@@ -10,6 +10,9 @@
 
 layout(location = VARY_POSWORLD) in vec3 inWorldPos;
 layout(location = VARY_TANGENTWS) flat in vec3 inInstanceOffset;
+// Interface match: the shared depth vertex stage also writes VARY_UV, which
+// this fragment never reads; declaring it keeps the SPIR-V Interface clean.
+layout(location = VARY_UV) in vec3 unusedUV;
 
 // Canonical scene UBO (set=0 binding=0): the shared struct IS the block
 // layout — no packed/named-view split.

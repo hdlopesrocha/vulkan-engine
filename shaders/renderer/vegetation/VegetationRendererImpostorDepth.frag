@@ -6,6 +6,8 @@
 
 layout(location = VARY_UV) in vec3 inTexCoord;  // xy=UV, z=float(layerIdx)
 layout(location = VARY_TANGENTWS) flat in vec3 inInstanceOffset;
+// Interface match: the shared depth vertex stage also writes VARY_POSWORLD
+// (read by the impostor-shadow pipeline using this same VS); unread here.
 
 // Canonical scene UBO (set=0 binding=0): the shared struct IS the block
 // layout — no packed/named-view split.

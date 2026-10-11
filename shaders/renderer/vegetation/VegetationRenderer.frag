@@ -3,8 +3,11 @@
 #include "../../includes/Locations.glsl"
 
 layout(location = VARY_UV) in vec3 inTexCoord;  // xy=uv, z=array layer
-// M5 (perf report 28): dead inBrushIndex declaration removed (trivial VS
-// copy, unread below; the shared VS write stays for the capture pipeline).
+// M5 (perf report 28, amended): inBrushIndex is unread below, but the
+// declaration stays: the shared vertex stage writes this location (the
+// capture pipeline reads it), and a VS-written-but-FS-undeclared location
+// raises the SPIR-V Interface performance warning. Zero behavior change.
+layout(location = VARY_BRUSHPATCH) in flat int inBrushIndex;
 layout(location = VARY_POSWORLD) in      vec3 inWorldPos;    // interpolated vertex world position
 layout(location = VARY_PLANE_NORMAL) in flat vec3 inPlaneNormal; // billboard face normal (world space)
 layout(location = VARY_POSLIGHT) in flat vec3 inTangentWS;   // billboard tangent (world space)

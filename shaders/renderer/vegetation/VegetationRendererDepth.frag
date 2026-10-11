@@ -5,9 +5,16 @@
 #include "../../includes/noise/Perlin.glsl"
 
 layout(location = VARY_UV) in vec3 inTexCoord;
-// M5 (perf report 28): dead inBrushIndex / inWorldPos / inPlaneNormal /
-// inTangentWS declarations removed (unread below; the shared billboard VS
-// writes stay — color needs them).
+// M5 (perf report 28, amended): the declarations below are unread in this
+// fragment, but they must stay declared: the shared billboard vertex stage
+// writes these locations (color needs them; the depth pipeline shares the
+// module), and VS-written-but-FS-undeclared locations raise the SPIR-V
+// Interface performance warning. Zero behavior change either way.
+layout(location = VARY_BRUSHPATCH) flat in int inBrushIndex;
+layout(location = VARY_POSWORLD) in vec3 inWorldPos;
+layout(location = VARY_PLANE_NORMAL) flat in vec3 inPlaneNormal;
+layout(location = VARY_POSLIGHT) flat in vec3 inTangentWS;
+layout(location = VARY_TANGENTWS) flat in vec3 inLightDirN;
 
 layout(set = 1, binding = 1) uniform sampler2DArray normalArray;
 layout(set = 1, binding = 2) uniform sampler2DArray opacityArray;

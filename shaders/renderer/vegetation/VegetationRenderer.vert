@@ -37,8 +37,13 @@ layout(location = VARY_PLANE_NORMAL) flat out vec3 outPlaneNormal;
 layout(location = VARY_POSLIGHT) flat out vec3 outTangentWS;
 // H8 (perf report 27): uniform light direction normalized once per vertex,
 // not per pixel (uniform input, identical value). VARY_TANGENTWS is unused
-// in the billboard color/depth interface.
+// in the billboard color/depth interface. NOT written under VEG_CAPTURE:
+// the capture pipeline binds the 112 B CaptureUBO, where this UniformObject
+// offset (lightDirection @336) is out of range — and the capture fragment
+// never reads it.
+#ifndef VEG_CAPTURE
 layout(location = VARY_TANGENTWS) flat out vec3 outLightDirN;
+#endif
 
 // Canonical scene UBO (set=0 binding=0): the shared struct IS the block
 // layout — no packed/named-view split.
@@ -247,8 +252,11 @@ void main() {
     outPlaneNormal = planeNormal;
     outTangentWS = tangent;
     // H8 (perf report 27): uniform light-direction normalize hoisted out of
-    // the color fragment (uniform input, identical value).
+    // the color fragment (uniform input, identical value). Skipped under
+    // VEG_CAPTURE (see the declaration): the capture UBO has no such field.
+#ifndef VEG_CAPTURE
     outLightDirN = normalize(-ubo.lightDirection);
+#endif
 
     // UV: from vertex attribute, array layer = billboard index
     fragTexCoord = vec3(inCornerUV, float(billboardIdx));
