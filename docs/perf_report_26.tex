@@ -1,0 +1,854 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+% Long unbreakable \texttt{} paths are the main source of overfull boxes in
+% this report; a generous emergencystretch plus sloppy paragraph breaking lets
+% TeX loosen those lines instead of running into the margin.
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\title{Performance Report 26: Vulkan Engine \\
+\large Ray Marching Meets Grass --- Two Grass Pipelines, the Fivefold Wind Bill, and the Per-Cascade Shadow March}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reports~17--25 audited the ray tracer, the water machinery, the raster core,
+vegetation structure, the load path, the fullscreen tail, and the generic SDF
+march --- but never the seam where ray marching meets grass. This engine grows
+\emph{two} grasses from one anchor stream: legacy textured billboards plus
+captured impostor quads (\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp},
+2285 lines, 13 shaders) and procedural SDF grass clumps marched inside the
+generic SDF renderer (\texttt{sdf/types/SdfScene.cpp:625--746} +
+\texttt{shaders/includes/sdf/SdfGrass.glsl}, 346 lines). The mode switch is
+exclusive (\texttt{MyApp.cpp:1503--1509}), yet GrassRaycast mode still draws
+the impostor far field \emph{and} marches the near field, evaluates the wind
+field in both, shadows both (up to 6 vegetation shadow draws plus one SDF
+grass march per cascade), and reserves both: \textbf{$\sim$385\,MiB}
+worst-case vegetation device memory (a 256\,MiB concatenation nobody
+reallocs) plus the SDF slice, plus 47\,MiB of $256\times256\times60$
+impostor arrays. Wind --- 3$\times$ Perlin plus ambient plus up to 4 tornadoes
+per evaluation --- runs $\sim$24 vertex evaluations $\times$ 5 passes per
+clump per frame on the billboard side and once per SDF step per candidate on
+the march side, in different units, under different LOD rulers
+(metres vs clump scales). The impostor selector burns a 20-iteration
+best-view loop per vertex; the billboard fragment fetches 5 textures before
+its first discard; density thinning exists only on the impostor side.
+
+It finds \textbf{15 issues} (3 critical, 5 high, 4 medium, 3 low). Each
+carries the standard technique and a copy-pasteable prompt preserving
+validation-clean execution, Synchronization2, and runtime feature detection.
+Scope score \textbf{5.1/10}; folding the grass seam into the combined estimate
+at 10\% weight gives \textbf{5.9/10}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{Scope and Method}
+
+One seam, never audited as a performance subject: where the SDF ray marcher
+meets grass. Three parts: (1) the vegetation renderer --- billboard
+near field, captured-impostor far field, merged GPU cull, bake, wind, and
+its per-frame depth+color passes (\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp/.hpp},
+\texttt{ImpostorCapture.*}, 13 shaders under
+\texttt{shaders/renderer/vegetation/}); (2) the SDF grass path --- anchor
+ingest, region-partitioned rebuild, the grass branch of the generic march,
+the 4-entry wind-lean cache, blade-LOD and impostor hand-off
+(\texttt{SdfRenderer.cpp:1418--1675}, \texttt{SdfScene.cpp:625--746},
+\texttt{SdfGrass.glsl}, \texttt{SdfRenderer.frag} grass regions); (3) the
+double shadow --- billboard EVSM plus impostor EVSM plus the SDF grass-only
+EVSM march, each per cascade (\texttt{VegetationRenderer.cpp:665--759},
+\texttt{SdfRenderer.cpp:2712--2792}). Report~25 priced the generic march
+(smoke container, tracer, resolve, normals); report~22 priced vegetation
+structure (pools, submits, equirect). Neither priced the grass-on-grass
+overlap. Method matches reports~22--25: full reads with file:line evidence,
+\texttt{spirv-dis} word/instruction tallies synthesized with the
+\texttt{Makefile} \texttt{glslc} flags (\texttt{bin/shaders/} was never built
+in this checkout, so no shipped modules exist to measure; §\ref{sec:budgets}
+documents the synthesis), byte tallies from creation code. The application
+was not executed; dynamic magnitudes are analytic estimates from verified
+structure at $1920\times1080$ (2.07\,M pixels), 3 frames in flight.
+
+\subsection{Measured Budgets}
+\label{sec:budgets}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Module} & \textbf{Words} & \textbf{Instrs} & \textbf{Role} \\
+\midrule
+\texttt{SdfRenderer.frag} & 69\,698 & 5\,332 & generic march incl.\ grass branch \\
+\texttt{SdfRendererSurface.frag} & 48\,432 & 3\,902 & \texttt{-DSDF\_VARIANT=1}, smoke compiled out \\
+\texttt{VegetationRenderer.frag} & 14\,307 & 1\,282 & billboard color (5 fetches pre-discard) \\
+\texttt{VegetationRendererImpostor.frag} & 14\,144 & 1\,271 & impostor color (depth reprojection) \\
+\texttt{VegetationRenderer.vert} & 9\,986 & 738 & billboard expander (wind $\times$24 verts) \\
+\texttt{VegetationRendererShadow.vert} & 9\,260 & 667 & billboard shadow expander \\
+\texttt{SdfGrassShadow.frag} & 13\,859 & 1\,070 & grass-only EVSM march, per cascade \\
+\texttt{SdfGrassShadowImpostor.frag} & 10\,086 & 792 & \texttt{-DSHADOW\_IMPOSTOR\_ONLY=1} \\
+\texttt{VegetationRendererImpostor.vert} & 3\,686 & 329 & 20-iter best-view select \\
+\texttt{VegetationRendererImpostorDepth.vert} & 3\,662 & 324 & depth twin of the above \\
+\texttt{VegetationRendererDepth.frag} & 2\,469 & 396 & billboard depth prepass \\
+\texttt{SdfGrassShadow.vert} & 2\,372 & 399 & grass proxy-cube VS (light VP) \\
+\texttt{SdfRenderer.vert} & 2\,291 & 384 & shared SDF proxy-cube VS \\
+\texttt{VegetationRendererImpostorDepth.frag} & 1\,257 & 155 & impostor depth prepass \\
+\texttt{VegetationRendererBake.comp} & 1\,560 & 108 & height-scale bake \\
+\texttt{ImpostorCapture.frag} & 1\,525 & 124 & 60-view capture FS \\
+\texttt{VegetationRendererImpostorShadow.frag} & 987 & 138 & impostor EVSM writer \\
+\texttt{VegetationRendererShadow.frag} & 2\,016 & 343 & billboard EVSM writer \\
+\bottomrule
+\end{tabular}
+\caption{Synthesized disassembly word counts (\texttt{spirv-dis | wc -w},
+the reports~20--25 convention) and instruction counts (op lines), compiled
+in-memory with the \texttt{Makefile} flags
+(\texttt{glslc --target-env=vulkan1.3 -Ishaders/includes}) because
+\texttt{bin/shaders/} does not exist in this checkout. Report~25 measured
+shipped 65\,907 / 4\,948 for the same SDF source at 990 lines; the source
+has since grown to 1240 lines. The two grass color fragments ($\sim$14k
+words each) are the largest non-SDF, non-brush modules in the engine.}
+\end{table}
+
+Per-frame fixed structure in GrassRaycast mode (the default,
+\texttt{types/Settings.hpp:33}): one SDF march over grass region containers
+($2\times2$ raycast, \texttt{SdfParamsUBO.hpp:35}), one impostor color pass
+over the vegetation offscreen targets, up to 6 vegetation shadow draws
+(3 cascades $\times$ billboard+impostor, billboards degenerate but still
+issued) plus one SDF grass shadow march per cascade, one bake only when
+chunks consolidate, and a 60-render capture exactly once per billboard type.
+Committed grass-side memory (\S\ref{sec:vram}): \textbf{$\sim$385\,MiB
+device} worst-case vegetation reservation plus \textbf{$\sim$50\,MiB}
+vegetation targets at 1080p plus the SDF target/slot slice from report~25.
+
+\subsection{Recommended Order}
+
+Unify the far-field LOD ruler and kill the double shadow (C1, C3)
+$\rightarrow$ cache wind per instance per frame instead of per vertex per
+pass (C2) $\rightarrow$ hoist the best-view select, fetch-then-discard
+order, and per-cascade march repetition (H4--H8) $\rightarrow$ gate passes on
+counts, thin billboards like impostors, stage uploads device-local, decouple
+consolidation from the frame (M9--M12) $\rightarrow$ hygiene (L13--L15).
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+\begin{equation}
+\begin{aligned}
+C = &\underbrace{\sum_{\mathrm{passes}} G_{\mathrm{pass}} V C_{\mathrm{vert}} + S C_{\mathrm{submit}} + L C_{\mathrm{bringup}} + G C_{\mathrm{sweep}}}_{\text{reports 20--23}} + \underbrace{P\,C_{\mathrm{tail}} + B\,C_{\mathrm{brush}} + K\,C_{\mathrm{equirect}}}_{\text{report 24}} \\
+&+ \underbrace{F_{\mathrm{sdf}}\,N_{\mathrm{steps}}\,N_{\mathrm{cand}}\,C_{\mathrm{eval}} + F_{\mathrm{smoke}}\,C_{\mathrm{resolve}} + F_{\mathrm{proxy}}\,C_{\mathrm{cover}}}_{\text{report 25}} \\
+&+ \underbrace{G_{\mathrm{veg}}\,V_{24}\,C_{\mathrm{wind}} + I\,C_{\mathrm{bestview}} + F_{\mathrm{imp}}\,C_{\mathrm{reproj}} + S_{\mathrm{cas}}\,(C_{\mathrm{vegshadow}} + C_{\mathrm{grassmarch}})}_{\text{this report}}
+\end{aligned}
+\end{equation}
+
+with $G_{\mathrm{veg}}$ the drawn grass instances, $V_{24}=24$ corner verts
+per billboard instance each paying a full wind evaluation
+$C_{\mathrm{wind}}$ (3$\times$ Perlin + ambient + up to 4 tornadoes,
+\texttt{VegetationRenderer.vert:101--155}), $I$ the impostor instances each
+paying the 20-iteration best-view loop $C_{\mathrm{bestview}}$ per vertex
+(\texttt{VegetationRendererImpostor.vert:88--97}),
+$F_{\mathrm{imp}}\,C_{\mathrm{reproj}}$ the impostor pixels paying captured
+depth reprojection (\texttt{VegetationRendererImpostor.frag:77--90}), and
+$S_{\mathrm{cas}}$ the shadow cascades each paying both a vegetation shadow
+draw and an SDF grass march. Reports~17--25 priced everything else; this
+report prices the grass seam, the only term that evaluates the same wind
+twice in two coordinate frames for the same plant.
+
+% =====================================================================
+\section{Grass Residency}
+\label{sec:vram}
+% =====================================================================
+
+Tallied from creation code at $1920\times1080$, 3 frames in flight
+(\texttt{VEG\_FRAMES = MAX\_FRAMES\_IN\_FLIGHT = 3},
+\texttt{VegetationRenderer.hpp:128}; \texttt{VEG\_CULL\_FRAMES = 3},
+\texttt{:370}) and the worst-case reservation in
+\texttt{VegetationRenderer.cpp:152--335}:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{5.9cm}p{4.3cm}r@{}}
+\toprule
+\textbf{Resource} & \textbf{Sizing} & \textbf{Bytes} \\
+\midrule
+Concatenated instances & $4096 \times 2048 \times 32$\,B dev-local & 256\,MiB dev \\
+Baked heights & $4096 \times 2048 \times 4$\,B dev-local & 32\,MiB dev \\
+Cull compacts (main+3 cascades) & $12 \times 4096 \times 20$\,B dev-local & $\sim$1\,MiB dev \\
+Cull counts & $24 \times 4$\,B dev-local & $<$1\,KiB \\
+Chunk info & $4096 \times 48$\,B host-vis mapped & 192\,KiB host \\
+Veg color targets & $3 \times 1920\times1080$ RGBA & $\sim$25\,MiB dev \\
+Veg depth targets & $3 \times 1920\times1080$ D32 & $\sim$25\,MiB dev \\
+Impostor albedo+normal+depth & $3 \times 256^2 \times 60$ texels & $\sim$47\,MiB dev \\
+SDF grass slice (anchors) & $\le 32768$ clumps, host-vis $\times$3 & scene-size \\
+\midrule
+Total vegetation-side & & $\sim$385\,MiB dev + host slice \\
+\bottomrule
+\end{tabular}
+\caption{Committed grass memory. The 256\,MiB concatenation plus 32\,MiB of
+baked heights are reserved up front in \texttt{preallocate}
+(\texttt{VegetationRenderer.cpp:173--187}) with zero runtime realloc by
+design (overflow asserts, \texttt{:367--383}); utilization below 25\%
+only warns (\texttt{:1208--1217}). The SDF grass anchors
+(\texttt{maxAnchors = 32768}, \texttt{SdfGrassConfig.hpp:23}) ride inside
+the report-25 SDF slots. Report~22's tally predates the bake buffer and the
+cascade cull frames.}
+\end{table}
+
+The reservation assumes 8.4\,M simultaneous instances
+(\texttt{kMaxVegInstances}, \texttt{VegetationRenderer.hpp:201--204});
+the SDF side independently caps the same meadow at 32768 clumps. Both caps
+are worst-case constants, neither follows the graphics preset, and the
+vegetation targets ignore \texttt{vegetationRenderScale} until the report-22
+M12 path recreates them.
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: Two Grasses, Two LOD Rulers, Two Shadows for One Meadow}
+\label{sec:c1}
+
+\textbf{Severity: Critical.}
+
+One anchor stream grows two grasses. Vegetation placement samples
+brush-3 triangles at 0.01/unit$^2$ (\texttt{VegetationRenderer.cpp:2113});
+the fence callback ingests the same anchors 1:1 into the SDF scene
+(\texttt{:2039--2042}, replace on destroy at \texttt{:2076--2078}), where
+each retained anchor becomes one Grass SDF instance partitioned into
+512\,m regions with 24\,m cells (\texttt{SdfGrassConfig.hpp:24--28},
+\texttt{SdfScene.cpp:699--744}). The mode switch looks exclusive
+(\texttt{MyApp.cpp:1503--1509}: Vegetation xor GrassRaycast), but
+GrassRaycast mode still draws the impostor far field \emph{and} marches the
+near field every frame: \texttt{drawBillboards = vegetationEnabled} is
+false, yet \texttt{drawImpostors} stays true whenever
+\texttt{impostorDistance > 0} (\texttt{MyApp.cpp:2294--2296}). The two
+far fields overlap under different rulers --- vegetation hands billboards to
+impostors at \texttt{impostorDistance = 512\,m}
+(\texttt{types/Settings.hpp:121},
+\texttt{VegetationRenderer.vert:184--187}), while the SDF march hands blades
+to its own impostor at 48--80 \emph{clump scales}
+(\texttt{SdfGrassConfig.hpp:52--53},
+\texttt{SdfRenderer.frag:739--742}). Between 80 scales and 512\,m both
+systems shade the same plants: once as marched blades, once as captured
+quads. Both are shadowed too: up to 6 vegetation shadow draws per frame
+(3 cascades $\times$ billboard+impostor,
+\texttt{VegetationRenderer.cpp:700--755}) plus one SDF grass EVSM march per
+cascade (\texttt{SdfRenderer.cpp:2791}), i.e.\ up to 9 grass shadow draws
+for one meadow.
+
+\textit{Technique: one LOD ladder, one shadow.} Express both hand-offs in
+the same unit (metres at the instance scale, evaluated on the CPU per chunk
+per frame from already-uploaded chunk info) and make them complementary:
+marched blades in $[0, N)$, captured impostors in $[N, M)$, nothing beyond
+$M$. Draw the SDF grass shadow only for cascades whose texel footprint
+resolves blades; let outer cascades take the impostor-only variant
+unconditionally (the pipeline already exists,
+\texttt{Makefile:220--224}) instead of selecting it per cascade at record
+time (\texttt{SdfRenderer.cpp:2757--2758}) while still rasterizing the full
+proxy.
+
+\begin{tcolorbox}[promptbox={Prompt --- C1: unified grass LOD ladder, single shadow}]
+Goal: no plant shaded or shadowed twice. Steps: (1) convert the SDF
+impostor band to metres per chunk on the CPU and align it with
+\texttt{impostorDistance} so the march hand-off and the billboard hand-off
+coincide; (2) skip the SDF grass shadow march on cascades fully covered by
+the impostor band (outer cascades take the impostor-only pipeline without
+rasterizing the full proxy); (3) skip the vegetation impostor pass for
+chunks the march owns this frame. Files: \texttt{MyApp.cpp} (veg block),
+\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp},
+\texttt{sdf/types/SdfGrassConfig.hpp}. Validation: per-mode A/B identical,
+draw/march counts per cascade down, validation-clean.
+\end{tcolorbox}
+
+\subsection{C2: Wind Is Evaluated per Vertex per Pass --- Five Times per Clump per Frame, Then Again per March Step}
+\label{sec:c2}
+
+\textbf{Severity: Critical.}
+
+The billboard vertex shader evaluates the full wind stack per vertex:
+\texttt{applyWindSkew} (3$\times$ \texttt{perlin2},
+\texttt{VegetationRenderer.vert:101--155}) over \texttt{windSVF} (ambient
+2$\times$ \texttt{perlinNoise3D} plus up to 4 Rankine tornadoes with
+\texttt{exp}, \texttt{WindField.glsl:29--47,64--108}), times 24 corner verts
+per instance (\texttt{VegetationRenderer.cpp:1124--1140}), times 5 passes per
+frame in Vegetation mode (depth + color + 3 shadow cascades) --- $\sim$120
+wind evaluations per clump per frame, each with its own \texttt{cos/sin}
+rotation (\texttt{VegetationRenderer.vert:192--194}) and Rodrigues tilt
+(\texttt{:225--233}). The shadow expander duplicates the stack without a
+\texttt{windEnabled} early-out (\texttt{VegetationRendererShadow.vert:79--112}).
+Then the SDF march evaluates the \emph{same} field again per step per
+candidate through \texttt{sdfGrassWindLean}
+(\texttt{SdfRenderer.frag:794--814} $\rightarrow$
+\texttt{SdfGrass.glsl:183--202}), softened only by a 4-entry round-robin
+lean cache (\texttt{SdfRenderer.frag:586--599}). The bake header knows the
+true multiple (\texttt{VegetationRendererBake.comp:4}: 24 verts
+$\times$ 5--9 passes) and bakes only the height scale, not the wind. Worse,
+the SDF \emph{shadow} march evaluates grass at rest pose (no wind inputs
+bound, \texttt{SdfGrassShadow.frag:17--23}) while its AABB covers the lean,
+so shadow texels pay conservative bounds for wind they never shade.
+
+\textit{Technique: evaluate wind once per instance per frame, reuse
+everywhere.} Bake the lean vector (xz + amplitude, 2 floats next to the
+baked height) in the existing bake dispatch, which already runs inside
+consolidation (\texttt{VegetationRenderer.cpp:437--469}); vertex stages read
+it like \texttt{inBakedHeight}, advancing only the time phase per frame.
+Keep the SDF lean cache as the correctness backstop for mid-frame time
+changes, and document the rest-pose shadow conservatism as the bound it is.
+
+\begin{tcolorbox}[promptbox={Prompt --- C2: baked per-instance wind lean}]
+Goal: one wind evaluation per instance per consolidation, not 120 per frame.
+Steps: (1) extend the bake SSBO with lean-xz + amplitude evaluated from the
+same \texttt{windSVF} the vertex stages call; (2) replace the per-vertex
+\texttt{applyWindSkew} chain in billboard, shadow, and impostor vertex
+stages with the baked lean (time-phase advanced on the CPU);
+(3) keep the SDF 4-entry cache and rest-pose shadow bound unchanged.
+Files: \texttt{shaders/renderer/vegetation/VegetationRendererBake.comp},
+\texttt{shaders/includes/vegetation/WindField.glsl},
+\texttt{shaders/renderer/vegetation/VegetationRenderer.vert},
+\texttt{VegetationRendererShadow.vert},
+\texttt{shaders/includes/sdf/SdfGrass.glsl}. Validation: still-air A/B
+identical, windy-frame A/B within tolerance, vertex ALU counters down,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{C3: The Near-Field Blade Loop Costs up to 24 Blades per Eval per Step per Candidate}
+\label{sec:c3}
+
+\textbf{Severity: Critical.}
+
+\texttt{sdGrassClump} (\texttt{SdfGrass.glsl:179--344}) loops up to
+\texttt{bladeCount = 24} blades (\texttt{SdfGrassConfig.hpp:33}), each blade
+a 2-taper evaluation with bend (\texttt{SdfGrass.glsl:313--337}: 2 hashes,
+root placement, \texttt{mix} toward wind, \texttt{sdGrassBlade} with 2
+normalizes + lengths). The blade-count LOD (24 $\rightarrow$ 8 beyond
+16 scales $\rightarrow$ 4 beyond 32, \texttt{:307--310}) and the skip logic
+(\texttt{:297--305}) only help \emph{far} clumps; near clumps --- the ones
+covering the most pixels --- always pay the full 24. That loop sits inside
+the generic march's inner product: up to 256 steps
+(\texttt{SdfRenderer.frag:524--540}) $\times$ up to 4 evaluated candidates
+(\texttt{:751--780}) $\times$ up to 24 blades, with the SDF grass step law
+deliberately refusing the \texttt{minStep} floor that protects every other
+primitive (\texttt{:1092--1096}: a 0.5\,m floor tunnels 0.4\,m blades, so
+grass steps at \texttt{dBest*safety} uncapped below). Report~25 C3 priced
+steps $\times$ candidates $\times$ noise; grass replaces noise with blades
+and removes the floor. A near-field grass pixel is the most expensive pixel
+in the engine that report~25 never isolated.
+
+\textit{Technique: bound the blade loop, floor the step with blade
+awareness.} Cap evaluated blades per step by screen-space footprint (near
+clumps keep 24 only inside a pixel-coverage tier, mid clumps 8, far clumps
+the impostor cone at \texttt{SdfGrass.glsl:257--265}); replace the missing
+step floor with a blade-aware floor derived from the instance's minimum
+blade width (already in \texttt{params0}, \texttt{SdfScene.cpp:659--662})
+so sphere tracing stays conservative without crawling at
+\texttt{dBest*safety} through empty air between blades.
+
+\begin{tcolorbox}[promptbox={Prompt --- C3: footprint-tiered blade count, blade-aware step floor}]
+Goal: near-field pixel ALU down $2$--$4\times$ with no silhouette change.
+Steps: (1) tier evaluated blade count by projected clump footprint (uniform
+thresholds, defaults conservative); (2) add the blade-width-derived step
+floor to the grass step law; (3) keep the 48/80 impostor hand-off and the
+Lipschitz-exact rigid lean untouched. Files:
+\texttt{shaders/includes/sdf/SdfGrass.glsl},
+\texttt{shaders/renderer/sdf/SdfRenderer.frag}. Validation: close-up A/B
+identical, step-count histogram down on grass views, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H4: The 20-Iteration Best-View Loop Runs per Vertex in Two Pipelines}
+
+\textbf{Severity: High.}
+
+Impostor placement reconstructs the Fibonacci sphere per vertex and
+brute-forces the best of 20 views by dot product
+(\texttt{VegetationRendererImpostor.vert:74--99}, loop at \texttt{:88--97};
+depth twin at \texttt{VegetationRendererImpostorDepth.vert:80--105}). That
+is 20 iterations $\times$ 4 quad verts = 80 iterations per instance per pass,
+paid in the color pass \emph{and} the depth pass \emph{and} every shadow
+cascade that draws impostors (up to 3 more), plus a per-vertex
+\texttt{cos/sin} for the un-rotation (\texttt{:79--86}) --- before a single
+fragment is shaded. The view index depends only on instance rotation and
+camera direction: constant across the quad's 4 verts, constant across
+passes within the frame.
+
+\textit{Technique: select once per instance, reuse per vertex.} Move the
+best-view select into the cull/compact shader (or the vertex shader's first
+invocation via subgroup broadcast) and pass the winning layer as a flat
+varying; vertices keep only the placement math
+(\texttt{:116--139}) and UV crop (\texttt{:149--157}).
+
+\begin{tcolorbox}[promptbox={Prompt --- H4: per-instance best-view select}]
+Goal: 80 loop iterations per instance per pass $\rightarrow$ 20 per frame.
+Steps: (1) compute the winning view/layer per instance per frame on the GPU
+(cull shader) or once per quad in the vertex stage and broadcast; (2) keep
+placement, crop, and segment culling bit-identical. Files:
+\texttt{shaders/renderer/vegetation/VegetationRendererImpostor.vert},
+\texttt{VegetationRendererImpostorDepth.vert}, the cull shader owning the
+compact stream. Validation: impostor A/B identical, vertex ALU down,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{H5: Grass Is Shadowed up to Nine Times per Frame}
+
+\textbf{Severity: High.}
+
+Per frame the meadow pays: up to 3 billboard EVSM draws
+(\texttt{VegetationRenderer.cpp:700--711}, \texttt{indexCount = 36} via
+\texttt{DrawIndexedIndirectCount} with \texttt{maxDraws = vegNumChunks}),
+up to 3 impostor EVSM draws (\texttt{:746--755}, 6-index quads), and up to 3
+SDF grass EVSM marches (\texttt{SdfRenderer.cpp:2791},
+\texttt{firstInstance = grassBase} over the grass container range). Each
+vegetation cascade draw rebinds pipeline + 3 descriptor sets + push constant
+(\texttt{:684--698,726--733}); each SDF march re-marches up to 256 steps
+with up to 8 AABB tests per step (\texttt{SdfGrassShadow.frag:176--247}).
+In GrassRaycast mode the billboard draws are degenerate (all verts culled
+past \texttt{impostorDistance}) but still issued: the command count does not
+fall, only the rasterized pixels do. Outer cascades march full blades unless
+the prebuilt impostor-only pipeline happens to be selected
+(\texttt{SdfRenderer.cpp:2757--2758}, with fallback to the full march when
+its module is missing at \texttt{:2772--2774}), even though shadows are
+blurred and the config comment itself calls coarse LOD ``required for
+performance'' (\texttt{SdfGrassConfig.hpp:40--46}).
+
+\begin{tcolorbox}[promptbox={Prompt --- H5: one grass shadow per cascade, impostor-grade outside}]
+Goal: shadow grass cost tracks texel footprint, not cascade count $\times$
+full march. Steps: (1) elide the billboard shadow draw in GrassRaycast mode
+at the command level (not just vertex culling); (2) default outer cascades
+to the impostor-only march pipeline and reserve the full-blade march for
+cascade 0; (3) fail loud (not silent fallback) when the impostor-only module
+is absent. Files: \texttt{MyApp.cpp} (shadow task),
+\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp}
+(\texttt{drawShadowCascade}),
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp}. Validation: shadow A/B per
+cascade, issued shadow draws down, validation-clean.
+\end{tcolorbox}
+
+\subsection{H6: Fragments Fetch First, Discard Later --- on Both Grass Pipelines}
+
+\textbf{Severity: High.}
+
+The billboard color fragment fetches albedo + opacity + normal plus
+\texttt{albedoLod5} + \texttt{normalLod5} (5 samples) \emph{before} the
+\texttt{weight < 0.3} discard (\texttt{VegetationRenderer.frag:60--62,94--95}),
+then pays TBN normalize$\times$3, Blinn-Phong \texttt{pow(NdotH, 16)}, hard
+shadows and a cloud-shadow raymarch when lit (\texttt{:114--156}). The depth
+prepass twin fetches 3 samples unconditionally
+(\texttt{VegetationRendererDepth.frag:36--38}). The impostor fragment pays
+captured-depth reprojection per pixel (\texttt{invVP[layer]} matvec,
+normalize, \texttt{viewProjection} re-transform,
+\texttt{VegetationRendererImpostor.frag:77--90}) before lighting, with no
+depth prepass in the main view to reject occluded quads first
+(\texttt{drawDepth} issues billboards only,
+\texttt{VegetationRenderer.cpp:1714--1723} vs shadow which draws both).
+The SDF side repeats the pattern: surface normals cost a tetrahedral 4-tap
+near (\texttt{SdfRenderer.frag:848--854}, report~25 H7) on hits the march
+just found. Every pipeline shades occluded and discarded pixels at full
+price.
+
+\textit{Technique: discard on the cheap fetch, prepass the impostors.}
+Test opacity/coverage from the single cheapest tap first and skip the LOD5
+pair plus lighting on discard; add the missing impostor depth prepass to the
+main view (the pipeline already exists,
+\texttt{VegetationRenderer.cpp:1417--1434}) so the color reprojection runs
+only on visible quads.
+
+\begin{tcolorbox}[promptbox={Prompt --- H6: cheap-first discard, impostor depth prepass}]
+Goal: discarded pixels cost one fetch, occluded impostors cost depth only.
+Steps: (1) reorder billboard/impostor fragments to discard from the opacity
+tap before the LOD5 fetch pair and lighting; (2) issue the impostor depth
+pipeline in \texttt{drawDepth} alongside billboards; (3) keep the EVSM
+no-cutout contract (solid silhouettes, \texttt{VegetationRendererShadow.frag:5--7})
+untouched. Files: \texttt{shaders/renderer/vegetation/VegetationRenderer.frag},
+\texttt{VegetationRendererImpostor.frag},
+\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp}. Validation:
+pixel-identical output, fetch counters down on discard-heavy views,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{H7: Passes Are Issued on Flags, Never on Counts}
+
+\textbf{Severity: High.}
+
+\texttt{drawDepth} binds pipeline + 3 sets + push constant + index/vertex
+buffers and issues \texttt{DrawIndexedIndirectCount} even when every
+instance is beyond \texttt{impostorDistance} or density-culled --- culling
+is per-vertex degenerate output, not command elision
+(\texttt{VegetationRenderer.cpp:1702--1725},
+\texttt{VegetationRenderer.vert:184--187}). \texttt{drawColor} repeats the
+binds twice (billboard + impostor,
+\texttt{:1741--1763}). Shadow cascades issue both streams per cascade with
+\texttt{maxDraws = vegNumChunks} even when the cascade count buffer is zero
+(\texttt{:706--711,749--754}; the GPU still reads the count). The SDF side
+matches: proxy cubes rasterize over merged containers plus ray/AABB plus
+1--2 depth taps plus dither even for grass regions off screen, and the
+\texttt{MyApp} veg block transitions, clears, draws, and submits on the
+dedicated vegetation queue whenever either flag is set
+(\texttt{MyApp.cpp:2299--2407}) --- the empty grass mode (\texttt{None})
+clears both targets and still submits (\texttt{:2365--2385}). The engine
+already owns the elision pattern (report~22 C3, report~24 C1, report~25
+M11); the grass seam is its last un-elided pass.
+
+\begin{tcolorbox}[promptbox={Prompt --- H7: count-gated grass passes}]
+Goal: no instances in range $\Rightarrow$ no draws, no clears, no submit.
+Steps: (1) read back (or predict from chunk counts + frustum) per-pass
+non-empty conditions on the CPU and skip depth/color/cascade draws,
+target clears, and the vegetation submit when empty, routing the composite
+wait to the cull timeline as the SDF-task elision does; (2) keep layouts
+stable across skipped frames. Files: \texttt{MyApp.cpp},
+\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp}. Validation:
+identical pixels on empty views, submit/draw counts down, validation-clean.
+\end{tcolorbox}
+
+\subsection{H8: The 60-Render Capture Runs Synchronously, From a Lost Source}
+
+\textbf{Severity: High.}
+
+\texttt{ImpostorCapture::capture} renders 20 views per billboard type
+inside one \texttt{runSingleTimeCommands} (a device-waiting synchronous
+submit), each view paying 4 transitions + \texttt{BeginRendering} over
+3 color + 1 depth targets + a 36-index draw + 3 transitions back
+(\texttt{ImpostorCapture.cpp:241--337}); \texttt{captureAll} triples it to
+60 renders plus ImGui set updates per type (\texttt{:346--355}), after
+pre-transitioning 180 layers at init (\texttt{:67--79}). The vertex source
+for that capture, \texttt{ImpostorCapture.vert}, does not exist on disk:
+the live path compiles it from \texttt{VegetationRenderer.vert
+-DVEG\_CAPTURE=1} (\texttt{ImpostorCapture.cpp:589},
+\texttt{Makefile:230--231}), while the checked-in
+\texttt{ImpostorCaptureLegacy.vert} (a pass-through to a nonexistent
+\texttt{vegetation.geom}) has zero references anywhere. Capture forces
+\texttt{impostorDistance = 0} and wind off (\texttt{:235--239}), so the
+captured quads never match a windy frame exactly --- the mismatch C2's bake
+would also fix.
+
+\begin{tcolorbox}[promptbox={Prompt --- H8: async capture, delete the orphan}]
+Goal: capture never stalls the frame; the source tree tells the truth.
+Steps: (1) move capture onto the async path (own queue/fence, or split
+across frames --- 60 renders need no single submit); (2) delete
+\texttt{ImpostorCaptureLegacy.vert} and document the \texttt{-DVEG\_CAPTURE}
+derivation next to the \texttt{Makefile} rule; (3) capture with the baked
+lean so quads match the windy world. Files:
+\texttt{vulkan/renderer/vegetation/ImpostorCapture.cpp},
+\texttt{shaders/renderer/vegetation/ImpostorCaptureLegacy.vert} (delete),
+\texttt{Makefile}. Validation: identical impostor arrays, zero
+frame-time capture cost, validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M9: Per-Frame O(Chunks) CPU Work and a Synchronous Consolidation Stall}
+
+\textbf{Severity: Medium.}
+
+Every frame pays for every chunk whether or not anything changed:
+\texttt{recordReadBarriers} builds one \texttt{HOST\_WRITE
+$\rightarrow$ VERTEX\_INPUT} barrier per chunk buffer (up to 4096 barriers
+in one \texttt{DependencyInfo},
+\texttt{VegetationRenderer.cpp:1219--1255});
+\texttt{writeVegChunkInfo} memcpys \texttt{vegNumChunks $\times$ 48\,B} and
+rebuilds the chunk-info map on dirty, called from both \texttt{prepareCull}
+and \texttt{prepareCullCascades} (\texttt{:506,551--594,640});
+\texttt{updateWindParamsUBO} rebuilds 80\,B and memcmps on every
+\texttt{draw*} call (up to $5\times$/frame,
+\texttt{:1599--1650,1710,1736,686}). Worse, \texttt{consolidateChunks} runs
+the copy + bake inside a synchronous single-time command
+(\texttt{:337--475}: N$\times$ copy plus bake dispatch at \texttt{:458}
+plus 3 barriers), and both cull prepares block while it is dirty or its
+fence is pending (\texttt{:480--484,608--611}). The chunk info buffer is
+host-visible/coherent and persistently mapped (\texttt{:296--300}), so every
+march-adjacent read also rides the host-visible heap path.
+
+\begin{tcolorbox}[promptbox={Prompt --- M9: dirty-gated barriers, async consolidation}]
+Goal: static meadows cost near-zero CPU; consolidation never blocks cull.
+Steps: (1) record the read barriers once per buffer version, not once per
+frame; (2) run consolidation on the async transfer path with a timeline
+fan-in instead of a waited single-time submit; (3) collapse the wind UBO
+updates to one dirty-gated upload per frame. Files:
+\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp}. Validation:
+identical chunk contents, barrier/upload counts down on static frames,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{M10: Density Thinning Exists --- Only Where It Does Not Matter}
+
+\textbf{Severity: Medium.}
+
+\texttt{DistanceDensitySettings} defaults to full density inside 512\,m
+falling to 10\% at 4096\,m
+(\texttt{VegetationRenderer.hpp:54--59}), packed with the hand-off guard
+\texttt{nearDistance = max(fullDensity, impostorDistance)}
+(\texttt{VegetationRenderer.cpp:1621--1638}) --- sound. But only the two
+impostor vertex shaders evaluate \texttt{densityFactorForDistance} with
+stochastic discard (\texttt{VegetationRendererImpostor.vert:61--70},
+\texttt{VegetationRendererImpostorDepth.vert:68--76}); the billboard vertex
+and fragment stages never call it. Billboards --- the near-field geometry
+covering the most pixels with 24 verts and 5 texture fetches each --- never
+thin at any distance. The far field, already reduced to camera-facing quads
+with a 20-view atlas, thins; the near field, where overdraw actually hurts,
+does not.
+
+\begin{tcolorbox}[promptbox={Prompt --- M10: thin billboards, not just impostors}]
+Goal: overdraw falls with distance on both representations. Steps:
+(1) evaluate the same density factor + hash discard in the billboard vertex
+stage (degenerate culled verts, mirroring the impostor path); (2) keep the
+\texttt{nearDistance} hand-off guard so thinning never opens a seam at the
+LOD boundary. Files:
+\texttt{shaders/renderer/vegetation/VegetationRenderer.vert},
+\texttt{shaders/includes/vegetation/VegetationCommon.glsl}. Validation:
+near A/B identical, mid/far overdraw down, no LOD seam, validation-clean.
+\end{tcolorbox}
+
+\subsection{M11: Two Shadow LODs in Incompatible Units}
+
+\textbf{Severity: Medium.}
+
+The SDF grass shadow march ignores camera distance and marches at a fixed
+\texttt{shadowLodScale = 32} (\texttt{SdfGrassConfig.hpp:46},
+\texttt{SdfRenderer.cpp:2737--2749}), jumping to the zero-blade impostor
+only at or above \texttt{impostorFull} (\texttt{SdfGrassShadow.frag:79--99}).
+The vegetation shadow has no LOD at all: full 24-vert wind expansion per
+cascade (\texttt{VegetationRendererShadow.vert:79--112}) with
+\texttt{windEnabled = -1} merely signalling the fragment
+(\texttt{VegetationRenderer.cpp:690--694},
+\texttt{VegetationRenderer.frag:56}). One LOD is in clump scales, the other
+in metres, neither follows cascade texel footprint --- yet footprint is what
+determines whether blades survive the EVSM blur. The impostor-only shadow
+pipeline that would let outer cascades skip blades exists
+(\texttt{Makefile:220--224}) but is chosen per cascade behind a fallback
+that silently takes the full march when the module is missing
+(\texttt{SdfRenderer.cpp:2772--2774}).
+
+\begin{tcolorbox}[promptbox={Prompt --- M11: footprint-driven shadow LOD}]
+Goal: each cascade marches what its texels resolve. Steps: (1) drive both
+shadow LODs from cascade texel footprint (cascade 0 full, outer cascades
+impostor-grade); (2) make the impostor-only module load failure loud;
+(3) unify the units with C1's ladder. Files:
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp},
+\texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp},
+\texttt{sdf/types/SdfGrassConfig.hpp}. Validation: shadow A/B per cascade,
+outer-cascade shadow ALU down, validation-clean.
+\end{tcolorbox}
+
+\subsection{M12: Streaming Churn per Chunk --- Copies, Allocs, and Fence Callbacks}
+
+\textbf{Severity: Medium.}
+
+\texttt{processPendingChunks} drains 10 chunks per frame
+(\texttt{MyApp.cpp:1128}) through per-chunk position/normal copies, a full
+vertex AABB scan, scratch reservation, per-triangle hash/biome/random work,
+a staging memcpy, a device \texttt{createBuffer}, and an async copy with a
+fence callback per batch (\texttt{VegetationRenderer.cpp:1854--2047}),
+with the AABB unconditionally bloated by \texttt{billboardScale $\times$
+2.1} (\texttt{:1871--1881}) --- bloating every proxy, cull volume, and SDF
+region bound downstream. Each batch pins a staging pool entry at peak
+concurrency that never shrinks (\texttt{VegetationRenderer.hpp:480--488}).
+Shape edits (\texttt{setGrassClumpRadius} et al.,
+\texttt{SdfRenderer.cpp:1545--1623}) set \texttt{grassDirty\_} and rebuild
+the whole grass scene plus re-merge plus re-upload all 6 vectors for what is
+often a slider drag (\texttt{:1480--1530} via
+\texttt{SceneRenderer.cpp:1857--1860}).
+
+\begin{tcolorbox}[promptbox={Prompt --- M12: quieter streaming, coarser grass dirty}]
+Goal: chunk streaming and slider drags stop spiking the frame. Steps:
+(1) size staging once from the batch total instead of per-chunk acquire;
+(2) derive the AABB bloat from eventual lean + blade extent, not a fixed
+$2.1\times$; (3) split grass shape dirt into cheap (tint/roughness: UBO
+stream) vs structural (radius/blades: rebuild) so drags do not re-merge.
+Files: \texttt{vulkan/renderer/vegetation/VegetationRenderer.cpp},
+\texttt{vulkan/renderer/sdf/SdfRenderer.cpp}. Validation: identical
+placement/bounds within tolerance, spike frames gone on drags,
+validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L13: Near-Twin Shadow Shaders and a Shared-Vertex Opportunity}
+
+\texttt{ShadowRenderer.frag} (22 lines) and
+\texttt{VegetationRendererShadow.frag} (22 lines) both write
+\texttt{(exp(2z), exp(4z))} EVSM moments, one inlining \texttt{exp}, the
+other calling \texttt{evsmMoments()} --- one helper, two spellings.
+\texttt{VegetationRendererImpostorShadow.frag} (49 lines, 987 words) is a
+stripped twin of \texttt{VegetationRendererImpostor.frag} (135 lines,
+14144 words) with identical inputs; the two impostor vertex shaders differ
+only in varyings and sentinel convention
+(\texttt{VARY\_TANGENTWS} vs \texttt{VARY\_FACE\_NORMAL}, \texttt{w = 2}
+vs degenerate). \texttt{SdfRenderer.vert} is already shared by both SDF
+pipelines (report~25 L13 resolved); the vegetation side never applied the
+lesson. Dedupe behind one EVSM writer and one impostor vertex core with
+\texttt{-D} variants, as C1/H8 already do for the SDF pair.
+
+\subsection{L14: Small-Upload and Descriptor Hygiene}
+
+\texttt{updateWindParamsUBO} (80\,B) and \texttt{updateWindFieldUBO}
+(304\,B) memcmp on up to 6 call sites per frame to save one coherent memcpy
+(\texttt{VegetationRenderer.cpp:1544--1650}); the capture UBO strides views
+at 256\,B for $\ge$5\,KiB total (\texttt{ImpostorCapture.cpp:713--721});
+every vegetation/capture layout sets \texttt{UPDATE\_AFTER\_BIND}
+(\texttt{VegetationRenderer.cpp:874--895,1315--1319},
+\texttt{ImpostorCapture.cpp:557--577}), disabling driver optimizations for
+sets refreshed only on texture-array events (\texttt{:796--811}).
+\texttt{setImpostorData} calls \texttt{waitForFrameFences} --- a CPU stall
+--- on a data path (\texttt{:1269}). Gate once per frame, pack the capture
+UBO tightly, restrict \texttt{UPDATE\_AFTER\_BIND} to the actually-updated
+set, and move the fence wait off the upload path.
+
+\subsection{L15: Magic Blade Constants and Removed-Dither Lore}
+
+\texttt{lip = 1 + amp\,(freq + 2/h)}, \texttt{amp = 0.30\,max(r, h/2)},
+\texttt{freq = 2.5/scale}, \texttt{detail = max(h\,0.35, w\,6)},
+\texttt{K = (maxR + amp)/lip} and the 24/8/4 blade tiers at 16/32 scales
+(\texttt{SdfGrass.glsl:140--172,237,291--310}) are unexplained globals; the
+removed $0.50\times$--$1.15\times$ Bayer dither is documented in three
+places as the ring it left behind (\texttt{VegetationRenderer.vert:176--183},
+\texttt{VegetationRenderer.frag:83--90},
+\texttt{VegetationRendererImpostor.vert:51--53}). Collect the blade-budget
+proof (max overstep $<$ min blade width at each tier, C3/M11) next to the
+constants so the next tuning pass does not re-break sphere-tracing
+conservatism, and fold the dither epitaphs into one comment.
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lp{5.8cm}p{5.6cm}@{}}
+\toprule
+\textbf{Item} & \textbf{Change} & \textbf{Est.\ effect} \\
+\midrule
+C1 & Unified LOD ladder, single shadow & no double-shaded plants; $-6$ draws/frame typical \\
+C2 & Baked wind lean & $\sim$120 $\rightarrow$ 1 wind evals/clump/frame \\
+C3 & Tiered blades + step floor & near-field pixel ALU $2$--$4\times$ down \\
+H4 & Per-instance best-view & $-75$\% of the select loop \\
+H5 & Count-gated + impostor-grade shadow & outer-cascade shadow ALU down \\
+H6 & Cheap-first discard + imp.\ prepass & $-$4 fetches per discarded px \\
+H7 & Count-gated passes/submit & $-1$ submit + passes when empty \\
+H8 & Async capture, orphan deleted & capture off the frame path \\
+M9--M12 & Dirty gates, billboard thinning, LOD units, streaming & additive host + bandwidth \\
+L13--L15 & Shared EVSM/vertex cores, hygiene & noise floor \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C1--C3 are the items that change what the engine \emph{costs per frame} on
+the grass seam: which representation shades each plant, how often wind runs,
+and what a near-field pixel pays per step. H4--H8 remove the per-vertex,
+per-pixel, and per-cascade taxes inside those representations. None of the
+changes touches scene content except C3/M10--M11's quality tiers (explicit
+knobs with A/B).
+
+Explicitly out of scope (audited shallowly or not at all; candidates for
+report~27): the GDAL heightmap load path
+(\texttt{math/HeightMapTif.cpp}); CPU threading
+(\texttt{space/ThreadPool.cpp}); input/events
+(\texttt{events/EventManager.cpp}); and the ImGui widget layer
+(release-only, never profiled) --- all carried forward from report~25. The
+impostor bake's synchronous capture, carried forward since report~22, is
+covered here for the first time (H8).
+
+% =====================================================================
+\section{Overall Score}
+\label{sec:score26}
+% =====================================================================
+
+\subsection{Rubric (Report-26 Scope)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcp{7.2cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Wt.} & \textbf{Score and justification} \\
+\midrule
+March / grass-eval efficiency & 35\% & \textbf{5.0} --- lean cache, blade LOD,
+impostor hand-off, height bake and the $2\times2$ raycast default are good;
+120 wind evals per clump per frame plus an uncapped-below grass step law drag
+it down. \\
+Representation unity & 30\% & \textbf{4.5} --- the exclusive mode switch and
+the specialized Surface/impostor-only/\texttt{VEG\_CAPTURE} variants are
+good; two LOD rulers in different units and up to 9 shadow draws for one
+meadow are not. \\
+Program structure & 20\% & \textbf{5.5} --- one anchor stream feeding two
+consumers is the right architecture; two 14k-word color fragments, near-twin
+shadow writers, and a captured source that does not exist drag it down. \\
+Upload / target hygiene & 15\% & \textbf{6.0} --- per-slot dirty flags,
+staged copies, event-driven descriptor refresh and the render-scale path are
+good; the 256\,MiB upfront reservation and per-frame O(chunks) barriers are
+not. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Overall: 5.1/10 Scope, 5.9/10 Combined}
+
+\begin{equation}
+0.35(5.0) + 0.30(4.5) + 0.20(5.5) + 0.15(6.0) = \mathbf{5.1}
+\end{equation}
+
+Report~25 scored the combined engine 6.0/10; that estimate priced geometry,
+submits, pools, arrays, mixer, load, tail, and the generic march, but not
+the grass seam. Measuring it:
+
+\begin{equation}
+0.90(6.0) + 0.10(5.1) = \mathbf{5.9}
+\end{equation}
+
+The engine's verdict is unchanged in kind, extended in scope one last time:
+the frame-graph architecture (async queues, timeline DAG, cached
+descriptors, specialized shader variants, elided debug tasks) is sound; the
+grass seam --- the same wind evaluated twice for the same plant, the same
+plant shaded twice under two rulers, the same shadow marched nine times ---
+is where the money is. Landing C1--C3 moves this scope toward $\sim$8/10
+with no redesign.
+
+\end{document}
