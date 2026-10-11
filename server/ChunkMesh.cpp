@@ -11,6 +11,35 @@
 namespace chunkmesh {
 namespace {
 
+// Finest (+1-shifted stored) lod among Surface descendants including the node
+// itself; -1 when the subtree holds no Surface node at all. Smaller stored
+// lod = finer rung. Used only as a tessellation fallback target (below).
+static int finestSurfaceLod(const Octree& tree, OctreeNode* node) {
+    if (!node) return -1;
+    int best = -1;
+    if (node->getType() == SpaceType::Surface && node->getLod() > 0)
+        best = node->getLod();
+    OctreeNode* children[8] = {};
+    node->getChildren(*tree.allocator, children);
+    for (int i = 0; i < 8; ++i) {
+        const int c = finestSurfaceLod(tree, children[i]);
+        if (c > 0 && (best < 0 || c < best)) best = c;
+    }
+    return best;
+}
+
+static void fillMesh(chunkproto::MeshData& out, const Geometry& g) {
+    out.positions.reserve(g.vertices.size() * 3);
+    out.brush.reserve(g.vertices.size());
+    for (const Vertex& v : g.vertices) {
+        out.positions.push_back(v.position.x);
+        out.positions.push_back(v.position.y);
+        out.positions.push_back(v.position.z);
+        out.brush.push_back(v.brushIndex);
+    }
+    out.indices.assign(g.indices.begin(), g.indices.end());
+}
+
 // Tessellates one already-resolved live node. Holds the tree shared lock
 // across the whole tessellation — the same nesting pattern
 // LocalScene::requestModel3D uses (outer shared lock, then iterateTriangles
@@ -28,16 +57,34 @@ void tessellateNode(const Octree& tree, OctreeNode* node, const BoundingCube& cu
     Tesselator tess(&triCount);
     ThreadContext ctx;
     tree.iterateTriangles(node, cube, level, tess, &ctx, chunkLod);
-    const Geometry& g = tess.geometry;
-    out.positions.reserve(g.vertices.size() * 3);
-    out.brush.reserve(g.vertices.size());
-    for (const Vertex& v : g.vertices) {
-        out.positions.push_back(v.position.x);
-        out.positions.push_back(v.position.y);
-        out.positions.push_back(v.position.z);
-        out.brush.push_back(v.brushIndex);
+    if (!tess.geometry.indices.empty()) {
+        fillMesh(out, tess.geometry);
+        return;
     }
-    out.indices.assign(g.indices.begin(), g.indices.end());
+    // Fallback: this rung holds no triangles at its own target (its surface
+    // lives in finer descendant rungs, which stream as separate chunk
+    // records). Retessellate at the finest Surface lod present so every
+    // streamed chunk carries drawable geometry instead of an empty mesh.
+    const int fine = finestSurfaceLod(tree, node);
+    if (const char* dbg = std::getenv("CHUNK_MESH_DEBUG")) {
+        (void)dbg;
+        std::fprintf(stderr, "[chunkmesh] id=%llu chunkLod=%u lod=%u type=%d pass1tris=%zu fine=%d\n",
+            (unsigned long long)id, chunkLod, node->getLod(), (int)node->getType(),
+            tess.geometry.indices.size() / 3, fine);
+    }
+    if (fine > 0 && fine != chunkLod) {
+        long triCount2 = 0;
+        Tesselator tess2(&triCount2);
+        ThreadContext ctx2;
+        tree.iterateTriangles(node, cube, level, tess2, &ctx2, fine);
+        if (const char* dbg2 = std::getenv("CHUNK_MESH_DEBUG")) {
+            (void)dbg2;
+            std::fprintf(stderr, "[chunkmesh] id=%llu pass2tris=%zu\n",
+                (unsigned long long)id, tess2.geometry.indices.size() / 3);
+        }
+        if (!tess2.geometry.indices.empty())
+            fillMesh(out, tess2.geometry);
+    }
 }
 
 // Finds the node in one tree by POINTER (the registry already mapped the
