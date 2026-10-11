@@ -57,6 +57,7 @@
     <button class="ghost" @click="clearAll">Clear</button>
     <label class="chk" v-for="l in layerList" :key="'v' + l"><input type="checkbox" v-model="layerVisibility[l]"> {{ layerName(l) }}</label>
     <label class="chk"><input type="checkbox" v-model="showWireframe"> wireframe</label>
+    <label class="chk" title="Show only chunks at this LoD rung in the 3D view (0 = unset)">chunkLoD <input type="range" min="0" max="10" step="1" v-model.number="lodFilter" style="width:90px"> {{ lodFilter }} ({{ rungCount }})</label>
     <label class="chk">speed <input type="range" min="16" max="2048" v-model.number="camSpeed" style="width:90px"> {{ camSpeed }}</label>
   </header>
   <div v-if="!connected" class="connwarn">
@@ -297,6 +298,14 @@ createApp({
     const sortKey = ref('level');
     const layerVisibility = ref({ 0: true, 1: true });
     const showWireframe = ref(true);
+    // LoD rung isolation for the 3D view: only chunks whose stored chunkLod
+    // equals this value are drawn (0 = unset). Default 1 = frontier chunks.
+    const lodFilter = ref(1);
+    const rungCount = computed(() => {
+      let n = 0;
+      for (const c of chunks.value.values()) if (c.chunkLod === lodFilter.value) n++;
+      return n;
+    });
     const camSpeed = ref(512);
     const fps = ref(0);
     const culled = ref(0);
@@ -517,7 +526,7 @@ createApp({
       lineMin: 0, lineMax: 0, lineSum: 0 };
     window.__wire = () => ({ ...dbg, meshId, meshStatus: meshStatus.value,
       selectedId: selectedId.value, showWireframe: showWireframe.value,
-      chunks: chunks.value.size });
+      chunks: chunks.value.size, lodFilter: lodFilter.value, rungCount: rungCount.value });
     let gl = null, prog = null, posBuf = null, colBuf = null, uVP = null;
     let meshTriBuf = null, meshLineBuf = null, meshLineColBuf = null;
     let vertCount = 0, meshTriCount = 0, meshLineCount = 0;
@@ -566,6 +575,7 @@ createApp({
       let culled = 0;
       for (const c of chunks.value.values()) {
         if (layerVisibility.value[c.layer] === false) continue;
+        if (c.chunkLod !== lodFilter.value) continue; // LoD rung isolation
         const mn = [c.minX, c.minY, c.minZ], mx = [c.minX + c.size, c.minY + c.size, c.minZ + c.size];
         if (planes && !aabbVisible(planes, mn, mx)) { culled++; continue; }
         const sel = selectedId.value === c.id;
@@ -692,7 +702,7 @@ createApp({
       // Box buffers depend on data + filters + frustum, so the rebuild key
       // includes a quantized camera pose (rebuilt while moving, cached idle).
       const visKey = layerList.value.map(l => layerVisibility.value[l] ? 1 : 0).join(',');
-      const key = [chunksVersion, visKey, selectedId.value, aspect,
+      const key = [chunksVersion, visKey, lodFilter.value, selectedId.value, aspect,
         cam.pos.map(x => x.toFixed(1)).join(','), cam.quat.map(x => x.toFixed(4)).join(',')].join('|');
       if (key !== builtKey) {
         culled.value = rebuildBuffers(planes);
@@ -706,11 +716,13 @@ createApp({
       gl.clearColor(0.008, 0.02, 0.05, 1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       gl.uniformMatrix4fv(uVP, false, vp);
-      // Selected-mesh visibility shares the chunk-box frustum test.
+      // Selected-mesh visibility shares the chunk-box frustum test (plus the
+      // LoD rung gate, so a wireframe never floats over a hidden box).
       let meshVisible = showWireframe.value && meshTriCount > 0 && meshId != null;
       if (meshVisible) {
         const c = chunks.value.get(meshId);
         if (!c) meshVisible = false;
+        else if (c.chunkLod !== lodFilter.value) meshVisible = false;
         else if (!aabbVisible(planes, [c.minX, c.minY, c.minZ],
                               [c.minX + c.size, c.minY + c.size, c.minZ + c.size])) meshVisible = false;
       }
@@ -762,6 +774,7 @@ createApp({
       let best = null, bestT = 1e30;
       for (const c of chunks.value.values()) {
         if (layerVisibility.value[c.layer] === false) continue;
+        if (c.chunkLod !== lodFilter.value) continue; // hidden rung: not pickable
         const mn = [c.minX, c.minY, c.minZ], mx = [c.minX + c.size, c.minY + c.size, c.minZ + c.size];
         let t0 = 0, t1 = 1e30, ok = true;
         for (let i = 0; i < 3; i++) {
@@ -829,7 +842,7 @@ createApp({
     });
 
     return { chunks, connected, selected, selectedId, query, sortKey, layerVisibility,
-      layerList, layerCounts, layerName, layerTag,
+      layerList, layerCounts, layerName, layerTag, lodFilter, rungCount,
       showWireframe, camSpeed, fps, culled, lastMsg, meshStatus, brushSwatch, wsTarget, wsError,
       filtered,
       requestAll, clearAll, select, sortBy, reconnect, shortId, fmtF, fmt3, spaceName };
