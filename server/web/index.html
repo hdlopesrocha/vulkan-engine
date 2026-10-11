@@ -80,7 +80,6 @@
         <h2>Filters (list + 3D view)</h2>
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:12px">
           <label class="chk" v-for="l in layerList" :key="'v' + l"><input type="checkbox" v-model="layerVisibility[l]"> {{ layerName(l) }}</label>
-          <label class="chk" title="Show only chunks at this LoD rung">chunkLoD <input type="range" min="1" max="10" step="1" v-model.number="lodFilter" style="width:90px"> {{ lodFilter }} ({{ rungCount }})</label>
         </div>
         <div style="font-size:11px;color:#9ca3af;margin-top:4px">The per-column search boxes below filter the list and the rendered chunks (numbers accept &gt;, &lt;, ranges like 1-5).</div>
       </div>
@@ -372,7 +371,8 @@ createApp({
     const layerVisibility = ref({ 0: true, 1: true });
     const showWireframe = ref(true);
     // LoD rung isolation for the 3D view: only chunks whose stored chunkLod
-    // equals this value are drawn (range 1..10). Default 1 = frontier chunks.
+    // equals this value are drawn. Fixed at the frontier rung (1); the
+    // slider was removed, so coarser rungs stay listed but are not drawn.
     const lodFilter = ref(1);
     const rungCount = computed(() => {
       let n = 0;
