@@ -194,6 +194,28 @@ void WebServer::flusherLoop() {
             ups.swap(pendingUpserts_);
             dels.swap(pendingDeletes_);
         }
+        // Tessellate the upserted chunks BEFORE taking the stream lock (the
+        // provider is thread-safe); the MESH_BATCH frames go out with the
+        // record batches below under one lock hold so they never interleave
+        // inside a concurrent snapshot on another client thread. Empty
+        // meshes are omitted (receivers treat a missing id as no geometry).
+        std::vector<chunkproto::MeshData> upMeshes;
+        if (meshProvider_) {
+            upMeshes.reserve(ups.size());
+            for (const auto& rec : ups) {
+                chunkproto::MeshData mesh;
+                mesh.id = rec.id;
+                bool ok = false;
+                try {
+                    ok = meshProvider_(rec.id, mesh);
+                } catch (const std::exception& e) {
+                    std::cerr << "[web] mesh build failed for id=" << rec.id << ": " << e.what() << "\n";
+                    continue;
+                }
+                if (ok && !(mesh.positions.empty() && mesh.indices.empty()))
+                    upMeshes.push_back(std::move(mesh));
+            }
+        }
         // Send upserts in 512-record batches (each WS frame gzipped alone).
         // The whole flush holds streamMutex_ so it never interleaves inside a
         // concurrent snapshot (START..END) on another client thread.
@@ -205,6 +227,23 @@ void WebServer::flusherLoop() {
             auto gz = chunkproto::gzipCompress(raw);
             broadcastRaw(gz, 0x2);
             upsertsSent_ += n;
+        }
+        // Geometry for the same upserts, ~512KB raw (or 128 meshes) per frame.
+        size_t mo = 0, mBytes = 0, mStart = 0;
+        for (size_t i = 0; i < upMeshes.size(); ++i) {
+            mo++;
+            mBytes += upMeshes[i].positions.size() * 4 + upMeshes[i].indices.size() * 4;
+            if (mo >= 128 || mBytes >= (512u << 10)) {
+                auto raw = chunkproto::buildMeshBatch(upMeshes.data() + mStart, i + 1 - mStart);
+                broadcastRaw(chunkproto::gzipCompress(raw), 0x2);
+                mStart = i + 1;
+                mo = 0;
+                mBytes = 0;
+            }
+        }
+        if (mStart < upMeshes.size()) {
+            auto raw = chunkproto::buildMeshBatch(upMeshes.data() + mStart, upMeshes.size() - mStart);
+            broadcastRaw(chunkproto::gzipCompress(raw), 0x2);
         }
         for (size_t i = 0; i < dels.size(); i += kBatch) {
             size_t n = std::min(kBatch, dels.size() - i);
@@ -379,6 +418,37 @@ void WebServer::sendSnapshotTo(int fd) {
         size_t n = std::min(kBatch, all.size() - i);
         sendGzipped(fd, chunkproto::buildChunkBatch(all.data() + i, n), 0x2);
     }
+    // Geometry push: one MESH_BATCH frame per ~512KB raw (or 128 meshes), so
+    // render clients hold tessellation for every chunk without requesting.
+    // Empty meshes are omitted; receivers treat a missing id as no geometry.
+    if (meshProvider_) {
+        std::vector<chunkproto::MeshData> pending;
+        size_t pendingBytes = 0, nMesh = 0;
+        auto flushMeshes = [&]() {
+            if (pending.empty()) return;
+            sendGzipped(fd, chunkproto::buildMeshBatch(pending.data(), pending.size()), 0x2);
+            nMesh += pending.size();
+            pending.clear();
+            pendingBytes = 0;
+        };
+        for (const auto& rec : all) {
+            chunkproto::MeshData mesh;
+            mesh.id = rec.id;
+            bool ok = false;
+            try {
+                ok = meshProvider_(rec.id, mesh);
+            } catch (const std::exception& e) {
+                std::cerr << "[web] mesh build failed for id=" << rec.id << ": " << e.what() << "\n";
+                continue;
+            }
+            if (!ok || (mesh.positions.empty() && mesh.indices.empty())) continue;
+            pendingBytes += mesh.positions.size() * 4 + mesh.indices.size() * 4;
+            pending.push_back(std::move(mesh));
+            if (pending.size() >= 128 || pendingBytes >= (512u << 10)) flushMeshes();
+        }
+        flushMeshes();
+        std::cout << "[web] snapshot meshes -> fd=" << fd << " sent=" << nMesh << "\n";
+    }
     sendGzipped(fd, chunkproto::buildSnapshotEnd(), 0x2);
 }
 
@@ -403,6 +473,39 @@ void WebServer::sendMeshTo(int fd, uint64_t chunkId) {
     std::lock_guard<std::mutex> stream(streamMutex_);
     sendGzipped(fd, chunkproto::buildMeshData(mesh), 0x2);
     ++meshesSent_;
+}
+
+void WebServer::sendAllMeshesTo(int fd) {
+    if (!snapshotProvider_ || !meshProvider_) return;
+    std::vector<chunkproto::ChunkRecord> all;
+    try {
+        all = snapshotProvider_();
+    } catch (const std::exception& e) {
+        std::cerr << "[web] all-meshes snapshot failed: " << e.what() << "\n";
+        return;
+    }
+    size_t sent = 0, skipped = 0;
+    for (const auto& rec : all) {
+        chunkproto::MeshData mesh;
+        mesh.id = rec.id;
+        bool ok = false;
+        try {
+            ok = meshProvider_(rec.id, mesh);
+        } catch (const std::exception& e) {
+            std::cerr << "[web] mesh build failed for id=" << rec.id << ": " << e.what() << "\n";
+            continue;
+        }
+        if (!ok || (mesh.positions.empty() && mesh.indices.empty())) { skipped++; continue; }
+        // Whole unicast holds streamMutex_ so it can never interleave inside
+        // a broadcast flush (or snapshot) sharing this fd's stream.
+        std::lock_guard<std::mutex> stream(streamMutex_);
+        sendGzipped(fd, chunkproto::buildMeshData(mesh), 0x2);
+        ++meshesSent_;
+        sent++;
+    }
+    std::cout << "[web] all-meshes -> fd=" << fd
+              << " chunks=" << all.size() << " sent=" << sent
+              << " skipped-empty=" << skipped << "\n";
 }
 
 void WebServer::wsLoop(int fd) {
@@ -478,6 +581,9 @@ void WebServer::wsLoop(int fd) {
                         id |= (uint64_t)raw[1 + i] << (8 * i);
                     sendMeshTo(fd, id);
                 }
+            } else if (type == chunkproto::MSG_REQUEST_ALL_MESHES) {
+                // 0x03: stream one MESH_DATA per live chunk (empties skipped).
+                sendAllMeshesTo(fd);
             }
             // (unknown types ignored)
         }

@@ -47,8 +47,9 @@ public:
     // per snapshot right after SNAPSHOT_START.
     void setMetaProvider(std::function<std::vector<chunkproto::SceneMetaLayer>()> fn);
 
-    // Mesh provider for REQUEST_MESH (must be thread-safe). Returns true when
-    // the id names a live chunk (mesh may be empty for non-surface chunks).
+    // Mesh provider for REQUEST_MESH / REQUEST_ALL_MESHES (must be
+    // thread-safe). Returns true when the id names a live chunk (mesh may
+    // be empty for non-surface chunks).
     void setMeshProvider(std::function<bool(uint64_t, chunkproto::MeshData&)> fn);
 
     size_t clientCount() const;
@@ -68,6 +69,10 @@ private:
     void wsLoop(int fd);
     void sendSnapshotTo(int fd);
     void sendMeshTo(int fd, uint64_t chunkId);
+    // Bulk geometry push for REQUEST_ALL_MESHES: one MESH_DATA per live
+    // chunk with non-empty tessellation (empties are skipped to save
+    // bandwidth; receivers treat a missing id as "no geometry").
+    void sendAllMeshesTo(int fd);
 
     void sendRaw(int fd, const std::vector<uint8_t>& gzipped, uint8_t opcode);
     void sendGzipped(int fd, const std::vector<uint8_t>& raw, uint8_t opcode);
