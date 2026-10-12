@@ -1270,15 +1270,21 @@ size_t VegetationRenderer::getInstanceTotal() const {
 }
 
 bool VegetationRenderer::hasDrawContent() const {
-    // H7 (report 26): see the header contract. Every conjunct is required
-    // for any indirect draw to exist today (issue*Draws no-op without the
-    // merged cull outputs or with zero chunks; a non-empty streaming backlog
-    // or a pending consolidation means the drawable set is still in flight).
-    // pendingChunkCount() is mutex-guarded and exact; the rest are the same
-    // plain-member reads the draw paths already perform on this thread.
+    // H7 (report 26) as fixed: TRUE iff the draw streams could emit anything
+    // today. The ONLY exact empty condition is "no consolidated chunks"
+    // (chunkBuffers empty or vegNumChunks == 0): every draw entry point
+    // already no-ops on it (drawDepth/drawColor/drawShadowCascade return
+    // without binds when vegNumChunks == 0), so skipping the pass leaves
+    // identical cleared targets.
+    // Deliberately NOT gated on streaming backlog or consolidation dirt:
+    // a non-empty backlog / dirty flag means MORE content is in flight, not
+    // that nothing is drawable — the last fence-complete prefix
+    // (vegNumChunks, published by pollConsolidation) draws normally, exactly
+    // as the pre-H7 code drew it every frame.
+    // Gating on those flags hid all vegetation for the entire streaming
+    // phase (thousands of chunks at 10/frame), the reported no-vegetation
+    // bug. pendingChunkCount() stays for telemetry; it must not gate.
     if (chunkBuffers.empty() || vegNumChunks == 0) return false;
-    if (pendingChunkCount() != 0) return false;
-    if (vegConsolidationDirty) return false;
     return true;
 }
 

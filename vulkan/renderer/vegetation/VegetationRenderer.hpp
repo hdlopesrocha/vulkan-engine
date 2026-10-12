@@ -121,12 +121,13 @@ public:
                    bool drawBillboards = true, bool drawImpostors = true);
     void recordReadBarriers(VkCommandBuffer& commandBuffer);
     // H7 (report 26): provably-empty gate for the veg block + draw entry
-    // points. True only when draws could exist today (non-empty chunk map AND
-    // a consolidated chunk count AND no streaming backlog AND no pending
-    // consolidation). False ⟹ drawDepth/drawColor currently issue zero
-    // indirect draws, so skipping the render-pass instances is pixel-identical.
-    // Reads plain renderer members also read by the existing draw paths (same
-    // cross-thread class); pendingChunkCount() is mutex-guarded and exact.
+    // points. True iff a fence-COMPLETE consolidation exists (non-empty
+    // chunk map AND completed vegNumChunks > 0): the cull and the draws
+    // consume only completed snapshots, so in-flight/streaming work never
+    // makes this false while drawable data exists. False ⟹ drawDepth/
+    // drawColor currently issue zero indirect draws, so skipping the
+    // render-pass instances is pixel-identical. Reads plain renderer members
+    // also read by the existing draw paths (same cross-thread class).
     bool hasDrawContent() const;
     // H7 (report 26, unified by M12 in report 27): veg-pass skip arbiter
     // with transition + warmup guards (mirrors the report-25 M11 SDF
