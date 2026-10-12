@@ -228,6 +228,12 @@ public:
     // frustum culling. Must be called once after all chunks are generated.
     // Uses a temporary command buffer (synchronous, one-time cost).
     void consolidateChunks(VulkanApp* app);
+    // Publish a fence-complete consolidation generation (completedSnapshot_
+    // + vegNumChunks + table-dirty flag). Idempotent per generation; safe to
+    // call every frame from prepareCull/prepareCullCascades. Returns true
+    // when a NEW generation completed (caller pushes metadata). Uses the
+    // ground-truth fence query, never the pump-dependent tracking list.
+    bool pollConsolidation();
 
     // Per-instance payload: pos vec4 (xyz = world pos, w = billboardIndex +
     // rotFrac) followed by a normal vec4 (xyz = surface normal, w unused).
@@ -331,6 +337,12 @@ private:
     std::unordered_map<NodeID, InstanceBuffer> chunkBuffers;
     std::unordered_map<NodeID, size_t> chunkInstanceCounts;
     void destroyInstanceBuffer(NodeID chunkId, VulkanApp* app = nullptr, VkFence completionFence = VK_NULL_HANDLE);
+    // Tombstone a chunk in the consolidation snapshots (count = 0, offsets
+    // kept): drops it from future culls/draws without shifting the
+    // concatenated layout, so in-flight and completed generations stay
+    // consistent until the next submit rebuilds from the live map. Called
+    // from destroy paths; also marks the chunk-info table dirty.
+    void tombstoneConsolidated(NodeID chunkId);
 
     // Pending CPU-generation queue — chunks are enqueued by the scene loader
     // and drained 10-per-frame by draw().
@@ -525,6 +537,28 @@ private:
     // to isFencePending(), never dereferenced.)
     TrackedHandle<VkFence> consolidationFence;
     bool consolidationPending = false;
+    // Generational-consistency snapshot (no-vegetation fix): the cull and the
+    // draws must agree on chunk order/counts with a COMPLETED copy, while
+    // publishes keep arriving. Each consolidation submit snapshots the exact
+    // (chunk, buffer, count, dstOffset, AABB) rows it copies; the copy loop
+    // and writeVegChunkInfo both consume the snapshot, never the live map,
+    // so later publishes cannot skew them apart. The fence poll publishes a
+    // generation (completedSnapshot_ + vegNumChunks) independently of later
+    // publishes, so generations always terminate: no version-match is needed
+    // to make progress, and draws show the last-complete prefix while
+    // streaming instead of nothing.
+    struct ConsolEntry {
+        NodeID chunkId{};
+        VkBuffer buffer = VK_NULL_HANDLE;
+        uint32_t count = 0;
+        VkDeviceSize dstOffset = 0;
+        glm::vec3 aabbMin{0.0f}, aabbMax{0.0f};
+    };
+    std::vector<ConsolEntry> submittedSnapshot_;  // order copied by the in-flight submit
+    std::vector<ConsolEntry> completedSnapshot_;  // order of the last fence-complete generation
+    uint64_t submittedVersion_ = UINT64_MAX;      // chunkBufferVersion at last submit (mismatch = first submit pending)
+    uint64_t consolEpoch_ = 0;                    // bumped by clearAllInstances: abandons in-flight generations (poll drops them instead of publishing stale rows after a reset)
+    uint64_t consolEpochAtSubmit_ = 0;            // consolEpoch_ captured at the last submit (poll publishes only on match)
     // M9-(2) (report 26): latest streaming-upload fence from
     // processPendingChunks (main thread). Polled with the thread-safe
     // isFencePending() (handle compare only, never dereferenced), so a

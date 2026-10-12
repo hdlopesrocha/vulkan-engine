@@ -337,50 +337,28 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
 void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     if (chunkBuffers.empty()) return;
     if (!app) return;
-    auto device = app->getDevice();
 
-    // M9-(2) (report 26): async consolidation. The copy + bake below runs in
-    // a graphics-queue single-time submit (same queue, same barriers, same
-    // regions as before) WITHOUT the old host fence wait: runSingleTimeCommands
-    // blocked the calling cull worker inside prepareCull, stalling tlCull for
-    // every consumer. Callers already skip the cull while dirty, so in-flight
-    // frames reuse the previous slot exactly like the old fence-pending path;
-    // the completion callback publishes the fresh prefix. Chunk bytes converge
-    // to the identical concatenation (same order, same regions); only the
-    // frame the fresh data becomes drawable shifts during streaming.
-    // Host-side fan-in (no new device timeline: the merged cull dispatch that
-    // would wait on it lives in IndirectRenderer, out of scope): never submit
-    // while a producer fence is still pending. isFencePending() only compares
-    // handles under the submission mutex and never dereferences, so a
-    // destroyed (implies signaled) or recycled handle resolves in the safe
-    // direction. Same-graphics-queue FIFO keeps today's cross-submit ordering
-    // (shadow reads, streaming copies) bit-for-bit: only host blocking is gone.
+    // Generational submit (no-vegetation fix): at most one consolidation in
+    // flight; a new generation submits only when the chunk set moved since
+    // the last submit. Publish (vegNumChunks + completed snapshot) happens
+    // exclusively in pollConsolidation() on fence completion, so every
+    // generation terminates independently of later publishes — the old
+    // version-match-to-publish rule livelocked (dirty never cleared while
+    // streaming) and starved the cull forever. Same-queue FIFO orders this
+    // submit ahead of the cull/draw CBs recorded later this frame, and the
+    // in-CB barriers below cover the copy->bake->vertex chain as before.
     std::lock_guard<std::mutex> lk(consolidationMutex);
-    // ── Phase 1: Check if previous consolidation is still pending ──
-    //    The deferred callback clears consolidationPending when the fence signals.
-    if (consolidationPending) {
-        if (consolidationFence != VK_NULL_HANDLE && app->isFencePending(consolidationFence)) {
-            vegConsolidationDirty = true;
-            return;
-        }
-        consolidationPending = false;
-    }
-    if (streamingUploadFence != VK_NULL_HANDLE && app->isFencePending(streamingUploadFence)) {
-        // Streaming copies (same graphics queue, submitted earlier on the main
-        // thread) are not device-complete yet: defer a frame rather than
-        // concatenating staged bytes whose publish callback has not run.
-        vegConsolidationDirty = true;
+    if (consolidationPending) return; // one generation in flight; dirty re-triggers later
+    if (chunkBufferVersion.load(std::memory_order_acquire) == submittedVersion_) return; // nothing new
+    // Don't submit while the streaming batch copies are still in flight: the
+    // snapshot below pins their device buffers, and the batch fence callback
+    // (which fills chunkBuffers) may not have run yet, so the map would miss
+    // them. Defer a frame; the dirty flag stays set. Ground-truth query, so
+    // a stalled pump cannot wedge this forever.
+    if (streamingUploadFence != VK_NULL_HANDLE && !app->isFenceDone(streamingUploadFence)) {
         return;
     }
-
-    // ── Phase 2: Start a new consolidation ──
-
-    size_t totalInstances = 0;
-    for (const auto& kv : chunkInstanceCounts)
-        totalInstances += kv.second;
-    if (totalInstances == 0) return;
-
-    uint32_t numChunks = static_cast<uint32_t>(chunkBuffers.size());
+    auto device = app->getDevice();
 
     // All culling buffers are pre-allocated ONCE via preallocate() at startup
     // (SceneRenderer::initSlottedMode). First use without preallocate() falls
@@ -390,39 +368,69 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     if (!vegPreallocated) {
         preallocate(app);
     }
+
+    // Count chunks with valid geometry (GPU metadata buffer removed — the CPU
+    // culling paths write draw commands directly). The submit snapshot below
+    // freezes (chunk, buffer, count, dstOffset, AABB) rows: the copy loop and
+    // writeVegChunkInfo both consume the snapshot, never the live map, so
+    // publishes landing mid-flight cannot skew copy regions apart from the
+    // info table (the unordered_map order instability that the old
+    // version-match rule papered over by starving the cull).
+    // vegNumChunks is NOT set here: it counts the last FENCE-COMPLETE
+    // generation (published by pollConsolidation), which is what the cull
+    // and the draws may reference.
+    submittedSnapshot_.clear();
+    size_t totalInstances = 0;
+    {
+        VkDeviceSize off = 0;
+        for (const auto& [chunkId, buf] : chunkBuffers) {
+            if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+            ConsolEntry e;
+            e.chunkId = chunkId;
+            e.buffer = buf.buffer;
+            e.count = buf.count;
+            e.dstOffset = off * kInstanceStride;
+            e.aabbMin = buf.aabbMin;
+            e.aabbMax = buf.aabbMax;
+            submittedSnapshot_.push_back(e);
+            off += buf.count;
+        }
+        totalInstances = static_cast<size_t>(off);
+    }
+    uint32_t chunkIdx = static_cast<uint32_t>(submittedSnapshot_.size());
+
+    if (chunkIdx == 0) {
+        // Map emptied between the dirty flag and this submit: nothing to
+        // copy; record the (empty) submit so the version gate converges.
+        submittedVersion_ = chunkBufferVersion.load(std::memory_order_acquire);
+        return;
+    }
     {
         VkMemoryRequirements reqs{};
         vkGetBufferMemoryRequirements(device, concatenatedInstanceBuffer.buffer, &reqs);
-        const VkDeviceSize concatSize = totalInstances * kInstanceStride;
+        const VkDeviceSize concatSize = static_cast<VkDeviceSize>(totalInstances) * kInstanceStride;
         if (reqs.size < concatSize) {
             std::cerr << "[veg] consolidateChunks: instance capacity exceeded "
                       << "(need " << totalInstances << " have "
                       << (reqs.size / kInstanceStride) << ") — bump preallocate() estimates\n";
             assert(false && "VegetationRenderer instance capacity exceeded");
+            submittedSnapshot_.clear();
             return;
         }
-        if (numChunks > vegMainCompactCapacity) {
+        if (chunkIdx > vegMainCompactCapacity) {
             std::cerr << "[veg] consolidateChunks: chunk capacity exceeded "
-                      << "(need " << numChunks << " cap " << vegMainCompactCapacity << ")\n";
+                      << "(need " << chunkIdx << " cap " << vegMainCompactCapacity << ")\n";
             assert(false && "VegetationRenderer chunk capacity exceeded");
+            submittedSnapshot_.clear();
             return;
         }
     }
 
-    // Count chunks with valid geometry (GPU metadata buffer removed — the CPU
-    // culling paths write draw commands directly).
-    uint32_t chunkIdx = 0;
-    for (const auto& [chunkId, buf] : chunkBuffers) {
-        (void)chunkId;
-        if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
-        chunkIdx++;
-    }
-    vegNumChunks = chunkIdx;
-
-    if (vegNumChunks == 0) return;
-
-    // Copy per-chunk instance data into the concatenated buffer (GPU→GPU)
-    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+    // Copy per-chunk instance data into the concatenated buffer (GPU→GPU).
+    // Regions come from the submit snapshot (frozen above), never the live
+    // map, so the bytes always match the info table built from the same
+    // snapshot in writeVegChunkInfo.
+    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE) {
         VkFence consolFence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
             // WRITE-AFTER-READ/WRITE guard: the concatenated instance buffer is
             // read as vertex attributes by the previous frame's vegetation
@@ -442,16 +450,15 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             dep.pMemoryBarriers    = &mb;
             vkCmdPipelineBarrier2(cmd, &dep);
 
-            uint32_t off = 0;
-            for (const auto& [cid, buf] : chunkBuffers) {
-                (void)cid;
-                if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+            uint32_t bakedTotal = 0;
+            for (const auto& e : submittedSnapshot_) {
+                if (e.buffer == VK_NULL_HANDLE || e.count == 0) continue;
                 VkBufferCopy region{};
                 region.srcOffset = 0;
-                region.dstOffset = off * kInstanceStride;
-                region.size = buf.count * kInstanceStride;
-                vkCmdCopyBuffer(cmd, buf.buffer, concatenatedInstanceBuffer.buffer, 1, &region);
-                off += buf.count;
+                region.dstOffset = e.dstOffset;
+                region.size = static_cast<VkDeviceSize>(e.count) * kInstanceStride;
+                vkCmdCopyBuffer(cmd, e.buffer, concatenatedInstanceBuffer.buffer, 1, &region);
+                bakedTotal += e.count;
             }
 
             // Bake per-instance heights (perf report 22 C2/H4): the copies
@@ -462,7 +469,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             // the concatenated instances (baked together, never modified
             // independently).
             if (vegBakePipeline != VK_NULL_HANDLE && vegBakeDescSet != VK_NULL_HANDLE
-                && vegBakedHeightsBuffer.buffer != VK_NULL_HANDLE && off > 0) {
+                && vegBakedHeightsBuffer.buffer != VK_NULL_HANDLE && bakedTotal > 0) {
                 VkMemoryBarrier2 bakeBar{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
                 bakeBar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
                 bakeBar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -479,7 +486,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
                     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                             vegBakePipelineLayout, 0, 1, &bakeSet, 0, nullptr);
                 }
-                const uint32_t bakeCount = off;
+                const uint32_t bakeCount = bakedTotal;
                 vkCmdPushConstants(cmd, vegBakePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                                    0, sizeof(uint32_t), &bakeCount);
                 vkCmdDispatch(cmd, (bakeCount + 63u) / 64u, 1, 1);
@@ -495,39 +502,69 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
                 vkCmdPipelineBarrier2(cmd, &bakeOutDep);
             }
         });
-        // Publish asynchronously: dirty stays set (callers keep skipping the
-        // cull) until the fence callback below runs. Per-chunk sources are
-        // safe to reference: every destroy path funnels through
+        // Generation submitted: record the fence + version and return. Veg
+        // draws must not reference this prefix until pollConsolidation
+        // observes fence completion (same-queue FIFO + the in-CB barriers
+        // above order the bytes before later cull/draw CBs; the CPU-side
+        // dirty flag stays set meanwhile). Per-chunk sources are safe to
+        // reference: every destroy path funnels through
         // deferDestroyUntilFence(VK_NULL_HANDLE) (drain after ALL pending
         // submits, which include this one), so no source buffer can die
         // mid-copy; the concatenated/bake targets are preallocated for the
-        // app lifetime. Draws gate on the dirty flag via the cull, so the
-        // fresh prefix is unreadable before the callback clears it.
+        // app lifetime. No flag callback is registered: publishing is owned
+        // exclusively by pollConsolidation (ground-truth fence query), so a
+        // stalled pump can neither wedge nor duplicate it.
         consolidationFence = consolFence;
         consolidationPending = true;
-        const uint64_t submitVersion = chunkBufferVersion.load(std::memory_order_acquire);
-        app->deferDestroyUntilFence(consolFence, [this, submitVersion]() {
-            std::lock_guard<std::mutex> clk(consolidationMutex);
-            consolidationPending = false;
-            consolidationFence = VK_NULL_HANDLE;
-            // Clear dirty only if no chunk mutation arrived after the submit
-            // snapshot; otherwise the fresh change re-consolidates next frame
-            // instead of being silently dropped by a lost update.
-            if (chunkBufferVersion.load(std::memory_order_acquire) == submitVersion) {
-                vegConsolidationDirty = false;
-                vegChunkInfoDirty = true;
-            }
-        });
+        submittedVersion_ = chunkBufferVersion.load(std::memory_order_acquire);
+        consolEpochAtSubmit_ = consolEpoch_;
     }
 }
 
+// Publish the in-flight consolidation generation once its fence signals.
+// Idempotent per generation (second call after publish is a no-op), so both
+// prepareCull and prepareCullCascades may call it every frame. Returns true
+// when a NEW generation completed (caller pushes metadata). Uses the
+// ground-truth fence query: unlike the old tracking-list poll, completion
+// here cannot stick when the pump is not running.
+bool VegetationRenderer::pollConsolidation() {
+    if (!consolidationPending) return false;
+    if (!appPtr) return false;
+    if (consolidationFence != VK_NULL_HANDLE && !appPtr->isFenceDone(consolidationFence))
+        return false; // genuinely in flight; try again next frame
+    std::lock_guard<std::mutex> lk(consolidationMutex);
+    if (!consolidationPending) return false; // raced with another publisher
+    if (consolEpochAtSubmit_ != consolEpoch_) {
+        // A reset (clearAllInstances) abandoned this generation after submit:
+        // drop it instead of publishing stale rows. The dirty flag left by
+        // the clear drives a fresh submit once new chunks arrive.
+        consolidationPending = false;
+        consolidationFence = VK_NULL_HANDLE;
+        submittedSnapshot_.clear();
+        return false;
+    }
+    consolidationPending = false;
+    consolidationFence = VK_NULL_HANDLE;
+    completedSnapshot_ = submittedSnapshot_;
+    vegNumChunks = static_cast<uint32_t>(completedSnapshot_.size());
+    vegChunkInfoDirty = true;
+    // Newer publishes need the next generation; a quiet tree converges here.
+    if (chunkBufferVersion.load(std::memory_order_acquire) == submittedVersion_)
+        vegConsolidationDirty = false;
+    return true;
+}
+
 void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
-    bool consolidatedThisFrame = false;
-    // Consolidate if chunks have changed since last consolidation
+    // Generational flow (no-vegetation fix): publish any fence-complete
+    // generation first, then submit a new one only if the set moved. The
+    // cull below runs on the last COMPLETED snapshot (vegNumChunks) even
+    // while dirty/new work streams — the old code skipped the cull on any
+    // dirt and required an exact version match to publish, which livelocked
+    // during streaming (dirty never cleared) so nothing ever drew.
+    const bool completedNow = pollConsolidation();
+    // Consolidate if chunks have changed since the last submit.
     if (vegConsolidationDirty && !chunkBuffers.empty()) {
         consolidateChunks(appPtr);
-        if (vegConsolidationDirty) return; // fence still in flight, skip cull
-        consolidatedThisFrame = true;
     }
     if (vegNumChunks == 0) return;
 
@@ -561,10 +598,10 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
     if (solidIR) {
         solidIR->setVegetationCullData(compactedCmdBuffers, visibleCountBuffers,
                                        impostorCompactBuffers, impostorCountBuffers);
-        // Only push the (potentially large) metadata map when it actually changed
-        // (i.e. after a consolidation), to avoid forcing a solid draw-list rebuild
-        // every frame.
-        if (consolidatedThisFrame) {
+        // Only push the (potentially large) metadata map when a NEW
+        // generation completed (i.e. after a consolidation publish), to avoid
+        // forcing a solid draw-list rebuild every frame.
+        if (completedNow) {
             solidIR->setVegetationChunkInfo(vegChunkInfoMap);
         }
     }
@@ -598,35 +635,38 @@ void VegetationRenderer::initCascadeCull(VulkanApp* app) {
 void VegetationRenderer::writeVegChunkInfo() {
     if (!vegChunkInfoMapped) return;
     // M11 (perf report 22): the table content is a pure function of the
-    // consolidated chunk set (counts, AABBs, cumulative firstInstance), so it
-    // only changes when consolidation runs. The flag is set there (and only
-    // there: every other mutation funnels through consolidation before the
-    // table is consumed, keeping it consistent with the concatenated buffer
-    // order it mirrors).
+    // last COMPLETED consolidation snapshot (counts, AABBs, cumulative
+    // firstInstance), so it only changes when a new generation publishes.
+    // Built from completedSnapshot_ — never the live map — so publishes
+    // landing between the copy submit and this table cannot skew the
+    // firstInstance mapping apart from the copied regions (which would
+    // draw wrong instances; the pre-generational code papered over this
+    // with a version-match rule that starved the cull instead).
     if (!vegChunkInfoDirty) return;
     glm::vec4* dst = static_cast<glm::vec4*>(vegChunkInfoMapped);
     uint32_t idx = 0;
-    // Record (solid mesh id, instance count) per consolidated chunk so we can also
-    // build vegChunkInfoMap (fed to the solid IndirectRenderer's merged cull).
+    // Record (solid mesh id, instance count) per snapshotted chunk so we can
+    // also build vegChunkInfoMap (fed to the solid IndirectRenderer's merged
+    // cull). Tombstoned rows (count 0) are included with 0: the cull skips
+    // them (meta.x < 1) while later rows keep stable offsets.
     std::vector<std::pair<uint32_t, uint32_t>> order;
-    order.reserve(chunkBuffers.size());
-    for (const auto& [chunkId, buf] : chunkBuffers) {
-        (void)chunkId;
-        if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
+    order.reserve(completedSnapshot_.size());
+    for (const auto& e : completedSnapshot_) {
         if (idx >= vegChunkInfoCapacity) {
-            // Unreachable (prepareCullCascades grows the table first) — guard
-            // against future call sites writing past the buffer.
+            // Unreachable (submit-time capacity assert covers the snapshot,
+            // which only shrinks afterwards via tombstones) — guard against
+            // future call sites writing past the buffer.
             std::cerr << "[veg] FATAL: writeVegChunkInfo overflow cap=" << vegChunkInfoCapacity << "\n";
             break;
         }
-        dst[idx * 3 + 0] = glm::vec4(buf.aabbMin, 0.0f);
-        dst[idx * 3 + 1] = glm::vec4(buf.aabbMax, 0.0f);
-        dst[idx * 3 + 2] = glm::vec4(static_cast<float>(buf.count), 0.0f, 0.0f, 0.0f);
-        order.push_back({(uint32_t)chunkId, (uint32_t)buf.count});
+        dst[idx * 3 + 0] = glm::vec4(e.aabbMin, 0.0f);
+        dst[idx * 3 + 1] = glm::vec4(e.aabbMax, 0.0f);
+        dst[idx * 3 + 2] = glm::vec4(static_cast<float>(e.count), 0.0f, 0.0f, 0.0f);
+        order.push_back({static_cast<uint32_t>(e.chunkId), e.count});
         ++idx;
     }
     // firstInstance per chunk = cumulative instance count (matches the
-    // concatenated instance buffer order built in consolidateChunks).
+    // submit-time copy order frozen in the snapshot).
     uint32_t instOff = 0;
     vegChunkInfoMap.clear();
     for (uint32_t i = 0; i < idx; ++i) {
@@ -652,9 +692,9 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
     // frame the solid cascade + shadow draws read back (set by the main-view cull).
     vegCullCurrentSlot = solidIR->getCurrentCullFrame();
 
+    pollConsolidation(); // publish any fence-complete generation (idempotent)
     if (vegConsolidationDirty && !chunkBuffers.empty()) {
         consolidateChunks(appPtr);
-        if (vegConsolidationDirty) return;
     }
 
     if (vegNumChunks == 0) return;
@@ -704,6 +744,8 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
     // Cascade matrices upload, output zeroing, dispatch and publish barriers all
     // live in IndirectRenderer::prepareCull (doVegCascade=true). The main-view cull
     // is NOT re-issued here (it runs in the main pass via the merged dispatch).
+    // Publishing is idempotent, so poll here too: this path must also observe
+    // completions when it runs without a preceding main prepareCull.
     solidIR->prepareCull(cmd, glm::mat4(1.0f), glm::vec3(0.0f), 0.0f, 0,
                          cascadeMatrices, /*doCascade=*/false, /*doMain=*/false,
                          /*doVegCascade=*/true, /*vegChunkCount=*/vegNumChunks);
@@ -716,14 +758,15 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
     if (cascadeIndex >= 3) return;
     if (!app || vegetationShadowPipeline == VK_NULL_HANDLE) return;
     if (chunkBuffers.empty()) return;
-    // H7 (report 26): provably-empty gate before any bind or upload. With a
-    // dirty consolidation or zero consolidated chunks both streams below
-    // issue zero indirect draws today (each draw is guarded on
-    // !vegConsolidationDirty && vegNumChunks > 0), so returning before the
-    // pipeline/push-constant/descriptor binds and the wind UBO touch changes
-    // no pixel. Per-cascade GPU counts stay unread (no stall); the CPU-known
-    // empty states are the only ones elided.
-    if (vegConsolidationDirty || vegNumChunks == 0) return;
+    // H7 (report 26) as fixed for generational consistency: the provably-empty
+    // gate is zero COMPLETED chunks. A set-but-dirty consolidation means newer
+    // work streams, not that nothing is drawable — the cull and the draws
+    // below consume the last fence-complete snapshot (vegNumChunks), exactly
+    // as the main view does. Skipping on dirt hid all grass shadows (and,
+    // via the same pattern, all vegetation) for the entire streaming phase.
+    // Per-cascade GPU counts stay unread (no stall); the CPU-known empty
+    // state is the only one elided.
+    if (vegNumChunks == 0) return;
     if (!ensureVegDescriptorSet(app)) return;
     if (shadowDescriptorSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
 
@@ -753,7 +796,7 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
                        0, sizeof(WindPushConstants), &pc);
 
     vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
         VkBuffer vbs[3] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer, vegBakedHeightsBuffer.buffer };
         VkDeviceSize offsets[3] = { 0, 0, 0 };
         vkCmdBindVertexBuffers(commandBuffer, 0, 3, vbs, offsets);
@@ -790,7 +833,7 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
         vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
         VkBuffer impVbs[3] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE, VK_NULL_HANDLE };
         VkDeviceSize impOffsets[3] = { 0, 0, 0 };
-        if (!vegConsolidationDirty && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+        if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
             impVbs[1] = concatenatedInstanceBuffer.buffer;
             impVbs[2] = vegBakedHeightsBuffer.buffer;
             vkCmdBindVertexBuffers(commandBuffer, 0, 3, impVbs, impOffsets);
@@ -1257,6 +1300,14 @@ void VegetationRenderer::clearAllInstances() {
     }
     vegConsolidationDirty = true;
     vegNumChunks = 0;
+    // Abandon consolidation state with the map: in-flight submits belong to
+    // the old world — pollConsolidation drops them via the epoch mismatch
+    // instead of publishing stale rows. The epoch bump also invalidates any
+    // submit racing this reset. Next publishes drive fresh submits.
+    submittedSnapshot_.clear();
+    completedSnapshot_.clear();
+    vegChunkInfoDirty = true;
+    ++consolEpoch_;
     // M9-(1): the chunk set moved — read barriers re-record next call.
     if (!ids.empty()) noteChunkBuffersChanged();
 }
@@ -1860,7 +1911,12 @@ void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLay
     VkBuffer vbs[3] = { billboardVBO.vertexBuffer.buffer, VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkDeviceSize offsets[3] = { 0, 0, 0 };
     vkCmdBindIndexBuffer(cmd, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (!vegConsolidationDirty && solidIR && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+    // No dirty gate: the compact stream is rebuilt from the last completed
+    // consolidation snapshot on every cull, so it is valid whenever chunks
+    // are consolidated (vegNumChunks > 0) — including while newer work
+    // streams. Gating on dirt hid all billboards for the entire streaming
+    // phase (the reported no-vegetation bug).
+    if (solidIR && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
         solidIR->getVegBbCompact(f) != VK_NULL_HANDLE && solidIR->getVegBbCount(f) != VK_NULL_HANDLE) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vbs[2] = vegBakedHeightsBuffer.buffer;
@@ -1879,7 +1935,9 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
     VkDeviceSize offsets[3] = { 0, 0, 0 };
     vkCmdBindIndexBuffer(cmd, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
     uint32_t f = vegFrame();
-    if (!vegConsolidationDirty && solidIR && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+    // No dirty gate (see issueVegetationDraws above): the impostor compact
+    // stream is valid whenever chunks are consolidated.
+    if (solidIR && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
         solidIR->getVegImpCompact(f) != VK_NULL_HANDLE && solidIR->getVegImpCount(f) != VK_NULL_HANDLE) {
         vbs[1] = concatenatedInstanceBuffer.buffer;
         vbs[2] = vegBakedHeightsBuffer.buffer;
@@ -2347,6 +2405,24 @@ Buffer VegetationRenderer::acquireStagingBuffer(VulkanApp* app, VkDeviceSize siz
     return b;
 }
 
+void VegetationRenderer::tombstoneConsolidated(NodeID chunkId) {
+    // Zero the count for every snapshot row of this chunk in both the
+    // submitted (in-flight copy targets a frozen layout — offsets must not
+    // move) and completed (draws must stop referencing the dropped buffer)
+    // snapshots. Rows stay in place so later offsets never shift. Marks the
+    // chunk-info table dirty so the cull picks up the zeros.
+    bool touched = false;
+    for (auto* vec : {&submittedSnapshot_, &completedSnapshot_}) {
+        for (auto& e : *vec) {
+            if (e.chunkId == chunkId && e.count != 0) {
+                e.count = 0;
+                touched = true;
+            }
+        }
+    }
+    if (touched) vegChunkInfoDirty = true;
+}
+
 void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, VkFence completionFence) {
     // Drop the SDF grass mirror for this chunk first (idempotent): chunk
     // replacement/clearing must never leave stale clumps in the SDF scene.
@@ -2362,6 +2438,12 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
     it->second.memory = VK_NULL_HANDLE;
     chunkBuffers.erase(it);
     chunkInstanceCounts.erase(chunkId);
+    // Tombstone the id in the consolidation snapshots: completed generations
+    // keep drawing (their compacts reference the OLD concatenated layout, so
+    // offsets must not shift) but emit nothing for this chunk until the next
+    // submit rebuilds from the live map. Same thread posture as the map
+    // mutation above (pre-existing); see tombstoneConsolidated.
+    tombstoneConsolidated(chunkId);
     // M9-(1): the chunk set moved — read barriers re-record next call.
     noteChunkBuffersChanged();
 
