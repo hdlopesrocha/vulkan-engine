@@ -1727,6 +1727,18 @@ bool VulkanApp::isFencePending(VkFence fence) {
     return false;
 }
 
+// Ground-truth completion query (see header): never sticks, unlike the
+// tracking-list membership test above when the pump is not running.
+bool VulkanApp::isFenceDone(VkFence fence) {
+    if (fence == VK_NULL_HANDLE) return true;
+    std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+    // Freed by the pump only after signaling: untracked means complete.
+    // (Mirrors the pump's own guard at the pending-list cleanup.)
+    if (!resources.find((uintptr_t)fence).has_value()) return true;
+    VkResult st = vkGetFenceStatus(device, fence);
+    return st == VK_SUCCESS;
+}
+
 
 // Submit a pre-recorded command buffer asynchronously to a specific queue and return a fence that will be signaled on completion.
 VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer, VkQueue targetQueue, VkSemaphore* outSemaphore, const std::vector<VkSemaphore>& waitSemaphores, bool registerSignal, const std::vector<VkSemaphore>& extraSignalSemaphores, const std::vector<uint64_t>& waitSemaphoreValues, uint64_t signalValue, const std::vector<uint64_t>& extraSignalValues, bool persistentSignal) {

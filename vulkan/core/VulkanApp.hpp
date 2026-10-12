@@ -396,6 +396,16 @@ public:
         void runSingleTimeCommandsOnTransfer(const std::function<void(VkCommandBuffer)>& fn);
         // Query whether a given fence is still tracked as pending by VulkanApp
         bool isFencePending(VkFence fence);
+        // Ground-truth completion query for a fence: true when there is
+        // nothing left to wait for (NULL handle, no longer tracked because
+        // the pump freed it after signaling, or vkGetFenceStatus SUCCESS).
+        // Unlike isFencePending (which reports tracking-list membership and
+        // goes stale when processPendingCommandBuffers is not pumped), this
+        // can never stick: a signaled fence always reports done. The find +
+        // status check run under m_submissionMutex, atomic with respect to
+        // the pump's removeFence+vkDestroyFence. Safe for per-frame polling;
+        // never blocks.
+        bool isFenceDone(VkFence fence);
         // Deferred destruction helpers
         void deferDestroyUntilAllPending(std::function<void()> destroyFn);
         void deferDestroyUntilFence(VkFence fence, std::function<void()> destroyFn);
