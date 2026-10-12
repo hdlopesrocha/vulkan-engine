@@ -2093,6 +2093,9 @@ void VegetationRenderer::generateChunkInstancesCPU(NodeID chunkId,
     (void)app; // used later in processPendingChunks
     if (grassIndices.size() < 3 || instancesPerTriangle == 0 || positions.empty()) {
         destroyInstanceBuffer(chunkId, app);
+        // True delete (no replacement follows): tombstone so completed
+        // generations stop drawing this chunk until the next submit rebuilds.
+        tombstoneConsolidated(chunkId);
         return;
     }
     // Enqueue for later processing — the render thread drains this queue.
@@ -2408,9 +2411,13 @@ Buffer VegetationRenderer::acquireStagingBuffer(VulkanApp* app, VkDeviceSize siz
 void VegetationRenderer::tombstoneConsolidated(NodeID chunkId) {
     // Zero the count for every snapshot row of this chunk in both the
     // submitted (in-flight copy targets a frozen layout — offsets must not
-    // move) and completed (draws must stop referencing the dropped buffer)
+    // move) and completed (draws must stop referencing the dropped chunk)
     // snapshots. Rows stay in place so later offsets never shift. Marks the
-    // chunk-info table dirty so the cull picks up the zeros.
+    // chunk-info table dirty so the cull picks up the zeros. Called ONLY for
+    // true deletes (drops with no replacement in the same batch):
+    // replacements keep drawing their previous bytes until the next submit
+    // refreshes them (no hole, no flicker), and resets drop the snapshots
+    // wholesale instead.
     bool touched = false;
     for (auto* vec : {&submittedSnapshot_, &completedSnapshot_}) {
         for (auto& e : *vec) {
@@ -2438,12 +2445,16 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
     it->second.memory = VK_NULL_HANDLE;
     chunkBuffers.erase(it);
     chunkInstanceCounts.erase(chunkId);
-    // Tombstone the id in the consolidation snapshots: completed generations
-    // keep drawing (their compacts reference the OLD concatenated layout, so
-    // offsets must not shift) but emit nothing for this chunk until the next
-    // submit rebuilds from the live map. Same thread posture as the map
-    // mutation above (pre-existing); see tombstoneConsolidated.
-    tombstoneConsolidated(chunkId);
+    // NOTE: no snapshot tombstone here. The batch publish path replaces the
+    // same id with new data in the same callback: the completed snapshot
+    // keeps referencing the OLD concatenated ranges until the next submit
+    // rebuilds from the live map, so draws show the previous bytes for a
+    // frame or two (no hole, no flicker) instead of blanking. The old ranges
+    // stay valid: the concatenated buffer is preallocated and only the next
+    // submit overwrites them, and snapshot handles are dereferenced solely
+    // at submit-copy time from the rebuilt snapshot. True deletes (drops
+    // with no replacement) tombstone explicitly at their call sites, and
+    // clearAllInstances drops the snapshots wholesale.
     // M9-(1): the chunk set moved — read barriers re-record next call.
     noteChunkBuffersChanged();
 
