@@ -2112,6 +2112,7 @@ float biomeNoise(const glm::vec2& xz) {
 void VegetationRenderer::generateChunkInstancesCPU(NodeID chunkId,
                                                    const std::vector<glm::vec3>& positions,
                                                    const std::vector<glm::vec3>& normals,
+                                                   const std::vector<int>& brushIndices,
                                                    const std::vector<uint32_t>& grassIndices,
                                                    const glm::vec3& chunkCenter,
                                                    uint32_t instancesPerTriangle, VulkanApp* app,
@@ -2129,6 +2130,7 @@ void VegetationRenderer::generateChunkInstancesCPU(NodeID chunkId,
     pc.chunkId             = chunkId;
     pc.positions           = positions;
     pc.normals             = normals;
+    pc.brushIndices        = brushIndices;
     pc.grassIndices        = grassIndices;
     pc.chunkCenter         = chunkCenter;
     pc.instancesPerTriangle = instancesPerTriangle;
@@ -2195,6 +2197,10 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
 
         // Per-vertex normals ride parallel to positions (same indices).
         const bool hasNormals = (pc.normals.size() == pc.positions.size());
+        // Per-vertex brush indices ride parallel to positions (same indices).
+        // Missing data falls back to accepting the sample (legacy behavior).
+        const bool hasBrushes = (pc.brushIndices.size() == pc.positions.size());
+        constexpr int kGrassBrush = 3; // LandBrush::grass: meadow brush
 
         for (uint32_t tri = 0; tri < triCount; ++tri) {
             const uint32_t tb = tri * 3;
@@ -2207,8 +2213,10 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
             const glm::vec3 v1 = pc.positions[i1];
             const glm::vec3 v2 = pc.positions[i2];
 
-            // No slope filter: grass is created for any surface normal (cliffs,
-            // overhangs included) — the billboard frame tilts onto the normal.
+            // Steep triangles carry rock/mix-brushed verts (see
+            // LandBrush::paint), so the dominant-vertex test below rejects
+            // their samples; surviving tufts tilt onto the smooth normal in
+            // the vertex shader.
             const glm::vec3 tc = (v0 + v1 + v2) / 3.0f;
             const uint32_t tch = posHash(tc);
 
@@ -2219,6 +2227,24 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 if (u + v > 1.0f) { u = 1.0f - u; v = 1.0f - v; }
                 float w = 1.0f - u - v;
                 glm::vec3 pos = u * v0 + v * v1 + w * v2;
+
+                // Dominant-vertex brush test: keep the sample only if the
+                // closest vertex (largest barycentric weight) is
+                // grass-brushed. This bounds spill to the grass verts'
+                // vicinity at any triangle size — coarse distant triangles
+                // keep their meadow coverage instead of going bald, while
+                // sand/rock/snow/lakebed samples are rejected (steep
+                // triangles carry no grass verts at all, so cliffs stay
+                // bare; surviving samples sit near high meadow verts, never
+                // underwater). Deterministic: all randomness here is
+                // hash-derived, unaffected by skips.
+                if (hasBrushes && i0 < pc.brushIndices.size() &&
+                    i1 < pc.brushIndices.size() && i2 < pc.brushIndices.size()) {
+                    const int dominantBrush = (u >= v && u >= w) ? pc.brushIndices[i0]
+                                            : (v >= w)          ? pc.brushIndices[i1]
+                                                                : pc.brushIndices[i2];
+                    if (dominantBrush != kGrassBrush) continue;
+                }
 
                 // Biome from spatially-coherent noise.
                 float noise = biomeNoise(glm::vec2(pos.x, pos.z));
@@ -2475,10 +2501,15 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
         positions.reserve(geom.vertices.size());
         for (const auto &v : geom.vertices) positions.push_back(v.position);
         // Parallel per-vertex normals: interpolated barycentrically per instance
-        // so billboards tilt onto the smooth surface normal.
+        // so blade tufts tilt onto the smooth surface normal.
         std::vector<glm::vec3> normals;
         normals.reserve(geom.vertices.size());
         for (const auto &v : geom.vertices) normals.push_back(v.normal);
+        // Parallel per-vertex brush indices: the per-instance dominant-vertex
+        // test in processPendingChunks keeps samples near grass verts only.
+        std::vector<int> brushes;
+        brushes.reserve(geom.vertices.size());
+        for (const auto &v : geom.vertices) brushes.push_back(v.brushIndex);
 
         // Build area-weighted virtual slots using unbiased stochastic rounding.
         // expected = area * density (instances per world-space unit area)
@@ -2493,26 +2524,23 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
                 const uint32_t i1 = geom.indices[i + 1];
                 const uint32_t i2 = geom.indices[i + 2];
                 if (i0 >= geom.vertices.size() || i1 >= geom.vertices.size() || i2 >= geom.vertices.size()) continue;
-                // Strict: ALL THREE verts must be grass-brushed. A triangle
-                // touching any other brush (sand/rock/snow/waterbed, a
-                // transition band, a cliff) contributes no slots: the
-                // barycentric sample lands anywhere in the triangle, so the
-                // old any-vert rule grew blades on sand, in lakes and on
-                // cliffs next to meadows. Pure-grass verts are always
-                // near-flat and up-facing (see LandBrush::paint), so this
-                // also keeps grass off steep/overhanging geometry, and all
-                // samples stay inside the meadow (y >= grass band, above
-                // water) by convexity.
-                const bool allGrass =
-                    geom.vertices[i0].brushIndex == brushIndex &&
-                    geom.vertices[i1].brushIndex == brushIndex &&
+                // Permissive: any grass-touching triangle contributes slots.
+                // Spill is trimmed per instance in processPendingChunks (only
+                // samples whose dominant barycentric vertex is grass-brushed
+                // survive), which keeps boundary coverage at any triangle
+                // size — coarse distant rungs would otherwise go bald, since
+                // their large triangles almost always span a brush boundary.
+                const bool hasBrush =
+                    geom.vertices[i0].brushIndex == brushIndex ||
+                    geom.vertices[i1].brushIndex == brushIndex ||
                     geom.vertices[i2].brushIndex == brushIndex;
-                if (!allGrass) continue;
+                if (!hasBrush) continue;
                 const glm::vec3& v0 = geom.vertices[i0].position;
                 const glm::vec3& v1 = geom.vertices[i1].position;
                 const glm::vec3& v2 = geom.vertices[i2].position;
-                // Surviving triangles are fully grass-brushed, hence near-flat:
-                // instances tilt onto the surface normal in the vertex shader.
+                // Surviving triangles touch grass; steep ones are filtered
+                // per instance below (their verts are rock/mix-brushed, so
+                // the dominant-vertex test rejects their samples).
                 const glm::vec3 faceNormal = glm::cross(v1 - v0, v2 - v0);
                 const float area = 0.5f * glm::length(faceNormal);
                 const float expectedInstances = std::max(0.0f, area * kVegetationDensity);
@@ -2565,14 +2593,14 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
                 return;
             }
             // CPU path handles the empty case (clears any previous chunk data).
-            generateChunkInstancesCPU(nid, positions, normals, grassIndices,
+            generateChunkInstancesCPU(nid, positions, normals, brushes, grassIndices,
                 chunkCenter, instancesPerTriangle, app, seed);
             return;
         }
 
         // CPU-side instance generation — avoids RADV GPUVM faults where
         // the Texture Cache/Pipe cannot read storage buffers on iGPUs.
-        generateChunkInstancesCPU(nid, positions, normals, grassIndices,
+        generateChunkInstancesCPU(nid, positions, normals, brushes, grassIndices,
             chunkCenter, instancesPerTriangle, app, seed);
     } catch (const std::exception &e) {
         std::cerr << "[VegetationRenderer] Vegetation generation failed for node " << (unsigned long long)nid

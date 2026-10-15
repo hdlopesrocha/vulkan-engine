@@ -52,11 +52,17 @@ public:
     };
     static_assert(sizeof(WindPushConstants) == 16, "WindPushConstants expected 16 bytes");
 
+    // Distance-density thinning for the impostor (far) range. Blades never
+    // thin: the near field stays dense. Defaults keep far meadows reading
+    // as grassland (half density at 4 km) instead of decaying to ~10% and
+    // exposing bare terrain — that mismatch against full-density blades is
+    // what reads as an impostor/blade color edge in wide vistas. Tune live
+    // in the Wind widget (Distance Density section).
     struct DistanceDensitySettings {
         bool enabled = true;
-        float fullDensityDistance = 512.0f;
+        float fullDensityDistance = 1200.0f;
         float minDensityDistance = 4096.0f;
-        float minDensityFactor = 0.10f;
+        float minDensityFactor = 0.50f;
     };
 
     float billboardScale = 10.0f;
@@ -82,17 +88,21 @@ public:
     void generateChunkInstancesCPU(NodeID chunkId,
                                    const std::vector<glm::vec3>& positions,
                                    const std::vector<glm::vec3>& normals,
+                                   const std::vector<int>& brushIndices,
                                    const std::vector<uint32_t>& grassIndices,
                                    const glm::vec3& chunkCenter,
                                    uint32_t instancesPerTriangle, VulkanApp* app,
                                    uint32_t seed = 1337);
     // CPU-side per-chunk vegetation generation (moved from SceneRenderer).
-    // Samples grass-flagged (brush 3) triangles from the chunk's tessellated
+    // Samples grass-touching triangles from the chunk's tessellated
     // geometry. Builds area-weighted virtual triangle
     // slots with unbiased stochastic rounding (area-proportional density
     // without bias), shuffles the slots per chunk (so reducing the indirect
     // instanceCount keeps a random spatial subset), then hands the result to
-    // generateChunkInstancesCPU. With no grass triangles the
+    // generateChunkInstancesCPU. Per-instance placement keeps only samples
+    // whose dominant barycentric vertex is grass-brushed, so blades hug
+    // meadows at any triangle size without spilling onto other brushes.
+    // With no grass triangles the
     // chunk's previous instance data is cleared instead.
     void generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom);
     // Drain up to maxChunks from the pending queue.  Call every frame from
@@ -341,6 +351,7 @@ private:
         NodeID chunkId;
         std::vector<glm::vec3> positions;
         std::vector<glm::vec3> normals; // per-vertex normals, parallel to positions
+        std::vector<int> brushIndices; // per-vertex brush, parallel to positions
         std::vector<uint32_t> grassIndices;
         glm::vec3 chunkCenter;
         uint32_t instancesPerTriangle;
