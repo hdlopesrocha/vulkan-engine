@@ -25,9 +25,10 @@
 #include "../CommandBufferState.hpp"
 
 class IndirectRenderer; // merged-cull integration (forward decl)
-class SdfRenderer;      // grass SDF consumer (forward decl)
 
-// Per-chunk vegetation instance buffer and renderer
+// Per-chunk bladed-grass instance buffer and renderer (triangle tufts,
+// procedural color, no billboards, no SDF). Impostor quads capture the blades
+// for the far LOD.
 class VegetationRenderer : public Renderer {
 public:
     struct WindSettings {
@@ -61,23 +62,16 @@ public:
     };
 
     float billboardScale = 10.0f;
-    uint32_t billboardCount = 3; // biomes: 0=foliage, 1=grass, 2=wild (40% of instances are empty sentinel)
+    uint32_t billboardCount = 3; // blade variants: 0=meadow, 1=lawn, 2=dry (40% of instances are empty sentinel)
     explicit VegetationRenderer();
     ~VegetationRenderer();
 
     void setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app);
     void setBillboardArrayTextures(VkImageView albedoView, VkImageView normalView, VkImageView opacityView, VkSampler sampler, VulkanApp* app);
     // Register the SOLID IndirectRenderer whose merged IndirectRenderer.comp dispatch now
-    // also emits the billboard/impostor commands. VegetationRenderer supplies its
+    // also emits the blade/impostor commands. VegetationRenderer supplies its
     // per-frame output buffers + per-chunk veg metadata to that renderer.
     void setSolidIndirectRenderer(IndirectRenderer* ir) { solidIR = ir; }
-    // Register the generic SDF renderer as the consumer of the per-chunk
-    // grass clumps: every published vegetation chunk also ingests its
-    // instances as Grass SDF anchors (position + vegetation type/biome +
-    // smooth normal), and chunk replacement/removal drops them again. The
-    // vegetation instance remains the single source of truth — the SDF side
-    // only converts it to one procedural clump per instance.
-    void setSdfGrassConsumer(SdfRenderer* sdf) { sdfGrassConsumer = sdf; }
     void onTextureArraysReallocated(VulkanApp* app);
     void init();
     void cleanup(VulkanApp* app) override;
@@ -114,9 +108,8 @@ public:
     // perf report 22 M9: all callers use drawDepth/drawColor directly.)
     // Deferred depth test: draw vegetation + impostor depth only (no color)
     void drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos);
-    // Deferred depth test: draw vegetation + impostor color only (LESS_OR_EQUAL, no depth write).
-    // drawBillboards=false skips the legacy billboard pass (Grass Raycast mode
-    // records impostors only); drawImpostors gates the captured-billboard pass.
+    // Deferred depth test: draw blades + impostor color only (LESS_OR_EQUAL, no depth write).
+    // drawBillboards=false skips the blade pass; drawImpostors gates the captured-blade pass.
     void drawColor(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos,
                    bool drawBillboards = true, bool drawImpostors = true);
     void recordReadBarriers(VkCommandBuffer& commandBuffer);
@@ -205,8 +198,8 @@ public:
 
     // Impostor rendering.  Call after init() once impostor views have been captured.
     // albedoArray60 and normalArray60 must be VkImageView covering 80 layers
-    // (4 billboard types × 20 Fibonacci views).
-    // depthArray60 is the captured device Z array (R32_SFLOAT, 80 layers) for depth reprojection.
+    // (3 blade variants × 20 Fibonacci views = 60 layers).
+    // depthArray60 is the captured device Z array (R32_SFLOAT, 60 layers) for depth reprojection.
     // captureInvVPBuf is a storage buffer containing per-layer inverse VP matrices.
     void setImpostorData(VulkanApp* app,                         VkImageView albedoArray60,
                          VkImageView normalArray60,
@@ -235,7 +228,7 @@ public:
     // ground-truth fence query, never the pump-dependent tracking list.
     bool pollConsolidation();
 
-    // Per-instance payload: pos vec4 (xyz = world pos, w = billboardIndex +
+    // Per-instance payload: pos vec4 (xyz = world pos, w = bladeVariant +
     // rotFrac) followed by a normal vec4 (xyz = surface normal, w unused).
     // One 32-byte stride shared by the per-chunk buffers, the concatenated
     // instance buffer, and every vertex-input declaration (binding 1).
@@ -503,13 +496,10 @@ private:
 
     // ── Merged-cull integration ──
     // The SOLID IndirectRenderer whose IndirectRenderer.comp dispatch also emits veg
-    // billboard/impostor commands. VegetationRenderer owns the output buffers and
+    // blade/impostor commands. VegetationRenderer owns the output buffers and
     // the per-chunk veg metadata; it hands both to solidIR each frame and mirrors
     // its cull frame so the draw reads the slot the merged dispatch wrote.
     IndirectRenderer* solidIR = nullptr;
-    // SDF grass consumer (setSdfGrassConsumer): receives the per-chunk grass
-    // clumps so the generic SDF renderer can march them. Never owns it.
-    SdfRenderer* sdfGrassConsumer = nullptr;
     // Per-solid-mesh vegetation metadata, keyed by the solid mesh id
     // (static_cast<uint32_t>(chunk NodeID)). value = vec4(instanceCount,
     // firstInstance, 0, 0). Fed to solidIR via setVegetationChunkInfo().
@@ -591,11 +581,6 @@ private:
         NodeID chunkId;
         uint32_t instanceCount;
         glm::vec3 aabbMin, aabbMax, center;
-        // Grass SDF anchors derived from this chunk's vegetation instances
-        // (same generation pass, no second placement system). Published to
-        // the SDF consumer in the same fence callback that publishes the
-        // instance buffer, so both lifetimes stay in lockstep.
-        std::vector<sdf_gpu::GrassAnchor> grassAnchors;
     };
     std::vector<PendingBatchCopy> pendingBatch;
     // ── Persistent staging pool (perf report 22 M10) ──────────────────────

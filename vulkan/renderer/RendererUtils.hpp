@@ -15,15 +15,14 @@
 
 namespace RendererUtils {
 
-// Corner-mesh tables for the 6-plane billboard mesh shared by ImpostorCapture
-// and VegetationRenderer (24 vertices = 6 planes × 4 corners): the base tangent
-// per plane, and the outward tilt direction for the first four planes.
-inline const glm::vec3 kBillboardBaseTangents[6] = {
-    {0,0,1}, {-1,0,0}, {0,0,-1}, {1,0,0}, {1,0,0}, {0,0,1}
-};
-inline const glm::vec3 kBillboardOutwardDirs[4] = {
-    {1,0,0}, {0,0,1}, {-1,0,0}, {0,0,-1}
-};
+// Blade-tuft base mesh shared by ImpostorCapture and VegetationRenderer.
+// 12 blades per tuft, 1 triangle per blade (left/right base + tip):
+// 36 vertices = 12 blades x 3 corners. The vertex shader expands these
+// procedurally (per-blade height/lean/width hash, instance rotation, tilt,
+// wind). No billboards, no textures.
+inline constexpr uint32_t kBladeCount = 12;
+inline constexpr uint32_t kBladeVertsPerTuft = kBladeCount * 3;
+inline constexpr uint32_t kBladeIndicesPerTuft = kBladeCount * 3;
 
 // Create a 2D image + VMA-backed device-local memory + image view.
 // Registers all three with VulkanResourceManager. Uses VMA for suballocation.

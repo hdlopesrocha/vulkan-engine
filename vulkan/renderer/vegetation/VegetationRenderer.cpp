@@ -1,6 +1,5 @@
 #include "VegetationRenderer.hpp"
 #include "../indirect/IndirectRenderer.hpp"
-#include "../sdf/SdfRenderer.hpp"
 #include "../DescriptorAllocator.hpp"
 #include "../DescriptorWriter.hpp"
 #include "../RendererUtils.hpp"
@@ -86,9 +85,6 @@ void VegetationRenderer::cleanup(VulkanApp* app) {
         windFieldCacheValid = false;
     }
     destroyCulling();
-    // The SDF consumer is never owned here; drop the pointer after the chunk
-    // removals above so no later call can reach a torn-down renderer.
-    sdfGrassConsumer = nullptr;
     appPtr = nullptr;
 }
 
@@ -1220,42 +1216,41 @@ void VegetationRenderer::init(VulkanApp* app) {
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertShader = VK_NULL_HANDLE;
     fragShader = VK_NULL_HANDLE;
-    // Build billboard corner mesh: 24 vertices (6 planes × 4 corners) + 36 indices
-    // (12 triangles = 2 per plane) for TRIANGLE_LIST.
+    // Build blade-tuft base mesh: 8 blades x 3 verts (left/right base + tip)
+    // = 24 verts, 8 triangles = 24 indices, TRIANGLE_LIST.
+    // Encoding (decoded in VegetationRenderer.vert):
+    //   position = (bladeIdx, heightT, side), color = canonical blade dir,
+    //   texCoord = (side*0.5, heightT), brushIndex = (bladeIdx<<8)|corner.
     if (billboardVBO.vertexBuffer.buffer == VK_NULL_HANDLE) {
-        const auto& baseTangents = RendererUtils::kBillboardBaseTangents;
-        const auto& outwardDirs = RendererUtils::kBillboardOutwardDirs;
-        const glm::vec3 worldUp(0,1,0);
-        constexpr float hs = 0.5f, h = 1.0f, tilt = 1.0f; // scaled in VS by billboardScale
-
-        std::vector<Vertex> verts(24);
-        for (int p = 0; p < 6; ++p) {
-            glm::vec3 tangent = baseTangents[p];
-            glm::vec3 outward = (p < 4) ? outwardDirs[p] : glm::vec3(0.0f);
-            int base = p * 4;
-            auto corner = [&](int ci, glm::vec3 off, glm::vec2 uv) {
-                verts[base + ci].position = off;
-                verts[base + ci].color = tangent;
-                verts[base + ci].texCoord = uv;
-                verts[base + ci].brushIndex = (p << 8) | ci;
+        const uint32_t BC = RendererUtils::kBladeCount;
+        std::vector<Vertex> verts;
+        verts.reserve(BC * 3);
+        for (uint32_t b = 0; b < BC; ++b) {
+            const float ang = float(b) / float(BC) * 6.28318530718f;
+            const glm::vec3 dir(std::cos(ang), 0.0f, std::sin(ang));
+            auto push = [&](float heightT, float side, int corner, glm::vec2 uv) {
+                Vertex v;
+                v.position = glm::vec3(float(b), heightT, side);
+                v.color = dir;
+                v.texCoord = uv;
+                v.brushIndex = (int(b) << 8) | corner;
+                verts.push_back(v);
             };
-            corner(0, -tangent * hs,                    glm::vec2(0,1));  // BL
-            corner(1,  tangent * hs,                    glm::vec2(1,1));  // BR
-            corner(2, -tangent * hs + worldUp * h + outward * tilt, glm::vec2(0,0));  // TL
-            corner(3,  tangent * hs + worldUp * h + outward * tilt, glm::vec2(1,0));  // TR
+            push(0.0f, -1.0f, 0, glm::vec2(-0.5f, 0.0f)); // left base
+            push(0.0f, +1.0f, 1, glm::vec2(+0.5f, 0.0f)); // right base
+            push(1.0f,  0.0f, 2, glm::vec2(0.0f, 1.0f));  // tip
         }
         billboardVBO.vertexBuffer = app->createVertexBuffer(verts);
 
-        // 36 indices = 6 planes × 2 triangles × 3 indices
-        std::vector<uint32_t> idx(36);
-        for (int p = 0; p < 6; ++p) {
-            int b = p * 4;
-            int ib = p * 6;
-            idx[ib + 0] = b + 0; idx[ib + 1] = b + 1; idx[ib + 2] = b + 2;
-            idx[ib + 3] = b + 1; idx[ib + 4] = b + 3; idx[ib + 5] = b + 2;
+        std::vector<uint32_t> idx;
+        idx.reserve(BC * 3);
+        for (uint32_t b = 0; b < BC; ++b) {
+            idx.push_back(b * 3 + 0);
+            idx.push_back(b * 3 + 1);
+            idx.push_back(b * 3 + 2);
         }
         billboardVBO.indexBuffer = app->createIndexBuffer(idx);
-        billboardVBO.indexCount = 36;
+        billboardVBO.indexCount = static_cast<uint32_t>(idx.size());
     }
 
     // Build impostor quad mesh: 4 vertices forming a unit-square with UV corners.
@@ -1288,10 +1283,6 @@ void VegetationRenderer::clearAllInstances() {
     // destroyInstanceBuffer already clears the map entries; these are safety no-ops.
     chunkBuffers.clear();
     chunkInstanceCounts.clear();
-    // Drop every tracked grass chunk too: chunk entries not present in
-    // chunkBuffers (none today, but the collector must not outlive its
-    // source) are cleared here.
-    if (sdfGrassConsumer) sdfGrassConsumer->clearGrass();
     // Clear any pending CPU-generation chunks to prevent stale data
     // from a previous scene from being processed after scene reset.
     {
@@ -1957,27 +1948,32 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
 void VegetationRenderer::drawDepth(VulkanApp* app, VkCommandBuffer& commandBuffer, const glm::vec3& cameraPos) {
     if (!app) return;
     if (chunkBuffers.empty()) return;
-    if (billboardAlbedoView == VK_NULL_HANDLE || billboardNormalView == VK_NULL_HANDLE ||
-        billboardOpacityView == VK_NULL_HANDLE || billboardArraySampler == VK_NULL_HANDLE) return;
-    if (!ensureVegDescriptorSet(app)) return;
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
-    if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
+    if (globalSet == VK_NULL_HANDLE) return;
     // H7 (report 26): issueVegetationDraws no-ops without the merged cull
     // outputs (null solidIR) or with zero consolidated chunks, so skip the
     // wind UBO touch, binds and draw. Zero draws either way: pixel-identical.
     if (!solidIR || vegNumChunks == 0) return;
     updateWindParamsUBO(cameraPos);
     WindPushConstants pc = buildWindPushConstants();
-    VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
 
     // Depth prepass.
     if (vegetationDepthPipeline != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationDepthPipeline);
         else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationDepthPipeline);
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-            vegetationDepthPipelineLayout, 0, 3, sets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            vegetationDepthPipelineLayout, 0, 3, sets, 0, nullptr);
+        // Bladed grass uses sets 0 (global) and 2 (wind) only; set 1
+        // (legacy billboard textures) stays unbound (undeclared in shader).
+        if (cmdState) {
+            cmdState->bindGraphicsDescriptorSets(commandBuffer,
+                vegetationDepthPipelineLayout, 0, 1, &globalSet, 0, nullptr);
+            cmdState->bindGraphicsDescriptorSets(commandBuffer,
+                vegetationDepthPipelineLayout, 2, 1, &windParamsDescSet, 0, nullptr);
+        } else {
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                vegetationDepthPipelineLayout, 0, 1, &globalSet, 0, nullptr);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                vegetationDepthPipelineLayout, 2, 1, &windParamsDescSet, 0, nullptr);
+        }
         issueVegetationDraws(commandBuffer, vegetationDepthPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
 
@@ -1987,33 +1983,34 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
                                    bool drawBillboards, bool drawImpostors) {
     if (!app) return;
     if (chunkBuffers.empty()) return;
-    if (billboardAlbedoView == VK_NULL_HANDLE || billboardNormalView == VK_NULL_HANDLE ||
-        billboardOpacityView == VK_NULL_HANDLE || billboardArraySampler == VK_NULL_HANDLE) return;
-    if (!ensureVegDescriptorSet(app)) return;
     VkDescriptorSet globalSet = app->getMainDescriptorSet();
-    if (globalSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
+    if (globalSet == VK_NULL_HANDLE) return;
     // H7 (report 26): both streams below no-op without the merged cull
     // outputs (null solidIR) or with zero consolidated chunks, so skip the
     // wind UBO touch, binds and draws. Per-stream flags still gate the
-    // billboard vs impostor binds exactly as before. Zero draws either way.
+    // blade vs impostor binds exactly as before. Zero draws either way.
     if (!solidIR || vegNumChunks == 0) return;
     updateWindParamsUBO(cameraPos);
     WindPushConstants pc = buildWindPushConstants();
-    VkDescriptorSet sets[3] = { globalSet, vegDescriptorSet, windParamsDescSet };
 
-    // Shading pass.
+    // Shading pass (bladed tufts; set 1 legacy textures unbound).
     if (drawBillboards && vegetationPipeline != VK_NULL_HANDLE) {
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, vegetationPipeline);
         else vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationPipeline);
-        if (cmdState) cmdState->bindGraphicsDescriptorSets(commandBuffer,
-            pipelineLayout, 0, 3, sets, 0, nullptr);
-        else vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipelineLayout, 0, 3, sets, 0, nullptr);
+        if (cmdState) {
+            cmdState->bindGraphicsDescriptorSets(commandBuffer,
+                pipelineLayout, 0, 1, &globalSet, 0, nullptr);
+            cmdState->bindGraphicsDescriptorSets(commandBuffer,
+                pipelineLayout, 2, 1, &windParamsDescSet, 0, nullptr);
+        } else {
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipelineLayout, 0, 1, &globalSet, 0, nullptr);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipelineLayout, 2, 1, &windParamsDescSet, 0, nullptr);
+        }
         issueVegetationDraws(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, pc);
     }
-    // Impostor color pass. In Grass Raycast mode this is the ONLY pass drawn:
-    // the legacy billboards are off, and the SDF grass hands its far clumps
-    // over to these captured quads (the SDF march skips them).
+    // Impostor color pass: captured blade tufts beyond impostorDistance.
     if (drawImpostors && impostorPipeline != VK_NULL_HANDLE &&
         impostorDescSet != VK_NULL_HANDLE && impostorDistance > 0.0f) {
         if (cmdState) cmdState->bindGraphicsPipeline(commandBuffer, impostorPipeline);
@@ -2126,14 +2123,13 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
     // M12-(1) (report 26): batch build list. Per-chunk payloads are stashed
     // here so a single staging buffer can be sized once from the batch total
     // below (one acquire, one packed memcpy chain) instead of one acquire +
-    // memcpy per chunk. Device bytes, AABBs, anchors and publish order are
-    // unchanged; only host-side acquire traffic is gone.
+    // memcpy per chunk. Device bytes, AABBs and publish order are unchanged;
+    // only host-side acquire traffic is gone.
     struct BuiltChunk {
         std::vector<float> bytes; // 8 floats per instance, same layout as before
         NodeID chunkId;
         uint32_t instanceCount;
         glm::vec3 aabbMin, aabbMax, center;
-        std::vector<sdf_gpu::GrassAnchor> grassAnchors;
     };
     std::vector<BuiltChunk> built;
     built.reserve(maxChunks);
@@ -2150,7 +2146,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         const uint32_t triCount = static_cast<uint32_t>(pc.grassIndices.size()) / 3;
         const uint32_t instanceCount = triCount * pc.instancesPerTriangle;
 
-        const float maxBillboardRadius = billboardScale * 2.1f; // max heightScale (1.4) × max corner offset (1.5)
+        const float maxBillboardRadius = billboardScale * 2.1f; // max heightScale (1.4) x max blade extent (~1.5)
 
         // Compute AABB from vertex positions (conservatively bounds all instance anchors)
         glm::vec3 aabbMin( std::numeric_limits<float>::max());
@@ -2167,13 +2163,6 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         instanceGenScratch.clear();
         instanceGenScratch.reserve(instanceCount * 8);
         std::vector<float>& validData = instanceGenScratch;
-
-        // Grass SDF anchors for this chunk: filled from the SAME accepted
-        // instances (position + vegetation type/biome + smooth normal), so
-        // the SDF grass consumes the existing vegetation data instead of
-        // running a second placement pass.
-        std::vector<sdf_gpu::GrassAnchor> grassAnchors;
-        if (sdfGrassConsumer) grassAnchors.reserve(instanceCount);
 
         // Per-vertex normals ride parallel to positions (same indices).
         const bool hasNormals = (pc.normals.size() == pc.positions.size());
@@ -2212,8 +2201,8 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 uint32_t rs = pc.seed ^ posHash(pos);
                 float rf = randFloat(rs);
 
-                // Smooth surface normal (barycentric interpolation): the billboard
-                // frame tilts onto this in the vertex shader so grass grows
+                // Smooth surface normal (barycentric interpolation): the blade
+                // tuft tilts onto this in the vertex shader so grass grows
                 // along the terrain normal instead of +Y.
                 glm::vec3 nrm(0.0f, 1.0f, 0.0f);
                 if (hasNormals) {
@@ -2230,24 +2219,6 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 validData.push_back(nrm.y);
                 validData.push_back(nrm.z);
                 validData.push_back(0.0f);
-
-                if (sdfGrassConsumer) {
-                    // One Grass SDF clump per vegetation instance: the shader
-                    // expands it into many procedural blades. Seed and size
-                    // are deterministic from the same per-instance hash; the
-                    // [0.6, 1.4] size range mirrors vegetationHeightScale and
-                    // billboardScale keeps the physical scale identical to
-                    // the billboard it represents.
-                    sdf_gpu::GrassAnchor ga;
-                    ga.pos = pos;
-                    ga.normal = nrm;
-                    ga.type = bi;
-                    const uint32_t gh = rs ^ (posHash(pos) * 2654435761u);
-                    ga.seed = float(gh & 0xFFFFu) * (1.0f / 65535.0f) * 100.0f;
-                    const float sizeVar = float((gh >> 16) & 0xFFFFu) * (1.0f / 65535.0f);
-                    ga.scale = std::max(billboardScale, 1e-3f) * (0.6f + 0.8f * sizeVar);
-                    grassAnchors.push_back(ga);
-                }
             }
         }
 
@@ -2268,7 +2239,6 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         bc.aabbMin = aabbMin;
         bc.aabbMax = aabbMax;
         bc.center = pc.chunkCenter;
-        bc.grassAnchors = std::move(grassAnchors);
         built.push_back(std::move(bc));
     }
 
@@ -2319,7 +2289,6 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 e.aabbMin = bc.aabbMin;
                 e.aabbMax = bc.aabbMax;
                 e.center = bc.center;
-                e.grassAnchors = std::move(bc.grassAnchors);
                 pendingBatch.push_back(std::move(e));
                 stagingOff += bufSize;
             }
@@ -2368,14 +2337,6 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
                 ibuf.count      = c.instanceCount;
                 chunkBuffers[c.chunkId] = ibuf;
                 chunkInstanceCounts[c.chunkId] = c.instanceCount;
-                // Publish the chunk's grass SDF clumps in the same fence
-                // callback that publishes the instance buffer, so both
-                // lifetimes stay locked (destroyInstanceBuffer dropped the
-                // previous version just above).
-                if (sdfGrassConsumer && !c.grassAnchors.empty()) {
-                    sdfGrassConsumer->ingestGrassChunk(
-                        static_cast<uintptr_t>(c.chunkId), std::move(c.grassAnchors));
-                }
                 vegConsolidationDirty = true;
             }
             // M9-(1): the chunk set moved — read barriers re-record next call.
@@ -2431,11 +2392,6 @@ void VegetationRenderer::tombstoneConsolidated(NodeID chunkId) {
 }
 
 void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, VkFence completionFence) {
-    // Drop the SDF grass mirror for this chunk first (idempotent): chunk
-    // replacement/clearing must never leave stale clumps in the SDF scene.
-    if (sdfGrassConsumer) {
-        sdfGrassConsumer->removeGrassChunk(static_cast<uintptr_t>(chunkId));
-    }
     auto it = chunkBuffers.find(chunkId);
     if (it == chunkBuffers.end()) return;
 

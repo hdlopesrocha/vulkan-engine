@@ -23,22 +23,25 @@ void ImpostorService::cleanup() {
 
 void ImpostorService::setSource(VkImageView albedo, VkImageView normal,
                                  VkImageView opacity, VkSampler sampler) {
-    srcAlbedo      = albedo;
-    srcNormal      = normal;
-    srcOpacity     = opacity;
-    srcSampler     = sampler;
+    // Bladed grass capture is procedural: source views are ignored (kept for
+    // caller compatibility). Capture immediately.
+    (void)albedo; (void)normal; (void)opacity; (void)sampler;
+    srcAlbedo = VK_NULL_HANDLE;
+    srcNormal = VK_NULL_HANDLE;
+    srcOpacity = VK_NULL_HANDLE;
+    srcSampler = VK_NULL_HANDLE;
 
-    if (vulkanApp && srcAlbedo != VK_NULL_HANDLE && srcSampler != VK_NULL_HANDLE) {
+    if (vulkanApp) {
         captureAll(10.0f);
     }
 }
 
 void ImpostorService::captureAll(float scale) {
-    if (!vulkanApp || srcAlbedo == VK_NULL_HANDLE || srcSampler == VK_NULL_HANDLE)
+    if (!vulkanApp)
         return;
 
     capture.captureAll(vulkanApp,
-                       srcAlbedo, srcNormal, srcOpacity, srcSampler,
+                       VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
                        scale);
     rewire();
 }

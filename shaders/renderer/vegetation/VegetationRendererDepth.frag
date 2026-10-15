@@ -1,23 +1,18 @@
 #version 450
 
 #include "../../includes/Locations.glsl"
-#include "../../includes/SceneBindings.glsl"
-#include "../../includes/noise/Perlin.glsl"
+
+// Bladed grass depth prepass: opaque triangles, no cutout.
+// Declares the shared blade VS outputs (required to avoid SPIR-V interface
+// warnings — the depth pipeline shares the vertex module with color) but
+// performs no discard: every blade pixel writes depth.
 
 layout(location = VARY_UV) in vec3 inTexCoord;
-// M5 (perf report 28, amended): the declarations below are unread in this
-// fragment, but they must stay declared: the shared billboard vertex stage
-// writes these locations (color needs them; the depth pipeline shares the
-// module), and VS-written-but-FS-undeclared locations raise the SPIR-V
-// Interface performance warning. Zero behavior change either way.
 layout(location = VARY_BRUSHPATCH) flat in int inBrushIndex;
 layout(location = VARY_POSWORLD) in vec3 inWorldPos;
 layout(location = VARY_PLANE_NORMAL) flat in vec3 inPlaneNormal;
 layout(location = VARY_POSLIGHT) flat in vec3 inTangentWS;
 layout(location = VARY_TANGENTWS) flat in vec3 inLightDirN;
-
-layout(set = 1, binding = 1) uniform sampler2DArray normalArray;
-layout(set = 1, binding = 2) uniform sampler2DArray opacityArray;
 
 layout(set = 2, binding = 0) uniform WindParamsUBO {
     vec4 windDirAndStrength;
@@ -37,38 +32,7 @@ layout(push_constant) uniform PushConstants {
 };
 
 void main() {
-    vec3 coord = vec3(inTexCoord.xy, inTexCoord.z);
-
-    // Cheap-first discard (perf report 26 H6): the single opacity tap is a
-    // sufficient cutout test (opacityWeight < 0.3 implies weight < 0.3, since
-    // normalWeight is in [0,1]), so the exact discard set is unchanged while
-    // discarded pixels skip both normal fetches. textureGrad with
-    // pre-discard gradients keeps the survivors' LOD bit-identical (the LOD5
-    // tap was already explicit).
-    float opacity       = texture(opacityArray, coord).r;
-    float opacityWeight = smoothstep(0.35, 0.65, opacity);
-    if (opacityWeight < 0.3) discard;
-
-    vec2 lodGradX = dFdx(coord.xy);
-    vec2 lodGradY = dFdy(coord.xy);
-    vec3  leafNormEnc = textureGrad(normalArray, coord, lodGradX, lodGradY).rgb;
-    vec3  bgNormEnc   = textureLod(normalArray, coord, 5.0).rgb;
-
-    vec3 leafNorm = normalize(leafNormEnc * 2.0 - 1.0);
-    vec3 bgNorm   = normalize(bgNormEnc   * 2.0 - 1.0);
-
-    float leafNConf = clamp(leafNorm.z, 0.0, 1.0);
-    float bgNConf   = clamp(bgNorm.z,   0.0, 1.0);
-
-    float normalWeight  = mix(bgNConf, leafNConf, opacityWeight);
-    float weight        = opacityWeight * normalWeight;
-
-    if (weight < 0.3) discard;
-
-    // Impostor hand-off is a direct per-instance swap at impostorDistance
-    // (see VegetationRenderer.vert / VegetationRenderer.frag): no dithered fade here, so the
-    // depth prepass writes exactly the fragments the shading pass keeps.
-
-    // Depth written (default gl_FragDepth) only for fragments that survive
-    // the same discard criteria as the shading pass.
+    // Opaque: depth written by default for every blade fragment.
+    // The impostor hand-off is a direct per-instance swap in the vertex
+    // shader, so the prepass writes exactly what the shading pass keeps.
 }

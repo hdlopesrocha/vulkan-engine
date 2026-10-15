@@ -360,11 +360,9 @@ void ImpostorCapture::capture(VulkanApp* app,
                                VkImageView opacityView, VkSampler   sampler,
                                float billboardScale, uint32_t billboardType) {
     if (!initDone || !app) return;
-    if (albedoView == VK_NULL_HANDLE || normalView == VK_NULL_HANDLE ||
-        opacityView == VK_NULL_HANDLE || sampler   == VK_NULL_HANDLE) {
-        fprintf(stderr, "[ImpostorCapture] capture: billboard texture arrays not ready\n");
-        return;
-    }
+    // Bladed grass capture is procedural (no billboard textures): source
+    // views are ignored (kept in the signature for caller compatibility).
+    (void)albedoView; (void)normalView; (void)opacityView; (void)sampler;
     if (billboardType >= NUM_BILLBOARD_TYPES) {
         fprintf(stderr, "[ImpostorCapture] capture: billboardType=%u out of range\n", billboardType);
         return;
@@ -377,10 +375,9 @@ void ImpostorCapture::capture(VulkanApp* app,
     // the GPU work finishes (inline on the sync path, fence-deferred on the
     // async path), so a re-capture can never orphan a deferred set.
 
-    // Update the texture descriptor set with current billboard arrays.
-    updateTexDescSet(app->getDevice(), albedoView, normalView, opacityView, sampler);
+    // (No texture descriptor update: bladed capture is procedural.)
 
-    // Single centred instance at the origin with the correct billboard type.
+    // Single centred instance at the origin with the correct blade variant.
     // The instance buffer holds one slot per billboard type; the draw selects
     // it with firstInstance, so staged per-type data never aliases and the
     // instanceData values are identical to the old single-slot upload
@@ -430,18 +427,14 @@ VkFence ImpostorCapture::captureAsync(VulkanApp* app,
                                        VkImageView opacityView, VkSampler sampler,
                                        float billboardScale, uint32_t billboardType) {
     if (!initDone || !app) return VK_NULL_HANDLE;
-    if (albedoView == VK_NULL_HANDLE || normalView == VK_NULL_HANDLE ||
-        opacityView == VK_NULL_HANDLE || sampler   == VK_NULL_HANDLE) {
-        fprintf(stderr, "[ImpostorCapture] captureAsync: billboard texture arrays not ready\n");
-        return VK_NULL_HANDLE;
-    }
+    (void)albedoView; (void)normalView; (void)opacityView; (void)sampler;
     if (billboardType >= NUM_BILLBOARD_TYPES) {
         fprintf(stderr, "[ImpostorCapture] captureAsync: billboardType=%u out of range\n", billboardType);
         return VK_NULL_HANDLE;
     }
     const uint32_t layerBase = billboardType * NUM_VIEWS;
 
-    updateTexDescSet(app->getDevice(), albedoView, normalView, opacityView, sampler);
+    // (No texture descriptor update: bladed capture is procedural.)
 
     {
         const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(billboardType));
@@ -473,13 +466,9 @@ VkFence ImpostorCapture::captureAllAsync(VulkanApp* app,
                                           VkImageView opacityView, VkSampler sampler,
                                           float billboardScale) {
     if (!initDone || !app) return VK_NULL_HANDLE;
-    if (albedoView == VK_NULL_HANDLE || normalView == VK_NULL_HANDLE ||
-        opacityView == VK_NULL_HANDLE || sampler   == VK_NULL_HANDLE) {
-        fprintf(stderr, "[ImpostorCapture] captureAllAsync: billboard texture arrays not ready\n");
-        return VK_NULL_HANDLE;
-    }
+    (void)albedoView; (void)normalView; (void)opacityView; (void)sampler;
 
-    updateTexDescSet(app->getDevice(), albedoView, normalView, opacityView, sampler);
+    // (No texture descriptor update: bladed capture is procedural.)
 
     for (uint32_t t = 0; t < NUM_BILLBOARD_TYPES; ++t) {
         const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(t));
@@ -882,44 +871,42 @@ void ImpostorCapture::createUBO(VulkanApp* app) {
 
 void ImpostorCapture::createCaptureBuffers(VulkanApp* app) {
 
-    // 24 corner vertices for the 6-plane billboard mesh (same layout as vegetation).
-    const auto& baseTangents = RendererUtils::kBillboardBaseTangents;
-    const auto& outwardDirs = RendererUtils::kBillboardOutwardDirs;
-    const glm::vec3 worldUp(0,1,0);
-    constexpr float hs = 0.5f, h = 1.0f, tilt = 1.0f;
-
-    std::vector<Vertex> verts(24);
-    for (int p = 0; p < 6; ++p) {
-        glm::vec3 tangent = baseTangents[p];
-        glm::vec3 outward = (p < 4) ? outwardDirs[p] : glm::vec3(0.0f);
-        int base = p * 4;
-        auto corner = [&](int ci, glm::vec3 off, glm::vec2 uv) {
-            verts[base + ci].position = off;
-            verts[base + ci].color = tangent;
-            verts[base + ci].texCoord = uv;
-            verts[base + ci].brushIndex = (p << 8) | ci;
+    // Blade-tuft base mesh (same encoding as VegetationRenderer): 8 blades x
+    // 3 verts = 24 verts, 8 triangles = 24 indices. Captures bladed tufts.
+    const uint32_t BC = RendererUtils::kBladeCount;
+    std::vector<Vertex> verts;
+    verts.reserve(BC * 3);
+    for (uint32_t b = 0; b < BC; ++b) {
+        const float ang = float(b) / float(BC) * 6.28318530718f;
+        const glm::vec3 dir(std::cos(ang), 0.0f, std::sin(ang));
+        auto push = [&](float heightT, float side, int corner, glm::vec2 uv) {
+            Vertex v;
+            v.position = glm::vec3(float(b), heightT, side);
+            v.color = dir;
+            v.texCoord = uv;
+            v.brushIndex = (int(b) << 8) | corner;
+            verts.push_back(v);
         };
-        corner(0, -tangent * hs,                    glm::vec2(0,1));
-        corner(1,  tangent * hs,                    glm::vec2(1,1));
-        corner(2, -tangent * hs + worldUp * h + outward * tilt, glm::vec2(0,0));
-        corner(3,  tangent * hs + worldUp * h + outward * tilt, glm::vec2(1,0));
+        push(0.0f, -1.0f, 0, glm::vec2(-0.5f, 0.0f));
+        push(0.0f, +1.0f, 1, glm::vec2(+0.5f, 0.0f));
+        push(1.0f,  0.0f, 2, glm::vec2(0.0f, 1.0f));
     }
     Buffer vb = app->createDeviceLocalBuffer(verts.data(), verts.size() * sizeof(Vertex),
                                               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     captureVertBuf = vb.buffer;
 
-    // 36-index triangle list.
-    std::vector<uint32_t> idx(36);
-    for (int p = 0; p < 6; ++p) {
-        int b = p * 4;
-        int ib = p * 6;
-        idx[ib + 0] = b + 0; idx[ib + 1] = b + 1; idx[ib + 2] = b + 2;
-        idx[ib + 3] = b + 1; idx[ib + 4] = b + 3; idx[ib + 5] = b + 2;
+    // 24-index triangle list (8 blades x 1 triangle).
+    std::vector<uint32_t> idx;
+    idx.reserve(BC * 3);
+    for (uint32_t b = 0; b < BC; ++b) {
+        idx.push_back(b * 3 + 0);
+        idx.push_back(b * 3 + 1);
+        idx.push_back(b * 3 + 2);
     }
     Buffer idxBuf = app->createDeviceLocalBuffer(idx.data(), idx.size() * sizeof(uint32_t),
                                                   VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     captureIdxBuf = idxBuf.buffer;
-    captureIdxCount = 36;
+    captureIdxCount = static_cast<uint32_t>(idx.size());
 
     // Instance buffer: one vec4 slot per billboard type (xyz=world pos,
     // w=billboardIndex), host-visible. Draws select the slot with firstInstance
