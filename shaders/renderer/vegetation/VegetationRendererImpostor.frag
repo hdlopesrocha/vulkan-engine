@@ -58,10 +58,11 @@ layout(push_constant) uniform PushConstants {
 vec3 fragPosWorld; // set in main() — required by shadows.glsl cascades 1 & 2
 
 #include "../../includes/shadow/Shadows.glsl"
+#include "../../includes/vegetation/GrassShading.glsl"
 
 void main() {
     // Debug: raw LOD source, no shading. Blue = impostor (this shader),
-    // red = billboard (VegetationRenderer.frag). The color edge is the hand-off.
+    // red = blades (VegetationRenderer.frag). The color edge is the hand-off.
     if (ubo.debugMode == DEBUG_MODE_VEGETATION_LOD) {
         outColor = vec4(0.0, 0.0, 1.0, 1.0);
         return;
@@ -73,6 +74,11 @@ void main() {
     // background pixels skip the albedo fetch entirely. Survivors compute
     // identical values (both are array fetches at the same coord, no
     // derivatives involved).
+    //
+    // The depth-reconstructed blade surface point drives shading (albedo
+    // variation cells, shadow sampling, view vector) exactly like the blade
+    // path's fragment world pos, so the two LODs agree.
+    vec3 bladePos = inWorldPos;
     {
         int layer = int(inTexCoord.z);
         float texDepth = texture(depthArray, inTexCoord).r;
@@ -83,6 +89,7 @@ void main() {
         vec4 worldPos = invVP[layer] * clipPos;
         worldPos /= worldPos.w;
         worldPos.xyz += inInstanceOffset;
+        bladePos = worldPos.xyz;
 
         vec4 camClipPos = ubo.viewProjection * worldPos;
         gl_FragDepth = clamp(camClipPos.z / camClipPos.w, 0.0, 1.0);
@@ -90,12 +97,15 @@ void main() {
 
     vec4 color = texture(impostorArray, inTexCoord);
     if (color.a < 0.3) discard;
-    fragPosWorld = inWorldPos; // must be set before any ShadowCalculation call
 
     // Direct hand-off (see impostors.vert): this instance only exists past
-    // impostorDistance, where the billboard vertex shader has already culled
+    // impostorDistance, where the blade vertex shader has already culled
     // its counterpart. No dithered fade - the old cross-fade thinned the
     // grass to sparse dots instead of swapping to the impostor.
+
+    // Captured albedo has no per-tuft variation baked in; apply the shared
+    // formula at the reconstructed pos so it matches the blade path exactly.
+    vec3 albedo = color.rgb * (1.0 + grassVariation(bladePos));
 
     // Decode baked world-space normal from the normal capture array.
     // The capture was done for a canonical (theta=0) plant orientation, so we must
@@ -110,38 +120,14 @@ void main() {
     vec3 N = normalize(vec3(cosT * N_raw.x - sinT * N_raw.z,
                             N_raw.y,
                             sinT * N_raw.x + cosT * N_raw.z));
+    // Two-sided, like the blade path (which flips by triangle winding):
+    // keep the hemisphere facing the viewer so back-facing blades light up
+    // instead of collapsing to ambient-only.
+    vec3 Vv = normalize(ubo.viewPosition - bladePos);
+    if (dot(N, Vv) < 0.0) N = -N;
     // H8 (perf report 27): uniform light direction already normalized per
     // vertex (flat varying), not per pixel.
-    vec3 L     = inLightDirN;
-    float NdotL = max(dot(N, L), 0.0);
+    vec3 col = grassShade(albedo, N, inLightDirN, bladePos, false);
 
-    vec3  V     = normalize(ubo.viewPosition - inWorldPos);
-    vec3  H     = normalize(L + V);
-    float NdotH = (NdotL > 0.0) ? max(dot(N, H), 0.0) : 0.0;
-
-    const float kAmbient  = 0.30;
-    const float kSpecular = 0.08;
-    const float kShine    = 16.0;
-    vec3 ambient  = kAmbient            * ubo.lightColor;
-    vec3 diffuse  = NdotL               * ubo.lightColor;
-    vec3 specular = pow(NdotH, kShine) * kSpecular * ubo.lightColor;
-
-    float shadow = 0.0;
-    if (ubo.shadowsEnabled != 0u) {
-        if (NdotL > 0.01) {
-            float bias = max(0.0005 * (1.0 - NdotL), 0.00005);
-            vec4 fragPosLightSpace = ubo.lightSpaceMatrix * vec4(inWorldPos, 1.0);
-            shadow = ShadowCalculationHard(fragPosLightSpace, inWorldPos, bias);
-        } else {
-            shadow = 1.0;
-        }
-    }
-    if ((sky.cloudsEnabled != 0u) && NdotL > 0.01) {
-        float cloudShadow = cloudShadowAt(inWorldPos);
-        shadow = 1.0 - (1.0 - shadow) * (1.0 - cloudShadow);
-    }
-
-    vec3 lighting = ambient + (diffuse + specular) * (1.0 - shadow);
-
-    outColor = vec4(color.rgb * lighting, 1.0);
+    outColor = vec4(col, 1.0);
 }
