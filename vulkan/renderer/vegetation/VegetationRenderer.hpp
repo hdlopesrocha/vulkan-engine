@@ -441,7 +441,7 @@ private:
 
     // ── Cascade-aware culling for vegetation shadows ──
     // GPU-side cull (veg_cascade_cull.comp): per-cascade compact + count
-    // buffers for billboards (indexCount=36) and impostors (indexCount=6).
+    // buffers for blades (indexCount=36) and impostors (indexCount=6).
     struct VegCascadeCullFrame {
         std::array<Buffer, 3> compactBuffers;        // billboard draw commands
         std::array<Buffer, 3> countBuffers;          // billboard counts (GPU atomics)

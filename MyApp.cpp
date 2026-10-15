@@ -2313,10 +2313,7 @@ public:
                     vkCmdSetScissor(vegCmd, 0, 1, &sc);
                 };
 
-                // Legacy billboards and/or the captured impostors. In Grass
-                // Raycast mode the billboards are off and the impostor pass is
-                // the far-field representation of the SDF grass (whose march
-                // skips those clumps); in Vegetation mode the billboards own
+                // Blade tufts and/or the captured impostors. The blades own
                 // [0, impostorDistance) and the impostors take over beyond.
                 const bool drawBillboards = vegetationEnabled;
                 const bool drawImpostors = vegImpostorDist > 0.0f &&

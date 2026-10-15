@@ -594,8 +594,8 @@ private:
     // The merged IndirectRenderer.comp dispatch writes the vegetation billboard/impostor
     // commands into the buffers OWNED by VegetationRenderer (so its existing draw
     // paths are unchanged). We only hold the bound VkBuffer handles here, supplied
-    // via setVegetationCullData each frame. Billboards use indexCount=36,
-    // impostors indexCount=6.
+    // via setVegetationCullData each frame. Blades use
+    // indexCount=VEG_BLADE_INDEX_COUNT (36), impostors indexCount=6.
     std::array<VkBuffer, MAX_CULL_FRAMES> vegBbCompactBuf = {};  // binding 7
     std::array<VkBuffer, MAX_CULL_FRAMES> vegBbCountBuf   = {};  // binding 8
     std::array<VkBuffer, MAX_CULL_FRAMES> vegImpCompactBuf = {}; // binding 5

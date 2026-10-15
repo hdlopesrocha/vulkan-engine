@@ -41,8 +41,13 @@ layout(std430, binding = 4) buffer VisibleLods {
 // Emitted by processVegetation() for every VISIBLE solid chunk that carries
 // vegetation. We reuse the solid chunk's AABB (boundsBuf[s]), so vegetation is
 // implicitly culled by the same frustum test as its terrain chunk (step 4: the
-// vegetation bounding box IS the solid terrain chunk AABB). Billboards use
-// indexCount=36, impostors indexCount=6 — each into its own compact stream.
+// vegetation bounding box IS the solid terrain chunk AABB). Blade tufts use
+// indexCount=VEG_BLADE_INDEX_COUNT, impostors indexCount=6 — each into its
+// own compact stream.
+// Blade-tuft triangle count: 12 blades x 1 triangle x 3 indices. Must match
+// RendererUtils::kBladeIndicesPerTuft (36) and the VegetationRenderer /
+// ImpostorCapture tuft VBOs (36 verts, 36 indices).
+#define VEG_BLADE_INDEX_COUNT 36u
 layout(std430, binding = 5) writeonly buffer OutVegImpCmds {
     DrawCmd cmds[];
 } outVegImp;
@@ -50,7 +55,7 @@ layout(std430, binding = 6) buffer VegImpCount {
     uint count;
 } vegImpCount;
 
-// Vegetation billboard output stream (indexCount=36) + its count.
+// Vegetation blade-tuft output stream (indexCount=VEG_BLADE_INDEX_COUNT) + its count.
 layout(std430, binding = 7) writeonly buffer OutVegBbCmds {
     DrawCmd cmds[];
 } outVegBb;
@@ -131,10 +136,10 @@ layout(std430, binding = 23) buffer CascadeCount2 {
 // ── Vegetation cascade (shadow) outputs ────────────────────────────────────────
 // Folded into the SAME dispatch as the main-view cull when pc.doVegCascade == 1.
 // Each vegetation chunk (not solid draw entry) is frustum-culled against the 3
-// cascade frustums and two command streams are emitted per cascade: billboards
-// (indexCount=36) and impostors (indexCount=6), each with the chunk's instance
-// count + firstInstance so the shadow billboard/impostor draws reconstruct the
-// instance range. Mirrors the retired veg_cascade_cull.comp.
+// cascade frustums and two command streams are emitted per cascade: blades
+// (indexCount=VEG_BLADE_INDEX_COUNT) and impostors (indexCount=6), each with
+// the chunk's instance count + firstInstance so the shadow blade/impostor
+// draws reconstruct the instance range. Mirrors the retired veg_cascade_cull.comp.
 layout(std430, binding = 24) readonly buffer VegCascadeChunkInfo {
     vec4 data[];
 } vegCascadeInfo;
@@ -275,8 +280,8 @@ bool lodRungIsSelected(uint entryLevel, int maxLevel, int maxTargetLod,
     return recurseParent && !recurseSelf;
 }
 
-// Emit the billboard (indexCount=36) and impostor (indexCount=6) draw commands
-// for a solid chunk that survived culling. Called from processChunk once the
+// Emit the blade-tuft (indexCount=VEG_BLADE_INDEX_COUNT) and impostor
+// (indexCount=6) draw commands for a solid chunk that survived culling. Called from processChunk once the
 // chunk is known visible, so no extra AABB test is needed — vegetation shares
 // the terrain chunk's bounding box.
 void processVegetation(uint s) {
@@ -288,7 +293,7 @@ void processVegetation(uint s) {
     uint firstInstance  = uint(meta.y);
 
     DrawCmd bbCmd;
-    bbCmd.indexCount    = 36u;
+    bbCmd.indexCount    = VEG_BLADE_INDEX_COUNT;
     bbCmd.instanceCount = instanceCount;
     bbCmd.firstIndex    = 0u;
     bbCmd.vertexOffset  = 0;
@@ -563,7 +568,7 @@ void processChunkCascade(uint s) {
 
 // Vegetation cascade cull: one invocation per veg CHUNK (not per solid draw
 // entry). Mirrors the retired veg_cascade_cull.comp — emits two command streams
-// per cascade (billboards indexCount=36, impostors indexCount=6) keyed by the
+// per cascade (blades indexCount=VEG_BLADE_INDEX_COUNT, impostors indexCount=6) keyed by the
 // chunk's instance count + firstInstance.
 void processVegCascade(uint idx) {
     if (idx >= pc.vegChunkCount) return;
@@ -575,7 +580,7 @@ void processVegCascade(uint idx) {
     if (meta.x < 1.0) return; // empty chunk never draws
 
     DrawCmd bbCmd;
-    bbCmd.indexCount    = 36u;
+    bbCmd.indexCount    = VEG_BLADE_INDEX_COUNT;
     bbCmd.instanceCount = uint(meta.x);
     bbCmd.firstIndex    = 0u;
     bbCmd.vertexOffset  = 0;
