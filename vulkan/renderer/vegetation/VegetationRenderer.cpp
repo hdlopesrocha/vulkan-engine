@@ -2440,7 +2440,8 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
         // Instances per world-space unit² of triangle area.
         constexpr float kVegetationDensity = 0.01f;
 
-        // Create tightly-packed position buffer (vec3[]) for the compute shader
+        // Create tightly-packed position buffer (vec3[]) for CPU-side
+        // instance generation below.
         std::vector<glm::vec3> positions;
         positions.reserve(geom.vertices.size());
         for (const auto &v : geom.vertices) positions.push_back(v.position);
@@ -2463,17 +2464,26 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
                 const uint32_t i1 = geom.indices[i + 1];
                 const uint32_t i2 = geom.indices[i + 2];
                 if (i0 >= geom.vertices.size() || i1 >= geom.vertices.size() || i2 >= geom.vertices.size()) continue;
-                const bool hasBrush =
-                    geom.vertices[i0].brushIndex == brushIndex ||
-                    geom.vertices[i1].brushIndex == brushIndex ||
+                // Strict: ALL THREE verts must be grass-brushed. A triangle
+                // touching any other brush (sand/rock/snow/waterbed, a
+                // transition band, a cliff) contributes no slots: the
+                // barycentric sample lands anywhere in the triangle, so the
+                // old any-vert rule grew blades on sand, in lakes and on
+                // cliffs next to meadows. Pure-grass verts are always
+                // near-flat and up-facing (see LandBrush::paint), so this
+                // also keeps grass off steep/overhanging geometry, and all
+                // samples stay inside the meadow (y >= grass band, above
+                // water) by convexity.
+                const bool allGrass =
+                    geom.vertices[i0].brushIndex == brushIndex &&
+                    geom.vertices[i1].brushIndex == brushIndex &&
                     geom.vertices[i2].brushIndex == brushIndex;
-                if (!hasBrush) continue;
+                if (!allGrass) continue;
                 const glm::vec3& v0 = geom.vertices[i0].position;
                 const glm::vec3& v1 = geom.vertices[i1].position;
                 const glm::vec3& v2 = geom.vertices[i2].position;
-                // Any orientation accepted: instances tilt onto the surface normal
-                // in the vertex shader, so steep and downward-facing triangles
-                // contribute slots like any other.
+                // Surviving triangles are fully grass-brushed, hence near-flat:
+                // instances tilt onto the surface normal in the vertex shader.
                 const glm::vec3 faceNormal = glm::cross(v1 - v0, v2 - v0);
                 const float area = 0.5f * glm::length(faceNormal);
                 const float expectedInstances = std::max(0.0f, area * kVegetationDensity);
