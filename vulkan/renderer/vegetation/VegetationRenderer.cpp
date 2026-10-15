@@ -695,6 +695,16 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
 
     if (vegNumChunks == 0) return;
 
+    // DIAG (blade-shadow investigation): confirm the cascade cull runs and
+    // with what chunk/slot state. Throttled: cascade culls run every frame.
+    {
+        static uint32_t diagCount = 0;
+        if ((diagCount++ % 300u) == 0u) {
+            std::cerr << "[vegshadow-diag] prepareCullCascades: vegNumChunks=" << vegNumChunks
+                      << " slot=" << vegCullCurrentSlot << std::endl;
+        }
+    }
+
     if (vegNumChunks > vegCascadeCompactCapacity) {
         std::cerr << "[veg] prepareCullCascades: cascade capacity exceeded "
                   << "(need " << vegNumChunks << " cap " << vegCascadeCompactCapacity << ")\n";
@@ -763,8 +773,25 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
     // Per-cascade GPU counts stay unread (no stall); the CPU-known empty
     // state is the only one elided.
     if (vegNumChunks == 0) return;
-    if (!ensureVegDescriptorSet(app)) return;
-    if (shadowDescriptorSet == VK_NULL_HANDLE || vegDescriptorSet == VK_NULL_HANDLE) return;
+    if (shadowDescriptorSet == VK_NULL_HANDLE) return;
+
+    // DIAG (blade-shadow investigation): confirm per-cascade shadow draws
+    // execute and which sub-paths run. Throttled: 3 cascades x every frame.
+    {
+        static uint32_t diagCount = 0;
+        const bool bladePipeOk = (vegetationShadowPipeline != VK_NULL_HANDLE);
+        const bool impPipeOk = (impostorShadowPipeline != VK_NULL_HANDLE) ||
+                              (impostorDepthPipeline != VK_NULL_HANDLE);
+        const bool impDescOk = (impostorDepthDescSet != VK_NULL_HANDLE);
+        if ((diagCount++ % 900u) == 0u) {
+            std::cerr << "[vegshadow-diag] drawShadowCascade: cascade=" << cascadeIndex
+                      << " vegNumChunks=" << vegNumChunks << " slot=" << vegCullCurrentSlot
+                      << " bladePipe=" << bladePipeOk
+                      << " impostorShadow=" << (impPipeOk && impDescOk && impostorDistance > 0.0f)
+                      << " (impPipe=" << impPipeOk << " impDesc=" << impDescOk
+                      << " impDist=" << impostorDistance << ")" << std::endl;
+        }
+    }
 
     uint32_t f = vegCullCurrentSlot;
     if (vegCascadeCullFrames[f].compactBuffers[cascadeIndex].buffer == VK_NULL_HANDLE) return;
@@ -774,12 +801,14 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
     // main/task command buffer. Eliding a bind through it could skip a
     // required bind here — beginShadowPass has already bound the SOLID shadow
     // pipeline in this command buffer (VUID-vkCmdDrawIndexedIndirectCount-
-    // None-08600). Same rationale as SdfRenderer::drawShadowCascade.
+    // None-08600).
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
 
     updateWindParamsUBO(cameraPos);
-    VkDescriptorSet sets[3] = { shadowDescriptorSet, vegDescriptorSet, windParamsDescSet };
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 3, sets, 0, nullptr);
+    // Bladed grass uses sets 0 (shadow/global) and 2 (wind) only; set 1
+    // (legacy billboard textures) is unbound (shader does not declare it).
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 1, &shadowDescriptorSet, 0, nullptr);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 2, 1, &windParamsDescSet, 0, nullptr);
 
     WindPushConstants pc{};
     pc.billboardScale = billboardScale;
