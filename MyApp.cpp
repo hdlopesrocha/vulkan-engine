@@ -42,7 +42,6 @@
 #include "widgets/WaterWidget.hpp"
 #include "widgets/GraphicsQualityWidget.hpp"
 #include "widgets/RenderTargetsWidget.hpp"
-#include "widgets/BillboardCreator.hpp"
 #include "widgets/ImpostorWidget.hpp"
 #include "services/ImpostorService.hpp"
 #include "widgets/TextureMixerWidget.hpp"
@@ -54,7 +53,6 @@
 #include "widgets/LightWidget.hpp"
 #include "widgets/VulkanResourcesManagerWidget.hpp"
 #include "widgets/QueueTimelineWidget.hpp"
-#include "widgets/VegetationAtlasEditor.hpp"
 #include "widgets/WindWidget.hpp"
 #include "widgets/RaymarchWidget.hpp"
 #include "widgets/RocksWidget.hpp"
@@ -101,10 +99,7 @@
 #include "vulkan/resources/MaterialManager.hpp"
 #include "world/World.hpp"
 #include "vulkan/renderer/DescriptorWriter.hpp"
-#include "utils/BillboardManager.hpp"
-#include "utils/AtlasManager.hpp"
 #include "services/TextureMixer.hpp"
-#include "services/BillboardService.hpp"
 #include "utils/ShadowParams.hpp"
 #include "space/ThreadPool.hpp"
 #include "space/Octree.hpp"
@@ -297,7 +292,6 @@ public:
     std::shared_ptr<WaterWidget> waterWidget;
     std::shared_ptr<GraphicsQualityWidget> graphicsQualityWidget;
     std::shared_ptr<RenderTargetsWidget> renderTargetsWidget;
-    std::shared_ptr<BillboardCreator> billboardCreator;
     std::shared_ptr<ImpostorService> impostorService;
     std::shared_ptr<ImpostorWidget> impostorWidget;
     std::shared_ptr<TextureMixerWidget> textureMixerWidget;
@@ -309,7 +303,6 @@ public:
     std::shared_ptr<LightWidget> lightWidget;
     std::shared_ptr<VulkanResourcesManagerWidget> vulkanResourcesManagerWidget;
     std::shared_ptr<QueueTimelineWidget> queueTimelineWidget;
-    std::shared_ptr<VegetationAtlasEditor> vegetationAtlasEditor;
     std::shared_ptr<WindWidget> windWidget;
     // Generic SDF volumes UI (SDF fire is always on; anchors stream in
     // from lava chunks, so no CPU scene mirror lives here). The ray
@@ -329,11 +322,6 @@ public:
     // The startup texture triple list, retained so a resolution-tier change
     // can re-upload the same content (perf report 23 C1).
     std::vector<TextureTriple> textureTriples_;
-
-    // Billboard editing / vegetation resources
-    BillboardManager billboardManager;
-    AtlasManager vegetationAtlasManager;
-    TextureArrayManager vegetationTextureArrayManager = TextureArrayManager();
 
     // Global texture arrays and material manager (moved from SceneRenderer)
     TextureArrayManager textureArrayManager = TextureArrayManager();
@@ -729,10 +717,6 @@ public:
         // Re-wire impostors now that VegetationRenderer::init() has stored the render pass.
         if (impostorService) impostorService->rewire();
 
-        // Keep the vegetation array manager wired for editor/atlas updates.
-        if (sceneRenderer->vegetationRenderer)
-            sceneRenderer->vegetationRenderer->setTextureArrayManager(&vegetationTextureArrayManager, this);
-
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
 
         textureViewer = std::make_shared<TextureViewer>();
@@ -807,13 +791,11 @@ public:
         widgetManager.addWidget(renderTargetsWidget);
         widgetManager.addWidget(vulkanResourcesManagerWidget);
         widgetManager.addWidget(queueTimelineWidget);
-        widgetManager.addWidget(vegetationAtlasEditor);
         widgetManager.addWidget(windWidget);
         widgetManager.addWidget(raymarchWidget);
         widgetManager.addWidget(rocksWidget);
         widgetManager.addWidget(grassWidget);
         widgetManager.addWidget(mp3Widget);
-        widgetManager.addWidget(billboardCreator);
         widgetManager.addWidget(impostorWidget);
 
       
@@ -3600,9 +3582,6 @@ public:
         }
         if (renderTargetsWidget) {
             renderTargetsWidget->invalidateImGuiDescriptors();
-        }
-        if (billboardCreator) {
-            billboardCreator->invalidateImGuiDescriptors();
         }
         textureArrayManager.invalidateImGuiDescriptors();
         if (impostorService) {

@@ -161,8 +161,7 @@ void WindWidget::render() {
         ImGui::SliderFloat(lSwingF.c_str(), &sel.swingFrequency, 0.0f, 2.0f, "%.2f");
         ImGuiHelpers::SetTooltipIfHovered("Direction swing speed (radians/second).");
 
-        // Delete: deactivates the selected slot (red styling precedent:
-        // VegetationAtlasEditor "Delete Tile"). Disabled on inactive slots.
+        // Delete: deactivates the selected slot. Disabled on inactive slots.
         ImGui::BeginDisabled(!sel.active);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
