@@ -64,8 +64,7 @@ private:
         settings.enableShadows = true;
         // Volumetric clouds on (sky + shadows + reflections).
         settings.cloudsEnabled = true;
-        // Ray marching on (generic SDF renderer: fire/smoke/rocks/grass +
-        // grass shadows).
+        // Ray marching on (generic SDF renderer: fire/smoke/rocks).
         settings.rayMarchingEnabled = true;
         // SDF march tiers (perf report 25 M12): Maximum keeps the reference
         // budgets (64 steps, 2x2 raycast, 12 smoke samples). Streams through
@@ -110,8 +109,8 @@ private:
         settings.enableShadows = false;
         // Volumetric clouds off (no sky raymarch, no cloud shadows).
         settings.cloudsEnabled = false;
-        // Ray marching off: the generic SDF pass (fire/smoke/rocks/grass)
-        // and the grass shadow caster are skipped, leaving cleared targets.
+        // Ray marching off: the generic SDF pass (fire/smoke/rocks)
+        // is skipped, leaving cleared targets.
         settings.rayMarchingEnabled = false;
         // SDF march tiers (perf report 25 M12): Minimal marches cheaper when
         // the user re-enables marching (32 steps, 4x4 raycast, 6 smoke

@@ -29,7 +29,6 @@ class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 #include "sdf/types/SdfInstance.hpp"
 #include "sdf/types/SdfMaterial.hpp"
 #include "sdf/types/SdfContainer.hpp"
-#include "sdf/types/SdfGrassAnchor.hpp"
 #include "sdf/types/SdfGridCell.hpp"
 #include "vulkan/ubo/SdfParamsUBO.hpp"
 #include "sdf/types/SmokeFragBullet.hpp"
@@ -39,23 +38,6 @@ class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 // SdfGridCell / SdfParamsUBO / SmokeFragBullet define the contract
 // consumed by shaders/SdfRenderer.vert(.frag) at set=1 bindings 0..9
 // (9 = rasterized water-surface depth for the solid+water march clamp).
-
-// Push constants for the grass-shadow pipeline (128 B; GLSL twin is the
-// push_constant block in shaders/renderer/shadow/SdfGrassShadow.{vert,frag},
-// shared by the full and the H8 SHADOW_IMPOSTOR_ONLY variant pipelines).
-// The block carries everything the grass-only EVSM caster needs without
-// touching set 0: the cascade matrix, the SDF clock + march budget and the
-// light-to-scene march direction.
-struct SdfGrassShadowPC {
-    glm::mat4 lightViewProj; // cascade light view-projection (world -> light clip)
-    glm::vec4 params;        // x = time (s), y = max steps, z = epsilon, w = safety
-    glm::vec4 march;         // x = max step (m), y = min step (m), z = shadow LOD camScale
-                             // (>= impostorFull -> impostor-only grass LOD, zero blades)
-    glm::vec4 impostor;      // x = impostor fade start, y = impostor fade full
-                             // (camera distance in clump scales)
-    glm::vec4 lightDir;      // xyz = light-to-scene direction (world), w unused
-};
-static_assert(sizeof(SdfGrassShadowPC) == 128, "SdfGrassShadowPC must be 128 bytes");
 
 // Generic GPU-driven SDF renderer: one instanced proxy-cube draw per SDF
 // container; the fragment shader traverses definitions/materials/grid for the
@@ -183,58 +165,6 @@ public:
     void setRockMetallic(float m);
     void setRockTint(const glm::vec3& rgb);
 
-    // ── Grass clumps (existing vegetation instances) ─────────────────────
-    // Grass anchors are streamed 1:1 by VegetationRenderer as chunks publish
-    // (position + vegetation type/biome + smooth surface normal). Each
-    // retained anchor becomes ONE SdfInstance of the procedural Grass
-    // primitive, which expands into many blades in-shader — the existing
-    // vegetation data stays the single source of truth and no second grass
-    // placement pass exists. The scene merges with lava + rocks + smoke.
-    void ingestGrassChunk(uintptr_t nid, std::vector<sdf_gpu::GrassAnchor> anchors);
-    void removeGrassChunk(uintptr_t nid);
-    void clearGrass();
-    // Rebuild the grass scene from collected anchors when dirty (coalesces
-    // per-chunk ingests into at most one flatten per frame). Returns true
-    // when a rebuild was staged.
-    bool rebuildGrassIfDirty();
-    // Force a grass-scene rebuild from the retained anchors.
-    void markGrassDirty();
-    // H6 (perf report 27): pack config_.grass into a GrassShape / hash the
-    // structural subset (everything feeding definitions/containers/grids, NOT
-    // tint/roughness). Callers hold sceneMutex.
-    sdf_gpu::GrassShape grassShapeLocked() const;
-    uint64_t grassStructuralHashLocked() const;
-    // Placement/collector controls.
-    void setGrassEnabled(bool on);
-    void setGrassMaxPerChunk(int n);
-    // Shape (applied at scene rebuild): clump radius/blade height/width in
-    // local units (1 = the per-instance vegetation scale), blade count,
-    // curvature, wind lean/gain, tip width, roughness and tint.
-    void setGrassClumpRadius(float r);
-    void setGrassBladeHeight(float h);
-    void setGrassBladeWidth(float w);
-    void setGrassBladeCount(int n);
-    void setGrassCurvature(float c);
-    void setGrassMaxLean(float rad);
-    void setGrassWindGain(float g);
-    void setGrassTipWidth(float f);
-    void setGrassRoughness(float r);
-    void setGrassTint(const glm::vec3& rgb);
-    // Shadow-caster LOD camera scale (no scene rebuild: read per shadow frame).
-    void setGrassShadowLodScale(float s);
-    // SDF impostor fade band (camera distance in clump scales; no scene
-    // rebuild: streamed through the SDF params UBO). Setting both to 0 forces
-    // the impostor representation everywhere (Impostors-widget preview).
-    void setGrassImpostorStart(float s);
-    void setGrassImpostorFull(float f);
-    void setGrassImpostorsOnly(bool on);
-    // Billboard impostor hand-off (Grass Raycast mode): grass clumps beyond
-    // this camera distance (metres) are drawn by the captured-billboard
-    // impostor pass and skipped by the SDF march, so the far field is not
-    // double-represented. 0 disables the hand-off (every clump stays in the
-    // march). Streamed through the SDF params UBO (no scene rebuild).
-    void setGrassImpostorDistance(float d);
-
     // ── Ray-cast quality (Settings: SDF raycast pixel size) ──────────────
     // The SDF ray is cast once per NxN screen-pixel block (block center) when
     // N > 1, pixelating the SDF output; the full-resolution proxy
@@ -243,9 +173,8 @@ public:
     // UBO). Default 2 (Settings::raycastPixelSize).
     void setRaycastPixelSize(int px);
     // Ray-marching master gate (Settings::rayMarchingEnabled): when off, the
-    // main SDF pass clears its targets without drawing and the grass shadow
-    // caster is skipped. Lock-free: written from the frame thread, read from
-    // the async SDF/shadow tasks.
+    // main SDF pass clears its targets without drawing. Lock-free: written
+    // from the frame thread, read from the async SDF/shadow tasks.
     void setRayMarchingEnabled(bool on) { rayMarchingEnabled_.store(on, std::memory_order_relaxed); }
     bool isRayMarchingEnabled() const { return rayMarchingEnabled_.load(std::memory_order_relaxed); }
     // M10 (report 25): screen-space overlap gate for the solid-depth preload
@@ -324,11 +253,9 @@ public:
         currentFrame_ = frame % SDF_FRAMES;
     }
     // Refresh the per-slot depth bindings (set=1 bindings 7/9) once per frame
-    // BEFORE any command buffer binds the SDF set for this frame (the grass
-    // shadow pass is the first user, then the SDF pass). vkUpdateDescriptorSets
-    // is illegal while a pending CB references the set (VUID 03047), so the
-    // refresh must happen before the shadow CB records; prepareCull and
-    // prepareShadowCascade only repeat it if this was not called yet.
+    // BEFORE any command buffer binds the SDF set for this frame.
+    // vkUpdateDescriptorSets is illegal while a pending CB references the set
+    // (VUID 03047), so the refresh must happen before the SDF CB records.
     // Main thread: call after setSceneDepth/setWaterDepth, before the shadow
     // task is enqueued. Safe: the set's previous slot use is fenced (3 frames
     // in flight).
@@ -366,26 +293,13 @@ public:
     // frame's slot. Call OUTSIDE a render pass, before render().
     void prepareCull(VkCommandBuffer cmd);
 
-    // ── Grass shadow casting into the EVSM cascades ──────────────────────
-    // Shadow-pass interface. prepareShadowCascade() is called from each
-    // cascade CB BEFORE beginShadowPass starts the dynamic rendering scope
-    // (buffer barriers are not allowed inside a vkCmdBeginRendering scope):
-    // the host flush is dirty-gated, so the slot upload runs exactly once per
-    // frame, while every cascade CB records its own HOST->shader barrier. The
-    // later SDF task then only re-records barriers and never rewrites the
-    // slot while a cascade CB may read it. drawShadowCascade() records the
-    // grass-only proxy draw for one cascade (set 1 = sdfSets[frameIdx] +
-    // push constants; set 0 is left untouched). Only SDF_PRIM_GRASS
-    // definitions ever write moments; fire/smoke/rocks have no path into the
-    // EVSM output.
-    void prepareShadowCascade(VkCommandBuffer cmd, uint32_t frameIdx);
-    void drawShadowCascade(VkCommandBuffer cmd, uint32_t cascadeIndex,
-                           const glm::mat4& lightViewProj, float time);
-    // March direction for the grass shadow shader (the shadow pass owns the
-    // light UBO; the SDF shadow pipeline deliberately does not bind set 0).
-    void setShadowLightDirection(const glm::vec3& dir);
-    // Global SDF clock (last updateParams time). The shadow task runs before
-    // the SDF task, so this is one frame stale — fine for the wind phase.
+    // Retired grass-only EVSM shadow API (bladed grass casts via
+    // VegetationRenderer). Kept as no-ops so ShadowRenderer links unchanged.
+    void prepareShadowCascade(VkCommandBuffer, uint32_t) {}
+    void drawShadowCascade(VkCommandBuffer, uint32_t, const glm::mat4&, float) {}
+    void setShadowLightDirection(const glm::vec3&) {}
+
+    // Global SDF clock (last updateParams time).
     float getTime() const;
 
     // Proxy-cube instanced draw (instanceCount = container count) to this
@@ -422,29 +336,6 @@ private:
     // L13: one vertex source/module serves both pipelines.
     TrackedHandle<VkShaderModule> fragSurfaceModule;
     TrackedHandle<VkPipeline> pipelineSurface;
-
-    // Grass-only EVSM caster for the shadow pass (SdfGrassShadow.*). Null
-    // until its SPIR-V exists (same lazy tolerance as createPipeline); the
-    // shadow draw no-ops while null.
-    TrackedHandle<VkPipeline> shadowPipeline;
-    TrackedHandle<VkPipelineLayout> shadowPipelineLayout;
-    TrackedHandle<VkShaderModule> shadowVertModule;
-    TrackedHandle<VkShaderModule> shadowFragModule;
-    // H8 impostor-only grass-shadow variant (SHADOW_IMPOSTOR_ONLY=1 build of
-    // the same source): created with createGraphicsPipelineWithLayout reusing
-    // shadowPipelineLayout (identical set layouts + push range), so no extra
-    // descriptor set or layout is created. Null until its SPIR-V exists;
-    // drawShadowCascade falls back to the full pipeline while null.
-    TrackedHandle<VkPipeline> shadowImpostorPipeline;
-    TrackedHandle<VkShaderModule> shadowImpostorFragModule;
-    glm::vec3 shadowLightDir_ = glm::vec3(0.0f);
-    // M10 (perf report 27): cascade-invariant grass-shadow PC fields, built
-    // once per frame; drawShadowCascade fills only lightViewProj per cascade
-    // under the per-cascade lock. M6 (perf report 28): params.x (time) is
-    // folded into the cache as well (identical sdfTime per cascade,
-    // debug-checked at the fill). shadowBaseFrame_ keys the cache.
-    SdfGrassShadowPC shadowBasePC_{};
-    uint32_t shadowBaseFrame_ = 0xFFFFFFFFu;
 
     Buffer vertexBuffer;
     Buffer indexBuffer;
@@ -483,11 +374,10 @@ private:
     // load path). The merged scene stores the canonical GPU-layout structs,
     // so the upload memcpys its vectors verbatim (no CPU->GPU conversion).
     mutable std::mutex sceneMutex;
-    sdf_gpu::SdfScene pendingScene_; // merged lava + rocks + grass + smoke (uploaded directly)
+    sdf_gpu::SdfScene pendingScene_; // merged lava + rocks + smoke (uploaded directly)
     sdf_gpu::SdfScene lavaScene_;    // fire scene from lava anchors
     sdf_gpu::SdfScene smokeScene_;   // static-topology smoke/flame shape scene
     sdf_gpu::SdfScene rocksScene_;   // rock scene from brush-7 anchors
-    sdf_gpu::SdfScene grassScene_;   // grass scene from existing vegetation instances
     SdfParamsUBO params_ = {};
     RenderMode renderMode_ = RenderMode::Surface;
     uint32_t debugFlags_ = 0;
@@ -545,11 +435,6 @@ private:
         float decim = 0.0f;               // [0,1) density key (keep while < ratio)
     };
     std::unordered_map<uintptr_t, std::vector<RockCandidate>> rocksByChunk_;
-    // Grass-clump collection (existing vegetation instances, keyed by the
-    // vegetation chunk). Anchors are stored verbatim as the conversion
-    // boundary into the generic scene; the vegetation stream stays the
-    // source of truth and re-publishing a chunk replaces its clumps.
-    std::unordered_map<uintptr_t, std::vector<sdf_gpu::GrassAnchor>> grassByChunk_;
     // Shared tuning (single source of truth for renderer + widgets).
     SdfEffectConfig config_;
     // C2: true = legacy 3700 m XZ smoke pad (default, A/B baseline);
@@ -558,18 +443,6 @@ private:
     bool smokeWideContainer_ = true;
     bool lavaDirty_ = false;    // anchors changed -> rebuild staged
     bool rocksDirty_ = false;   // anchors/shape changed -> rebuild staged
-    bool grassDirty_ = false;   // vegetation clumps/shape changed -> rebuild staged
-    // H6 (perf report 27): material-only grass tint/roughness path. Set by
-    // the tint/roughness setters instead of grassDirty_; consumed by
-    // rebuildGrassIfDirty, which patches the 3 grass materials in place
-    // (grassScene_ + merged range) and stages a material-range-only upload,
-    // skipping the re-merge/rebuild. grassStructuralHash_ guards the cheap
-    // path: a structural change that missed its flag escalates to a full
-    // rebuild instead of silently taking it. Per-slot flags mirror
-    // sceneDirtySlots_ (triple-buffered slots).
-    bool grassMaterialDirty_ = false;
-    uint64_t grassStructuralHash_ = 0;
-    std::array<bool, SDF_FRAMES> grassMatDirtySlots_ = {false, false, false};
 
     // Smoke bomb state (second generic consumer). Scene topology is static
     // (1 def/mat/container/instance); all behavior below streams through
@@ -597,13 +470,6 @@ private:
     SdfStats stats_;
     VulkanApp* app_ = nullptr; // stashed for buffer (re)allocation
 
-    // Container range of the GRASS scene inside the merged scene (computed in
-    // refreshMergedLocked from the merge order lava -> rocks -> grass ->
-    // smoke). The shadow pass rasterizes exactly this range so fire/smoke/
-    // rock containers are never drawn.
-    uint32_t grassContainerBase_ = 0;
-    uint32_t grassContainerCount_ = 0;
-
     // Offscreen color+depth targets (one per frame in flight).
     std::array<VkImage, SDF_FRAMES> sdfColorImages{};
     std::array<VmaAllocation, SDF_FRAMES> sdfColorAllocations{};
@@ -621,7 +487,6 @@ private:
     void createCubeBuffers(VulkanApp* app);
     void createDescriptorSet(VulkanApp* app);
     void createPipeline(VulkanApp* app);
-    void createShadowPipeline(VulkanApp* app);
     // Re-merge lava + rock + smoke scenes into pendingScene_, rebuild its
     // bounds and grids (caller holds sceneMutex). Marks all scene slots dirty.
     void refreshMergedLocked();

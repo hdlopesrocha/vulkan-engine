@@ -1850,7 +1850,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     if (sdfRenderer) {
         sdfRenderer->rebuildLavaIfDirty();
         sdfRenderer->rebuildRocksIfDirty();
-        sdfRenderer->rebuildGrassIfDirty();
     }
 
     if (batch.empty()) {

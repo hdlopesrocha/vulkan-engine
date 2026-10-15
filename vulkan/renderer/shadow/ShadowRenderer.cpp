@@ -924,10 +924,8 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
         vegetationRenderer_->drawShadowCascade(app, cmd, ds, camPos, cascadeIndex);
     }
 
-    // Grass-only SDF caster: drawn after the rasterized casters so the depth
-    // test resolves grass against solid/vegetation (grass behind an occluder
-    // must not overwrite its nearer EVSM moments). Only SDF_PRIM_GRASS
-    // definitions ever reach outEVSM (SdfGrassShadow.frag).
+    // SDF shadow caster (retired grass-only path is now a no-op): drawn after
+    // the rasterized casters so the depth test resolves correctly.
     if (sdfRenderer_) {
         const float sdfTime = sdfRenderer_->getTime();
         sdfRenderer_->drawShadowCascade(cmd, cascadeIndex, lsMatrix, sdfTime);

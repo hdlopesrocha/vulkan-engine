@@ -7,12 +7,10 @@
 #include "../../../math/Vertex.hpp"
 #include "../../../math/Geometry.hpp"
 #include "../debug/DebugCubeRenderer.hpp"
-#include "../../../utils/BillboardManager.hpp"
 #include "../../resources/VertexBufferObject.hpp"
 #include "../../../utils/Scene.hpp" // for NodeID
 #include "../../ubo/WindParamsUBO.hpp"
 #include "../../ubo/WindField.hpp"
-#include "sdf/types/SdfGrassAnchor.hpp"
 #include <vector>
 #include <deque>
 #include <unordered_map>

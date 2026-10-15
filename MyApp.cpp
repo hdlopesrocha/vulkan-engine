@@ -213,7 +213,7 @@ public:
     // Last grass mode applied to the renderers; the mode selector only
     // pushes on change so the Grass/Impostors widget toggles are not
     // overridden every frame.
-    Settings::GrassMode appliedGrassMode = Settings::GrassMode::GrassRaycast;
+    Settings::GrassMode appliedGrassMode = Settings::GrassMode::None;
     SceneRenderer * sceneRenderer = nullptr;
     // Scene render queues are owned by the generic VulkanApp framework via its
     // SceneQueues member (forward-declared, created and configured below in
@@ -774,9 +774,8 @@ public:
         // Brush-7 boulder instances: same generic SDF scene as the fire
         // volumes; the widget edits the renderer's shared rock config.
         rocksWidget = std::make_shared<RocksWidget>(sceneRenderer->sdfRenderer.get());
-        // SDF grass: one procedural clump per existing vegetation instance,
-        // streamed from VegetationRenderer into the same generic SDF scene.
-        grassWidget = std::make_shared<GrassWidget>(sceneRenderer->sdfRenderer.get());
+        // Bladed grass tufts (triangle blades + captured impostors).
+        grassWidget = std::make_shared<GrassWidget>(sceneRenderer->vegetationRenderer.get());
         // Generic SDF fire volume (spec §19) is the fire path; flame
         // anchors stream in from brush-4 lava chunks as they publish (see
         // SceneRenderer::processPendingMeshes ingest hook).
@@ -1499,18 +1498,12 @@ public:
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n";
         }
 
-        // Grass mode selector (Settings widget): derive the effective legacy
-        // vegetation gate and the SDF grass gate from the single 3-way choice.
-        // Applied only when the mode changes, so the Grass/Impostors widget
-        // enable toggles are not overridden every frame.
+        // Grass mode selector (Settings widget): bladed grass (triangle tufts
+        // + captured impostors) or none. vegetationEnabled derives from it.
         if (settings.grassMode != appliedGrassMode) {
             appliedGrassMode = settings.grassMode;
             settings.vegetationEnabled =
-                (settings.grassMode == Settings::GrassMode::Vegetation);
-            if (sceneRenderer && sceneRenderer->sdfRenderer) {
-                sceneRenderer->sdfRenderer->setGrassEnabled(
-                    settings.grassMode == Settings::GrassMode::GrassRaycast);
-            }
+                (settings.grassMode == Settings::GrassMode::Bladed);
         }
         if (sceneRenderer && sceneRenderer->sdfRenderer) {
             // Ray-cast quality (1..8 px blocks; default 2) for the SDF pass.
@@ -1533,14 +1526,11 @@ public:
 
         const bool waterEnabled = settings.waterEnabled;
         const bool vegetationEnabled = settings.vegetationEnabled;
-        // Grass SDF billboard hand-off (Grass Raycast mode): the captured
-        // impostors take over beyond Settings::impostorDistance, so the
-        // vegetation impostor pass runs even though the legacy billboards are
-        // off. Disabled with the ray-marching master gate (no SDF grass to
-        // hand off from) and when the hand-off distance is 0.
+        // Bladed-grass impostor hand-off: captured blade tufts take over beyond
+        // Settings::impostorDistance, so the impostor pass runs whenever
+        // vegetation is enabled and the hand-off distance is set.
         const bool grassImpostorsEnabled =
-            settings.grassMode == Settings::GrassMode::GrassRaycast &&
-            settings.rayMarchingEnabled && settings.impostorDistance > 0.0f;
+            settings.vegetationEnabled && settings.impostorDistance > 0.0f;
 
         // ── Solid scene pass (sky offscreen + depth prepass + color pass) ──
         // Recorded on its OWN command buffer (solidCmd) and submitted to the
@@ -1765,11 +1755,6 @@ public:
                     waterDepthValid && wdv != VK_NULL_HANDLE);
             }
             sceneRenderer->sdfRenderer->setFrame(frameIdx);
-            // Billboard impostor hand-off: clumps beyond this camera distance
-            // are drawn by the vegetation impostor pass, so the SDF march
-            // skips them. 0 keeps every clump in the march.
-            sceneRenderer->sdfRenderer->setGrassImpostorDistance(
-                grassImpostorsEnabled ? settings.impostorDistance : 0.0f);
             // SDF march counters (profiling UI): re-applied per frame so a
             // renderer rebuild cannot leave a stale gate.
             sceneRenderer->sdfRenderer->setProfileCounters(
@@ -3238,8 +3223,7 @@ public:
                                 cells > 0.0 ? static_cast<double>(st.lastCandidateEvals) / cells : 0.0,
                                 rays > 0.0 ? 100.0 * static_cast<double>(st.lastHits) / rays : 0.0);
                         }
-                        ImGui::Text("grass: %u/%u chunks  lava: %u/%u  rocks: %u/%u",
-                            st.grassAnchors, st.grassChunks,
+                        ImGui::Text("lava: %u/%u chunks  rocks: %u/%u chunks",
                             st.lavaAnchors, st.lavaChunks,
                             st.rockAnchors, st.rockChunks);
                     } else {
@@ -3859,13 +3843,9 @@ void MyApp::recreateTextureArrays(uint32_t size) {
 
 // Implementation: setup vegetation textures
 void MyApp::setupVegetationTextures() {
-    // Allocate 3-layer texture arrays for vegetation (foliage, grass, wild)
-    vegetationTextureArrayManager.allocate(3, 512, 512, this);
-    vegetationAtlasEditor = std::make_shared<VegetationAtlasEditor>(&vegetationTextureArrayManager, &vegetationAtlasManager);
-    auto billboardSvc = std::make_shared<BillboardService>();
-    billboardCreator = std::make_shared<BillboardCreator>(&billboardManager, &vegetationAtlasManager, billboardSvc);
-    // Provide VulkanApp to the creator so it can initialize GPU-backed preview textures
-    billboardCreator->setVulkanApp(this);
+    // Bladed grass: no billboard textures. The impostor capture renders
+    // procedural blade tufts directly; the capture arrays feed the far-LOD
+    // impostor quads. Kept under the legacy name so setup() needs no change.
     impostorService = std::make_shared<ImpostorService>();
     // Must be set before init(): the capture pipeline shares the renderer's
     // set=2 wind params descriptor set/layout instead of duplicating them.
@@ -3873,110 +3853,12 @@ void MyApp::setupVegetationTextures() {
     impostorService->init(this);
     impostorWidget = std::make_shared<ImpostorWidget>(impostorService);
     impostorWidget->setVegetationRenderer(sceneRenderer->vegetationRenderer.get());
-    // Grass SDF impostors (procedural far-LOD) controls in the same widget.
-    if (sceneRenderer->sdfRenderer)
-        impostorWidget->setSdfRenderer(sceneRenderer->sdfRenderer.get());
-    
-    // Load the vegetation atlas textures (albedo, normal, opacity) into the texture array
-    std::vector<TextureTriple> vegTriples = {
-        { "textures/vegetation/foliage_color.jpg", "textures/vegetation/foliage_normal.jpg", "textures/vegetation/foliage_opacity.jpg" },
-        { "textures/vegetation/grass_color.jpg",   "textures/vegetation/grass_normal.jpg",   "textures/vegetation/grass_opacity.jpg" },
-        { "textures/vegetation/wild_color.jpg",    "textures/vegetation/wild_normal.jpg",    "textures/vegetation/wild_opacity.jpg" }
-    };
-    size_t loaded = vegetationTextureArrayManager.loadTriples(this, vegTriples);
-    std::cerr << "[MyApp::setupVegetationTextures] Loaded " << loaded << " vegetation texture layers" << std::endl;
 
-    // Auto-detect atlas tiles from opacity maps and populate AtlasManager for each texture
-    const char* opacityPaths[3] = { "textures/vegetation/foliage_opacity.jpg", "textures/vegetation/grass_opacity.jpg", "textures/vegetation/wild_opacity.jpg" };
-    for (int atlasIndex = 0; atlasIndex < 3; ++atlasIndex) {
-        try {
-            vegetationAtlasManager.clear(atlasIndex);
-            int added = vegetationAtlasManager.autoDetectTiles(atlasIndex, opacityPaths[atlasIndex]);
-            std::cerr << "[MyApp::setupVegetationTextures] Atlas " << atlasIndex << ": auto-detected " << added << " tiles" << std::endl;
-        } catch (...) {
-            std::cerr << "[MyApp::setupVegetationTextures] Atlas " << atlasIndex << ": autoDetectTiles failed" << std::endl;
-        }
-    }
-
-    // Initialize the editor with 3 vegetation billboards.
-    // Each billboard uses only one atlas (its respective texture), and includes
-    // all available tiles from that atlas as layers with uniform horizontal offsets.
-    billboardManager.clear();
-
-    for (int atlasIndex = 0; atlasIndex < 3; ++atlasIndex) {
-        const std::string name = "Vegetation Billboard " + std::to_string(atlasIndex + 1);
-        const size_t bidx = billboardManager.createBillboard(name);
-
-        Billboard* billboard = billboardManager.getBillboard(bidx);
-        if (billboard) {
-            billboard->width = 1.0f;
-            billboard->height = 1.5f;
-        }
-
-        const size_t tileCount = vegetationAtlasManager.getTileCount(atlasIndex);
-        if (tileCount == 0) continue;
-
-        // Repeat tiles until there are at least minSlots to fill the full width.
-        const size_t minSlots   = 5;
-        const size_t repeats    = (minSlots + tileCount - 1) / tileCount;
-        const size_t totalSlots = repeats * tileCount;
-
-        for (size_t slot = 0; slot < totalSlots; ++slot) {
-            const size_t tileIndex = slot % tileCount;
-            const AtlasTile* tile  = vegetationAtlasManager.getTile(atlasIndex, static_cast<int>(tileIndex));
-
-            BillboardLayer layer;
-            layer.atlasIndex = atlasIndex;
-            layer.tileIndex  = static_cast<int>(tileIndex);
-            // Distribute slots uniformly left-to-right in normalised [-1,+1] space.
-            // Centre of slot s of n: (2s+1)/n − 1
-            layer.offsetX = (2.0f * static_cast<float>(slot) + 1.0f)
-                            / static_cast<float>(totalSlots) - 1.0f;
-            layer.offsetY = 0.0f;
-            // Scale each tile to exactly fill its 1/totalSlots slot of billboard width.
-            // In compositeLayer: visible_width = 2 * scaleX * tile->scaleX, desired = 2/totalSlots.
-            layer.scaleX = (tile && tile->scaleX > 1e-6f)
-                           ? 1.0f / (tile->scaleX * static_cast<float>(totalSlots))
-                           : 1.0f;
-            // Scale each tile to fill the full billboard height (100%).
-            // denomY = scaleY * tile->scaleY; setting scaleY = 1/tile->scaleY → denomY = 1.0,
-            // so the full [-1,+1] output range maps to the full tile height.
-            layer.scaleY = (tile && tile->scaleY > 1e-6f)
-                           ? 1.0f / tile->scaleY
-                           : 1.0f;
-            layer.rotation = 0.0f;
-            layer.opacity  = 1.0f;
-            layer.renderOrder = static_cast<int>(slot);
-
-            billboardManager.addLayer(bidx, layer);
-        }
-    }
-
-    if (billboardCreator) {
-        // Bake authoring billboards into dedicated per-billboard GPU textures.
-        billboardCreator->bakeAllBillboards();
-    }
-
-    // Wire freshly baked billboard array textures to VegetationRenderer.
-    // The setup() call to setBillboardArrayTextures happens before baking,
-    // so the views were VK_NULL_HANDLE. Re-wire now with valid views.
-    if (sceneRenderer && sceneRenderer->vegetationRenderer && billboardCreator) {
-        sceneRenderer->vegetationRenderer->setBillboardArrayTextures(
-            billboardCreator->getAlbedoArrayView(),
-            billboardCreator->getNormalArrayView(),
-            billboardCreator->getOpacityArrayView(),
-            billboardCreator->getArraySampler(),
-            this
-        );
-    }
-
-    // Notify ImpostorService about the freshly baked texture arrays.
-    if (impostorService && billboardCreator) {
-        impostorService->setSource(
-            billboardCreator->getAlbedoArrayView(),
-            billboardCreator->getNormalArrayView(),
-            billboardCreator->getOpacityArrayView(),
-            billboardCreator->getArraySampler());
+    // Capture the 3 blade variants x 20 views immediately (procedural, no
+    // source textures) and wire the arrays into the vegetation renderer.
+    if (impostorService) {
+        impostorService->setSource(VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                   VK_NULL_HANDLE, VK_NULL_HANDLE);
     }
 }
 
@@ -4281,7 +4163,6 @@ void MyApp::resetSceneState() {
         if (sceneRenderer->sdfRenderer) {
             sceneRenderer->sdfRenderer->clearLava();
             sceneRenderer->sdfRenderer->clearRocks();
-            sceneRenderer->sdfRenderer->clearGrass();
         }
     }
 

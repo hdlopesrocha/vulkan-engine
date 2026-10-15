@@ -30,15 +30,8 @@ enum class SdfPrimitiveType : uint32_t {
     // amplitude as a fraction of the radius; the instance seed offsets the
     // noise lattice so every rock is unique. Bounds add the displacement.
     Rock = 10,
-    // Grass clump: a procedural GROUP of blades sharing one instance, built
-    // from the existing vegetation instances (position + type/biome + smooth
-    // normal) so one clump represents many blades without one SDF object per
-    // blade. Local frame: base at the origin, blades grow along +Y (aligned to
-    // the vegetation surface normal through the instance euler), one local
-    // unit = one instance scale. params0 = (clump radius, blade height, blade
-    // width, blade count); params1 = (curvature fraction of height, maximum
-    // wind lean radians, wind gain radians per m/s, tip width fraction).
-    // Evaluated procedurally in-shader (shaders/includes/sdf/SdfGrass.glsl)
-    // with an aggregate envelope for SDF-distance empty-space skipping.
+    // Grass clump (retired): SDF grass is removed; bladed grass renders as
+    // triangle tufts in VegetationRenderer. Kept as an unused enum value so
+    // other primitive IDs stay stable; the SDF evaluator returns a miss.
     Grass = 11
 };

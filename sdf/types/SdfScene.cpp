@@ -110,44 +110,8 @@ glm::vec3 localHalfExtents(SdfPrimitiveType prim, const glm::vec4& p0, const glm
             return glm::vec3(std::max(rr * (1.0f + amp), 0.001f));
         }
         case SdfPrimitiveType::Grass: {
-            // Base-anchored blade sheaf: roots within params0.x, blades rise
-            // params0.y, tips bend by curvature * height and, under wind,
-            // lean up to maxLean off the local +Y axis (params1). Bounds are
-            // a centered box covering the leaned sheaf (the buried/behind
-            // half is a conservative superset; the composite depth test
-            // resolves the actual surfaces).
-            const float rad = std::max(p0.x, 0.0f) * radial;
-            const float hgt = std::max(p0.y, 0.0f) * height;
-            const float wid = std::max(p0.z, 0.0f) * std::max(radial, height);
-            const float lean = std::min(std::max(p1.y, 0.0f), 1.4f);
-            // Per-blade curvature reaches 1.4 x params1.x (SdfGrass.glsl); the
-            // per-blade wind blend only rotates the bend direction inside the
-            // unit disk, so the same ceiling covers it. The shader also caps
-            // the width by the blade height (slope guard) and the conservative
-            // taper bound inflates cap radii by 1/cosA <= ~1.3; both stay
-            // within the 2 x width margin below, so using the unclamped p0.z
-            // here keeps the AABB/grid cull conservative.
-            const float curve = std::max(p1.x, 0.0f) * 1.4f;
-            // Far-LOD impostor (sdGrassImpostor in SdfGrass.glsl): the base
-            // bulge (fraction of the envelope's base->top radius growth) and
-            // the one-signed ripple (fraction of max(radius, height/2)) push
-            // the mass past the blade envelope. Mirror the shader constants
-            // (MUST match GRASS_IMPOSTOR_BASE_BULGE / _RIPPLE) so the
-            // instance AABB, container fit and grid membership cover the
-            // impostor surface the far march renders.
-            constexpr float kImpostorBaseBulge = 0.5f;
-            constexpr float kImpostorRipple = 0.30f;
-            const float envR1 = rad + 2.0f * wid + hgt * curve;
-            const float impRip = kImpostorRipple * std::max(rad, 0.5f * hgt);
-            const float impBulge = kImpostorBaseBulge * hgt * curve;
-            // XZ reach: leaned cone + envelope top radius + impostor extras.
-            // Y reach: the far-LOD surface's top cap (envelope + ripple); the
-            // centered box also covers the base cap below the anchor.
-            const float extXZ = hgt * std::sin(lean) + envR1 + impBulge + impRip;
-            const float extY = hgt + envR1 + impRip;
-            return glm::vec3(std::max(extXZ, 0.001f),
-                             std::max(extY, 0.001f),
-                             std::max(extXZ, 0.001f));
+            // SDF grass retired (bladed grass in VegetationRenderer). No instances.
+            return glm::vec3(0.001f);
         }
     }
     return glm::vec3(0.5f * uni);
@@ -499,41 +463,6 @@ void addFlameDefinitionAndMaterial(SdfScene& scene,
 }
 } // namespace
 
-// H6 (perf report 27): single source for the three per-type grass materials.
-// createGrassFromAnchors and the renderer's material-only tint/roughness patch
-// both go through here, so the patch writes byte-identical entries to a full
-// rebuild. Verbatim move of the material block (same expressions, same order).
-void SdfScene::makeGrassMaterials(const GrassShape& shape, SdfMaterial* out) {
-    const glm::vec3 kTypeColor[3] = {
-        glm::vec3(0.22f, 0.38f, 0.16f), // foliage
-        glm::vec3(0.30f, 0.52f, 0.20f), // grass
-        glm::vec3(0.46f, 0.55f, 0.24f), // wild
-    };
-    for (int t = 0; t < 3; ++t) {
-        SdfMaterial m;
-        m.mode = SdfMaterialType::Surface;
-        m.baseColor = glm::vec4(glm::clamp(kTypeColor[t] * shape.tint, glm::vec3(0.0f),
-                                           glm::vec3(4.0f)), 1.0f);
-        m.roughness = std::clamp(shape.roughness, 0.02f, 1.0f);
-        m.metallic = 0.0f;
-        m.opacity = 1.0f;
-        m.emission = glm::vec3(0.0f);
-        m.emissionIntensity = 0.0f;
-        // Opaque blades: zero volumetric density/temperature so even an
-        // interior march sample can never add gray volume (the solid hit
-        // path is the only shading, like rocks).
-        m.density = 0.0f;
-        m.absorption = 0.5f;
-        m.scattering = 0.5f;
-        m.tempScale = 0.0f;
-        m.noiseScale = 1.0f;
-        m.turbulence = 0.0f;
-        m.riseSpeed = 0.0f;
-        m.textureLayer = -1.0f; // flat blade color (no texture-array path)
-        out[t] = m;
-    }
-}
-
 SdfScene SdfScene::createFireFromAnchors(const std::vector<FlameAnchor>& anchors,
                                           const FlameShape& shape) {
     SdfScene scene;
@@ -657,109 +586,8 @@ SdfScene SdfScene::createRocksFromAnchors(const std::vector<RockAnchor>& anchors
     return scene;
 }
 
-SdfScene SdfScene::createGrassFromAnchors(const std::vector<GrassAnchor>& anchors,
-                                          const GrassShape& shape) {
-    SdfScene scene;
 
-    // Three species, one per existing vegetation type/biome (0=foliage,
-    // 1=grass, 2=wild — the VegetationRenderer billboard/biome order). One
-    // type feeds BOTH the definition and the material; the shared Grass
-    // primitive keeps the shader single-path, and the per-type multipliers
-    // only scale its parameters. This is the whole "three vegetation types
-    // remain the source of truth" contract: no new species are invented.
-    constexpr int kTypeCount = 3;
-    constexpr float kTypeRadiusMul[kTypeCount] = {1.15f, 1.00f, 0.90f};
-    constexpr float kTypeHeightMul[kTypeCount] = {1.10f, 1.00f, 0.80f};
-    constexpr float kTypeWidthMul[kTypeCount]  = {1.30f, 1.00f, 0.85f};
-    constexpr float kTypeCurveMul[kTypeCount]  = {0.70f, 1.00f, 1.25f};
-
-    const float baseRadius = std::max(shape.clumpRadius, 1e-3f);
-    const float baseHeight = std::max(shape.bladeHeight, 1e-3f);
-    const float baseWidth  = std::clamp(shape.bladeWidth, 1e-5f, baseRadius * 0.5f);
-    const float bladeCount = static_cast<float>(std::clamp(shape.bladeCount, 1, 64));
-    const float curvature  = std::clamp(shape.curvature, 0.0f, 1.5f);
-    const float maxLean    = std::clamp(shape.maxLean, 0.0f, 1.4f);
-    const float windGain   = std::max(shape.windGain, 0.0f);
-    const float tipWidth   = std::clamp(shape.tipWidth, 0.05f, 1.0f);
-
-    // H6 (report 27): materials via the shared helper (byte-identical to the
-    // inline block it replaces; the material-only patch reuses it).
-    SdfMaterial typeMats[kTypeCount];
-    makeGrassMaterials(shape, typeMats);
-    for (int t = 0; t < kTypeCount; ++t) {
-        SdfDefinition d;
-        d.prim = SdfPrimitiveType::Grass;
-        d.op = SdfOpType::Union;
-        d.params0 = glm::vec4(baseRadius * kTypeRadiusMul[t],
-                              baseHeight * kTypeHeightMul[t],
-                              baseWidth * kTypeWidthMul[t],
-                              bladeCount);
-        d.params1 = glm::vec4(curvature * kTypeCurveMul[t], maxLean, windGain, tipWidth);
-        d.deformFlags = 0u; // wind lean is a rigid in-shader rotation, not the flame deformer
-        d.smoothK = 0.5f;
-        scene.addDefinition(d);
-
-        scene.addMaterial(typeMats[t]);
-    }
-
-    if (anchors.empty()) return scene; // defs+mats, no containers -> renders nothing
-
-    // Region partition: one container per regionSize tile. The generic
-    // container grid is the coarse cull level (one proxy AABB per tile), and
-    // the per-tile resolution targets ~cellSize m cells so a grid cell holds
-    // few clumps (the shader evaluates at most SDF_MAX_CANDIDATES per cell).
-    const float region = std::max(shape.regionSize, 16.0f);
-    const float cellTarget = std::max(shape.cellSize, 4.0f);
-    std::map<std::array<int32_t, 3>, std::vector<uint32_t>> regions;
-    for (uint32_t i = 0; i < static_cast<uint32_t>(anchors.size()); ++i) {
-        const glm::vec3& p = anchors[i].pos;
-        const std::array<int32_t, 3> key = {
-            static_cast<int32_t>(std::floor(p.x / region)),
-            static_cast<int32_t>(std::floor(p.y / region)),
-            static_cast<int32_t>(std::floor(p.z / region))};
-        regions[key].push_back(i);
-    }
-
-    for (const auto& kv : regions) {
-        const uint32_t containerIdx = static_cast<uint32_t>(scene.containers().size());
-        std::vector<SdfInstance> local;
-        local.reserve(kv.second.size());
-        glm::vec3 mn(std::numeric_limits<float>::max());
-        glm::vec3 mx(-std::numeric_limits<float>::max());
-        for (uint32_t ai : kv.second) {
-            const GrassAnchor& a = anchors[ai];
-            SdfInstance in;
-            const uint32_t type = std::min(a.type, static_cast<uint32_t>(kTypeCount - 1));
-            in.defIdx = type;
-            in.matIdx = type;
-            in.position = a.pos;
-            in.rotation = eulerAlignYToNormal(a.normal);
-            in.scale = std::max(a.scale, 0.05f);
-            in.heightScale = 1.0f;
-            in.radiusScale = 1.0f;
-            in.intensity = 1.0f;
-            in.seed = a.seed;
-            in.containerIdx = containerIdx;
-            const BoundingBox b = scene.computeInstanceBounds(in);
-            mn = glm::min(mn, b.getMin());
-            mx = glm::max(mx, b.getMax());
-            local.push_back(in);
-        }
-        // Small pad so float rounding never clips the outer clumps; the
-        // container is the march interval, so it must cover every AABB.
-        const glm::vec3 pad = (mx - mn) * 0.02f + glm::vec3(1.0f);
-        auto axisRes = [&](float e) {
-            return std::clamp(static_cast<uint32_t>(std::ceil(e / cellTarget)), 1u, 24u);
-        };
-        const glm::vec3 extent = (mx + pad) - (mn - pad);
-        scene.addContainer(mn - pad, mx + pad,
-                           glm::uvec3(axisRes(extent.x), axisRes(extent.y), axisRes(extent.z)));
-        for (const SdfInstance& in : local) scene.addInstance(in);
-    }
-    return scene;
-}
-
-} // namespace sdf_gpu
+// SDF grass builders retired (bladed grass in VegetationRenderer).
 
 glm::vec3 sdf_gpu::SdfScene::eulerAlignYToNormal(const glm::vec3& n) {
     const float l2 = glm::dot(n, n);
@@ -793,3 +621,5 @@ glm::vec3 sdf_gpu::SdfScene::eulerAlignYToNormal(const glm::vec3& n) {
     }
     return e;
 }
+
+} // namespace sdf_gpu

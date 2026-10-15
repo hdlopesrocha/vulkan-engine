@@ -3,10 +3,10 @@
 class Settings {
 public:
     // Grass representation selector (Settings widget: "Grass"):
-    //   Vegetation   = legacy textured billboard/impostor draws
-    //   GrassRaycast = SDF grass rendered by the generic SDF renderer
-    //   None         = no grass
-    enum class GrassMode { Vegetation = 0, GrassRaycast = 1, None = 2 };
+    //   Bladed     = triangle blade tufts + captured impostors (only path)
+    //   None       = no grass
+    // The legacy billboard quads and SDF raymarched grass are retired.
+    enum class GrassMode { Bladed = 0, None = 1 };
 
     void resetToDefaults() {
         *this = Settings{};
@@ -26,14 +26,11 @@ public:
     // layer's own flag are on (same two-way pattern as rtRefractions /
     // rtWaterReflections with the per-layer reflection/refraction toggles).
     bool blurEnabled = true;
-    // Legacy billboard/impostor vegetation. Derived from grassMode every
-    // frame (MyApp): true only in GrassMode::Vegetation. Grass clumps for the
-    // SDF renderer stream from the same vegetation generation regardless.
+    // Bladed grass (triangle tufts + impostors). Derived from grassMode every
+    // frame (MyApp): true unless GrassMode::None.
     bool vegetationEnabled = false;
-    // Active grass representation (see GrassMode). Default: legacy
-    // billboard/impostor vegetation (vegetationEnabled derives from this
-    // every frame in MyApp).
-    GrassMode grassMode = GrassMode::Vegetation;
+    // Active grass representation (see GrassMode). Default: bladed grass.
+    GrassMode grassMode = GrassMode::Bladed;
     // Ray-cast quality: the SDF raymarcher AND the sky cloud raymarcher cast
     // one ray per NxN screen-pixel block (1 = one ray per pixel).
     // 2 = the default 2x2 pixelation.
@@ -58,9 +55,7 @@ public:
     int sdfMaxSteps = 64;
     int sdfSmokeSamples = 12;
     // Ray marching master gate: the generic SDF raymarcher (fire, smoke,
-    // rocks, grass) and its grass shadow caster. The sky cloud raymarch has
-    // its own Volumetric Clouds toggle. Default off with vegetation grass
-    // (SDF grass needs the marcher; re-enable with GrassRaycast mode).
+    // rocks). The sky cloud raymarch has its own Volumetric Clouds toggle.
     // Minimal preset turns this off.
     bool rayMarchingEnabled = false;
     bool wireframeMode = false;
@@ -119,10 +114,9 @@ public:
     float nearPlane = 0.1f;
     float farPlane = 8092.0f;
 
-    // Impostor rendering hand-off distance (m): beyond this distance the
-    // vegetation (legacy billboards) and the SDF grass (Grass Raycast mode)
-    // are drawn as pre-captured camera-facing impostor quads. 0 = disabled.
-    // Shared by both modes so the far field hands off at one distance.
+    // Impostor rendering hand-off distance (m): beyond this distance bladed
+    // grass tufts are drawn as pre-captured camera-facing impostor quads.
+    // 0 = disabled (every tuft stays geometric).
     float impostorDistance = 512.0f;
 
     // ── Hybrid RT (raster owns primary, CSM owns macro shadows, RT owns

@@ -56,19 +56,18 @@ void SettingsWidget::render() {
         ImGuiComponents::TooltipOnHover("Global gate for the per-material refraction/tint blur.\n"
                        "The blur runs only where this AND the layer's 'Enable Blur' are on.\n"
                        "Reflections and surface highlights are never blurred.");
-        // Grass representation selector: legacy billboards, SDF raycast, none.
+        // Grass representation selector: bladed tufts + impostors, or none.
         {
-            const char* kGrassModes[] = { "Vegetation", "Grass Raycast", "None" };
+            const char* kGrassModes[] = { "Bladed", "None" };
             int grassMode = static_cast<int>(settings.grassMode);
             ImGuiComponents::FieldLabel("Grass", "Grass representation selector");
             ImGui::SetNextItemWidth(kSettingsColWidth);
-            if (ImGui::Combo("##GrassMode", &grassMode, kGrassModes, 3)) {
+            if (ImGui::Combo("##GrassMode", &grassMode, kGrassModes, 2)) {
                 settings.grassMode = static_cast<Settings::GrassMode>(grassMode);
             }
             ImGuiComponents::TooltipOnHover("Grass representation:\n"
-                           "  Vegetation   = legacy textured billboard/impostor draws\n"
-                           "  Grass Raycast = SDF grass (generic SDF renderer, Grass widget)\n"
-                           "  None         = no grass");
+                           "  Bladed = triangle blade tufts + captured impostors\n"
+                           "  None   = no grass");
         }
         if (ImGuiComponents::SliderIntField("Raycast Pixel Size", &settings.raycastPixelSize, 1, 8, "%d px",
                 "SDF and sky-cloud raymarchers cast one ray per NxN screen-pixel\n"

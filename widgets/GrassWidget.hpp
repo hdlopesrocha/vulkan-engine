@@ -2,18 +2,16 @@
 
 #include "Widget.hpp"
 
-class SdfRenderer;
+class VegetationRenderer;
 
-// Grass-clump editor: the SDF renderer consumes the EXISTING vegetation
-// instances (position + vegetation type/biome + smooth normal) as one
-// procedural Grass SDF clump per instance, expanding each clump into many
-// blades in-shader. Everything here maps 1:1 onto SdfRenderer's grass setters
-// (shape edits rebuild the scene on the next frame).
+// Bladed-grass editor: triangle tufts (procedural color, wind) + captured
+// impostors for the far field. Everything here maps onto VegetationRenderer
+// (tuft scale, impostor hand-off); wind itself lives in the Wind widget.
 class GrassWidget : public Widget {
 public:
-    explicit GrassWidget(SdfRenderer* sdfRenderer_);
+    explicit GrassWidget(VegetationRenderer* vegRenderer_);
     void render() override;
 
 private:
-    SdfRenderer* sdfRenderer;
+    VegetationRenderer* vegRenderer;
 };
