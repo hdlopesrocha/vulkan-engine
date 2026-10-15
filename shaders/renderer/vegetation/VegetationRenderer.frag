@@ -82,5 +82,22 @@ void main() {
     // Blade world normal: face normal flipped for back-faces (two-sided).
     vec3 faceN = gl_FrontFacing ? normalize(inPlaneNormal) : -normalize(inPlaneNormal);
 
+    // Canonical debug views 1/2/3 (see DebugModes.glsl): shading normal is
+    // the two-sided normal above, geometric is the raw blade-plane normal,
+    // face is the rasterizer facet from screen-space derivatives.
+    if (ubo.debugMode == DEBUG_MODE_SHADING_NORMAL) {
+        outColor = vec4(normalize(faceN) * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (ubo.debugMode == DEBUG_MODE_GEOMETRIC_NORMAL) {
+        outColor = vec4(normalize(inPlaneNormal) * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (ubo.debugMode == DEBUG_MODE_FACE_NORMAL) {
+        vec3 fn = normalize(cross(dFdy(inWorldPos), dFdx(inWorldPos)));
+        outColor = vec4(fn * 0.5 + 0.5, 1.0);
+        return;
+    }
+
     outColor = vec4(grassShade(albedo, faceN, inLightDirN, inWorldPos, shadowPass), 1.0);
 }

@@ -117,9 +117,10 @@ void main() {
     // runs the identical operations in the identical order.
     float cosT = inCosSinT.x;
     float sinT = inCosSinT.y;
-    vec3 N = normalize(vec3(cosT * N_raw.x - sinT * N_raw.z,
-                            N_raw.y,
-                            sinT * N_raw.x + cosT * N_raw.z));
+    vec3 Ngeom = normalize(vec3(cosT * N_raw.x - sinT * N_raw.z,
+                                N_raw.y,
+                                sinT * N_raw.x + cosT * N_raw.z));
+    vec3 N = Ngeom;
     // Two-sided, like the blade path (which flips by triangle winding):
     // keep the hemisphere facing the viewer so back-facing blades light up
     // instead of collapsing to ambient-only.
@@ -127,6 +128,24 @@ void main() {
     if (dot(N, Vv) < 0.0) N = -N;
     // H8 (perf report 27): uniform light direction already normalized per
     // vertex (flat varying), not per pixel.
+    //
+    // Canonical debug views 1/2/3 (see DebugModes.glsl): shading normal is
+    // the two-sided N above, geometric is the captured normal before the
+    // viewer flip, face is the rasterizer facet of the reconstructed
+    // blade surface.
+    if (ubo.debugMode == DEBUG_MODE_SHADING_NORMAL) {
+        outColor = vec4(normalize(N) * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (ubo.debugMode == DEBUG_MODE_GEOMETRIC_NORMAL) {
+        outColor = vec4(Ngeom * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (ubo.debugMode == DEBUG_MODE_FACE_NORMAL) {
+        vec3 fn = normalize(cross(dFdy(bladePos), dFdx(bladePos)));
+        outColor = vec4(fn * 0.5 + 0.5, 1.0);
+        return;
+    }
     vec3 col = grassShade(albedo, N, inLightDirN, bladePos, false);
 
     outColor = vec4(col, 1.0);
