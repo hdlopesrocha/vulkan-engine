@@ -193,7 +193,7 @@ void BrushSdfRenderer::updateParams(uint32_t frameIndex, const BrushEntry& entry
 }
 
 void BrushSdfRenderer::recordPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
-                                  VkDescriptorSet mainDs) {
+                                  VkDescriptorSet mainDs, VkBuffer mainUboBuffer) {
     if (!app || cmd == VK_NULL_HANDLE) return;
     const uint32_t fi = frameIndex % BRUSH_FRAMES;
     VkImage colorImg = colorImages[fi];
@@ -279,6 +279,51 @@ void BrushSdfRenderer::recordPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments = &colorAtt;
     ri.pDepthAttachment = &depthAtt;
+
+    // HOST->shader visibility for the two host-written UBOs this pass reads:
+    // the main-scene UBO (camera rays) and the brush params (brush transform).
+    // Both are memcpy'd on the recording thread just before this call; without
+    // these barriers the fullscreen raymarch may sample last frame's camera
+    // and the preview lags behind camera motion.
+    {
+        VkBufferMemoryBarrier2 barriers[2]{};
+        uint32_t barrierCount = 0;
+        if (mainUboBuffer != VK_NULL_HANDLE) {
+            barriers[barrierCount].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barriers[barrierCount].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+            barriers[barrierCount].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+            barriers[barrierCount].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barriers[barrierCount].dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+            barriers[barrierCount].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[barrierCount].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[barrierCount].buffer = mainUboBuffer;
+            barriers[barrierCount].offset = 0;
+            barriers[barrierCount].size = VK_WHOLE_SIZE;
+            ++barrierCount;
+        }
+        if (paramsBuffers[fi].buffer != VK_NULL_HANDLE) {
+            barriers[barrierCount].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barriers[barrierCount].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+            barriers[barrierCount].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+            barriers[barrierCount].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barriers[barrierCount].dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+            barriers[barrierCount].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[barrierCount].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[barrierCount].buffer = paramsBuffers[fi].buffer;
+            barriers[barrierCount].offset = 0;
+            barriers[barrierCount].size = VK_WHOLE_SIZE;
+            ++barrierCount;
+        }
+        if (barrierCount > 0) {
+            VkDependencyInfo depInfo{};
+            depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            depInfo.bufferMemoryBarrierCount = barrierCount;
+            depInfo.pBufferMemoryBarriers = barriers;
+            vkCmdPipelineBarrier2(cmd, &depInfo);
+        }
+    }
 
     vkCmdBeginRendering(cmd, &ri);
     VkViewport vp{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};

@@ -57,9 +57,14 @@ public:
 
     // Record the raymarch pass: transitions color/depth to attachments,
     // clears, draws the fullscreen triangle, transitions to
-    // SHADER_READ_ONLY_OPTIMAL for the composite.
+    // SHADER_READ_ONLY_OPTIMAL for the composite. mainUboBuffer is the
+    // main-scene UBO storage for frameIndex (set 0 comes from mainDs): both
+    // it and the brush params UBO are host-written every frame on the
+    // recording thread, so HOST->shader barriers are recorded here — without
+    // them this command buffer may read last frame's camera and the preview
+    // swims while the camera moves.
     void recordPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
-                    VkDescriptorSet mainDs);
+                    VkDescriptorSet mainDs, VkBuffer mainUboBuffer);
 
     void setCmdState(CommandBufferState* state) override { Renderer::setCmdState(state); }
 

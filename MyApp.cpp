@@ -1699,7 +1699,8 @@ public:
                 if (brushCmd != VK_NULL_HANDLE) {
                     CommandBufferState brushState;
                     this->sceneRenderer->setCmdState(&brushState);
-                    this->sceneRenderer->brushRenderer->recordPass(this, brushCmd, frameIdx, getMainDescriptorSet());
+                    this->sceneRenderer->brushRenderer->recordPass(this, brushCmd, frameIdx, getMainDescriptorSet(),
+                        this->sceneRenderer->mainUniformBuffers[frameIdx].buffer);
                     this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
                     submitCommandBufferAsyncToQueue(brushCmd, getBrushQueue(), &tlBrush, {tlCull}, true, {}, {v}, v, {}, true);
                 }
