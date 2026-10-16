@@ -383,7 +383,17 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     // in-CB barriers below cover the copy->bake->vertex chain as before.
     std::lock_guard<std::mutex> lk(consolidationMutex);
     if (consolidationPending) return; // one generation in flight; dirty re-triggers later
-    if (chunkBufferVersion.load(std::memory_order_acquire) == submittedVersion_) return; // nothing new
+    // Capture the version BEFORE building the snapshot and record THAT exact
+    // value as submitted below. Re-loading at the end could observe a publish
+    // that landed after the snapshot was frozen, marking the un-snapshotted
+    // change as "already submitted" — the gate would then skip it until some
+    // unrelated later publish re-bumped the version (tail chunks of a stream
+    // could stay unconsolidated = randomly missing chunks). The pre-snapshot
+    // load is conservative: a racing mutation leaves version !=
+    // submittedVersion_, forcing at worst one redundant next-frame generation
+    // instead of losing the update.
+    const uint64_t versionAtSnapshot = chunkBufferVersion.load(std::memory_order_acquire);
+    if (versionAtSnapshot == submittedVersion_) return; // nothing new
     // Don't submit while the streaming batch copies are still in flight: the
     // snapshot below pins their device buffers, and the batch fence callback
     // (which fills chunkBuffers) may not have run yet, so the map would miss
@@ -436,7 +446,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     if (chunkIdx == 0) {
         // Map emptied between the dirty flag and this submit: nothing to
         // copy; record the (empty) submit so the version gate converges.
-        submittedVersion_ = chunkBufferVersion.load(std::memory_order_acquire);
+        submittedVersion_ = versionAtSnapshot;
         return;
     }
     {
@@ -585,7 +595,9 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         consolidationPending = true;
         // Pair this submit wrote (the then-inactive one); publish swaps to it.
         concatSubmittedUsesAlt = !concatActiveUsesAlt;
-        submittedVersion_ = chunkBufferVersion.load(std::memory_order_acquire);
+        // Record the PRE-snapshot version (see the gate above): a mutation that
+        // landed during recording must be re-submitted next frame, not skipped.
+        submittedVersion_ = versionAtSnapshot;
         consolEpochAtSubmit_ = consolEpoch_;
     }
 }
