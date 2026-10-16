@@ -254,9 +254,11 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
         vegBakeDescSet = bakeSet;
         DescriptorWriter(device)
             .writeBuffer(bakeSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                         concatenatedInstanceBuffer.buffer, 0, VK_WHOLE_SIZE)
+                         concatenatedInstanceBuffer.buffer, 0,
+                         app->getClampedWholeSizeRange(concatenatedInstanceBuffer.buffer))
             .writeBuffer(bakeSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                         vegBakedHeightsBuffer.buffer, 0, VK_WHOLE_SIZE)
+                         vegBakedHeightsBuffer.buffer, 0,
+                         app->getClampedWholeSizeRange(vegBakedHeightsBuffer.buffer))
             .flush();
         bakeModule = VK_NULL_HANDLE;
     }

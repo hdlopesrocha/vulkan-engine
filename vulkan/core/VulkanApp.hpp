@@ -607,6 +607,19 @@ public:
             vkGetPhysicalDeviceProperties(physicalDevice, &props);
             return props.limits.maxStorageBufferRange;
         }
+        // Whole-size storage-descriptor range for `buffer`, spec-clamped:
+        // VUID-vkUpdateDescriptorSets range must be <= maxStorageBufferRange,
+        // so large pools (e.g. the 256 MB merged vegetation instances) cannot
+        // be bound with VK_WHOLE_SIZE. Callers use the returned value where
+        // they previously passed VK_WHOLE_SIZE; on devices whose limit covers
+        // the buffer this returns the full size, so nothing changes there.
+        VkDeviceSize getClampedWholeSizeRange(VkBuffer buffer) const {
+            if (buffer == VK_NULL_HANDLE) return 0;
+            VkMemoryRequirements reqs{};
+            vkGetBufferMemoryRequirements(getDevice(), buffer, &reqs);
+            const VkDeviceSize maxRange = getMaxStorageBufferRange();
+            return (reqs.size < maxRange) ? reqs.size : maxRange;
+        }
         VmaAllocator getVmaAllocator() const { return vma.allocator; }
         VkQueue getGraphicsQueue() const { return graphicsQueue; }
         VkQueue getVegetationQueue() const;
