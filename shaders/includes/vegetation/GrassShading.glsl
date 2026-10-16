@@ -15,6 +15,19 @@ const float kGrassShine    = 24.0;
 // impostors (which have no heightT) evaluate bit-identical values.
 const float kGrassTransl   = 0.25;
 
+// Shortest-arc tilt mapping +Y onto a (unit) surface normal, mirroring
+// tiltToNormal in VegetationCommon.glsl (kept local so this header stays
+// dependency-free). The blade VS tilts normals with it; the impostor path
+// must apply the same tilt to captured (flat-land) normals at runtime.
+vec3 grassTiltToNormal(vec3 v, vec3 n) {
+    vec3 k = vec3(n.z, 0.0, -n.x); // cross(+Y, n)
+    float s = length(k);
+    if (s < 1e-4) return (n.y >= 0.0) ? v : vec3(v.x, -v.y, v.z);
+    k /= s;
+    float c = clamp(n.y, -1.0, 1.0);
+    return v * c + cross(k, v) * s + k * dot(k, v) * (1.0 - c);
+}
+
 // Per-tuft albedo variation. Blades call it with the fragment world pos,
 // impostors with the depth-reconstructed blade pos: same 3 m cells, same
 // single factor applied to root and tip, so both LODs agree exactly.

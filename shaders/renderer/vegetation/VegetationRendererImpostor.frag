@@ -13,6 +13,9 @@ layout(location = VARY_POSWORLD) in vec3 inWorldPos;
 layout(location = VARY_ROTFRAC) flat in vec2 inCosSinT;
 layout(location = VARY_TANGENTWS) flat in vec3 inLightDirN;
 layout(location = VARY_POSLIGHT) flat in vec3 inInstanceOffset;
+// Terrain surface normal (flat): captured normals are flat-land, so the
+// fragment tilts them onto this exactly like the blade VS does.
+layout(location = VARY_PLANE_NORMAL) flat in vec3 inSurfN;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -117,9 +120,10 @@ void main() {
     // runs the identical operations in the identical order.
     float cosT = inCosSinT.x;
     float sinT = inCosSinT.y;
-    vec3 Ngeom = normalize(vec3(cosT * N_raw.x - sinT * N_raw.z,
-                                N_raw.y,
-                                sinT * N_raw.x + cosT * N_raw.z));
+    vec3 Ngeom = grassTiltToNormal(normalize(vec3(cosT * N_raw.x - sinT * N_raw.z,
+                                                       N_raw.y,
+                                                       sinT * N_raw.x + cosT * N_raw.z)),
+                                       normalize(inSurfN));
     vec3 N = Ngeom;
     // Two-sided, like the blade path (which flips by triangle winding):
     // keep the hemisphere facing the viewer so back-facing blades light up

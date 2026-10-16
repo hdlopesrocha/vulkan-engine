@@ -22,6 +22,10 @@ layout(location = VARY_ROTFRAC) flat out vec2 outCosSinT;
 // in the impostor color interface.
 layout(location = VARY_TANGENTWS) flat out vec3 outLightDirN;
 layout(location = VARY_POSLIGHT) flat out vec3 outInstanceOffset;
+// Surface normal for the fragment tilt below (location free in this
+// pipeline). Early-out paths leave it unwritten; their triangles are
+// degenerate (clipped), same as the other varyings.
+layout(location = VARY_PLANE_NORMAL) flat out vec3 outSurfN;
 
 // Canonical scene UBO (set=0 binding=0): the shared struct IS the block
 // layout — no packed/named-view split.
@@ -103,4 +107,8 @@ void main() {
     // M5 (perf report 28): shared placement core (center -> quad -> offset ->
     // finalPos -> UV crop); the prologue above stays twin-specific.
     #include "../../includes/vegetation/ImpostorPlacement.glsl"
+    // Normalized surface normal for the fragment-stage normal tilt. The
+    // captured normals are flat-land; tilting them here matches what the
+    // blade VS bakes into inPlaneNormal via the same tilt.
+    outSurfN = surfN;
 }
