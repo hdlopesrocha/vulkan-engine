@@ -104,16 +104,19 @@ void main() {
         gl_FragDepth = clamp(camClipPos.z / camClipPos.w, 0.0, 1.0);
     }
 
-    // LOD policy: keep the tuft's blade mosaic (colors AND normals) close to
-    // rasterized-blade crispness through the mid range, unlocking the mip
-    // chain only as the tuft shrinks to a few pixels — where blades would
-    // alias into the same shimmer anyway. Without this, hardware LOD is
-    // already ~3 (8x8 average) at the hand-off distance, washing the
-    // saturated blade normals into a flat average while the blades in front
-    // of it stay crisp, so the two representations read as different plants.
+    // LOD policy. Albedo: distance-ramped (the averaged tone matches the
+    // blade canopy tone; it is a color, averaging is correct). Normals:
+    // capped at LOD 1 at ANY distance. Mip-averaging a bidirectional blade
+    // mosaic collapses the +/- normal spray toward the mean (up/slope)
+    // direction, desaturating the far field to a flat olive while the
+    // blades in front of it stay saturated - the exact "impostor normals
+    // are not coloured the same way" report. Near-L0 sampling keeps the
+    // same saturated mosaic the blades show; the shimmer it can trade in is
+    // exactly what rasterized blades do at distance anyway.
     float impostorDist = distance(ubo.viewPosition, bladePos);
     float lodCap = clamp(1.0 + 2.0 * log2(max(impostorDist, 700.0) / 700.0), 1.0, 8.0);
     float lod = min(hwLod, lodCap);
+    float lodN = min(hwLod, 1.0);
 
     vec4 color = textureLod(impostorArray, inTexCoord, lod);
     if (color.a < 0.3) discard;
@@ -134,8 +137,9 @@ void main() {
     // actual plant orientation at runtime (same rotateY convention as vegetation_common.glsl).
     // Like albedo, the normal texture is premultiplied-form: divide out the
     // mipped alpha before decoding (no-op at L0 where alpha is 1). Sampled
-    // at the same capped LOD so normals keep blade-level mosaic detail.
-    vec4 normalTex = textureLod(impostorNormalArray, inTexCoord, lod);
+    // at lodN (capped at 1) so the normal mosaic stays blade-saturated at
+    // every distance.
+    vec4 normalTex = textureLod(impostorNormalArray, inTexCoord, lodN);
     vec3 N_raw = normalize(normalTex.rgb / max(normalTex.a, 1e-3) * 2.0 - 1.0);
     // H8 (perf report 27): cosT/sinT arrive as flat varyings (same values the
     // per-pixel rebuild produced); the rotate/normalize/lighting chain below
