@@ -95,12 +95,22 @@ void VegetationRenderer::destroyCulling() {
         appPtr->destroyBuffer(concatenatedInstanceBuffer);
         concatenatedInstanceBuffer = {};
     }
+    if (concatenatedInstanceBufferAlt.buffer != VK_NULL_HANDLE) {
+        appPtr->destroyBuffer(concatenatedInstanceBufferAlt);
+        concatenatedInstanceBufferAlt = {};
+    }
     // Baked heights aux (perf report 22 C2/H4): same lifetime as the
-    // concatenated instances it parallels.
+    // concatenated instances they parallel (both pairs).
     if (vegBakedHeightsBuffer.buffer != VK_NULL_HANDLE) {
         appPtr->destroyBuffer(vegBakedHeightsBuffer);
         vegBakedHeightsBuffer = {};
     }
+    if (vegBakedHeightsBufferAlt.buffer != VK_NULL_HANDLE) {
+        appPtr->destroyBuffer(vegBakedHeightsBufferAlt);
+        vegBakedHeightsBufferAlt = {};
+    }
+    concatActiveUsesAlt = false;
+    concatSubmittedUsesAlt = false;
     // Staging pool (perf report 22 M10): destroy every pooled buffer. Any
     // late fence callback is guarded by an index/size check, so clearing the
     // vector here cannot cause an out-of-bounds release.
@@ -187,8 +197,21 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
     if (vegBakedHeightsBuffer.buffer == VK_NULL_HANDLE)
         throw std::runtime_error("VegetationRenderer: failed to create baked heights buffer");
 
-    // Bake compute pipeline + descriptor set, written once here (both buffer
-    // handles are fixed for the session, so the set never needs refresh).
+    // Second pair (flicker fix): consolidation copies into the inactive pair
+    // while the draws read the active one; the pair swaps on the fence-
+    // complete publish (pollConsolidation). Same sizes/usages as pair A.
+    concatenatedInstanceBufferAlt = app->createBuffer(concatSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vegBakedHeightsBufferAlt = app->createBuffer(bakedSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (concatenatedInstanceBufferAlt.buffer == VK_NULL_HANDLE || vegBakedHeightsBufferAlt.buffer == VK_NULL_HANDLE)
+        throw std::runtime_error("VegetationRenderer: failed to create double-buffered instance pair");
+
+    // Bake compute pipeline + descriptor sets, written once here (all four
+    // buffer handles are fixed for the session, so the sets never need
+    // refresh; the consolidation binds the set matching its copy targets).
     {
         VkShaderModule bakeModule = app->getOrCreateShaderModule("shaders/renderer/vegetation/VegetationRendererBake.comp.spv");
         VkDescriptorSetLayoutBinding bindings[2] = {};
@@ -233,32 +256,45 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
             throw std::runtime_error("VegetationRenderer: failed to create bake pipeline");
         app->resources.addPipeline(vegBakePipeline, "VegetationRenderer: bakePipeline");
 
-        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 };
+        VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 };
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = 1;
         poolInfo.pPoolSizes = &poolSize;
-        poolInfo.maxSets = 1;
+        poolInfo.maxSets = 2; // one per double-buffered pair
         if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &vegBakeDescPool) != VK_SUCCESS)
             throw std::runtime_error("VegetationRenderer: failed to create bake descriptor pool");
         app->resources.addDescriptorPool(vegBakeDescPool, "VegetationRenderer: bakeDescPool");
         VkDescriptorSetAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocInfo.descriptorPool = vegBakeDescPool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &vegBakeDescSetLayout;
-        VkDescriptorSet bakeSet = VK_NULL_HANDLE;
-        if (vkAllocateDescriptorSets(device, &allocInfo, &bakeSet) != VK_SUCCESS)
-            throw std::runtime_error("VegetationRenderer: failed to allocate bake descriptor set");
-        app->resources.addDescriptorSet(bakeSet, "VegetationRenderer: bakeDescSet");
-        vegBakeDescSet = bakeSet;
+        allocInfo.descriptorSetCount = 2;
+        VkDescriptorSetLayout bakeLayouts[2] = { vegBakeDescSetLayout, vegBakeDescSetLayout };
+        allocInfo.pSetLayouts = bakeLayouts;
+        VkDescriptorSet bakeSets[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+        if (vkAllocateDescriptorSets(device, &allocInfo, bakeSets) != VK_SUCCESS)
+            throw std::runtime_error("VegetationRenderer: failed to allocate bake descriptor sets");
+        app->resources.addDescriptorSet(bakeSets[0], "VegetationRenderer: bakeDescSet");
+        app->resources.addDescriptorSet(bakeSets[1], "VegetationRenderer: bakeDescSetAlt");
+        vegBakeDescSet = bakeSets[0];
+        vegBakeDescSetAlt = bakeSets[1];
+        // Set 0 -> pair A (concat A + heights A); set 1 -> pair B. The
+        // consolidation dispatch binds the set matching its copy targets
+        // (the inactive pair), so each generation bakes its own heights
+        // alongside its own instances.
         DescriptorWriter(device)
-            .writeBuffer(bakeSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .writeBuffer(bakeSets[0], 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                          concatenatedInstanceBuffer.buffer, 0,
                          app->getClampedWholeSizeRange(concatenatedInstanceBuffer.buffer))
-            .writeBuffer(bakeSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .writeBuffer(bakeSets[0], 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                          vegBakedHeightsBuffer.buffer, 0,
                          app->getClampedWholeSizeRange(vegBakedHeightsBuffer.buffer))
+            .writeBuffer(bakeSets[1], 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         concatenatedInstanceBufferAlt.buffer, 0,
+                         app->getClampedWholeSizeRange(concatenatedInstanceBufferAlt.buffer))
+            .writeBuffer(bakeSets[1], 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                         vegBakedHeightsBufferAlt.buffer, 0,
+                         app->getClampedWholeSizeRange(vegBakedHeightsBufferAlt.buffer))
             .flush();
         bakeModule = VK_NULL_HANDLE;
     }
@@ -329,7 +365,7 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
     (void)device;
     std::cerr << "[veg] preallocated: chunks=" << maxChunks
               << " instances=" << vegPreallocatedInstances
-              << " (concat " << (concatSize >> 20) << " MB, zero runtime realloc)\n";
+              << " (concat " << (concatSize >> 20) << " MB x2 pairs, zero runtime realloc)\n";
 }
 
 void VegetationRenderer::consolidateChunks(VulkanApp* app) {
@@ -428,8 +464,24 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
     // Regions come from the submit snapshot (frozen above), never the live
     // map, so the bytes always match the info table built from the same
     // snapshot in writeVegChunkInfo.
-    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE) {
-        VkFence consolFence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
+    if (inactiveConcatenatedBuffer().buffer != VK_NULL_HANDLE) {
+        // Manual record+submit (instead of runSingleTimeCommandsAsync) so the
+        // copy can carry a TIMELINE WAIT: it overwrites the INACTIVE pair,
+        // whose last readers were the previous era's vegetation draws on the
+        // vegetation queue (and transitively the shadow cascade draws). The
+        // frame thread pushes the latest signaled vegetation timeline value
+        // (setConsolidationWait); waiting it orders this copy strictly after
+        // those readers, so no draw ever sees partially overwritten bytes.
+        VkCommandBuffer consolCmd = app->allocatePrimaryCommandBuffer();
+        VkCommandBufferBeginInfo cbi{};
+        cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (consolCmd == VK_NULL_HANDLE || vkBeginCommandBuffer(consolCmd, &cbi) != VK_SUCCESS) {
+            // Rare allocation hiccup: skip this generation; the dirty flag
+            // keeps it scheduled and the next frame retries.
+            return;
+        }
+        auto recordConsolidation = [&](VkCommandBuffer cmd) {
             // WRITE-AFTER-READ/WRITE guard: the concatenated instance buffer is
             // read as vertex attributes by the previous frame's vegetation
             // draws, and its per-chunk sources were written by earlier transfer
@@ -455,7 +507,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
                 region.srcOffset = 0;
                 region.dstOffset = e.dstOffset;
                 region.size = static_cast<VkDeviceSize>(e.count) * kInstanceStride;
-                vkCmdCopyBuffer(cmd, e.buffer, concatenatedInstanceBuffer.buffer, 1, &region);
+                vkCmdCopyBuffer(cmd, e.buffer, inactiveConcatenatedBuffer().buffer, 1, &region);
                 bakedTotal += e.count;
             }
 
@@ -467,7 +519,7 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             // the concatenated instances (baked together, never modified
             // independently).
             if (vegBakePipeline != VK_NULL_HANDLE && vegBakeDescSet != VK_NULL_HANDLE
-                && vegBakedHeightsBuffer.buffer != VK_NULL_HANDLE && bakedTotal > 0) {
+                && inactiveBakedHeightsBuffer().buffer != VK_NULL_HANDLE && bakedTotal > 0) {
                 VkMemoryBarrier2 bakeBar{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
                 bakeBar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
                 bakeBar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -480,7 +532,9 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
 
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegBakePipeline);
                 {
-                    VkDescriptorSet bakeSet = vegBakeDescSet;
+                    // Bind the set whose pair matches this submit's copy targets (the
+                    // INACTIVE pair): active A -> set B (Alt), active B -> set A.
+                    VkDescriptorSet bakeSet = concatActiveUsesAlt ? vegBakeDescSet : vegBakeDescSetAlt;
                     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                             vegBakePipelineLayout, 0, 1, &bakeSet, 0, nullptr);
                 }
@@ -499,7 +553,22 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
                 bakeOutDep.pMemoryBarriers = &bakeOutBar;
                 vkCmdPipelineBarrier2(cmd, &bakeOutDep);
             }
-        });
+        }; // end recordConsolidation
+        recordConsolidation(consolCmd);
+
+        // Submit on the graphics queue (submission order to vkEndCommandBuffer
+        // is handled by the submit helper), carrying the vegetation-timeline
+        // wait (see setConsolidationWait). registerSignal=false: no timeline
+        // registration, the returned fence IS this generation's completion.
+        std::vector<VkSemaphore> consolWaitSems;
+        std::vector<uint64_t> consolWaitValues;
+        if (consolidationWaitSemaphore != VK_NULL_HANDLE) {
+            consolWaitSems.push_back(consolidationWaitSemaphore);
+            consolWaitValues.push_back(consolidationWaitValue);
+        }
+        VkFence consolFence = app->submitCommandBufferAsyncToQueue(
+            consolCmd, app->getGraphicsQueue(), nullptr,
+            consolWaitSems, false, {}, consolWaitValues, 0, {}, false);
         // Generation submitted: record the fence + version and return. Veg
         // draws must not reference this prefix until pollConsolidation
         // observes fence completion (same-queue FIFO + the in-CB barriers
@@ -514,6 +583,8 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
         // stalled pump can neither wedge nor duplicate it.
         consolidationFence = consolFence;
         consolidationPending = true;
+        // Pair this submit wrote (the then-inactive one); publish swaps to it.
+        concatSubmittedUsesAlt = !concatActiveUsesAlt;
         submittedVersion_ = chunkBufferVersion.load(std::memory_order_acquire);
         consolEpochAtSubmit_ = consolEpoch_;
     }
@@ -543,6 +614,11 @@ bool VegetationRenderer::pollConsolidation() {
     }
     consolidationPending = false;
     consolidationFence = VK_NULL_HANDLE;
+    // Flicker fix: make the pair this generation wrote the ACTIVE one from
+    // now on. Draws recorded after this point (same frame's veg task, which
+    // waits tlCull = after prepareCull/publish) bind the new pair; the
+    // now-inactive pair is free for the next consolidation copy to overwrite.
+    concatActiveUsesAlt = concatSubmittedUsesAlt;
     completedSnapshot_ = submittedSnapshot_;
     vegNumChunks = static_cast<uint32_t>(completedSnapshot_.size());
     vegChunkInfoDirty = true;
@@ -690,7 +766,14 @@ void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
     // frame the solid cascade + shadow draws read back (set by the main-view cull).
     vegCullCurrentSlot = solidIR->getCurrentCullFrame();
 
-    pollConsolidation(); // publish any fence-complete generation (idempotent)
+    // NO publish/swap here (flicker fix). The shadow path runs on its own
+    // worker AFTER the main prepareCull in the same frame (tlCull chain) and
+    // both run under the same vegetationEnabled gate, so the main poll has
+    // already published and swapped before the main cull consumed the table.
+    // Publishing here could swap the active instance pair BETWEEN the main
+    // cull (old-offset compact commands) and the main draws, making them read
+    // the new pair with stale offsets for one frame. Consolidation SUBMITS
+    // are still allowed: they only fill the inactive pair.
     if (vegConsolidationDirty && !chunkBuffers.empty()) {
         consolidateChunks(appPtr);
     }
@@ -823,8 +906,8 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
                        0, sizeof(WindPushConstants), &pc);
 
     vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-        VkBuffer vbs[3] = { billboardVBO.vertexBuffer.buffer, concatenatedInstanceBuffer.buffer, vegBakedHeightsBuffer.buffer };
+    if (activeConcatenatedBuffer().buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+        VkBuffer vbs[3] = { billboardVBO.vertexBuffer.buffer, activeConcatenatedBuffer().buffer, activeBakedHeightsBuffer().buffer };
         VkDeviceSize offsets[3] = { 0, 0, 0 };
         vkCmdBindVertexBuffers(commandBuffer, 0, 3, vbs, offsets);
         {
@@ -860,9 +943,9 @@ void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& comm
         vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
         VkBuffer impVbs[3] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE, VK_NULL_HANDLE };
         VkDeviceSize impOffsets[3] = { 0, 0, 0 };
-        if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-            impVbs[1] = concatenatedInstanceBuffer.buffer;
-            impVbs[2] = vegBakedHeightsBuffer.buffer;
+        if (activeConcatenatedBuffer().buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
+            impVbs[1] = activeConcatenatedBuffer().buffer;
+            impVbs[2] = activeBakedHeightsBuffer().buffer;
             vkCmdBindVertexBuffers(commandBuffer, 0, 3, impVbs, impOffsets);
 
             // Impostor draw commands (indexCount=6) are written by the GPU
@@ -1946,10 +2029,10 @@ void VegetationRenderer::issueVegetationDraws(VkCommandBuffer cmd, VkPipelineLay
     // are consolidated (vegNumChunks > 0) — including while newer work
     // streams. Gating on dirt hid all billboards for the entire streaming
     // phase (the reported no-vegetation bug).
-    if (solidIR && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+    if (solidIR && activeConcatenatedBuffer().buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
         solidIR->getVegBbCompact(f) != VK_NULL_HANDLE && solidIR->getVegBbCount(f) != VK_NULL_HANDLE) {
-        vbs[1] = concatenatedInstanceBuffer.buffer;
-        vbs[2] = vegBakedHeightsBuffer.buffer;
+        vbs[1] = activeConcatenatedBuffer().buffer;
+        vbs[2] = activeBakedHeightsBuffer().buffer;
         vkCmdBindVertexBuffers(cmd, 0, 3, vbs, offsets);
         {
             vkCmdDrawIndexedIndirectCount(cmd, solidIR->getVegBbCompact(f), 0,
@@ -1967,10 +2050,10 @@ void VegetationRenderer::issueImpostorDraws(VkCommandBuffer cmd, VkPipelineLayou
     uint32_t f = vegFrame();
     // No dirty gate (see issueVegetationDraws above): the impostor compact
     // stream is valid whenever chunks are consolidated.
-    if (solidIR && concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
+    if (solidIR && activeConcatenatedBuffer().buffer != VK_NULL_HANDLE && vegNumChunks > 0 &&
         solidIR->getVegImpCompact(f) != VK_NULL_HANDLE && solidIR->getVegImpCount(f) != VK_NULL_HANDLE) {
-        vbs[1] = concatenatedInstanceBuffer.buffer;
-        vbs[2] = vegBakedHeightsBuffer.buffer;
+        vbs[1] = activeConcatenatedBuffer().buffer;
+        vbs[2] = activeBakedHeightsBuffer().buffer;
         vkCmdBindVertexBuffers(cmd, 0, 3, vbs, offsets);
         // Indirect draw consuming the impostor stream compacted by the merged
         // GPU vegetation cull (solid IndirectRenderer's IndirectRenderer.comp dispatch).

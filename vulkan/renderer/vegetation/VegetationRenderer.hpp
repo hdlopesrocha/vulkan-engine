@@ -225,6 +225,19 @@ public:
     // Set to 0 (default) to disable impostor rendering entirely.
     void setImpostorDistance(float dist) { impostorDistance = dist; }
 
+    // Cross-queue guard for the consolidation copy (flicker fix): the pair it
+    // overwrites was last read by the previous era's vegetation draws on the
+    // vegetation queue (and, transitively through tlShadow, the shadow
+    // cascade draws on the cube queues — the veg task waits tlShadow every
+    // frame before signaling its own timeline). The frame thread pushes the
+    // vegetation timeline semaphore + latest signaled value each frame; the
+    // consolidation submit waits it so the overwrite never races a reader.
+    // VK_NULL_HANDLE (pre-startup) skips the wait.
+    void setConsolidationWait(VkSemaphore sem, uint64_t value) {
+        consolidationWaitSemaphore = sem;
+        consolidationWaitValue = value;
+    }
+
     // Build the concatenated instance buffer and per-chunk metadata for GPU
     // frustum culling. Must be called once after all chunks are generated.
     // Uses a temporary command buffer (synchronous, one-time cost).
@@ -429,7 +442,26 @@ private:
     void*                 windFieldMapped      = nullptr;
 
     // ── CPU frustum culling (indirection via concatenated instance buffer) ────
-    Buffer concatenatedInstanceBuffer;  // all instances concatenated (kInstanceStride per element)
+    // Double-buffered (flicker fix): consolidation copies into the INACTIVE
+    // pair while draws read the ACTIVE pair (selected by the last fence-
+    // complete generation in pollConsolidation). A single buffer let the
+    // graphics-queue copy overwrite the bytes the vegetation-queue draws were
+    // reading — and since firstInstance offsets shift between generations
+    // during streaming, every consolidation produced a frame of wrong
+    // instances (the reported chunk-loading flicker).
+    Buffer concatenatedInstanceBuffer;     // pair A (concat + heights + bake set)
+    Buffer vegBakedHeightsBuffer;
+    Buffer concatenatedInstanceBufferAlt;  // pair B
+    Buffer vegBakedHeightsBufferAlt;
+    bool concatActiveUsesAlt = false;      // which pair the draws must bind
+    bool concatSubmittedUsesAlt = false;   // pair the in-flight submit wrote
+    // See setConsolidationWait (cross-queue guard for the consolidation copy).
+    VkSemaphore consolidationWaitSemaphore = VK_NULL_HANDLE;
+    uint64_t consolidationWaitValue = 0;
+    Buffer& activeConcatenatedBuffer() { return concatActiveUsesAlt ? concatenatedInstanceBufferAlt : concatenatedInstanceBuffer; }
+    Buffer& activeBakedHeightsBuffer() { return concatActiveUsesAlt ? vegBakedHeightsBufferAlt : vegBakedHeightsBuffer; }
+    Buffer& inactiveConcatenatedBuffer() { return concatActiveUsesAlt ? concatenatedInstanceBuffer : concatenatedInstanceBufferAlt; }
+    Buffer& inactiveBakedHeightsBuffer() { return concatActiveUsesAlt ? vegBakedHeightsBuffer : vegBakedHeightsBufferAlt; }
     // Triple-buffered culling resources to prevent CPU/GPU race conditions
     // (same pattern as IndirectRenderer::MAX_CULL_FRAMES). All DEVICE_LOCAL
     // cull outputs (GPU-only): written by the merged cull dispatch, consumed
@@ -487,14 +519,17 @@ private:
     // concatenated instance slot, written by the bake dispatch during
     // consolidateChunks, read as an instance-rate vertex attribute
     // (binding 2, ATTR_VEG_AUX) by every vegetation VS. Same firstInstance
-    // indexing as concatenatedInstanceBuffer; the two stay in lockstep
-    // always (baked together, never independently modified).
-    Buffer vegBakedHeightsBuffer;
+    // indexing as the concatenated instance pair it parallels (double-
+    // buffered together; the alt twin lives with the alt instance buffer).
     TrackedHandle<VkPipeline> vegBakePipeline;
     TrackedHandle<VkPipelineLayout> vegBakePipelineLayout;
     TrackedHandle<VkDescriptorSetLayout> vegBakeDescSetLayout;
     TrackedHandle<VkDescriptorPool> vegBakeDescPool;
+    // One set per buffer pair (SAME layout): the bake dispatch must target the
+    // INACTIVE pair, so each consolidation binds the set matching its copy
+    // targets.
     TrackedHandle<VkDescriptorSet> vegBakeDescSet;
+    TrackedHandle<VkDescriptorSet> vegBakeDescSetAlt;
     uint32_t vegCullFrameIndex = 0;        // auto-cycling frame index for triple buffering
     uint32_t vegCullCurrentSlot = 0;       // slot selected for current frame's cull + draws
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata

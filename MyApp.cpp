@@ -1575,6 +1575,15 @@ public:
         // build waits on it so it cannot overwrite the TLAS/metas while a
         // previous frame's water pass (different queue) is still reading them.
         static uint64_t lastWaterSignal = 0;
+        // Last frame value signaled on tlVeg (0 = none yet). The vegetation
+        // consolidation copy waits on it so its overwrite of the inactive
+        // instance pair never races the previous era's vegetation draws
+        // (vegetation queue) or the shadow cascade draws (cube queues,
+        // transitively covered because the veg task waits tlShadow first).
+        // Flicker fix: without this wait the copy overwrote instance bytes
+        // under in-flight draws and every streaming consolidation flashed
+        // wrong instances for a frame.
+        static uint64_t lastVegSignal = 0;
         static bool tlInit = false;
         if (!tlInit) {
             tlCull      = createTimelineSemaphore();
@@ -1595,6 +1604,11 @@ public:
 
         // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
         if (sceneRenderer) {
+            // Hand the vegetation renderer the cross-queue wait for its
+            // consolidation copy BEFORE the cull task may submit one
+            // (flicker fix: see lastVegSignal above).
+            if (sceneRenderer->vegetationRenderer)
+                sceneRenderer->vegetationRenderer->setConsolidationWait(tlVeg, lastVegSignal);
             asyncCullFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v, grassImpostorsEnabled]() {
                 MyApp* app = this;
                 VkCommandBuffer cullCmd = app->beginAsyncTask("cull");
@@ -2275,6 +2289,7 @@ public:
                 // cull timeline directly (same frame value).
                 app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg,
                     {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
+                lastVegSignal = v; // valid consolidation wait target (flicker fix)
                     return;
                 }
                 // H7 + M12 (perf report 27): no worker-side skip here. The
@@ -2430,6 +2445,10 @@ public:
                 // same queue family no ownership transfer is required.
                 app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg,
                     {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
+                // Publish the value the consolidation copy must wait on
+                // (flicker fix). Worker-thread write; the frame thread reads
+                // it only after joining this future.
+                lastVegSignal = v;
             });
             } // if (vegRun): skipped frames enqueue nothing (H7, report 27)
         }
