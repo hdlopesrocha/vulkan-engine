@@ -106,15 +106,19 @@ void main() {
     // its counterpart. No dithered fade - the old cross-fade thinned the
     // grass to sparse dots instead of swapping to the impostor.
 
-    // Captured albedo has no per-tuft variation baked in; apply the shared
-    // formula at the reconstructed pos so it matches the blade path exactly.
-    vec3 albedo = color.rgb * (1.0 + grassVariation(bladePos));
+    // Captured albedo is premultiplied-form (opaque texels alpha 1,
+    // background 0): divide the mipped alpha back out (no-op at L0), then
+    // apply the shared variation formula so it matches the blade path.
+    vec3 albedo = (color.rgb / max(color.a, 1e-3)) * (1.0 + grassVariation(bladePos));
 
     // Decode baked world-space normal from the normal capture array.
     // The capture was done for a canonical (theta=0) plant orientation, so we must
     // rotate the decoded normal by the per-instance Y-axis rotation to match the
     // actual plant orientation at runtime (same rotateY convention as vegetation_common.glsl).
-    vec3 N_raw = normalize(texture(impostorNormalArray, inTexCoord).rgb * 2.0 - 1.0);
+    // Like albedo, the normal texture is premultiplied-form: divide out the
+    // mipped alpha before decoding (no-op at L0 where alpha is 1).
+    vec4 normalTex = texture(impostorNormalArray, inTexCoord);
+    vec3 N_raw = normalize(normalTex.rgb / max(normalTex.a, 1e-3) * 2.0 - 1.0);
     // H8 (perf report 27): cosT/sinT arrive as flat varyings (same values the
     // per-pixel rebuild produced); the rotate/normalize/lighting chain below
     // runs the identical operations in the identical order.

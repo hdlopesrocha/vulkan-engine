@@ -197,6 +197,91 @@ void ImpostorCapture::writeCaptureCameraUbos(float billboardScale, uint32_t laye
     std::memcpy(captureInvVPMapped, captureInvVP.data(), TOTAL_LAYERS * sizeof(glm::mat4));
 }
 
+// Single-range image barrier for the mipmanaged capture arrays.
+// recordTransitionImageLayoutLayer cannot express per-level transitions,
+// and its per-(image,layer) tracking cannot represent per-level states, so
+// every transition of captureImage/captureNormalImage is recorded here.
+static void captureImageBarrier(VkCommandBuffer cb, VkImage image,
+                                VkImageLayout oldLayout, VkImageLayout newLayout,
+                                VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                                VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
+                                uint32_t baseMip, uint32_t levelCount,
+                                uint32_t baseLayer, uint32_t layerCount) {
+    VkImageMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b.oldLayout = oldLayout;
+    b.newLayout = newLayout;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, baseMip, levelCount, baseLayer, layerCount };
+    b.srcStageMask = srcStage;
+    b.srcAccessMask = srcAccess;
+    b.dstStageMask = dstStage;
+    b.dstAccessMask = dstAccess;
+    VkDependencyInfo dep{};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cb, &dep);
+}
+
+void ImpostorCapture::generateMipmaps(VkCommandBuffer cb, VkImage image, VkFormat format,
+                                      uint32_t layerBase, uint32_t layerCount) {
+    if (cb == VK_NULL_HANDLE || image == VK_NULL_HANDLE || layerCount == 0) return;
+    (void)format; // both mipmapped arrays are COLOR_BIT R8G8B8A8.
+    // L0 rendered range: attachment writes -> transfer reads.
+    captureImageBarrier(cb, image,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+        0, 1, layerBase, layerCount);
+    uint32_t w = TEX_SIZE, h = TEX_SIZE;
+    for (uint32_t l = 1; l < kCaptureMips; ++l) {
+        const uint32_t pw = w, ph = h;
+        w = std::max(1u, w >> 1); h = std::max(1u, h >> 1);
+        // Dest level: always transitioned from UNDEFINED (legal whatever the
+        // actual layout is) because the blit below overwrites every texel of
+        // the range — no prior content needs preserving. This keeps mip
+        // generation stateless across image recreations and recaptures.
+        captureImageBarrier(cb, image,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VkAccessFlags2(0),
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            l, 1, layerBase, layerCount);
+        VkImageBlit blit{};
+        blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blit.srcSubresource.mipLevel = l - 1;
+        blit.srcSubresource.baseArrayLayer = layerBase;
+        blit.srcSubresource.layerCount = layerCount;
+        blit.srcOffsets[0] = { 0, 0, 0 };
+        blit.srcOffsets[1] = { static_cast<int32_t>(pw), static_cast<int32_t>(ph), 1 };
+        blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blit.dstSubresource.mipLevel = l;
+        blit.dstSubresource.baseArrayLayer = layerBase;
+        blit.dstSubresource.layerCount = layerCount;
+        blit.dstOffsets[0] = { 0, 0, 0 };
+        blit.dstOffsets[1] = { static_cast<int32_t>(w), static_cast<int32_t>(h), 1 };
+        vkCmdBlitImage(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &blit, VK_FILTER_LINEAR);
+        // Newly written level becomes the source for the next iteration.
+        captureImageBarrier(cb, image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            l, 1, layerBase, layerCount);
+    }
+    // Whole touched range (all levels) readable for sampling.
+    captureImageBarrier(cb, image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        0, kCaptureMips, layerBase, layerCount);
+}
+
 void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
                                          uint32_t layerBase, uint32_t viewCount,
                                          uint32_t firstInstance, const CapturePC& pc) {
@@ -207,18 +292,23 @@ void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
         return;
     }
 
-    // H5 (perf report 27): batched attachment transitions. Every layer is
-    // CLEARed on load, so the three arrays stay in COLOR_ATTACHMENT_OPTIMAL
-    // across all views of a capture: one batched UNDEFINED → ATTACHMENT
-    // transition per array up front (discards prior bytes, correct for both
-    // first capture and re-capture) and one batched ATTACHMENT →
-    // SHADER_READ_ONLY transition per array at the end. Same per-layer
-    // old/new layouts as the old per-view transitions, in a handful of
-    // multi-layer calls instead of 6 per view.
-    app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
-        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerBase, viewCount);
-    app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
-        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerBase, viewCount);
+    // Batched attachment transitions. Every rendered layer is CLEARed on
+    // load, so UNDEFINED is always a valid old layout here. The albedo and
+    // normal arrays are transitioned explicitly (never via
+    // recordTransitionImageLayoutLayer): the app layout tracker cannot
+    // represent the per-level states used by generateMipmaps below, and a
+    // tracked call afterwards would emit a barrier from a wrong old layout.
+    // (The depth array keeps its tracked helper calls; it stays single-level.)
+    captureImageBarrier(cb, captureImage,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        0, 1, layerBase, viewCount);
+    captureImageBarrier(cb, captureNormalImage,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        0, 1, layerBase, viewCount);
     app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, layerBase, viewCount);
     // H5 (perf report 27): the transient depth image has storeOp DONT_CARE,
@@ -309,12 +399,11 @@ void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
         vkCmdEndRendering(cb);
     }
 
-    // H5 (perf report 27): one batched out-transition per array at the end
-    // of the capture range (same per-layer old/new layouts as before).
-    app->recordTransitionImageLayoutLayer(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM,
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerBase, viewCount);
-    app->recordTransitionImageLayoutLayer(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM,
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerBase, viewCount);
+    // Mip chains + SHADER_READ_ONLY for albedo/normal (generateMipmaps ends
+    // with the whole touched range readable). The depth array keeps its
+    // tracked out-transition (single level, unchanged).
+    generateMipmaps(cb, captureImage, VK_FORMAT_R8G8B8A8_UNORM, layerBase, viewCount);
+    generateMipmaps(cb, captureNormalImage, VK_FORMAT_R8G8B8A8_UNORM, layerBase, viewCount);
     app->recordTransitionImageLayoutLayer(cb, captureDepthImage, VK_FORMAT_R32_SFLOAT,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layerBase, viewCount);
 }
@@ -528,30 +617,33 @@ void ImpostorCapture::createCaptureImages(VulkanApp* app) {
     VkDevice device = app->getDevice();
     const VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM;
 
-    // Array image (all views).
+    // Array image (all views). Mipmapped: albedo/normal minification must
+    // sample lod-appropriate footprints (see kCaptureMips).
     {
         VkImageCreateInfo imgInfo{};
         imgInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imgInfo.imageType     = VK_IMAGE_TYPE_2D;
         imgInfo.format        = fmt;
         imgInfo.extent        = { TEX_SIZE, TEX_SIZE, 1 };
-        imgInfo.mipLevels     = 1;
+        imgInfo.mipLevels     = kCaptureMips;
         imgInfo.arrayLayers   = TOTAL_LAYERS;
         imgInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
         imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
-        imgInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imgInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                              | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         app->createImageWithVma(imgInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, captureImage, captureAllocation, captureMemory, "ImpostorCapture: captureImage");
     }
 
-    // All-layers view (VK_IMAGE_VIEW_TYPE_2D_ARRAY).
+    // All-layers view (VK_IMAGE_VIEW_TYPE_2D_ARRAY), covering the full mip
+    // chain so trilinear sampling can reach every level.
     {
         VkImageViewCreateInfo v{};
         v.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         v.image            = captureImage;
         v.viewType         = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         v.format           = fmt;
-        v.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, TOTAL_LAYERS };
+        v.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, kCaptureMips, 0, TOTAL_LAYERS };
         if (vkCreateImageView(device, &v, nullptr, &captureArrayView) != VK_SUCCESS)
             throw std::runtime_error("ImpostorCapture: captureArrayView failed");
         app->resources.addImageView(captureArrayView, "ImpostorCapture: captureArrayView");
@@ -577,23 +669,24 @@ void ImpostorCapture::createCaptureImages(VulkanApp* app) {
         imgInfo.imageType     = VK_IMAGE_TYPE_2D;
         imgInfo.format        = fmt;
         imgInfo.extent        = { TEX_SIZE, TEX_SIZE, 1 };
-        imgInfo.mipLevels     = 1;
+        imgInfo.mipLevels     = kCaptureMips;
         imgInfo.arrayLayers   = TOTAL_LAYERS;
         imgInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
         imgInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
-        imgInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imgInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                              | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         app->createImageWithVma(imgInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, captureNormalImage, captureNormalAllocation, captureNormalMemory, "ImpostorCapture: captureNormalImage");
     }
 
-    // All-layers normal view.
+    // All-layers normal view (full mip chain, like albedo).
     {
         VkImageViewCreateInfo v{};
         v.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         v.image            = captureNormalImage;
         v.viewType         = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         v.format           = fmt;
-        v.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, TOTAL_LAYERS };
+        v.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, kCaptureMips, 0, TOTAL_LAYERS };
         if (vkCreateImageView(device, &v, nullptr, &captureNormalArrayView) != VK_SUCCESS)
             throw std::runtime_error("ImpostorCapture: captureNormalArrayView failed");
         app->resources.addImageView(captureNormalArrayView, "ImpostorCapture: captureNormalArrayView");
@@ -929,7 +1022,23 @@ void ImpostorCapture::createCaptureInvVPBuffer(VulkanApp* app) {
 }
 
 void ImpostorCapture::createSceneSampler(VulkanApp* app) {
-    sceneSampler = app->createSamplerLinearClamp("ImpostorCapture: sceneSampler");
+    // Trilinear scene sampler: minified impostor quads must reach the mip
+    // chain (default maxLod 0 would pin everything to L0). Sole consumer is
+    // vegetation impostor sampling (ImGui thumbs use imguiSampler).
+    VkSamplerCreateInfo si{};
+    si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    si.magFilter    = VK_FILTER_LINEAR;
+    si.minFilter    = VK_FILTER_LINEAR;
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.anisotropyEnable = VK_FALSE;
+    si.compareEnable = VK_FALSE;
+    si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    si.mipLodBias   = 0.0f;
+    si.minLod       = 0.0f;
+    si.maxLod       = VK_LOD_CLAMP_NONE;
+    sceneSampler = app->createSampler(si, "ImpostorCapture: sceneSampler");
 }
 
 void ImpostorCapture::allocateDescSets(VulkanApp* app) {

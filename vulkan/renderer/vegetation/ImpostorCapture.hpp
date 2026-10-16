@@ -1,6 +1,7 @@
 #pragma once
 #include "../Renderer.hpp"
 #include <vulkan/vulkan.h>
+#include <cstdint>
 #include "../../core/VmaContext.hpp"
 #include "../../core/TrackedHandle.hpp"
 #include "../../resources/Buffer.hpp"
@@ -22,6 +23,15 @@ public:
     static constexpr uint32_t TOTAL_LAYERS       = NUM_BILLBOARD_TYPES * NUM_VIEWS; // 60
     static constexpr uint32_t TEX_SIZE           = 256;
     static constexpr uint32_t NUM_INSTANCES      = 1; // single centred instance
+    // Mip chain for the albedo/normal arrays (linear blits): minified
+    // impostor quads must sample lod-appropriate footprints instead of a
+    // 2x2 tent over hundreds of texels, which washed blade texels toward
+    // the cleared background (blue-shifted normals, discarded alpha).
+    // Captured L0 content is already premultiplied-form (opaque texels carry
+    // alpha 1, background 0), so plain linear averaging stays correct and
+    // the runtime divides albedo/normal by the mipped alpha. The depth
+    // array stays single-level and is always fetched exactly (texelFetch).
+    static constexpr uint32_t kCaptureMips = 9; // 256 -> 1
 
     // Allocate all GPU resources (call once after VulkanApp is ready).
     // The vegetation renderer supplies the shared set=2 wind params descriptor
@@ -211,6 +221,14 @@ private:
     void writeCaptureCameraUbos(float billboardScale, uint32_t layerBase);
     void recordCaptureViews(VkCommandBuffer cb, VulkanApp* app, uint32_t layerBase,
                             uint32_t viewCount, uint32_t firstInstance, const CapturePC& pc);
+    // Generate the albedo/normal mip chains for [layerBase, +viewCount) with
+    // linear blits, then transition the whole touched range (all levels) to
+    // SHADER_READ_ONLY. Leaves the app layout tracker untouched: all
+    // transitions for these two images are recorded here explicitly, and no
+    // recordTransitionImageLayoutLayer call must be added for them afterwards
+    // (its per-(image,layer) tracking cannot represent per-level states).
+    void generateMipmaps(VkCommandBuffer cb, VkImage image, VkFormat format,
+                         uint32_t layerBase, uint32_t layerCount);
     VkFence submitCaptureTypesAsync(VulkanApp* app, const CapturePC& pc,
                                     uint32_t typeBegin, uint32_t typeCount);
     void completeCaptureType(VulkanApp* app, uint32_t billboardType, float billboardScale);
