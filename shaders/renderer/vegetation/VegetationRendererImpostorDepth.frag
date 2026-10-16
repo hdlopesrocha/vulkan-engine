@@ -47,7 +47,13 @@ layout(push_constant) uniform PushConstants {
 void main() {
     int layer = int(inTexCoord.z);
 
-    float texDepth = texture(depthArray, inTexCoord).r;
+    // Exact texel (same discipline as the color pass and the shadow caster):
+    // filtering device-Z at silhouettes mixes blade depth with the cleared
+    // background; one exact texel keeps the prepass depth EQUAL to the color
+    // pass's reconstructed depth bit for bit.
+    ivec2 texSize = textureSize(depthArray, 0).xy;
+    ivec2 texel = clamp(ivec2(inTexCoord.xy * vec2(texSize)), ivec2(0), texSize - ivec2(1));
+    float texDepth = texelFetch(depthArray, ivec3(texel, layer), 0).r;
     if (texDepth >= 1.0 || texDepth <= 0.0) discard;
 
     // Direct hand-off (see impostors_depth.vert): no dithered fade; the
