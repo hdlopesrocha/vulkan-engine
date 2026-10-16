@@ -21,7 +21,7 @@ layout(location = VARY_ROTFRAC) flat out vec2 outCosSinT;
 // not per pixel (uniform input, identical value). VARY_TANGENTWS is unused
 // in the impostor color interface.
 layout(location = VARY_TANGENTWS) flat out vec3 outLightDirN;
-layout(location = VARY_POSLIGHT) flat out vec3 outInstanceOffset;
+layout(location = VARY_POSLIGHT) flat out vec4 outInstanceOffset;
 // Surface normal for the fragment tilt below (location free in this
 // pipeline). Early-out paths leave it unwritten; their triangles are
 // degenerate (clipped), same as the other varyings.
@@ -62,7 +62,7 @@ void main() {
     // VegetationRenderer.vert, perf report 26 L15).
     if (impostorDistance <= 0.0 || dist < impostorDistance) {
         outTexCoord = vec3(0.0); outWorldPos = worldPos;
-        outInstanceOffset = worldPos;
+        outInstanceOffset = vec4(worldPos, 1.0);
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         return;
     }
@@ -72,13 +72,16 @@ void main() {
         float keep = perlin2d_hash13(vec3(worldPos.xz * 0.03125, float(billboardIdx) + worldPos.y * 0.0078125));
         if (keep > densityFactor) {
             outTexCoord = vec3(0.0); outWorldPos = worldPos;
-            outInstanceOffset = worldPos;
+            outInstanceOffset = vec4(worldPos, 1.0);
             gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
             return;
         }
     }
 
-    outInstanceOffset = worldPos;
+    float hs = inBakedHeight;
+    // xyz = base, w = hs: the fragment reconstruction scales the captured
+    // surface point by the same hs the placement scales the quad by.
+    outInstanceOffset = vec4(worldPos, hs);
 
     // Best-view select (perf report 26 H4): the winning view depends only on
     // instance rotation + camera direction, so all 4 quad corners agree; the
@@ -101,8 +104,6 @@ void main() {
     outLightDirN = normalize(-ubo.lightDirection);
 
     int layerIdx = impostorBestLayerIndex(toCamera, rotFrac, billboardIdx);
-
-    float hs = inBakedHeight;
 
     // M5 (perf report 28): shared placement core (center -> quad -> offset ->
     // finalPos -> UV crop); the prologue above stays twin-specific.

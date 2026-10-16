@@ -1664,7 +1664,15 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
             std::cerr << "[VegetationRenderer] Impostor depth pipeline created: " << (void*)impostorDepthPipeline << "\n";
 
         // ── Build impostor shadow EVSM pipeline (color+depth write) ──────
+        // Shadow-caster vertex VARIANT (VEG_SHADOW_PASS=1): same module
+        // source as the depth VS, but the quad faces the LIGHT and the
+        // capture layer is the light-facing view, so the rasterized
+        // footprint covers the sun and the captured-depth silhouette is
+        // exact from the light's side. The depth twin keeps the camera-
+        // facing orientation for the deferred depth prepass.
+        VkShaderModule shadowVertMod = app->getOrCreateShaderModule("shaders/renderer/vegetation/VegetationRendererImpostorShadow.vert.spv");
         VkShaderModule shadowFragMod = app->getOrCreateShaderModule("shaders/renderer/vegetation/VegetationRendererImpostorShadow.frag.spv");
+        depthStages[0].module = shadowVertMod;
         depthStages[1].module = shadowFragMod;  // reuse depthStages array, swap frag
 
         VkFormat evsmColorFormat = VK_FORMAT_R32G32_SFLOAT;

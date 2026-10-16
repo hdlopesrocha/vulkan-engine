@@ -2,10 +2,10 @@
 // Requires perlin2d.glsl and the WindParamsUBO block (declared as `windParams`)
 // to be visible before this include.
 
-// Rotate a direction vector around the world-up (Y) axis.
-vec3 rotateY(vec3 v, float c, float s) {
-    return vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z);
-}
+// rotateY lives in NormalTilt.glsl (shared with the impostor fragment
+// shaders, which cannot include this file because of the windParams
+// requirement).
+#include "NormalTilt.glsl"
 
 // Shortest-arc tilt mapping +Y onto a (unit) surface normal. Vegetation is
 // authored growing along +Y; applying this to the billboard frame makes grass

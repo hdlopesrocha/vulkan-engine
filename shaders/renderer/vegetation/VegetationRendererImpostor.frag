@@ -12,7 +12,8 @@ layout(location = VARY_POSWORLD) in vec3 inWorldPos;
 // location as the old rotFrac it replaces) + flat normalized light direction.
 layout(location = VARY_ROTFRAC) flat in vec2 inCosSinT;
 layout(location = VARY_TANGENTWS) flat in vec3 inLightDirN;
-layout(location = VARY_POSLIGHT) flat in vec3 inInstanceOffset;
+// xyz = instance base, w = runtime height scale (hs).
+layout(location = VARY_POSLIGHT) flat in vec4 inInstanceOffset;
 // Terrain surface normal (flat): captured normals are flat-land, so the
 // fragment tilts them onto this exactly like the blade VS does.
 layout(location = VARY_PLANE_NORMAL) flat in vec3 inSurfN;
@@ -95,12 +96,21 @@ void main() {
 
         vec2 ndc_xy = inTexCoord.xy * 2.0 - 1.0;
         vec4 clipPos = vec4(ndc_xy, texDepth, 1.0);
-        vec4 worldPos = invVP[layer] * clipPos;
-        worldPos /= worldPos.w;
-        worldPos.xyz += inInstanceOffset;
-        bladePos = worldPos.xyz;
+        vec4 capPos = invVP[layer] * clipPos;
+        capPos /= capPos.w;
 
-        vec4 camClipPos = ubo.viewProjection * worldPos;
+        // Reconstruct the runtime blade surface: the captured point lives in
+        // the canonical capture frame (origin, hs=1, no rotation), so the
+        // exact runtime position is base + tilt_surfN(rotateY(hs * cap)) —
+        // the same transform the blade VS bakes in and the placement scales
+        // the quad by. Skipping hs/rotation/tilt skewed bladePos (and the
+        // written depth) from the rasterized tuft by up to ~40% of its size.
+        vec3 worldPos = inInstanceOffset.xyz + grassTiltToNormal(
+            rotateY(capPos.xyz * inInstanceOffset.w, inCosSinT.x, inCosSinT.y),
+            normalize(inSurfN));
+        bladePos = worldPos;
+
+        vec4 camClipPos = ubo.viewProjection * vec4(worldPos, 1.0);
         gl_FragDepth = clamp(camClipPos.z / camClipPos.w, 0.0, 1.0);
     }
 

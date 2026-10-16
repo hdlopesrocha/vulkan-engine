@@ -3,9 +3,15 @@
 #include "../../ubo/UniformObject.glsl"
 
 #include "../../includes/Locations.glsl"
+#include "../../includes/vegetation/NormalTilt.glsl"
 
 layout(location = VARY_UV) in vec3 inTexCoord;  // xy=UV, z=float(layerIdx)
-layout(location = VARY_TANGENTWS) flat in vec3 inInstanceOffset;
+// xyz = instance base, w = runtime height scale (hs); see the depth VS.
+layout(location = VARY_POSLIGHT) flat in vec4 inInstanceOffset;
+// Instance rotation + terrain surface normal: the reconstruction applies the
+// same rotateY(hs * p) + tilt-to-surface transform the blade VS bakes in.
+layout(location = VARY_ROTFRAC) flat in vec2 inCosSinT;
+layout(location = VARY_PLANE_NORMAL) flat in vec3 inSurfN;
 // Interface match: the shared depth vertex stage also writes VARY_POSWORLD
 // (read by the impostor-shadow pipeline using this same VS); unread here.
 
@@ -47,16 +53,20 @@ void main() {
     // Direct hand-off (see impostors_depth.vert): no dithered fade; the
     // billboard depth prepass stops at the same distance.
 
-    // Reconstruct world position from captured depth.
+    // Reconstruct world position from captured depth, applying the exact
+    // runtime instance transform (base + tilt_surfN(rotateY(hs * cap))), so
+    // the prepass depth matches both the rasterized quad and the color pass
+    // bit for bit.
     vec2 ndc_xy = inTexCoord.xy * 2.0 - 1.0;
     vec4 clipPos = vec4(ndc_xy, texDepth, 1.0);
-    vec4 worldPos = invVP[layer] * clipPos;
-    worldPos /= worldPos.w;
+    vec4 capPos = invVP[layer] * clipPos;
+    capPos /= capPos.w;
 
-    // Translate from capture origin to instance position.
-    worldPos.xyz += inInstanceOffset;
+    vec3 worldPos = inInstanceOffset.xyz + grassTiltToNormal(
+        rotateY(capPos.xyz * inInstanceOffset.w, inCosSinT.x, inCosSinT.y),
+        normalize(inSurfN));
 
     // Reproject to camera space.
-    vec4 camClipPos = ubo.viewProjection * worldPos;
+    vec4 camClipPos = ubo.viewProjection * vec4(worldPos, 1.0);
     gl_FragDepth = clamp(camClipPos.z / camClipPos.w, 0.0, 1.0);
 }

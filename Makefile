@@ -130,6 +130,7 @@ OUT_SPVS = \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv \
 	$(OUT_DIR)/shaders/renderer/sdf/SdfRendererSurface.frag.spv \
 	$(OUT_DIR)/shaders/renderer/vegetation/ImpostorCapture.vert.spv \
+	$(OUT_DIR)/shaders/renderer/vegetation/VegetationRendererImpostorShadow.vert.spv \
 	$(OUT_DIR)/shaders/renderer/water/WaterRendererNoTess.vert.spv \
 	$(OUT_DIR)/shaders/renderer/water/WaterRendererRT.frag.spv \
 	$(OUT_DIR)/shaders/renderer/water/WaterRendererNoBody.frag.spv \
@@ -227,6 +228,14 @@ $(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv: shaders/rendere
 # deleted and is intentionally NOT rebuilt by the generic pattern rule below.
 $(OUT_DIR)/shaders/renderer/vegetation/ImpostorCapture.vert.spv: shaders/renderer/vegetation/VegetationRenderer.vert $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/vegetation/VegetationRenderer.vert,$@,-DVEG_CAPTURE=1,--D VEG_CAPTURE=1,)
+
+# Shadow-caster variant of the impostor depth VS (VEG_SHADOW_PASS=1): the
+# quad faces the LIGHT and the capture layer is the light-facing view, so
+# the rasterized footprint covers the sun and the captured-depth silhouette
+# is exact from the light's side (see the #ifdef in the source). Source IS
+# on disk; this is a compile-time define variant like VEG_CAPTURE above.
+$(OUT_DIR)/shaders/renderer/vegetation/VegetationRendererImpostorShadow.vert.spv: shaders/renderer/vegetation/VegetationRendererImpostorDepth.vert $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/vegetation/VegetationRendererImpostorDepth.vert,$@,-DVEG_SHADOW_PASS=1,--D VEG_SHADOW_PASS=1,)
 
 # C1/L13 (perf report 25): SDF surface fragment variant. Same single source as
 # the generic module (shaders/renderer/sdf/SdfRenderer.frag); SDF_VARIANT=1

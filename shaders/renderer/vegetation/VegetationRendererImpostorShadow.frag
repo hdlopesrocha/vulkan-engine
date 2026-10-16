@@ -8,10 +8,16 @@
 
 #include "../../includes/Locations.glsl"
 #include "../../includes/shadow/EvsmWrite.glsl"
+#include "../../includes/vegetation/NormalTilt.glsl"
 
 layout(location = VARY_POSWORLD) in vec3 inWorldPos; // quad pos (interface only)
-layout(location = VARY_TANGENTWS) flat in vec3 inInstanceOffset;
+// xyz = instance base, w = runtime height scale (hs); see the depth VS.
+layout(location = VARY_POSLIGHT) flat in vec4 inInstanceOffset;
 layout(location = VARY_UV) in vec3 inTexCoord; // xy=crop UV, z=capture layer
+// Instance rotation + terrain surface normal: the reconstruction applies the
+// same rotateY(hs * p) + tilt-to-surface transform the blade VS bakes in.
+layout(location = VARY_ROTFRAC) flat in vec2 inCosSinT;
+layout(location = VARY_PLANE_NORMAL) flat in vec3 inSurfN;
 
 // Canonical scene UBO (set=0 binding=0). In the shadow pass this carries
 // the cascade light VP, so projecting the reconstructed point yields the
@@ -46,14 +52,20 @@ void main() {
     float texDepth = texelFetch(depthArray, ivec3(texel, layer), 0).r;
     if (texDepth >= 1.0 || texDepth <= 0.0) discard; // no blade at this texel
 
-    // Capture-space blade point -> world (capture ran at the origin).
+    // Capture-space blade point -> runtime world: base + tilt(rotateY(hs*p))
+    // (the exact instance transform the blade VS applies), so the EVSM
+    // moments carry the true blade-surface light depth — scaled, rotated and
+    // terrain-tilted — not a flat quad plane.
     vec2 ndc_xy = inTexCoord.xy * 2.0 - 1.0;
     vec4 clipPos = vec4(ndc_xy, texDepth, 1.0);
-    vec4 worldPos = invVP[layer] * clipPos;
-    worldPos /= worldPos.w;
-    worldPos.xyz += inInstanceOffset;
+    vec4 capPos = invVP[layer] * clipPos;
+    capPos /= capPos.w;
 
-    vec4 lsPos = ubo.viewProjection * vec4(worldPos.xyz, 1.0);
+    vec3 worldPos = inInstanceOffset.xyz + grassTiltToNormal(
+        rotateY(capPos.xyz * inInstanceOffset.w, inCosSinT.x, inCosSinT.y),
+        normalize(inSurfN));
+
+    vec4 lsPos = ubo.viewProjection * vec4(worldPos, 1.0);
     float depth = clamp(lsPos.z / lsPos.w, 0.0, 1.0);
 
     gl_FragDepth = depth;
