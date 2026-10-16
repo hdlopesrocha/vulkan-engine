@@ -148,9 +148,9 @@ void main() {
 #endif
 
     // Per-blade deterministic variation (height, lean, width, phase).
-    // Under VEG_CAPTURE instancePos is the origin; the hash still varies per
-    // blade so the captured tuft is not uniform.
-    vec4 bh = bladeHash(worldPos, float(bladeIdx));
+    // Canonical in the blade index only (see BladeGrass.glsl): the capture
+    // bakes this exact layout, so runtime blades and their impostors agree.
+    vec4 bh = bladeHash(float(bladeIdx));
     float bladeHeightVar = 0.70 + 0.50 * bh.x;   // 0.70..1.20
     float leanAmt = (0.10 + 0.35 * bh.y);        // tip lean as fraction of height
     float leanAng = bh.z * 6.28318530718;        // lean direction

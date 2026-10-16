@@ -71,6 +71,12 @@ void main() {
         return;
     }
 
+    // Hardware mip level of this fragment. Computed here, before any
+    // discard, so the derivatives are always taken in uniform control flow.
+    vec2 uvDx = dFdx(inTexCoord.xy);
+    vec2 uvDy = dFdy(inTexCoord.xy);
+    float hwLod = log2(max(length(uvDx), length(uvDy)) * float(textureSize(impostorArray, 0).x));
+
     // M9 (perf report 27): depth tap before the albedo tap. The two
     // discard conditions (captured-depth range vs albedo alpha) are
     // independent, so the survivor set is order-free; depth-culled
@@ -98,7 +104,18 @@ void main() {
         gl_FragDepth = clamp(camClipPos.z / camClipPos.w, 0.0, 1.0);
     }
 
-    vec4 color = texture(impostorArray, inTexCoord);
+    // LOD policy: keep the tuft's blade mosaic (colors AND normals) close to
+    // rasterized-blade crispness through the mid range, unlocking the mip
+    // chain only as the tuft shrinks to a few pixels — where blades would
+    // alias into the same shimmer anyway. Without this, hardware LOD is
+    // already ~3 (8x8 average) at the hand-off distance, washing the
+    // saturated blade normals into a flat average while the blades in front
+    // of it stay crisp, so the two representations read as different plants.
+    float impostorDist = distance(ubo.viewPosition, bladePos);
+    float lodCap = clamp(1.0 + 2.0 * log2(max(impostorDist, 700.0) / 700.0), 1.0, 8.0);
+    float lod = min(hwLod, lodCap);
+
+    vec4 color = textureLod(impostorArray, inTexCoord, lod);
     if (color.a < 0.3) discard;
 
     // Direct hand-off (see impostors.vert): this instance only exists past
@@ -116,8 +133,9 @@ void main() {
     // rotate the decoded normal by the per-instance Y-axis rotation to match the
     // actual plant orientation at runtime (same rotateY convention as vegetation_common.glsl).
     // Like albedo, the normal texture is premultiplied-form: divide out the
-    // mipped alpha before decoding (no-op at L0 where alpha is 1).
-    vec4 normalTex = texture(impostorNormalArray, inTexCoord);
+    // mipped alpha before decoding (no-op at L0 where alpha is 1). Sampled
+    // at the same capped LOD so normals keep blade-level mosaic detail.
+    vec4 normalTex = textureLod(impostorNormalArray, inTexCoord, lod);
     vec3 N_raw = normalize(normalTex.rgb / max(normalTex.a, 1e-3) * 2.0 - 1.0);
     // H8 (perf report 27): cosT/sinT arrive as flat varyings (same values the
     // per-pixel rebuild produced); the rotate/normalize/lighting chain below

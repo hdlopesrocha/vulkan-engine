@@ -8,10 +8,19 @@
 // Must match RendererUtils::kBladeCount (36 verts = 12 blades x 3).
 #define BLADE_COUNT 12
 
-// Deterministic per-blade hash from instance position + blade index.
+// Deterministic per-blade hash — canonical in the blade index ONLY.
+//
+// This MUST NOT depend on the instance world position: the impostor capture
+// renders the tuft at the origin and bakes that exact blade layout, normals
+// and colors into the impostor arrays. Every runtime tuft therefore has to
+// use the same canonical layout, or the impostor shown past the hand-off
+// distance would be a different plant than the blades drawn just before it
+// (different blade directions/heights/widths -> different normal colors at
+// the same world spot). Per-instance variety comes from the instance
+// rotation (rotFrac), the baked height scale and the biome palette.
 // Returns 4 uncorrelated [0,1) values without trig.
-vec4 bladeHash(vec3 instancePos, float bladeIdx) {
-    vec3 p = instancePos * 0.173 + vec3(bladeIdx * 17.13, bladeIdx * 9.71, bladeIdx * 5.37);
+vec4 bladeHash(float bladeIdx) {
+    vec3 p = vec3(bladeIdx * 17.13, bladeIdx * 9.71, bladeIdx * 5.37);
     vec3 h = fract(sin(vec3(dot(p, vec3(127.1, 311.7, 74.7)),
                              dot(p, vec3(269.5, 183.3, 246.1)),
                              dot(p, vec3(113.5, 271.9, 124.6)))) * 43758.5453);

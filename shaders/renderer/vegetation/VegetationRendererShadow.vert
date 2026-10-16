@@ -68,7 +68,7 @@ void main() {
     float heightScale = inBakedHeight;
     float scale = billboardScale * heightScale;
 
-    vec4 bh = bladeHash(worldPos, float(bladeIdx));
+    vec4 bh = bladeHash(float(bladeIdx));
     float bladeHeightVar = 0.70 + 0.50 * bh.x;
     float leanAmt = (0.10 + 0.35 * bh.y);
     float leanAng = bh.z * 6.28318530718;

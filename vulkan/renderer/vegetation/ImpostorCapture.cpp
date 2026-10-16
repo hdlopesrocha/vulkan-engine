@@ -360,7 +360,14 @@ void ImpostorCapture::recordCaptureViews(VkCommandBuffer cb, VulkanApp* app,
         colorAtts[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         colorAtts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAtts[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAtts[1].clearValue.color = { 0.5f, 0.5f, 1.0f, 0.0f };
+        // PREMULTIPLIED-ZERO clear: the array is linearly mipped and the
+        // runtime recovers color by rgb/max(alpha,eps). Any nonzero RGB with
+        // alpha=0 (e.g. the old (0.5,0.5,1) "no normal" sentinel) gets
+        // amplified by (1-coverage)/coverage in the divide, tinting every
+        // blended impostor texel blue at any sampled LOD. Zero-RGB keeps the
+        // premultiplied invariant exact. Empty texels stay discarded via the
+        // alpha test.
+        colorAtts[1].clearValue.color = { 0.0f, 0.0f, 0.0f, 0.0f };
         colorAtts[2].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         colorAtts[2].imageView = captureDepthLayerViews[layerIdx];
         colorAtts[2].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
