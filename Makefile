@@ -38,15 +38,16 @@ endef
 # Speak the first compiler diagnostic from logs/build.log through
 # sounds/say.sh, so a failed (or warning-producing) build says what went
 # wrong out loud. Errors win over warnings; everything before "error: " /
-# "warning: " (file:line:column:) and the quote characters gcc wraps
-# identifiers in are dropped so TTS reads the message naturally. The
+# "warning: " (file:line:column:), the quote characters gcc wraps
+# identifiers in, and the trailing [-Wflag] marker are dropped so TTS reads
+# the message naturally (the full line stays in logs/build.log). The
 # synthesis runs in the background and the phrase queues behind the phase
 # voice, so the build never waits for it.
 define SPEAK_DIAGNOSTIC
 	{ msg="$$(grep -m1 -E 'error: ' logs/build.log 2>/dev/null)"; \
 		[ -n "$$msg" ] || msg="$$(grep -m1 -E 'warning: ' logs/build.log 2>/dev/null)"; \
 		if [ -n "$$msg" ]; then \
-			msg="$$(printf '%s' "$$msg" | sed -E "s/^.*(error|warning): /\1: /; s/[‘’'\"]//g")"; \
+			msg="$$(printf '%s' "$$msg" | sed -E "s/^.*(error|warning): /\1: /; s/[‘’'\"]//g; s/ ?\[-W[^]]*\]//g")"; \
 			nohup sh "$(SOUND_DIR)/say.sh" "$$msg" </dev/null >/dev/null 2>&1 & \
 		fi; }
 endef
