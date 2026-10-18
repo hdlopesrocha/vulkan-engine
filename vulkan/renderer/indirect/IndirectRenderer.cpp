@@ -2328,9 +2328,8 @@ IndirectRenderer::SpanReservation IndirectRenderer::reserveSpanLocked(
     if (slotIdx == UINT32_MAX) {
         slotIdx = slotAlloc.allocate(1, 1);
         if (slotIdx == UINT32_MAX) {
-            auto now = std::chrono::steady_clock::now();
-            if (now - g_lastNoSlotLog >= std::chrono::seconds(1)) {
-                g_lastNoSlotLog = now;
+            static std::atomic<int> slotLogged{0};
+            if (slotLogged.fetch_add(1) < 8) {
                 std::cerr << "[IndirectRenderer] reserveSpan: no free draw block for chunk " << chunkId
                           << " (active=" << slotAlloc.activeCount()
                           << " capacity=" << slotAlloc.capacity()
@@ -2361,9 +2360,8 @@ IndirectRenderer::SpanReservation IndirectRenderer::reserveSpanLocked(
         // Roll back the partial allocation so the pool is not fragmented.
         if (newVBase != UINT32_MAX) spaceAlloc.freeVertex(newVBase, neededVerts);
         if (newIBase != UINT32_MAX) spaceAlloc.freeIndex(newIBase, neededIdxs);
-        auto now = std::chrono::steady_clock::now();
-        if (now - g_lastNoSlotLog >= std::chrono::seconds(1)) {
-            g_lastNoSlotLog = now;
+        static std::atomic<int> spaceLogged{0};
+        if (spaceLogged.fetch_add(1) < 8) {
             std::cerr << "[IndirectRenderer] reserveSpan: element pool exhausted for chunk "
                       << chunkId << " (verts=" << neededVerts
                       << " idxs=" << neededIdxs << "; usedVert=" << spaceAlloc.usedVertex()
@@ -2454,13 +2452,35 @@ IndirectRenderer::GpuMeshSpan IndirectRenderer::reserveGpuMeshSpan(
     const glm::vec3* boundsBase)
 {
     GpuMeshSpan span;
-    if (!slottedMode || spanVertexCapacity == 0 || spanIndexCapacity == 0) return span;
+    if (!slottedMode || spanVertexCapacity == 0 || spanIndexCapacity == 0) {
+        // Should never happen once initSlots ran: leaving this silent made a
+        // "no target" export look like a pool failure. Log the actual reason.
+        static std::atomic<int> rejectedLogged{0};
+        if (rejectedLogged.fetch_add(1) < 8) {
+            std::cerr << "[IndirectRenderer] reserveGpuMeshSpan rejected chunk " << chunkId
+                      << " (slotted=" << (slottedMode ? 1 : 0)
+                      << " verts=" << spanVertexCapacity
+                      << " idx=" << spanIndexCapacity << ")" << std::endl;
+        }
+        return span;
+    }
 
     std::lock_guard<std::recursive_mutex> guard(mutex);
 
     SpanReservation r = reserveSpanLocked(chunkId, spanVertexCapacity, spanIndexCapacity,
                                           cubeMin, cubeMax, level, boundsBase);
-    if (r.slotIndex == UINT32_MAX || r.info == nullptr) return span;
+    if (r.slotIndex == UINT32_MAX || r.info == nullptr) {
+        static std::atomic<int> resLogged{0};
+        if (resLogged.fetch_add(1) < 8)
+            std::cerr << "[IndirectRenderer] reserveSpan: reservation empty chunk=" << chunkId
+                      << " slot=" << r.slotIndex << " info=" << (r.info != nullptr)
+                      << " vcap=" << spanVertexCapacity << " icap=" << spanIndexCapacity
+                      << " slots=" << slotAlloc.activeCount() << "/" << slotAlloc.capacity()
+                      << " vert=" << spaceAlloc.usedVertex() << "/" << spaceAlloc.totalVertex()
+                      << " idx=" << spaceAlloc.usedIndex() << "/" << spaceAlloc.totalIndex()
+                      << std::endl;
+        return span;
+    }
 
     // The GPU pass writes the span; until it reports back the entry must stay
     // undrawn (staged zero, same reasoning as addMeshSlotted).
@@ -2477,6 +2497,14 @@ IndirectRenderer::GpuMeshSpan IndirectRenderer::reserveGpuMeshSpan(
     span.indexCapacity = spanIndexCapacity;
     span.vertexBuffer = vertexBuffer.buffer;
     span.indexBuffer = indexBuffer.buffer;
+    if (span.vertexBuffer == VK_NULL_HANDLE || span.indexBuffer == VK_NULL_HANDLE) {
+        static std::atomic<int> handlesLogged{0};
+        if (handlesLogged.fetch_add(1) < 8) {
+            std::cerr << "[IndirectRenderer] reserveGpuMeshSpan: pool handles missing for chunk "
+                      << chunkId << " (vertexBuffer=" << (void*)span.vertexBuffer
+                      << " indexBuffer=" << (void*)span.indexBuffer << ")" << std::endl;
+        }
+    }
     return span;
 }
 

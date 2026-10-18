@@ -471,14 +471,15 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    const size_t keyWant = std::min(cellCount * kVerticesPerCellHint, kMaxKeysPerCall);
-    ensureCapacity(nodeCount, cellCount, /*vertexCount=*/0, keyWant);
-    ensureBridgeCapacity(nodeCount * kVertexKeysPerNode, keyWant);
-    const size_t keys = std::min(keyWant, keyCap);
-    const size_t maxUnique = std::min(nodeCount * kVertexKeysPerNode, keys);
-
-    uploadInput(input);
-    writeDescriptors(nullptr);
+    // The walk's key capacity is an estimate (kVerticesPerCellHint per scan
+    // cell). Real chunks can overshoot it slightly (dense multi-segment
+    // edges), so the walk is retried with a doubled key space instead of
+    // dropping the chunk; kMaxKeysPerCall caps the retries.
+    size_t keyWant = std::min(cellCount * kVerticesPerCellHint, kMaxKeysPerCall);
+    size_t keys = 0;
+    size_t maxUnique = 0;
+    uint32_t rawCount = 0;
+    bool walkOk = false;
 
     TopologyPC pc{};
     pc.cellCount = (uint32_t)cellCount;
@@ -488,33 +489,58 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
     pc.rootMinSize = glm::vec4(input.rootMin, input.rootSize);
     pc.worldSize = input.rootSize;
     pc.maxVertices = 0u;          // resident: the arena is not needed
-    pc.keyCapacity = (uint32_t)keys;
     pc.resident = 1u;
     pc.pass = 0u;
 
-    // Phase 1: the walk. Only the keys are written; the counters tell us how
-    // big the chunk's index stream is.
-    const uint32_t cellGroups = (uint32_t)((cellCount + 63) / 64);
-    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &descSet, 0, nullptr);
-        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TopologyPC), &pc);
-        vkCmdDispatch(cmd, cellGroups, 1, 1);
-        hostReadBarrier(cmd);
-    });
+    for (int attempt = 0; attempt < 6 && !walkOk; ++attempt) {
+        ensureCapacity(nodeCount, cellCount, /*vertexCount=*/0, keyWant);
+        ensureBridgeCapacity(nodeCount * kVertexKeysPerNode, keyWant);
+        keys = std::min(keyWant, keyCap);
+        maxUnique = std::min(nodeCount * kVertexKeysPerNode, keys);
+        uploadInput(input); // also resets the four counters
+        writeDescriptors(nullptr);
+        pc.keyCapacity = (uint32_t)keys;
 
-    const uint32_t* counters = (const uint32_t*)bCounter.mappedData;
-    uint32_t rawCount = std::min<uint32_t>(counters[0], (uint32_t)keys);
-    rawCount -= rawCount % 3u;
-    const uint32_t walkDropped = counters[3];
-    res.indexCount = rawCount;
-    if (walkDropped > 0) {
+        // Phase 1: the walk. Only the keys are written; the counters tell us
+        // how big the chunk's index stream is.
+        const uint32_t cellGroups = (uint32_t)((cellCount + 63) / 64);
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &descSet, 0, nullptr);
+            vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TopologyPC), &pc);
+            vkCmdDispatch(cmd, cellGroups, 1, 1);
+            hostReadBarrier(cmd);
+        });
+
+        const uint32_t* counters = (const uint32_t*)bCounter.mappedData;
+        const uint32_t emitted = counters[0];
+        const uint32_t walkDropped = counters[3];
+        if (walkDropped == 0 && emitted <= keys) {
+            rawCount = std::min<uint32_t>(emitted, (uint32_t)keys);
+            rawCount -= rawCount % 3u;
+            walkOk = true;
+            break;
+        }
+        if (keys >= kMaxKeysPerCall) break;
+        const size_t nextWant = std::min<size_t>(keys * 2, kMaxKeysPerCall);
+        if (nextWant <= keys) break;
+        static std::atomic<int> retryLogged{0};
+        if (retryLogged.fetch_add(1) < 8)
+            std::cerr << "[OctreeTopology] walk key capacity too small (emitted=" << emitted
+                      << " cap=" << keys << " cells=" << cellCount
+                      << ") — retrying with " << nextWant << "\n";
+        keyWant = nextWant;
+    }
+
+    if (!walkOk) {
         static std::atomic<int> logged{0};
         if (logged.fetch_add(1) < 8)
-            std::cerr << "[OctreeTopology] chunk walk overflowed the key capacity (raw="
-                      << counters[0] << " cap=" << keys << " cells=" << cellCount << "): skipped\n";
+            std::cerr << "[OctreeTopology] chunk walk overflowed the key capacity (cap="
+                      << keys << " cells=" << cellCount << "): skipped\n";
         return res; // ok == false
     }
+
+    res.indexCount = rawCount;
     if (rawCount < 3u) {
         res.ok = true; // empty chunk: nothing to draw, not a failure
         return res;
@@ -632,8 +658,9 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
         hostReadBarrier(cmd);
     });
 
-    const uint32_t unique = counters[2];
-    const uint32_t dropPhase2 = counters[3]; // includes the (already zero) phase-1 drops
+    const uint32_t* phase2Counters = (const uint32_t*)bCounter.mappedData;
+    const uint32_t unique = phase2Counters[2];
+    const uint32_t dropPhase2 = phase2Counters[3]; // includes the (already zero) phase-1 drops
     res.poolVertexCount = std::min(unique, target.vertexCapacity);
     const bool spanFits = unique <= target.vertexCapacity;
     res.ok = dropPhase2 == 0 && spanFits;

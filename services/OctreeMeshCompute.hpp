@@ -13,8 +13,8 @@ public:
     static OctreeMeshCompute* globalInstance __attribute__((weak));
     static OctreeMeshCompute* getGlobal() __attribute__((weak)) { return globalInstance; }
     OctreeMeshCompute();
-    void init(VulkanApp* app);
-    void destroy(VulkanApp* app);
+    void init(VulkanApp* appInstance);
+    void destroy(VulkanApp* appInstance);
     VulkanApp* app = nullptr;
     std::mutex mutex;
     // Synchronously compute vertices for the given cells. Returns positions/normals.

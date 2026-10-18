@@ -137,8 +137,8 @@ SpaceType OctreeNode::getType() const {
 	}
 }
 
-void OctreeNode::setBrush(int brushIndex) {
-	this->brushIndex = brushIndex;
+void OctreeNode::setBrush(int index) {
+	this->brushIndex = index;
 }
 int OctreeNode::getBrush() const {
 	return this->brushIndex;

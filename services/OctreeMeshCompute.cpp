@@ -14,8 +14,8 @@ OctreeMeshCompute::OctreeMeshCompute() {
     globalInstance = this;
 }
 
-void OctreeMeshCompute::init(VulkanApp* app) {
-    this->app = app;
+void OctreeMeshCompute::init(VulkanApp* appInstance) {
+    this->app = appInstance;
     if (pipeline != VK_NULL_HANDLE) return;
     VkDevice device = app->getDevice();
 
@@ -88,8 +88,8 @@ void OctreeMeshCompute::init(VulkanApp* app) {
     app->resources.addDescriptorSet(descSet, "OctreeMeshCompute: descSet");
 }
 
-void OctreeMeshCompute::destroy(VulkanApp* app) {
-    (void)app;
+void OctreeMeshCompute::destroy(VulkanApp* appInstance) {
+    (void)appInstance;
     pipeline = VK_NULL_HANDLE;
     layout = VK_NULL_HANDLE;
     descLayout = VK_NULL_HANDLE;

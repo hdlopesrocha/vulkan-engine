@@ -984,7 +984,11 @@ void main() {
         const uint live = min(vertexCount, pc.keyCapacity);
         if (pc.pass == 2u) {
             if (gi < live) {
-                if (pc.indexBase + gi >= pc.indexCapacity) {
+                // `indexBase` is the ABSOLUTE pool element index of this
+                // chunk's span while `indexCapacity` is the span's LENGTH:
+                // the bound must be checked stream-relative (the host already
+                // proved indexCapacity >= raw vertex count).
+                if (gi >= pc.indexCapacity) {
                     atomicAdd(droppedCount, 1u);
                     return;
                 }

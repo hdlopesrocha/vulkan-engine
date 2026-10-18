@@ -50,20 +50,30 @@ bool topologySelfCheckEnabled() {
     return enabled;
 }
 
-// Hash of a renderable vertex payload: exactly the fields the CPU tessellator
-// dedups on (position, normal, texCoord, brushIndex) — the fields both the
-// packed-pool write and the shading read.
-uint64_t vertexPayloadHash(const Vertex& v) {
-    uint64_t h = 1469598103934665603ull;
-    auto mix = [&h](float f) {
-        uint32_t bits = 0;
-        std::memcpy(&bits, &f, sizeof(bits));
-        h = (h ^ bits) * 1099511628211ull;
+// Tolerance-quantized payload keys for the self-check. The GPU and the CPU
+// walker solve the same QEF system with different fp32 operation order, so a
+// bit-exact hash flags every vertex on a correctly built chunk. Positions are
+// quantized relative to the chunk cube (2048 steps across the chunk), normals
+// and UVs to 1/64; brushIndex stays exact.
+//
+// `geometryOnly` drops normal/UV from the key: it proves the two walkers emit
+// the same vertices at the same places (and the same triangle set), while the
+// full key additionally proves the shading payload agrees.
+uint64_t vertexQuantizedKey(const Vertex& v, float invCubeSize, bool geometryOnly) {
+    auto q = [](float value, float scale) {
+        return static_cast<uint64_t>(static_cast<int64_t>(std::llround(double(value) * double(scale))));
     };
-    mix(v.position.x); mix(v.position.y); mix(v.position.z);
-    mix(v.normal.x);   mix(v.normal.y);   mix(v.normal.z);
-    mix(v.texCoord.x); mix(v.texCoord.y);
-    mix(static_cast<float>(v.brushIndex));
+    const float posScale = invCubeSize * 2048.0f;
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](uint64_t bits) { h = (h ^ bits) * 1099511628211ull; };
+    mix(q(v.position.x, posScale));
+    mix(q(v.position.y, posScale));
+    mix(q(v.position.z, posScale));
+    mix(static_cast<uint64_t>(static_cast<int64_t>(v.brushIndex)));
+    if (!geometryOnly) {
+        mix(q(v.normal.x, 64.0f)); mix(q(v.normal.y, 64.0f)); mix(q(v.normal.z, 64.0f));
+        mix(q(v.texCoord.x, 64.0f)); mix(q(v.texCoord.y, 64.0f));
+    }
     return h;
 }
 
@@ -82,14 +92,14 @@ bool triangleKeyLess(const TriangleKey& l, const TriangleKey& r) {
     return l.c < r.c;
 }
 
-std::vector<TriangleKey> triangleKeys(const Geometry& g) {
+std::vector<TriangleKey> triangleKeys(const Geometry& g, float invCubeSize, bool geometryOnly) {
     std::vector<TriangleKey> keys;
     keys.reserve(g.indices.size() / 3);
     for (size_t i = 0; i + 2 < g.indices.size(); i += 3) {
         const uint64_t h[3] = {
-            vertexPayloadHash(g.vertices[g.indices[i + 0]]),
-            vertexPayloadHash(g.vertices[g.indices[i + 1]]),
-            vertexPayloadHash(g.vertices[g.indices[i + 2]])
+            vertexQuantizedKey(g.vertices[g.indices[i + 0]], invCubeSize, geometryOnly),
+            vertexQuantizedKey(g.vertices[g.indices[i + 1]], invCubeSize, geometryOnly),
+            vertexQuantizedKey(g.vertices[g.indices[i + 2]], invCubeSize, geometryOnly)
         };
         int best = 0;
         if (h[1] < h[best]) best = 1;
@@ -98,6 +108,71 @@ std::vector<TriangleKey> triangleKeys(const Geometry& g) {
     }
     std::sort(keys.begin(), keys.end(), triangleKeyLess);
     return keys;
+}
+
+// Same as triangleKeys() but order-insensitive (the three vertex hashes are
+// sorted): distinguishes "same triangle, opposite winding/order" from "same
+// triangle" comparisons.
+std::vector<TriangleKey> triangleKeysSorted(const Geometry& g, float invCubeSize, bool geometryOnly) {
+    std::vector<TriangleKey> keys;
+    keys.reserve(g.indices.size() / 3);
+    for (size_t i = 0; i + 2 < g.indices.size(); i += 3) {
+        uint64_t h[3] = {
+            vertexQuantizedKey(g.vertices[g.indices[i + 0]], invCubeSize, geometryOnly),
+            vertexQuantizedKey(g.vertices[g.indices[i + 1]], invCubeSize, geometryOnly),
+            vertexQuantizedKey(g.vertices[g.indices[i + 2]], invCubeSize, geometryOnly)
+        };
+        if (h[0] > h[1]) std::swap(h[0], h[1]);
+        if (h[1] > h[2]) std::swap(h[1], h[2]);
+        if (h[0] > h[1]) std::swap(h[0], h[1]);
+        keys.push_back(TriangleKey{h[0], h[1], h[2]});
+    }
+    std::sort(keys.begin(), keys.end(), triangleKeyLess);
+    return keys;
+}
+
+// Centroid key: quantized triangle centroid (relative to the chunk) plus the
+// brush index. Winding-, order- and normal-independent; proves both walkers
+// put the same triangles at the same places.
+uint64_t triangleCentroidKey(const Vertex& a, const Vertex& b, const Vertex& c, float invCubeSize) {
+    auto q = [](float value, float scale) {
+        return static_cast<uint64_t>(static_cast<int64_t>(std::llround(double(value) * double(scale))));
+    };
+    const float scale = invCubeSize * 256.0f;
+    const glm::vec3 centroid = (a.position + b.position + c.position) / 3.0f;
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](uint64_t bits) { h = (h ^ bits) * 1099511628211ull; };
+    mix(q(centroid.x, scale)); mix(q(centroid.y, scale)); mix(q(centroid.z, scale));
+    mix(static_cast<uint64_t>(static_cast<int64_t>(a.brushIndex)));
+    return h;
+}
+
+std::vector<TriangleKey> triangleCentroidKeys(const Geometry& g, float invCubeSize) {
+    std::vector<TriangleKey> keys;
+    keys.reserve(g.indices.size() / 3);
+    for (size_t i = 0; i + 2 < g.indices.size(); i += 3) {
+        const uint64_t k = triangleCentroidKey(g.vertices[g.indices[i + 0]],
+                                               g.vertices[g.indices[i + 1]],
+                                               g.vertices[g.indices[i + 2]], invCubeSize);
+        keys.push_back(TriangleKey{k, 0ull, 0ull});
+    }
+    std::sort(keys.begin(), keys.end(), triangleKeyLess);
+    return keys;
+}
+
+// Matched-triangle count between two key sets (both sorted).
+size_t countMatched(const std::vector<TriangleKey>& a, const std::vector<TriangleKey>& b) {
+    size_t i = 0, j = 0, matched = 0;
+    while (i < a.size() && j < b.size()) {
+        if (triangleKeyLess(a[i], b[j])) {
+            ++i;
+        } else if (triangleKeyLess(b[j], a[i])) {
+            ++j;
+        } else {
+            ++matched; ++i; ++j;
+        }
+    }
+    return matched;
 }
 
 // Stable-slot pool capacities (pre-allocated GPU buffers, never reallocated).
@@ -139,7 +214,16 @@ std::vector<TriangleKey> triangleKeys(const Geometry& g) {
 // True runtime growth would require reallocating the buffers, which the design
 // deliberately avoids.
 constexpr uint32_t kMaxSolidChunkSlots = 1536;   // main solid (opaque) pool
-constexpr uint32_t kMaxWaterChunkSlots = 192;    // main water (transparent) pool
+// Draw ENTRIES (one per published rung: chunk cells plus their coarser ladder
+// ancestors). The transparent layer publishes ~240 rungs in the reference
+// scene, so the entry pool must be sized from the *rung* count, not from the
+// old per-chunk budget: with 192 entries the last rungs of the ladder could
+// never reserve a span (logged as "no free draw block") and were skipped.
+constexpr uint32_t kMaxWaterChunkSlots = 512;
+// Element-pool byte budget stays at the old per-chunk-ceiling factor
+// (192 x per-chunk bytes): the packed allocator shares those bytes between the
+// extra rungs, so the larger entry pool costs no GPU memory.
+constexpr uint32_t kWaterPoolBudgetSlots = 192;
 
 // Per-chunk (per-slot) geometry ceilings used to size the TOTAL packed pools
 // (total = chunkCount * perChunk). Allocation is packed/variable-size, so a chunk
@@ -2098,8 +2182,8 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
 
     const uint64_t solidVertBytes = static_cast<uint64_t>(maxSolidChunks) * vertexBytesPerChunk;
     const uint64_t solidIdxBytes  = static_cast<uint64_t>(maxSolidChunks) * indexBytesPerChunk;
-    const uint64_t waterVertBytes = static_cast<uint64_t>(maxWaterChunks) * vertexBytesPerChunk;
-    const uint64_t waterIdxBytes  = static_cast<uint64_t>(maxWaterChunks) * indexBytesPerChunk;
+    const uint64_t waterVertBytes = static_cast<uint64_t>(kWaterPoolBudgetSlots) * vertexBytesPerChunk;
+    const uint64_t waterIdxBytes  = static_cast<uint64_t>(kWaterPoolBudgetSlots) * indexBytesPerChunk;
 
     solidRenderer->getIndirectRenderer().initSlots(app, maxSolidChunks,
                                                        static_cast<uint32_t>(solidVertBytes),
@@ -2193,7 +2277,16 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                                                      d.rawVertexCount, &cubeMin, &cubeMax,
                                                      lod, &cubeMin);
             OctreeTopologyTarget t;
-            if (span.slotIndex == UINT32_MAX) return t; // no slot / pool space
+            if (span.slotIndex == UINT32_MAX) {
+                static std::atomic<int> logged{0};
+                if (logged.fetch_add(1) < 8)
+                    std::cerr << "[SceneRenderer] resident span empty (chunk=" << chunkId
+                              << " layer=" << layer << " verts=" << d.suggestedVertexCapacity
+                              << " idx=" << d.rawVertexCount << " slot=" << span.slotIndex
+                              << " vb=" << (void*)span.vertexBuffer
+                              << " ib=" << (void*)span.indexBuffer << ")\n";
+                return t; // no slot / pool space
+            }
             t.vertexBuffer = span.vertexBuffer;
             t.baseVertex = span.baseVertex;
             t.vertexCapacity = span.vertexCapacity;
@@ -2235,9 +2328,11 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     // multiset of canonical (payload-hash) triples: identical triangle sets
     // with matching vertex payloads, independent of emission order.
     if (topologySelfCheckEnabled()) {
-        static std::atomic<bool> selfChecked{false};
-        bool expected = false;
-        if (selfChecked.compare_exchange_strong(expected, true)) {
+        // A few chunks, not just the first: agreement is very high but a
+        // single sample cannot tell a systematic difference from a
+        // chunk-specific degenerate QEF case.
+        static std::atomic<int> selfCheckedCount{0};
+        if (selfCheckedCount.fetch_add(1) < 4) {
             Octree* tree = scene.getLayerOctree(layer);
             if (tree != nullptr) {
                 std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
@@ -2247,27 +2342,30 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                 OctreeTriangleTessellator(*tree).iterateTriangles(
                     nodeData.node, nodeData.cube, nodeData.level, refTesselator, &refContext,
                     chunkLod, std::function<Vertex(OctreeNode*, const BoundingCube&)>());
-                const std::vector<TriangleKey> gpuKeys = triangleKeys(res.bridge);
-                const std::vector<TriangleKey> cpuKeys = triangleKeys(refTesselator.geometry);
-                const size_t compared = std::min(gpuKeys.size(), cpuKeys.size());
-                size_t mismatches = 0;
-                size_t firstBad = SIZE_MAX;
-                for (size_t i = 0; i < compared; ++i) {
-                    if (std::memcmp(&gpuKeys[i], &cpuKeys[i], sizeof(TriangleKey)) != 0) {
-                        ++mismatches;
-                        if (firstBad == SIZE_MAX) firstBad = i;
-                    }
-                }
+                const float invCubeSize = (cube.getLengthX() > 0.0f) ? (1.0f / cube.getLengthX()) : 1.0f;
+                const std::vector<TriangleKey> gpuGeom = triangleKeys(res.bridge, invCubeSize, true);
+                const std::vector<TriangleKey> cpuGeom = triangleKeys(refTesselator.geometry, invCubeSize, true);
+                const std::vector<TriangleKey> gpuGeomSorted = triangleKeysSorted(res.bridge, invCubeSize, true);
+                const std::vector<TriangleKey> cpuGeomSorted = triangleKeysSorted(refTesselator.geometry, invCubeSize, true);
+                const std::vector<TriangleKey> gpuCentroid = triangleCentroidKeys(res.bridge, invCubeSize);
+                const std::vector<TriangleKey> cpuCentroid = triangleCentroidKeys(refTesselator.geometry, invCubeSize);
+                const std::vector<TriangleKey> gpuFull = triangleKeys(res.bridge, invCubeSize, false);
+                const std::vector<TriangleKey> cpuFull = triangleKeys(refTesselator.geometry, invCubeSize, false);
+                const size_t matchedGeom = countMatched(gpuGeom, cpuGeom);
+                const size_t matchedSorted = countMatched(gpuGeomSorted, cpuGeomSorted);
+                const size_t matchedCentroid = countMatched(gpuCentroid, cpuCentroid);
+                const size_t matchedFull = countMatched(gpuFull, cpuFull);
                 std::cerr << "[SceneRenderer] resident topology self-check ("
                           << topoInput.cells.size() << " cells, " << topoInput.nodes.size()
                           << " nodes): gpu triangles=" << (res.indexCount / 3)
                           << " cpu triangles=" << (refTesselator.geometry.indices.size() / 3)
                           << " gpu verts=" << res.poolVertexCount
                           << " cpu verts=" << refTesselator.geometry.vertices.size()
-                          << " compared=" << compared << " mismatches=" << mismatches;
-                if (firstBad != SIZE_MAX)
-                    std::cerr << " (first mismatch at " << firstBad << ")";
-                std::cerr << "\n";
+                          << " geometry=" << matchedGeom << "/" << gpuGeom.size()
+                          << " geometry(sorted)=" << matchedSorted << "/" << gpuGeomSorted.size()
+                          << " centroid=" << matchedCentroid << "/" << gpuCentroid.size()
+                          << " payload=" << matchedFull << "/" << gpuFull.size()
+                          << "\n";
             }
         }
     }
