@@ -65,7 +65,10 @@ SimplificationResult Simplifier::simplify(
     for(uint i = 0; i < 8; ++i) {
         NodeOperationResult * child = &children[i];
         if(child && child->resultType == SpaceType::Surface && child->node) {
-            avgNormal += child->node->vertex.normal;
+            BoundingCube childCube = cube.getChild(i);
+            glm::vec3 pos = SDF::getPosition(child->resultSDF, childCube);
+            glm::vec3 nrm = SDF::getNormalFromPosition(child->resultSDF, childCube, pos);
+            avgNormal += nrm;
             ++surfaceCount;
         }
     }
@@ -83,7 +86,9 @@ SimplificationResult Simplifier::simplify(
         for(uint i = 0; i < 8; ++i) {
             NodeOperationResult * child = &children[i];
             if(child && child->resultType == SpaceType::Surface && child->node) {
-                const glm::vec3 n = child->node->vertex.normal;
+                BoundingCube childCube = cube.getChild(i);
+                glm::vec3 pos = SDF::getPosition(child->resultSDF, childCube);
+                const glm::vec3 n = SDF::getNormalFromPosition(child->resultSDF, childCube, pos);
                 const float nLen = glm::length(n);
                 if(nLen > 1e-6f) {
                     minDot = glm::min(minDot, glm::dot(avgNormal, n / nLen));

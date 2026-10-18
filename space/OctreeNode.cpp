@@ -11,7 +11,7 @@ const float FAR_ARRAY [8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINI
 
 OctreeNode::OctreeNode() {
 	version = 0u;
-	init(glm::vec3());
+	init(Vertex());
 }
 
 OctreeNode::OctreeNode(Vertex vertex_) {
@@ -32,7 +32,8 @@ OctreeNode * OctreeNode::init(Vertex vert) {
 	this->chunkLod = 0;
 	this->setChunk(false);
 	this->setType(SpaceType::Surface);
-	this->vertex = vert;
+	this->brushIndex = vert.brushIndex;
+	this->hsv = vert.hsv;
 	this->blockId = UINT_MAX;
 	this->version = 0u;
 	return this;
@@ -137,8 +138,8 @@ SpaceType OctreeNode::getType() const {
 }
 
 void OctreeNode::setBrush(int brushIndex) {
-	vertex.brushIndex = brushIndex;
+	this->brushIndex = brushIndex;
 }
 int OctreeNode::getBrush() const {
-	return this->vertex.brushIndex;
+	return this->brushIndex;
 }

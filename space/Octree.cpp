@@ -229,7 +229,8 @@ void Octree::iterateTriangles(
             int fromLevel,
             OctreeNodeTriangleHandler &func,
             ThreadContext * context,
-            int targetLod) const {
+            int targetLod,
+            const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn) const {
     OctreeSharedLock lock(treeMutex);
 
     struct EdgeCell {
@@ -567,11 +568,20 @@ void Octree::iterateTriangles(
         return std::less<OctreeNode*>()(a.node, b.node);
     };
 
-    auto emitTriangle = [&](Vertex *a, Vertex *b, Vertex *c, float eps) {
-        if(a == NULL || b == NULL || c == NULL) return;
-        if(samePosition(a->position, b->position, eps)) return;
-        if(samePosition(b->position, c->position, eps)) return;
-        if(samePosition(c->position, a->position, eps)) return;
+    auto nodeVertex = [&](OctreeNode *n, const BoundingCube &c) -> Vertex {
+        if (vertexFn) return vertexFn(n, c);
+        glm::vec3 pos = SDF::getPosition(n->sdf, c);
+        glm::vec3 norm = SDF::getNormalFromPosition(n->sdf, c, pos);
+        Vertex v(pos, norm, glm::vec2(0.0f), n->brushIndex);
+        v.hsv = n->hsv;
+        return v;
+    };
+
+    auto emitTriangle = [&](const Vertex &a, const Vertex &b, const Vertex &c, float eps) {
+        // a/b/c are vertices (not pointers) now; no null check needed.
+        if(samePosition(a.position, b.position, eps)) return;
+        if(samePosition(b.position, c.position, eps)) return;
+        if(samePosition(c.position, a.position, eps)) return;
         // Brush fallback for unattributed vertices: rung-parent chunks
         // aggregate finer non-chunk cells whose vertices were solved
         // (positions valid) but never painted (brush DISCARD), because paint
@@ -582,8 +592,8 @@ void Octree::iterateTriangles(
         // vertex state is never mutated. When the anchor itself is
         // unattributed the old drop behavior is kept (Tesselator::handle
         // below enforces the same rule).
-        Vertex ca = *a, cb = *b, cc = *c;
-        const int fallbackBrush = (from != NULL) ? from->vertex.brushIndex : DISCARD_BRUSH_INDEX;
+        Vertex ca = a, cb = b, cc = c;
+        const int fallbackBrush = (from != NULL) ? from->brushIndex : DISCARD_BRUSH_INDEX;
         if(ca.brushIndex <= DISCARD_BRUSH_INDEX) ca.brushIndex = fallbackBrush;
         if(cb.brushIndex <= DISCARD_BRUSH_INDEX) cb.brushIndex = fallbackBrush;
         if(cc.brushIndex <= DISCARD_BRUSH_INDEX) cc.brushIndex = fallbackBrush;
@@ -660,7 +670,7 @@ void Octree::iterateTriangles(
             }
             bool duplicate = (pcount > 0)
                 && (plist[pcount - 1].node == cells[q].node
-                    || samePosition(plist[pcount - 1].node->vertex.position, cells[q].node->vertex.position, edge.eps));
+                    || samePosition(nodeVertex(plist[pcount - 1].node, plist[pcount - 1].cube).position, nodeVertex(cells[q].node, cells[q].cube).position, edge.eps));
             if(!duplicate && pcount < 4) {
                 plist[pcount++] = cells[q];
             }
@@ -669,7 +679,7 @@ void Octree::iterateTriangles(
         if(pcount > 1) {
             const EdgeCell &first = plist[0];
             const EdgeCell &last = plist[pcount - 1];
-            if(first.node == last.node || samePosition(first.node->vertex.position, last.node->vertex.position, edge.eps)) {
+            if(first.node == last.node || samePosition(nodeVertex(first.node, first.cube).position, nodeVertex(last.node, last.cube).position, edge.eps)) {
                 --pcount;
             }
         }
@@ -677,7 +687,7 @@ void Octree::iterateTriangles(
         for(int i = 0; i < pcount; ++i) {
             for(int j = i + 1; j < pcount; ++j) {
                 if(plist[i].node == plist[j].node
-                    || samePosition(plist[i].node->vertex.position, plist[j].node->vertex.position, edge.eps)) {
+                    || samePosition(nodeVertex(plist[i].node, plist[i].cube).position, nodeVertex(plist[j].node, plist[j].cube).position, edge.eps)) {
                     return;
                 }
             }
@@ -706,16 +716,16 @@ void Octree::iterateTriangles(
         const bool solidAtStart = s0;
         if(pcount == 3) {
             if(solidAtStart)
-                emitTriangle(&plist[0].node->vertex, &plist[1].node->vertex, &plist[2].node->vertex, edge.eps);
+                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[1].node, plist[1].cube), nodeVertex(plist[2].node, plist[2].cube), edge.eps);
             else
-                emitTriangle(&plist[0].node->vertex, &plist[2].node->vertex, &plist[1].node->vertex, edge.eps);
+                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[2].node, plist[2].cube), nodeVertex(plist[1].node, plist[1].cube), edge.eps);
         } else if(pcount == 4) {
             if(solidAtStart) {
-                emitTriangle(&plist[0].node->vertex, &plist[1].node->vertex, &plist[2].node->vertex, edge.eps);
-                emitTriangle(&plist[0].node->vertex, &plist[2].node->vertex, &plist[3].node->vertex, edge.eps);
+                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[1].node, plist[1].cube), nodeVertex(plist[2].node, plist[2].cube), edge.eps);
+                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[2].node, plist[2].cube), nodeVertex(plist[3].node, plist[3].cube), edge.eps);
             } else {
-                emitTriangle(&plist[0].node->vertex, &plist[3].node->vertex, &plist[2].node->vertex, edge.eps);
-                emitTriangle(&plist[0].node->vertex, &plist[2].node->vertex, &plist[1].node->vertex, edge.eps);
+                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[3].node, plist[3].cube), nodeVertex(plist[2].node, plist[2].cube), edge.eps);
+                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[2].node, plist[2].cube), nodeVertex(plist[1].node, plist[1].cube), edge.eps);
             }
         }
     };
@@ -954,11 +964,11 @@ void Octree::shapeChildren(
         node->getChildren(*allocator, children);
     }
 
-    int brushIndex = node ? node->vertex.brushIndex : frame.brushIndex;
+    int brushIndex = node ? node->brushIndex : frame.brushIndex;
     if(brushIndex == DISCARD_BRUSH_INDEX) {
         brushIndex = frame.brushIndex;
     }
-    glm::vec3 hsv = node ? node->vertex.hsv : frame.hsv;
+    glm::vec3 hsv = node ? node->hsv : frame.hsv;
 
     // Iterate nodes and submit threaded children to the pool
     for (uint i = 0; i < 8; ++i) {
@@ -968,11 +978,11 @@ void Octree::shapeChildren(
         }
 
         float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
-        int childBrushIndex = child ? child->vertex.brushIndex : brushIndex;
+        int childBrushIndex = child ? child->brushIndex : brushIndex;
         if(childBrushIndex == DISCARD_BRUSH_INDEX) {
             childBrushIndex = brushIndex;
         }
-        glm::vec3 childHsv = child ? child->vertex.hsv : hsv;
+        glm::vec3 childHsv = child ? child->hsv : hsv;
 
         if(child != NULL) {
             SDF::copySDF(child->sdf, childSDF);
@@ -1026,8 +1036,8 @@ void Octree::shape(
     const float nodeLength = frame.cube.getLengthX();
     const bool isShapeLeaf = nodeLength <= args.minSize;
     const bool isNodeLeaf = r.node == NULL || r.node->isLeaf();
-    r.brushIndex = r.node ? r.node->vertex.brushIndex : frame.brushIndex;
-    r.brushHsv = r.node ? r.node->vertex.hsv : frame.hsv;
+    r.brushIndex = r.node ? r.node->brushIndex : frame.brushIndex;
+    r.brushHsv = r.node ? r.node->hsv : frame.hsv;
     bool isChunk = isChunkNode(nodeLength);
     bool isLeaf = isShapeLeaf && isNodeLeaf;
     r.selectedLod = isLeaf ? 1u : 0u;
@@ -1088,11 +1098,14 @@ void Octree::shape(
 
             if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
                 if(r.node != NULL) {
-                    r.brushIndex = args.painter.paint(r.node->vertex);
-                    r.brushHsv = args.painter.paintHSV(r.node->vertex);
-                    r.node->vertex.normal = SDF::getNormalFromPosition(r.resultSDF, frame.cube, r.node->vertex.position);
-                    r.node->vertex.hsv = r.brushHsv;
-                    r.node->vertex.brushIndex = r.brushIndex;
+                    glm::vec3 _pos = SDF::getPosition(r.resultSDF, frame.cube);
+                    glm::vec3 _norm = SDF::getNormalFromPosition(r.resultSDF, frame.cube, _pos);
+                    Vertex _v(_pos, _norm, glm::vec2(0.0f), r.node->brushIndex);
+                    _v.hsv = r.node->hsv;
+                    r.brushIndex = args.painter.paint(_v);
+                    r.brushHsv = args.painter.paintHSV(_v);
+                    r.node->hsv = r.brushHsv;
+                    r.node->brushIndex = r.brushIndex;
                     r.node->setBrush(r.brushIndex);
                 }
             }
@@ -1136,11 +1149,14 @@ void Octree::shape(
                 r.resultType = SpaceType::Solid;
                 if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
                     if(r.node != NULL) {
-                        r.brushIndex = args.painter.paint(r.node->vertex);
-                        r.brushHsv = args.painter.paintHSV(r.node->vertex);
-                        r.node->vertex.normal = SDF::getNormalFromPosition(r.resultSDF, frame.cube, r.node->vertex.position);
-                        r.node->vertex.hsv = r.brushHsv;
-                        r.node->vertex.brushIndex = r.brushIndex;
+                        glm::vec3 _pos = SDF::getPosition(r.resultSDF, frame.cube);
+                        glm::vec3 _norm = SDF::getNormalFromPosition(r.resultSDF, frame.cube, _pos);
+                        Vertex _v(_pos, _norm, glm::vec2(0.0f), r.node->brushIndex);
+                        _v.hsv = r.node->hsv;
+                        r.brushIndex = args.painter.paint(_v);
+                        r.brushHsv = args.painter.paintHSV(_v);
+                        r.node->hsv = r.brushHsv;
+                        r.node->brushIndex = r.brushIndex;
                         r.node->setBrush(r.brushIndex);
                     }
                 }
@@ -1191,15 +1207,17 @@ void Octree::shape(
             }
 
             if(r.node!= NULL) {
-                r.node->vertex.position = SDF::getPosition(r.resultSDF, frame.cube);
-                r.node->vertex.normal = SDF::getNormalFromPosition(r.resultSDF, frame.cube, r.node->vertex.position);
+                glm::vec3 _pos = SDF::getPosition(r.resultSDF, frame.cube);
+                glm::vec3 _norm = SDF::getNormalFromPosition(r.resultSDF, frame.cube, _pos);
                 // Simplification & Painting
                 if(isLeaf) {
                     if(r.shapeType != SpaceType::Empty) {
-                        r.brushIndex = args.painter.paint(r.node->vertex);
-                        r.node->vertex.hsv = args.painter.paintHSV(r.node->vertex);
-                        r.node->vertex.brushIndex = r.brushIndex;
-                        r.brushHsv = r.node->vertex.hsv;
+                        Vertex _v(_pos, _norm, glm::vec2(0.0f), r.node->brushIndex);
+                        _v.hsv = r.node->hsv;
+                        r.brushIndex = args.painter.paint(_v);
+                        r.node->hsv = args.painter.paintHSV(_v);
+                        r.node->brushIndex = r.brushIndex;
+                        r.brushHsv = r.node->hsv;
                     }  
                 } else  {
                 
@@ -1228,7 +1246,7 @@ void Octree::shape(
                                 childNode->setBrush(r.brushIndex);
                                 childNode->setLod(child.selectedLod);
                                 childNode->setChunkLod(child.selectedChunkLod);
-                                childNode->vertex.hsv = child.brushHsv;
+                                childNode->hsv = child.brushHsv;
                             }
 
                             if(frame.node != NULL && childNode == r.node) {
@@ -1269,7 +1287,7 @@ void Octree::shape(
                     if(count > bestCount) {
                         bestCount = count;
                         r.brushIndex = childBrush;
-                        r.brushHsv = childNode->vertex.hsv;
+                        r.brushHsv = childNode->hsv;
                     }
                 }
             }    
@@ -1293,7 +1311,7 @@ void Octree::shape(
         r.node->setLod(r.selectedLod);
         r.node->setChunkLod(r.selectedChunkLod);
         r.node->setBrush(r.brushIndex);
-        r.node->vertex.hsv = r.brushHsv;
+        r.node->hsv = r.brushHsv;
 
         if(r.node->getChunkLod() > 0 && r.resultType == SpaceType::Surface) {
             ++r.node->version;

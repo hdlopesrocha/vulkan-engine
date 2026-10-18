@@ -3,6 +3,7 @@
 #include "../math/Vertex.hpp"
 #include "../math/BoundingCube.hpp"
 #include "../math/SpaceType.hpp"
+#include <glm/glm.hpp>
 #include <cstdint>
 
 class OctreeAllocator;
@@ -10,7 +11,8 @@ class OctreeAllocator;
 class OctreeNode {
 
 public:
-    Vertex vertex;
+    int brushIndex = 0;
+    glm::vec3 hsv = glm::vec3(0.0f, 0.5f, 0.5f);
     uint blockId;
     uint8_t bits;
     // Stored LoD levels are +1 shifted: getLod() returns the ladder level

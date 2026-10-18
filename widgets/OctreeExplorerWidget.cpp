@@ -312,7 +312,6 @@ void OctreeExplorerWidget::renderSdfInline(const OctreeNode* node) {
     }
     if (ImGui::IsItemHovered()) {
         ImGui::BeginTooltip();
-        ImGui::Text("Vertex: (%.2f, %.2f, %.2f)", node->vertex.position.x, node->vertex.position.y, node->vertex.position.z);
         for (int i = 0; i < 8; i += 2) {
             auto fmt = [&](int c) {
                 if (node->sdf[c] == INFINITY) return std::string("FAR");

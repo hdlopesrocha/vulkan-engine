@@ -6,6 +6,8 @@
 #include "OctreeNodeFrame.hpp"
 #include "OctreeNodeLevel.hpp"
 #include "OctreeAllocator.hpp"
+#include "../math/Vertex.hpp"
+#include <functional>
 #include "OctreeNodeTriangleHandler.hpp"
 #include "ShapeArgs.hpp"
 #include "../sdf/SignedDistanceFunction.hpp"
@@ -94,7 +96,8 @@ class Octree: public BoundingCube {
         ThreadContext * context,
         // targetLod uses the +1-shifted STORED ladder level:
         // 0 = no LoD (legacy full-walk mode), 1 = frontier, k = ancestor.
-        int targetLod = 0) const;
+        int targetLod = 0,
+        const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn = nullptr) const;
 
     // HeightRootToChunk(N): how many LoD levels a chunk can hold above its
     // tessellation frontier before reaching the chunk-size boundary, i.e.
