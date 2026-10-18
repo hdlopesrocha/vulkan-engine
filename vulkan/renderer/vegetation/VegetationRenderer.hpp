@@ -106,8 +106,14 @@ public:
     // chunk's previous instance data is cleared instead.
     void generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom);
     // Drain up to maxChunks from the pending queue.  Call every frame from
-    // draw() so chunks trickle in at a controlled rate.
+    // draw() so chunks trickle in at a controlled rate. Dispatches to the GPU
+    // placement path (processPendingChunksGPU) when available, else the CPU
+    // path.
     void processPendingChunks(uint32_t maxChunks);
+    // Force the CPU placement path (server fallback / debugging). Set from the
+    // VULKAN_CPU_VEGETATION env var at init.
+    void setUseGpuPlacement(bool enabled) { useGpuPlacement = enabled; }
+    bool gpuPlacementEnabled() const { return useGpuPlacement; }
     // Number of chunks still waiting in the queue.
     size_t pendingChunkCount() const;
     void clearAllInstances();
@@ -649,6 +655,24 @@ private:
     // Frame-thread scratch reused by processPendingChunks for per-chunk
     // instance data (clear + reserve avoids reallocating per chunk).
     std::vector<float> instanceGenScratch;
+
+    // ── GPU vegetation placement (compute) ────────────────────────────────
+    // Replaces the per-instance CPU loop in processPendingChunks: the chunk's
+    // tessellated mesh (positions/normals/brushes) plus the expanded grass
+    // triangle slots are uploaded once and a compute dispatch writes the
+    // 32-byte instance records DIRECTLY into the chunk's device-local buffer.
+    // Only the instance count is read back (deferred, after the dispatch
+    // fence), so the instance data never round-trips through the CPU.
+    bool useGpuPlacement = true;
+    // Upper bound on in-flight placement descriptor sets per batch (one set
+    // per chunk dispatch, freed once its fence signals).
+    static constexpr uint32_t kMaxVegPlacementSets = 256;
+    TrackedHandle<VkPipeline> vegPlacementPipeline;
+    TrackedHandle<VkPipelineLayout> vegPlacementPipelineLayout;
+    TrackedHandle<VkDescriptorSetLayout> vegPlacementDescSetLayout;
+    TrackedHandle<VkDescriptorPool> vegPlacementDescPool;
+    void ensurePlacementPipeline(VulkanApp* app);
+    void processPendingChunksGPU(VulkanApp* app, uint32_t maxChunks);
 
     // ── Own offscreen color + depth targets (decoupled from solid pass) ──
     std::array<VkImage, VEG_FRAMES> vegColorImages = {};

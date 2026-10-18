@@ -1,0 +1,134 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : enable
+
+// GPU vegetation placement: a faithful port of the per-instance loop that used
+// to live in VegetationRenderer::processPendingChunks (CPU). The chunk's
+// tessellated mesh (positions + normals + brush indices) and the expanded
+// grass-triangle slot list are uploaded once; this dispatch samples the slots
+// and writes the 32-byte instance records DIRECTLY into the chunk's
+// device-local instance buffer. The instance data never round-trips through
+// the CPU — only the resulting count is read back, after the dispatch fence.
+//
+// Determinism: identical hashes / RNG / thresholds to the CPU path
+// (xorshift32, posHash, cellHash, biomeNoise, dominant-vertex brush test), so
+// the placement matches the CPU implementation up to float rounding.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, scalar) readonly  buffer InPos   { vec4 positions[]; };
+layout(set = 0, binding = 1, scalar) readonly  buffer InNrm   { vec4 normals[]; };
+layout(set = 0, binding = 2, scalar) readonly  buffer InBrush { int  brushes[]; };
+// Expanded virtual-triangle slot list: 3 vertex indices per slot.
+layout(set = 0, binding = 3, scalar) readonly  buffer InSlots { uint slots[]; };
+// Output: 2x vec4 per instance (pos vec4, then normal vec4) = kInstanceStride.
+layout(set = 0, binding = 4, scalar) writeonly buffer OutInst { vec4 instances[]; };
+layout(set = 0, binding = 5, scalar) buffer Counter { uint count; };
+
+layout(push_constant) uniform PC {
+    uint slotCount;
+    uint instancesPerTriangle;
+    uint billboardCount;
+    uint seed;
+    int  grassBrush;
+    int  vertexCount;
+} pc;
+
+uint xorshift32(inout uint state) {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+float randFloat(inout uint state) {
+    return float(xorshift32(state) & 0x00FFFFFFu) / float(0x01000000u);
+}
+
+// Position hash — matches posHash in VegetationRenderer.cpp.
+uint posHash(vec3 p) {
+    ivec3 qi = ivec3(round(p * 8.0));
+    uint h = uint(qi.x) * 1640531513u;
+    h ^= uint(qi.y) * 2246822519u;
+    h ^= uint(qi.z) * 3266489917u;
+    return h;
+}
+
+// 2D cell hash — matches cellHash in VegetationRenderer.cpp.
+uint cellHash(ivec2 c) {
+    uint h = uint(c.x) * 1640531513u ^ uint(c.y) * 2246822519u;
+    h ^= h >> 13;
+    h *= 0x45d9f3bu;
+    h ^= h >> 16;
+    return h;
+}
+
+// Biome noise — matches biomeNoise in VegetationRenderer.cpp.
+float biomeNoise(vec2 xz) {
+    const float kBiomeScale = 50.0;
+    vec2 p = xz / kBiomeScale;
+    ivec2 i = ivec2(floor(p));
+    vec2 f = p - vec2(i);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+
+    float a = float(cellHash(i + ivec2(0, 0))) / 4294967295.0;
+    float b = float(cellHash(i + ivec2(1, 0))) / 4294967295.0;
+    float c = float(cellHash(i + ivec2(0, 1))) / 4294967295.0;
+    float d = float(cellHash(i + ivec2(1, 1))) / 4294967295.0;
+
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+void main() {
+    uint ipt = max(pc.instancesPerTriangle, 1u);
+    uint idx = gl_GlobalInvocationID.x;
+    uint total = pc.slotCount * ipt;
+    if (idx >= total) return;
+
+    uint tri  = idx / ipt;
+    uint inst = idx % ipt;
+
+    uint i0 = slots[tri * 3 + 0];
+    uint i1 = slots[tri * 3 + 1];
+    uint i2 = slots[tri * 3 + 2];
+    if (int(i0) >= pc.vertexCount || int(i1) >= pc.vertexCount || int(i2) >= pc.vertexCount) return;
+
+    vec3 v0 = positions[i0].xyz;
+    vec3 v1 = positions[i1].xyz;
+    vec3 v2 = positions[i2].xyz;
+
+    vec3 tc = (v0 + v1 + v2) / 3.0;
+    uint tch = posHash(tc);
+
+    uint rng = pc.seed ^ tch ^ (tri * 2654435761u) ^ (inst * 19349663u);
+    float u = randFloat(rng);
+    float v = randFloat(rng);
+    if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
+    float w = 1.0 - u - v;
+    vec3 pos = u * v0 + v * v1 + w * v2;
+
+    // Dominant-vertex brush test: keep the sample only if the closest vertex
+    // (largest barycentric weight) is grass-brushed (mirrors the CPU path).
+    int dominantBrush = (u >= v && u >= w) ? brushes[i0]
+                      : (v >= w)          ? brushes[i1]
+                                          : brushes[i2];
+    if (dominantBrush != pc.grassBrush) return;
+
+    // Biome from spatially-coherent noise.
+    float noise = biomeNoise(pos.xz);
+    if (noise < 0.40) return; // empty biome — skip entirely
+
+    float remapped = (noise - 0.40) / 0.60;
+    uint bi = min(uint(remapped * float(pc.billboardCount)), pc.billboardCount - 1u);
+
+    uint rs = pc.seed ^ posHash(pos);
+    float rf = randFloat(rs);
+
+    // Smooth surface normal (barycentric interpolation).
+    vec3 nrm = u * normals[i0].xyz + v * normals[i1].xyz + w * normals[i2].xyz;
+    float n2 = dot(nrm, nrm);
+    nrm = (n2 > 1e-8) ? nrm * inversesqrt(n2) : vec3(0.0, 1.0, 0.0);
+
+    uint outIdx = atomicAdd(count, 1u);
+    instances[outIdx * 2 + 0] = vec4(pos, float(bi) + rf);
+    instances[outIdx * 2 + 1] = vec4(nrm, 0.0);
+}

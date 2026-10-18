@@ -499,10 +499,15 @@ void VegetationRenderer::consolidateChunks(VulkanApp* app) {
             // sync validation attributes vertex-attribute reads to
             // (SYNC-HAZARD-WRITE-AFTER-READ reported on GPU-assisted runs).
             VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+            // SHADER_WRITE: the per-chunk sources may have been produced by the
+            // GPU placement dispatch (compute) instead of the legacy staging
+            // copy (TRANSFER_WRITE); both are made available here. ALL_COMMANDS
+            // srcStage already spans the compute stage.
             mb.srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
             mb.srcAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
                                VK_ACCESS_2_TRANSFER_READ_BIT |
-                               VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                               VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                               VK_ACCESS_2_SHADER_WRITE_BIT;
             mb.dstStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT;
             mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
             VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
@@ -1079,6 +1084,12 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
 void VegetationRenderer::init(VulkanApp* app) {
     if (!app) return;
     this->appPtr = app;
+    // GPU placement is the default; VULKAN_CPU_VEGETATION=1 forces the legacy
+    // CPU path (RADV iGPU storage-read fallback / A-B debugging).
+    if (std::getenv("VULKAN_CPU_VEGETATION")) {
+        useGpuPlacement = false;
+        std::cerr << "[VegetationRenderer] VULKAN_CPU_VEGETATION set — using CPU placement path\n";
+    }
     VkDevice device = app->getDevice();
 
     DescriptorAllocator descAlloc{device, app};
@@ -1528,14 +1539,17 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
         (void)chunkId;
         if (buf.buffer == VK_NULL_HANDLE || buf.count == 0) continue;
 
-        // Instance buffers are filled by the CPU (processPendingChunks writes
-        // via mapped HOST_VISIBLE memory).  Without this barrier the GPU may
-        // read uninitialized billboardIndex values, producing out-of-bounds
-        // texture-array accesses that cause RADV GPUVM faults (TCP read).
+        // Instance buffers are filled either by the CPU upload path (host
+        // write + staging transfer) or by the GPU placement dispatch (compute
+        // shader write). Without this barrier the GPU may read uninitialized
+        // billboardIndex values, producing out-of-bounds texture-array accesses
+        // that cause RADV GPUVM faults (TCP read).
         VkBufferMemoryBarrier2 instanceBarrier{};
         instanceBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        instanceBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-        instanceBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+        instanceBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        instanceBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT |
+                                        VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                                        VK_ACCESS_2_SHADER_WRITE_BIT;
         instanceBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
         instanceBarrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
         instanceBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -2214,6 +2228,18 @@ float biomeNoise(const glm::vec2& xz) {
 
 } // anonymous namespace
 
+namespace {
+// Push constants for VegetationPlacement.comp (mirrors the shader block).
+struct VegPlacementPC {
+    uint32_t slotCount;
+    uint32_t instancesPerTriangle;
+    uint32_t billboardCount;
+    uint32_t seed;
+    int32_t  grassBrush;
+    int32_t  vertexCount;
+};
+} // anonymous namespace
+
 void VegetationRenderer::generateChunkInstancesCPU(NodeID chunkId,
                                                    const std::vector<glm::vec3>& positions,
                                                    const std::vector<glm::vec3>& normals,
@@ -2251,9 +2277,307 @@ size_t VegetationRenderer::pendingChunkCount() const {
     return pendingChunks.size();
 }
 
+void VegetationRenderer::ensurePlacementPipeline(VulkanApp* app) {
+    if (!app) return;
+    if (vegPlacementPipeline != VK_NULL_HANDLE) return;
+    VkDevice device = app->getDevice();
+
+    VkDescriptorSetLayoutBinding bindings[6] = {};
+    for (int b = 0; b < 6; ++b) {
+        bindings[b].binding = b;
+        bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[b].descriptorCount = 1;
+        bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo dli{};
+    dli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dli.bindingCount = 6;
+    dli.pBindings = bindings;
+    if (vkCreateDescriptorSetLayout(device, &dli, nullptr, &vegPlacementDescSetLayout) != VK_SUCCESS)
+        throw std::runtime_error("VegetationRenderer: placement descriptor set layout");
+    app->resources.addDescriptorSetLayout(vegPlacementDescSetLayout, "VegetationRenderer: vegPlacementDescSetLayout");
+
+    VkPushConstantRange pcr{};
+    pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pcr.offset = 0;
+    pcr.size = sizeof(VegPlacementPC);
+    VkPipelineLayoutCreateInfo pli{};
+    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &vegPlacementDescSetLayout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    if (vkCreatePipelineLayout(device, &pli, nullptr, &vegPlacementPipelineLayout) != VK_SUCCESS)
+        throw std::runtime_error("VegetationRenderer: placement pipeline layout");
+    app->resources.addPipelineLayout(vegPlacementPipelineLayout, "VegetationRenderer: vegPlacementPipelineLayout");
+
+    VkShaderModule module = app->getOrCreateShaderModule("shaders/renderer/vegetation/VegetationPlacement.comp.spv");
+    VkComputePipelineCreateInfo cpi{};
+    cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    cpi.stage.module = module;
+    cpi.stage.pName = "main";
+    cpi.layout = vegPlacementPipelineLayout;
+    if (vkCreateComputePipelines(device, app->getPipelineCache(), 1, &cpi, nullptr, &vegPlacementPipeline) != VK_SUCCESS)
+        throw std::runtime_error("VegetationRenderer: placement pipeline");
+    app->resources.addPipeline(vegPlacementPipeline, "VegetationRenderer: vegPlacementPipeline");
+
+    VkDescriptorPoolSize ps{};
+    ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ps.descriptorCount = 6 * kMaxVegPlacementSets;
+    VkDescriptorPoolCreateInfo dpi{};
+    dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpi.poolSizeCount = 1;
+    dpi.pPoolSizes = &ps;
+    dpi.maxSets = kMaxVegPlacementSets;
+    dpi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    if (vkCreateDescriptorPool(device, &dpi, nullptr, &vegPlacementDescPool) != VK_SUCCESS)
+        throw std::runtime_error("VegetationRenderer: placement descriptor pool");
+    app->resources.addDescriptorPool(vegPlacementDescPool, "VegetationRenderer: vegPlacementDescPool");
+
+    std::cerr << "[VegetationRenderer] GPU placement pipeline ready (VegetationPlacement.comp)\n";
+}
+
+// GPU-side instance placement. Per chunk: upload the tessellated mesh
+// (positions/normals/brushes) + the expanded grass-slot list into one pooled
+// host-visible staging buffer, dispatch VegetationPlacement.comp writing the
+// 32-byte instance records DIRECTLY into a fresh device-local instance buffer,
+// and publish the chunk (count read from the GPU counter) when the dispatch
+// fence signals. The instance bytes never touch the CPU.
+void VegetationRenderer::processPendingChunksGPU(VulkanApp* app, uint32_t maxChunks) {
+    if (!app) return;
+    ensurePlacementPipeline(app);
+    const uint32_t billboardCnt = (billboardCount > 0) ? billboardCount : 1u;
+    constexpr int kGrassBrush = 3; // LandBrush::grass: meadow brush
+    const float maxBillboardRadius = billboardScale * 2.1f;
+
+    struct Work {
+        PendingChunk mesh;              // owns positions/normals/brushes/slots
+        uint32_t vertexCount = 0;
+        uint32_t slotCount = 0;
+        uint32_t capacity = 0;          // worst-case instance count
+        glm::vec3 aabbMin{0.0f}, aabbMax{0.0f}, center{0.0f};
+        VkDeviceSize posOff = 0, nrmOff = 0, brushOff = 0, slotOff = 0;
+        Buffer instBuf;
+        Buffer counterBuf;
+        VkDescriptorSet descSet = VK_NULL_HANDLE;
+    };
+    std::vector<Work> work;
+    work.reserve(maxChunks);
+
+    auto align256 = [](VkDeviceSize v) { return (v + 255u) & ~VkDeviceSize(255u); };
+
+    for (uint32_t n = 0; n < maxChunks; ++n) {
+        PendingChunk pc;
+        {
+            std::lock_guard<std::mutex> lk(pendingChunksMutex);
+            if (pendingChunks.empty()) break;
+            pc = std::move(pendingChunks.front());
+            pendingChunks.pop_front();
+        }
+        const uint32_t slotCount = static_cast<uint32_t>(pc.grassIndices.size()) / 3u;
+        if (slotCount == 0 || pc.positions.empty()) {
+            destroyInstanceBuffer(pc.chunkId, app);
+            tombstoneConsolidated(pc.chunkId);
+            continue;
+        }
+        Work w;
+        w.vertexCount = static_cast<uint32_t>(pc.positions.size());
+        w.slotCount = slotCount;
+        w.capacity = slotCount * std::max(1u, pc.instancesPerTriangle);
+        w.center = pc.chunkCenter;
+        w.aabbMin = glm::vec3(std::numeric_limits<float>::max());
+        w.aabbMax = glm::vec3(-std::numeric_limits<float>::max());
+        for (const auto& pos : pc.positions) {
+            w.aabbMin = glm::min(w.aabbMin, pos);
+            w.aabbMax = glm::max(w.aabbMax, pos);
+        }
+        w.aabbMin -= glm::vec3(maxBillboardRadius);
+        w.aabbMax += glm::vec3(maxBillboardRadius);
+        w.mesh = std::move(pc);
+        work.push_back(std::move(w));
+    }
+    if (work.empty()) return;
+
+    // Staging layout: positions | normals | brushes | slots, each region
+    // 256-byte aligned (minStorageBufferOffsetAlignment is at most 256).
+    VkDeviceSize cursor = 0;
+    for (auto& w : work) {
+        w.posOff = cursor;   cursor = align256(cursor + VkDeviceSize(w.vertexCount) * 16u);
+        w.nrmOff = cursor;   cursor = align256(cursor + VkDeviceSize(w.vertexCount) * 16u);
+        w.brushOff = cursor; cursor = align256(cursor + VkDeviceSize(w.vertexCount) * 4u);
+        w.slotOff = cursor;  cursor = align256(cursor + VkDeviceSize(w.slotCount) * 12u);
+    }
+    const VkDeviceSize batchTotal = cursor;
+
+    size_t stagingIndex = 0;
+    Buffer staging = acquireStagingBuffer(app, batchTotal, stagingIndex);
+    {
+        char* base = static_cast<char*>(staging.map(0));
+        if (!base) {
+            if (stagingIndex < stagingPool.size()) stagingPool[stagingIndex].inUse = false;
+            return;
+        }
+        for (auto& w : work) {
+            const uint32_t vc = w.vertexCount;
+            float* p = reinterpret_cast<float*>(base + w.posOff);
+            for (uint32_t i = 0; i < vc; ++i) {
+                const glm::vec3& pv = w.mesh.positions[i];
+                p[i * 4 + 0] = pv.x; p[i * 4 + 1] = pv.y; p[i * 4 + 2] = pv.z; p[i * 4 + 3] = 0.0f;
+            }
+            float* nn = reinterpret_cast<float*>(base + w.nrmOff);
+            const bool hasNormals = (w.mesh.normals.size() == w.mesh.positions.size());
+            for (uint32_t i = 0; i < vc; ++i) {
+                const glm::vec3 nv = hasNormals ? w.mesh.normals[i] : glm::vec3(0.0f, 1.0f, 0.0f);
+                nn[i * 4 + 0] = nv.x; nn[i * 4 + 1] = nv.y; nn[i * 4 + 2] = nv.z; nn[i * 4 + 3] = 0.0f;
+            }
+            int* br = reinterpret_cast<int*>(base + w.brushOff);
+            const bool hasBrushes = (w.mesh.brushIndices.size() == w.mesh.positions.size());
+            for (uint32_t i = 0; i < vc; ++i)
+                br[i] = hasBrushes ? w.mesh.brushIndices[i] : kGrassBrush;
+            uint32_t* sl = reinterpret_cast<uint32_t*>(base + w.slotOff);
+            const uint32_t slotWords = w.slotCount * 3u;
+            for (uint32_t i = 0; i < slotWords; ++i) sl[i] = w.mesh.grassIndices[i];
+            // The staging bytes are the only consumer of the CPU-side mesh;
+            // release the vectors now instead of retaining them until the
+            // dispatch fence fires. Scalars (chunkId/seed/instancesPerTriangle)
+            // stay for the deferred publish.
+            std::vector<glm::vec3>().swap(w.mesh.positions);
+            std::vector<glm::vec3>().swap(w.mesh.normals);
+            std::vector<int>().swap(w.mesh.brushIndices);
+            std::vector<uint32_t>().swap(w.mesh.grassIndices);
+        }
+        staging.unmap();
+    }
+
+    VkDevice device = app->getDevice();
+    VkDescriptorBufferInfo infos[6];
+    for (auto& w : work) {
+        w.instBuf = app->createBuffer(VkDeviceSize(w.capacity) * kInstanceStride,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, /*zeroInit=*/false);
+        w.counterBuf = app->createBuffer(sizeof(uint32_t),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (w.instBuf.buffer == VK_NULL_HANDLE || w.counterBuf.buffer == VK_NULL_HANDLE ||
+            w.counterBuf.mappedData == nullptr)
+            continue;
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool = vegPlacementDescPool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &vegPlacementDescSetLayout;
+        if (vkAllocateDescriptorSets(device, &ai, &w.descSet) != VK_SUCCESS) {
+            w.descSet = VK_NULL_HANDLE;
+            continue;
+        }
+        infos[0] = { staging.buffer, w.posOff,   VkDeviceSize(w.vertexCount) * 16u };
+        infos[1] = { staging.buffer, w.nrmOff,   VkDeviceSize(w.vertexCount) * 16u };
+        infos[2] = { staging.buffer, w.brushOff, VkDeviceSize(w.vertexCount) * 4u };
+        infos[3] = { staging.buffer, w.slotOff,  VkDeviceSize(w.slotCount) * 12u };
+        infos[4] = { w.instBuf.buffer, 0, VK_WHOLE_SIZE };
+        infos[5] = { w.counterBuf.buffer, 0, VK_WHOLE_SIZE };
+        VkWriteDescriptorSet writes[6] = {};
+        for (int b = 0; b < 6; ++b) {
+            writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[b].dstSet = w.descSet;
+            writes[b].dstBinding = b;
+            writes[b].descriptorCount = 1;
+            writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[b].pBufferInfo = &infos[b];
+        }
+        vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
+    }
+
+    VkFence fence = app->runSingleTimeCommandsAsync([&](VkCommandBuffer cmd) {
+        // Host writes -> compute reads (the staging buffer is HOST_COHERENT,
+        // but make the dependency explicit and validation-friendly).
+        VkMemoryBarrier hostBar{};
+        hostBar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        hostBar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        hostBar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &hostBar, 0, nullptr, 0, nullptr);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegPlacementPipeline);
+        for (auto& w : work) {
+            if (w.descSet == VK_NULL_HANDLE) continue;
+            VegPlacementPC pc{};
+            pc.slotCount = w.slotCount;
+            pc.instancesPerTriangle = std::max(1u, w.mesh.instancesPerTriangle);
+            pc.billboardCount = billboardCnt;
+            pc.seed = w.mesh.seed;
+            pc.grassBrush = kGrassBrush;
+            pc.vertexCount = static_cast<int32_t>(w.vertexCount);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vegPlacementPipelineLayout,
+                                    0, 1, &w.descSet, 0, nullptr);
+            vkCmdPushConstants(cmd, vegPlacementPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(pc), &pc);
+            const uint32_t groups = (w.capacity + 63u) / 64u;
+            vkCmdDispatch(cmd, groups, 1, 1);
+        }
+        // Compute writes -> host reads (counter readback in the deferred
+        // callback). One barrier covers every dispatch in this batch.
+        VkMemoryBarrier outBar{};
+        outBar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        outBar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        outBar.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                             0, 1, &outBar, 0, nullptr, 0, nullptr);
+    });
+    streamingUploadFence = fence;
+
+    app->deferDestroyUntilFence(fence, [this, app, stagingIndex, work = std::move(work)]() mutable {
+        VkDevice dev = app->getDevice();
+        if (stagingIndex < stagingPool.size()) stagingPool[stagingIndex].inUse = false;
+        for (auto& w : work) {
+            uint32_t count = (w.counterBuf.mappedData != nullptr)
+                                 ? *static_cast<uint32_t*>(w.counterBuf.mappedData) : 0u;
+            if (count > w.capacity) count = w.capacity;
+            destroyInstanceBuffer(w.mesh.chunkId, app);
+            if (w.descSet != VK_NULL_HANDLE) {
+                vkFreeDescriptorSets(dev, vegPlacementDescPool, 1, &w.descSet);
+                w.descSet = VK_NULL_HANDLE;
+            }
+            if (w.counterBuf.buffer != VK_NULL_HANDLE) {
+                app->destroyBuffer(w.counterBuf);
+                w.counterBuf = {};
+            }
+            if (count == 0 || w.instBuf.buffer == VK_NULL_HANDLE) {
+                if (w.instBuf.buffer != VK_NULL_HANDLE) {
+                    app->destroyBuffer(w.instBuf);
+                    w.instBuf = {};
+                }
+                // True delete (no replacement follows): tombstone so completed
+                // generations stop drawing this chunk until the next submit.
+                tombstoneConsolidated(w.mesh.chunkId);
+                continue;
+            }
+            InstanceBuffer ibuf;
+            ibuf.buffer     = w.instBuf.buffer;
+            ibuf.memory     = w.instBuf.memory;
+            ibuf.allocation = w.instBuf.allocation;
+            ibuf.center     = w.center;
+            ibuf.aabbMin    = w.aabbMin;
+            ibuf.aabbMax    = w.aabbMax;
+            ibuf.count      = count;
+            chunkBuffers[w.mesh.chunkId] = ibuf;
+            chunkInstanceCounts[w.mesh.chunkId] = count;
+            vegConsolidationDirty = true;
+        }
+        // M9-(1): the chunk set moved — read barriers re-record next call.
+        noteChunkBuffersChanged();
+    });
+}
+
 void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
     if (!appPtr) return;
     VulkanApp* app = appPtr;
+    if (useGpuPlacement) {
+        processPendingChunksGPU(app, maxChunks);
+        return;
+    }
     const uint32_t billboardCnt = (billboardCount > 0) ? billboardCount : 1u;
 
     // M12-(1) (report 26): batch build list. Per-chunk payloads are stashed
@@ -2521,8 +2845,12 @@ Buffer VegetationRenderer::acquireStagingBuffer(VulkanApp* app, VkDeviceSize siz
     }
     // Create a new entry sized exactly for this request. Indices are stable
     // across push_back (no erasure ever), so captured indices stay valid.
+    // STORAGE_BUFFER: the GPU vegetation placement dispatch binds these host-
+    // visible buffers directly as its mesh/slot inputs (no extra copy), so the
+    // pooled staging buffers must be storage-bindable. Harmless for the
+    // instance-copy users (pure TRANSFER_SRC read).
     Buffer b = app->createBuffer(size,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     stagingPool.push_back({ b, size, true });
     outIndex = stagingPool.size() - 1;
