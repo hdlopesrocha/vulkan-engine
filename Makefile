@@ -529,7 +529,8 @@ valgrind: debug
 	@cd $(OUT_DIR) && valgrind --suppressions=../valgrind.supp --leak-check=full --show-leak-kinds=all ./app > ../logs/valgrind.log 2>&1; echo "Exit code: $$?"
 
 .PHONY: commit
-# Commit the staged changes and then speak the commit subject (first line)
+# Commit the staged changes, store the full commit message in
+# logs/<commit_hash>.log and then speak the commit subject (first line)
 # through the alert queue, so every commit is announced in the same voice as
 # the other alerts. Agents MUST commit through this target instead of bare
 # `git commit`:
@@ -541,9 +542,13 @@ valgrind: debug
 # `git add` first.
 commit:
 	@if [ -n "$$MSG" ]; then git commit -m "$$MSG"; else git commit; fi
-	@msg=$$(git log -1 --pretty=%s); \
-		if [ -n "$$msg" ]; then \
-			nohup sh "$(SOUND_DIR)/say.sh" "$$msg" </dev/null >/dev/null 2>&1 & \
+	@mkdir -p logs; \
+		hash=$$(git rev-parse HEAD); \
+		git log -1 --pretty=%B > "logs/$$hash.log"; \
+		echo "Commit message stored in logs/$$hash.log"; \
+		subject=$$(git log -1 --pretty=%s); \
+		if [ -n "$$subject" ]; then \
+			nohup sh "$(SOUND_DIR)/say.sh" "$$subject" </dev/null >/dev/null 2>&1 & \
 		fi
 
 clean:
