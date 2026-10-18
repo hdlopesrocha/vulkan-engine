@@ -40,7 +40,7 @@
 \maketitle
 
 \begin{abstract}
-This document describes the SDF octree meshing path in this project. The terrain and solid geometry pipeline is a surface-nets style extractor: every simplified surface cell stores one representative vertex, and triangles are emitted around cube edges whose signed distance samples cross the zero isosurface. The document follows the implementation from \code{Octree::apply} and \code{Octree::shape}, through simplification-based LOD, into \code{Octree::iterateTriangles}, the adaptive per-edge stitching algorithm, and finally \code{Tesselator::handle}.
+This document describes the SDF octree meshing path in this project. The terrain and solid geometry pipeline is a surface-nets style extractor: every simplified surface cell stores one representative vertex, and triangles are emitted around cube edges whose signed distance samples cross the zero isosurface. The document follows the implementation from \code{Octree::apply} and \code{Octree::shape}, through simplification-based LOD, into \code{octess::iterateTriangles}, the adaptive per-edge stitching algorithm, and finally \code{Tesselator::handle}.
 \end{abstract}
 
 \tableofcontents
@@ -94,14 +94,14 @@ LocalScene::requestModel3D
   if geometry is not empty, return it through callback
 \end{lstlisting}
 
-\code{Processor::test} walks the chunk subtree. When it finds an unsimplified surface node, traversal continues into children. When it finds a simplified surface node, it calls \code{Octree::iterateTriangles} and stops below that node.
+\code{Processor::test} walks the chunk subtree. When it finds an unsimplified surface node, traversal continues into children. When it finds a simplified surface node, it calls \code{octess::iterateTriangles} and stops below that node.
 
 \begin{lstlisting}
 Processor::test(node):
   if node is not a surface:
     return false
   if node is simplified:
-    tree.iterateTriangles(node, cube, level, handler, context)
+    octess::iterateTriangles(tree, node, cube, level, handler, context)
     return false
   return true
 \end{lstlisting}
@@ -175,7 +175,7 @@ The twelve cube edges are stored in \code{SDF_EDGES}. An edge is a pair of corne
 \end{tabular}
 \end{center}
 
-\code{Octree::iterateTriangles} loops over all twelve edges of each simplified surface cell. An edge is active when the two endpoint signs differ.
+\code{octess::iterateTriangles} loops over all twelve edges of each simplified surface cell. An edge is active when the two endpoint signs differ.
 
 \section{SDF Values, Classification, and Interpolation}
 
@@ -612,7 +612,7 @@ The mesh frontier is defined by \code{Processor::test}:
 \begin{lstlisting}
 if params.node->getType() == Surface:
   if params.node->isSimplified():
-    tree.iterateTriangles(params.node, params.cube, params.level, ...)
+    octess::iterateTriangles(tree, params.node, params.cube, params.level, ...)
     return false
   return true
 return false
@@ -662,7 +662,7 @@ The current implementation instead emits geometry from active cube edge segments
 
 \subsection{EdgeCell}
 
-Inside \code{Octree::iterateTriangles}, an \code{EdgeCell} stores:
+Inside \code{octess::iterateTriangles}, an \code{EdgeCell} stores:
 
 \begin{itemize}
     \item \code{node}: the octree node containing a sample point;
@@ -1024,7 +1024,7 @@ shape(frame):
 \subsection{Tessellation}
 
 \begin{lstlisting}
-iterateTriangles(from):
+octess::iterateTriangles(tree, from):
   for each cube edge e:
     if from.sdf endpoints do not change sign:
       continue
@@ -1051,6 +1051,6 @@ iterateTriangles(from):
 
 \section{Summary}
 
-The project builds renderable terrain and solid meshes by storing an adaptive SDF in an octree and extracting a surface-nets mesh from the simplified surface frontier. \code{Octree::shape} creates and maintains that frontier: it applies CSG operations, classifies cells, creates representative vertices, paints materials, and simplifies compatible child surfaces into coarser LOD cells. Mesh extraction then walks only to simplified surface nodes. For each active SDF edge, \code{Octree::iterateTriangles} splits the edge at neighboring LOD boundaries, samples the four incident cells, chooses one deterministic owner, and emits a local triangle or quad split. \code{Tesselator::handle} performs the final material filter, winding correction, UV generation, and indexed geometry insertion.
+The project builds renderable terrain and solid meshes by storing an adaptive SDF in an octree and extracting a surface-nets mesh from the simplified surface frontier. \code{Octree::shape} creates and maintains that frontier: it applies CSG operations, classifies cells, creates representative vertices, paints materials, and simplifies compatible child surfaces into coarser LOD cells. Mesh extraction then walks only to simplified surface nodes. For each active SDF edge, \code{octess::iterateTriangles} splits the edge at neighboring LOD boundaries, samples the four incident cells, chooses one deterministic owner, and emits a local triangle or quad split. \code{Tesselator::handle} performs the final material filter, winding correction, UV generation, and indexed geometry insertion.
 
 \end{document}

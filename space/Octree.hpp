@@ -8,7 +8,6 @@
 #include "OctreeAllocator.hpp"
 #include "../math/Vertex.hpp"
 #include <functional>
-#include "OctreeNodeTriangleHandler.hpp"
 #include "ShapeArgs.hpp"
 #include "../sdf/SignedDistanceFunction.hpp"
 #include <functional>
@@ -89,15 +88,10 @@ class Octree: public BoundingCube {
     float getSdfAt(const glm::vec3 &pos);
     OctreeNodeLevel fetch(glm::vec3 pos, uint level, bool simplification, ThreadContext * context) const;
 
-    void iterateTriangles(OctreeNode * from,
-        const BoundingCube &fromCube,
-        int fromLevel,
-        OctreeNodeTriangleHandler &func,
-        ThreadContext * context,
-        // targetLod uses the +1-shifted STORED ladder level:
-        // 0 = no LoD (legacy full-walk mode), 1 = frontier, k = ancestor.
-        int targetLod = 0,
-        const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn = nullptr) const;
+    // Triangle topology (the adaptive walker) no longer lives here: it moved to
+    // octess::iterateTriangles in space/OctreeTriangleTessellator.hpp — the
+    // GPU port is services/OctreeTopologyCompute + OctreeTriangles.comp, and
+    // this class owns only the SDF/octree data itself.
 
     // HeightRootToChunk(N): how many LoD levels a chunk can hold above its
     // tessellation frontier before reaching the chunk-size boundary, i.e.

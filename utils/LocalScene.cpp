@@ -2,6 +2,7 @@
 #include "../space/OctreeFile.hpp"
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeAllocator.hpp"
+#include "../space/OctreeTriangleTessellator.hpp"
 #include "../services/OctreeMeshTypes.hpp"
 #include "../services/OctreeTopologyTypes.hpp"
 #include "../space/IteratorHandler.hpp"
@@ -346,7 +347,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
     // Walk starts AT the chunk node (not the whole tree): processNodeLayer already
     // passes the correct chunk with its chunkLod, so only this chunk's subtree is
     // ever visited. Hold the tree shared lock for the traversal, exactly as the
-    // prior Octree::iterateMultiThreaded did (iterateTriangles re-locks shared).
+    // prior Octree::iterateMultiThreaded did (the triangle walker re-locks shared).
     {
         std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
         IteratorHandler handler;
@@ -406,7 +407,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                                         selfChecked = true;
                                         long refCount = 0;
                                         Tesselator refTesselator(&refCount);
-                                        tree->iterateTriangles(params.node, params.cube, params.level,
+                                        octess::iterateTriangles(*tree, params.node, params.cube, params.level,
                                                                refTesselator, &context, chunkLod,
                                                                std::function<Vertex(OctreeNode*, const BoundingCube&)>());
                                         const Geometry& gGpu = nodeTesselator.geometry;
@@ -495,7 +496,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                             }
                         }
 
-                        tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod, vertexFn);
+                        octess::iterateTriangles(*tree, params.node, params.cube, params.level, nodeTesselator, &context, chunkLod, vertexFn);
                     }
 
                     {

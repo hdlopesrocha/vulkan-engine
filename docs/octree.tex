@@ -708,7 +708,7 @@ dispatching all eight potential threads, the parent waits on all futures
 before aggregating child results.
 
 % ============================================================
-\section{Surface Nets Mesh Extraction: \texttt{iterateTriangles}}
+\section{Surface Nets Mesh Extraction: \texttt{octess::iterateTriangles}}
 \label{sec:itriangles}
 % ============================================================
 
@@ -739,7 +739,7 @@ adapts naturally to the octree LOD without any explicit crack-filling.
 
 \subsection{Edge Iteration and Sign-Change Detection}
 
-\lstinline{iterateTriangles(from, fromCube, handler)} is called once for
+\lstinline{octess::iterateTriangles(tree, from, fromCube, handler)} is called once for
 every simplified surface node \lstinline{from}.  It iterates over all 12
 edges of \lstinline{fromCube}.  For edge $e = \{e_0, e_1\}$, a sign
 change is detected by:
@@ -947,7 +947,7 @@ by designating the \emph{finest} (smallest) cell as the owner:
 without emitting, deferring the polygon to the cell that \emph{is} the
 finest.  This guarantees that the polygon is emitted exactly once per
 underlying geometric boundary, regardless of how many times
-\lstinline{iterateTriangles} is invoked (once per surface node).
+\lstinline{octess::iterateTriangles} is invoked (once per surface node).
 
 \subsection{Polygon Ring Construction and Deduplication}
 \label{sec:itriangles:dedup}

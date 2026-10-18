@@ -3,6 +3,7 @@
 #include "../utils/LocalScene.hpp"
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeNodeData.hpp"
+#include "../space/OctreeTriangleTessellator.hpp"
 #include "../space/Tesselator.hpp"
 #include "../space/ThreadContext.hpp"
 #include <shared_mutex>
@@ -42,7 +43,7 @@ static void fillMesh(chunkproto::MeshData& out, const Geometry& g) {
 
 // Tessellates one already-resolved live node. Holds the tree shared lock
 // across the whole tessellation — the same nesting pattern
-// LocalScene::requestModel3D uses (outer shared lock, then iterateTriangles
+// LocalScene::requestModel3D uses (outer shared lock, then the walker
 // takes its own shared guard).
 void tessellateNode(const Octree& tree, OctreeNode* node, const BoundingCube& cube,
                     uint32_t level, uint8_t layer, uint64_t id, chunkproto::MeshData& out) {
@@ -56,7 +57,7 @@ void tessellateNode(const Octree& tree, OctreeNode* node, const BoundingCube& cu
     long triCount = 0;
     Tesselator tess(&triCount);
     ThreadContext ctx;
-    tree.iterateTriangles(node, cube, level, tess, &ctx, chunkLod);
+    octess::iterateTriangles(tree, node, cube, level, tess, &ctx, chunkLod);
     if (!tess.geometry.indices.empty()) {
         fillMesh(out, tess.geometry);
         return;
@@ -76,7 +77,7 @@ void tessellateNode(const Octree& tree, OctreeNode* node, const BoundingCube& cu
         long triCount2 = 0;
         Tesselator tess2(&triCount2);
         ThreadContext ctx2;
-        tree.iterateTriangles(node, cube, level, tess2, &ctx2, fine);
+        octess::iterateTriangles(tree, node, cube, level, tess2, &ctx2, fine);
         if (const char* dbg2 = std::getenv("CHUNK_MESH_DEBUG")) {
             (void)dbg2;
             std::fprintf(stderr, "[chunkmesh] id=%llu pass2tris=%zu\n",
