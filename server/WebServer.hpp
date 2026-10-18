@@ -60,7 +60,11 @@ public:
 private:
     uint16_t port_;
     int listenFd_ = -1;
-    bool running_ = false;
+    // Shutdown flag. Read from the accept, flusher and client threads while
+    // stop() flips it on the caller's thread, so it must be atomic: a plain
+    // bool lets the compiler hoist the read out of those loops (the shutdown
+    // then never takes effect) and is a data race regardless.
+    std::atomic<bool> running_{false};
 
     void acceptLoop();
     void flusherLoop();

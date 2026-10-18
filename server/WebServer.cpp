@@ -249,6 +249,13 @@ void WebServer::flusherLoop() {
         if (meshProvider_) {
             upMeshes.reserve(ups.size());
             for (const auto& rec : ups) {
+                // stop() joins this thread, and the initial scene load queues
+                // one upsert per chunk (thousands), each a full CPU
+                // tessellation - a whole batch would otherwise hold the process
+                // open for a long time after SIGTERM. Bail out between meshes;
+                // the records are dropped because the process is exiting and no
+                // client can receive them.
+                if (!running_.load(std::memory_order_relaxed)) break;
                 chunkproto::MeshData mesh;
                 mesh.id = rec.id;
                 bool ok = false;
