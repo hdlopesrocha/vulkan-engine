@@ -9,6 +9,7 @@
 #include "CylinderDistanceFunction.hpp"
 #include "TaperedCylinderDistanceFunction.hpp"
 #include "TaperedCapsuleDistanceFunction.hpp"
+#include "SvgPolygonDistanceFunction.hpp"
 
 template<typename T>
 SweepSignedDistanceFunction<T>::SweepSignedDistanceFunction(const T &f1, const T &f2,
@@ -93,3 +94,4 @@ template class SweepSignedDistanceFunction<ConeDistanceFunction>;
 template class SweepSignedDistanceFunction<CylinderDistanceFunction>;
 template class SweepSignedDistanceFunction<TaperedCylinderDistanceFunction>;
 template class SweepSignedDistanceFunction<TaperedCapsuleDistanceFunction>;
+template class SweepSignedDistanceFunction<SvgPolygonDistanceFunction>;
