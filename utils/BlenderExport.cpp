@@ -1081,7 +1081,9 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
                    << " -- \"" << configPath.filename().string() << "\"\n"
                    << "      [--save-blend <file.blend>] [--render <png>]\n"
                    << "  or open " << scriptPath.filename().string()
-                   << " in Blender's Scripting workspace and press Run Script.\n\n"
+                   << " in Blender's Scripting workspace and press Run Script.\n"
+                   << "Do not run it with a plain python3 interpreter: bpy/mathutils\n"
+                   << "only exist inside Blender's bundled Python.\n\n"
                    << "The script imports the glb, extracts the embedded textures, builds the\n"
                    << "triplanar material blend, creates grass blades and SDF proxy objects,\n"
                    << "places the engine camera (or auto-frames the terrain when the export\n"

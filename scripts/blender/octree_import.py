@@ -40,9 +40,35 @@ import os
 import struct
 import sys
 
-import bpy
-import numpy as np
-from mathutils import Matrix, Vector
+try:
+    import bpy
+    import numpy as np
+    from mathutils import Matrix, Vector
+except ModuleNotFoundError as exc:  # -------------------------------------------------
+    # `bpy`/`mathutils` only exist inside Blender's bundled Python. Running this
+    # file with a system interpreter (python3 octree_import.py) can never work,
+    # so fail with the correct invocation instead of a bare traceback.
+    _missing = getattr(exc, "name", "bpy")
+    sys.stderr.write(
+        "octree_import.py must run inside Blender (module '%s' is Blender-only).\n"
+        "\n"
+        "This file is a Blender setup script, not a standalone Python program.\n"
+        "Run it with Blender 4.x instead:\n"
+        "\n"
+        "  blender --background --python %s -- %s\n"
+        "\n"
+        "or open Blender, switch to the Scripting workspace, load this file and\n"
+        "press Run Script. The optional arguments after '--' are the sidecar\n"
+        "(<name>.octree.json) and options such as --save-blend <file.blend> or\n"
+        "--render <out.png>.\n"
+        "\n"
+        "A ready-to-render .blend is usually already next to this script (the\n"
+        "engine writes it when exporting); you can open that directly.\n"
+        % (_missing, os.path.basename(__file__) if "__file__" in globals()
+           else "octree_import.py", "<name>.octree.json")
+    )
+    sys.exit(2)
+
 
 
 # ---------------------------------------------------------------------------
