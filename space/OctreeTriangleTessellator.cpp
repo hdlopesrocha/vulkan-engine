@@ -9,20 +9,18 @@
 #include <vector>
 
 // Moved verbatim from Octree::iterateTriangles (space/Octree.cpp): the walk
-// itself is unchanged, only the owning object became a `const Octree&`
-// parameter (member accesses are tree.*) and getNodeIndex(pos, cube) — a
+// itself is unchanged, only the owning object became OctreeTriangleTessellator's
+// `tree` member (member accesses are tree.*) and getNodeIndex(pos, cube) — a
 // forwarder — became cube.getChildIndex(pos), which it is value-identical to.
 
-namespace octess {
-
-void iterateTriangles(const Octree &tree,
-                      OctreeNode * from,
-                      const BoundingCube &fromCube,
-                      int fromLevel,
-                      OctreeNodeTriangleHandler &func,
-                      ThreadContext * context,
-                      int targetLod,
-                      const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn) {
+void OctreeTriangleTessellator::iterateTriangles(
+        OctreeNode * from,
+        const BoundingCube &fromCube,
+        int fromLevel,
+        OctreeNodeTriangleHandler &func,
+        ThreadContext * context,
+        int targetLod,
+        const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn) {
     OctreeSharedLock lock(tree.treeMutex);
 
     struct EdgeCell {
@@ -94,8 +92,8 @@ void iterateTriangles(const Octree &tree,
         }
     };
 
-    // `&tree` replaces the implicit `this` of the original member function.
-    auto findCellAt = [&tree, context, &hint, &fromCube, &cachedChainNode, &cachedChainNodes,
+    // `this` replaces the implicit `this` of the original member function.
+    auto findCellAt = [this, context, &hint, &fromCube, &cachedChainNode, &cachedChainNodes,
             &cachedChainIndices, &cachedChainLen, &cachedChainOk, &cellCache, targetLod](const glm::vec3 &pos) {
         auto cacheHit = cellCache.find(pos);
         if(cacheHit != cellCache.end()) {
@@ -599,5 +597,3 @@ void iterateTriangles(const Octree &tree,
     };
     walkLadder(from, fromCube);
 }
-
-} // namespace octess

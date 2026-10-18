@@ -57,7 +57,7 @@ void tessellateNode(const Octree& tree, OctreeNode* node, const BoundingCube& cu
     long triCount = 0;
     Tesselator tess(&triCount);
     ThreadContext ctx;
-    octess::iterateTriangles(tree, node, cube, level, tess, &ctx, chunkLod);
+    OctreeTriangleTessellator(tree).iterateTriangles(node, cube, level, tess, &ctx, chunkLod);
     if (!tess.geometry.indices.empty()) {
         fillMesh(out, tess.geometry);
         return;
@@ -77,7 +77,7 @@ void tessellateNode(const Octree& tree, OctreeNode* node, const BoundingCube& cu
         long triCount2 = 0;
         Tesselator tess2(&triCount2);
         ThreadContext ctx2;
-        octess::iterateTriangles(tree, node, cube, level, tess2, &ctx2, fine);
+        OctreeTriangleTessellator(tree).iterateTriangles(node, cube, level, tess2, &ctx2, fine);
         if (const char* dbg2 = std::getenv("CHUNK_MESH_DEBUG")) {
             (void)dbg2;
             std::fprintf(stderr, "[chunkmesh] id=%llu pass2tris=%zu\n",

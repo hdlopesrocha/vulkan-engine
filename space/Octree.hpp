@@ -89,7 +89,7 @@ class Octree: public BoundingCube {
     OctreeNodeLevel fetch(glm::vec3 pos, uint level, bool simplification, ThreadContext * context) const;
 
     // Triangle topology (the adaptive walker) no longer lives here: it moved to
-    // octess::iterateTriangles in space/OctreeTriangleTessellator.hpp — the
+    // OctreeTriangleTessellator (space/OctreeTriangleTessellator.hpp) — the
     // GPU port is services/OctreeTopologyCompute + OctreeTriangles.comp, and
     // this class owns only the SDF/octree data itself.
 

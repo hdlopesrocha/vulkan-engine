@@ -21,7 +21,7 @@ public:
     // child node -> (parent node, child index within parent). Populated by the
     // tree traversal (IteratorHandler), seeded with the world-root path to the
     // chunk root, so neighbor lookups during triangle extraction can rebuild
-    // root-consistent cubes (see octess::iterateTriangles in
+    // root-consistent cubes (see OctreeTriangleTessellator::iterateTriangles in
     // space/OctreeTriangleTessellator.hpp). The parent link is
     // NOT stored inside the octree nodes.
     tsl::robin_map<OctreeNode*, std::pair<OctreeNode*, int>> parentOf;

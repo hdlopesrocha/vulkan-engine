@@ -407,9 +407,9 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                                         selfChecked = true;
                                         long refCount = 0;
                                         Tesselator refTesselator(&refCount);
-                                        octess::iterateTriangles(*tree, params.node, params.cube, params.level,
-                                                               refTesselator, &context, chunkLod,
-                                                               std::function<Vertex(OctreeNode*, const BoundingCube&)>());
+                                        OctreeTriangleTessellator(*tree).iterateTriangles(params.node, params.cube, params.level,
+                                                                                          refTesselator, &context, chunkLod,
+                                                                                          std::function<Vertex(OctreeNode*, const BoundingCube&)>());
                                         const Geometry& gGpu = nodeTesselator.geometry;
                                         const Geometry& gCpu = refTesselator.geometry;
                                         const size_t compared = std::min(gGpu.indices.size(), gCpu.indices.size());
@@ -496,7 +496,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                             }
                         }
 
-                        octess::iterateTriangles(*tree, params.node, params.cube, params.level, nodeTesselator, &context, chunkLod, vertexFn);
+                        OctreeTriangleTessellator(*tree).iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod, vertexFn);
                     }
 
                     {

@@ -26,22 +26,29 @@ class ThreadContext;
 // parent-index chain (never the cached/drifting per-node cubes), and `parentOf`
 // links (seeded by the tree traversal in IteratorHandler) are the only source
 // of the chain. Both properties are load-bearing for bit-exact output.
-namespace octess {
+// Owns one walk over a tree: construct it with the octree and call
+// iterateTriangles() for each subtree to tessellate, e.g.
+//   OctreeTriangleTessellator(tree).iterateTriangles(node, cube, level,
+//                                                    handler, context, lod);
+// The walk holds the tree's shared lock for its duration and nests safely
+// (see OctreeSharedLock).
+class OctreeTriangleTessellator {
+    const Octree &tree;
+public:
+    explicit OctreeTriangleTessellator(const Octree &octree) : tree(octree) {}
 
-// Walks the subtree at `from` (pass the chunk node and its root-consistent
-// cube) and emits triangle vertices to `func`.
-//   targetLod: +1-shifted STORED ladder level to tessellate. 0 = legacy
-//              full-walk mode, 1 = frontier, k = ancestor. The level-k mesh is
-//              the aggregate of the cells at lod k inside the anchor.
-//   vertexFn:  optional vertex override (e.g. GPU-generated vertices). When
-//              empty, vertices come from SDF::getPosition/getNormalFromPosition.
-void iterateTriangles(const Octree &tree,
-                      OctreeNode * from,
-                      const BoundingCube &fromCube,
-                      int fromLevel,
-                      OctreeNodeTriangleHandler &func,
-                      ThreadContext * context,
-                      int targetLod = 0,
-                      const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn = nullptr);
-
-} // namespace octess
+    // Walks the subtree at `from` (pass the chunk node and its root-consistent
+    // cube) and emits triangle vertices to `func`.
+    //   targetLod: +1-shifted STORED ladder level to tessellate. 0 = legacy
+    //              full-walk mode, 1 = frontier, k = ancestor. The level-k mesh
+    //              is the aggregate of the cells at lod k inside the anchor.
+    //   vertexFn:  optional vertex override (e.g. GPU-generated vertices). When
+    //              empty, vertices come from SDF::getPosition/getNormalFromPosition.
+    void iterateTriangles(OctreeNode * from,
+                          const BoundingCube &fromCube,
+                          int fromLevel,
+                          OctreeNodeTriangleHandler &func,
+                          ThreadContext * context,
+                          int targetLod = 0,
+                          const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn = nullptr);
+};
