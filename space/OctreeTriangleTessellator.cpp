@@ -13,6 +13,11 @@
 // `tree` member (member accesses are tree.*) and getNodeIndex(pos, cube) — a
 // forwarder — became cube.getChildIndex(pos), which it is value-identical to.
 
+bool OctreeTriangleTessellator::EdgeCell::isSurface(int targetLod) const {
+    return node != NULL && node->getType() == SpaceType::Surface &&
+        node->getLod() == targetLod;
+}
+
 void OctreeTriangleTessellator::iterateTriangles(
         OctreeNode * from,
         const BoundingCube &fromCube,
@@ -22,23 +27,6 @@ void OctreeTriangleTessellator::iterateTriangles(
         int targetLod,
         const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn) {
     OctreeSharedLock lock(tree.treeMutex);
-
-    struct EdgeCell {
-        OctreeNode *node = NULL;
-        BoundingCube cube;
-        int level = 0;
-
-        // A cell is "surface at the walk's resolution": a ladder cell exactly
-        // at targetLod. With targetLod >= 1 the descent already stops at cells
-        // with lod == targetLod, so requiring lod equality here keeps coarse
-        // ladder levels (internal, non-simplified nodes) emitting their own
-        // cells while neighbors one level finer/coarser stay out. lod and
-        // targetLod are both in the +1-shifted STORED space.
-        bool isSurface(int targetLod) const {
-            return node != NULL && node->getType() == SpaceType::Surface &&
-                node->getLod() == targetLod;
-        }
-    };
 
     // Anchor for the upper-traversal cache: findCellAt climbs from a cached
     // ancestor of this cell (via context->parentOf) instead of the root. The
@@ -65,17 +53,6 @@ void OctreeTriangleTessellator::iterateTriangles(
     // pure function of pos (the octree/context are constant during this call),
     // so cached results are reusable and bit-identical to a fresh lookup.
     tsl::robin_map<glm::vec3, EdgeCell> cellCache;
-
-    struct EdgeSpan {
-        int axis = 0;
-        int u = 1;
-        int v = 2;
-        float fixedU = 0.0f;
-        float fixedV = 0.0f;
-        float start = 0.0f;
-        float end = 0.0f;
-        float eps = 1e-6f;
-    };
 
     auto samePosition = [](const glm::vec3 &a, const glm::vec3 &b, float eps) {
         glm::vec3 d = a - b;
