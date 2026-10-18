@@ -84,6 +84,7 @@ OUT = $(OUT_DIR)/app
 # and linking against Vulkan)
 SERVER_OBJS := $(filter-out $(OBJ_DIR)/MyApp.o $(OBJ_DIR)/vulkan/%.o $(OBJ_DIR)/widgets/%.o $(OBJ_DIR)/services/%.o $(OBJ_DIR)/events/KeyboardPublisher.o $(OBJ_DIR)/events/GamepadPublisher.o $(OBJ_DIR)/events/MousePublisher.o $(OBJ_DIR)/events/RadialMenuHandler.o,$(OBJS))
 SERVER_OBJS += $(OBJ_DIR)/services/OctreeMeshTypes.o
+SERVER_OBJS += $(OBJ_DIR)/services/OctreeTopologyTypes.o
 
 # Server-specific link flags: now include glfw and vulkan libs for ImGui backends
 SERVER_LIBS := $(LIBS)

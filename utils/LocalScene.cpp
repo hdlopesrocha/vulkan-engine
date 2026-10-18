@@ -3,6 +3,7 @@
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeAllocator.hpp"
 #include "../services/OctreeMeshTypes.hpp"
+#include "../services/OctreeTopologyTypes.hpp"
 #include "../space/IteratorHandler.hpp"
 #include "../sdf/SDF.hpp"
 #include "../math/Math.hpp"
@@ -15,6 +16,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cfloat>
+#include <cstdlib>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 #include <glm/glm.hpp>
 #include <filesystem>
 
@@ -29,6 +34,161 @@ constexpr const char kSceneBundleMagic[8] = {'S', 'C', 'N', 'B', 'N', 'D', 'L', 
 constexpr uint32_t kSceneBundleVersionV1 = 1;
 constexpr uint32_t kSceneBundleVersionV2 = 2;
 constexpr uint32_t kSceneBundleVersion = kSceneBundleVersionV2;
+
+// GPU triangle-topology path is on by default; VULKAN_CPU_TOPOLOGY=1 forces
+// the CPU walker (A/B comparison and a fallback for drivers that cannot run
+// the compute pass).
+bool gpuTopologyEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("VULKAN_CPU_TOPOLOGY");
+        return !(v != nullptr && v[0] == '1' && v[1] == '\0');
+    }();
+    return enabled;
+}
+
+// One-shot verification aid: for the first GPU-tessellated chunk, re-run the
+// CPU walker (SDF vertex path, no GPU mesh hook) and compare the produced
+// geometry index by index. VULKAN_TOPOLOGY_SELFCHECK=1.
+bool topologySelfCheckEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("VULKAN_TOPOLOGY_SELFCHECK");
+        return v != nullptr && v[0] == '1' && v[1] == '\0';
+    }();
+    return enabled;
+}
+
+bool cubeIntersectsCube(const glm::vec3& aMin, const glm::vec3& aMax, const glm::vec3& bMin, const glm::vec3& bMax) {
+    for (int i = 0; i < 3; ++i) {
+        if (aMax[i] < bMin[i] || aMin[i] > bMax[i]) return false;
+    }
+    return true;
+}
+
+// Flattens the octree neighborhood the GPU topology walker needs for one
+// chunk: the anchor's ancestor path (root-consistent cubes), the node table
+// reachable by the neighbour descent (nodes coarser than targetLod inside the
+// chunk + one cell, plus their children, which are the descent's stopping
+// cells) and the scan cells at targetLod (walkLadder order).
+struct GpuTopologyBuilder {
+    const Octree& tree;
+    OctreeTopologyInput& out;
+    int targetLod;
+    glm::vec3 domainMin;
+    glm::vec3 domainMax;
+    std::unordered_map<OctreeNode*, uint32_t> ids;
+
+    GpuTopologyBuilder(const Octree& t, OctreeTopologyInput& o, int lod)
+        : tree(t), out(o), targetLod(lod) {}
+
+    uint32_t addNode(OctreeNode* n, const BoundingCube& cube) {
+        auto it = ids.find(n);
+        if (it != ids.end()) return it->second;
+        OctreeGpuNode rec{};
+        for (int i = 0; i < 8; ++i) rec.sdf[i] = n->sdf[i];
+        rec.cubeMin = cube.getMin();
+        rec.cubeSize = cube.getLengthX();
+        rec.lod = static_cast<int32_t>(n->getLod());
+        rec.type = static_cast<int32_t>(n->getType());
+        rec.brushIndex = n->brushIndex;
+        rec.flags = n->isLeaf() ? 1 : 0;
+        rec.hsv = n->hsv;
+        for (int i = 0; i < 8; ++i) rec.children[i] = -1;
+        const uint32_t id = static_cast<uint32_t>(out.nodes.size());
+        out.nodes.push_back(rec);
+        ids[n] = id;
+        return id;
+    }
+
+    // Mirrors the findCellAt descent: descend while the node is coarser than
+    // targetLod and keep every child whose cube can be sampled.
+    void descend(uint32_t id, OctreeNode* n, const BoundingCube& cube) {
+        if (n->isLeaf() || static_cast<int>(n->getLod()) <= targetLod) return;
+        OctreeNode* children[8] = {};
+        n->getChildren(*tree.allocator, children);
+        for (int i = 0; i < 8; ++i) {
+            if (children[i] == nullptr) continue;
+            BoundingCube childCube = cube.getChild(i);
+            if (!cubeIntersectsCube(childCube.getMin(), childCube.getMax(), domainMin, domainMax)) continue;
+            const uint32_t childId = addNode(children[i], childCube);
+            out.nodes[id].children[i] = static_cast<int32_t>(childId);
+            descend(childId, children[i], childCube);
+        }
+    }
+
+    // Mirrors walkLadder: cells exactly at targetLod, depth-first in child order.
+    void collectCells(OctreeNode* n, const BoundingCube& cube) {
+        if (n == nullptr) return;
+        const int lod = static_cast<int>(n->getLod());
+        if (lod == targetLod) {
+            out.cells.push_back(addNode(n, cube));
+        } else if (lod > targetLod) {
+            OctreeNode* children[8] = {};
+            n->getChildren(*tree.allocator, children);
+            for (int i = 0; i < 8; ++i) {
+                if (children[i] != nullptr) collectCells(children[i], cube.getChild(i));
+            }
+        }
+    }
+};
+
+// Builds the flattening for one chunk. Returns false when the chunk node
+// cannot be reached from the world root (stale parameters) so the caller can
+// fall back to the CPU walker.
+bool buildGpuTopologyInput(const Octree& tree, OctreeNode* chunk, const BoundingCube& chunkCubeHint,
+                           int targetLod, OctreeTopologyInput& out) {
+    if (tree.root == nullptr || chunk == nullptr) return false;
+
+    // Root-consistent ancestor chain: replay the child indices from the world
+    // root so every cube matches the shader's own descent (BoundingCube drift
+    // from cached traversal cubes could otherwise flip getChildIndex).
+    std::vector<std::pair<OctreeNode*, BoundingCube>> chain;
+    OctreeNode* node = tree.root;
+    BoundingCube cube = static_cast<const BoundingCube&>(tree);
+    chain.push_back({node, cube});
+    const glm::vec3 center = chunkCubeHint.getCenter();
+    while (node != nullptr && node != chunk) {
+        if (node->isLeaf() || chain.size() > 200) return false;
+        OctreeNode* children[8] = {};
+        node->getChildren(*tree.allocator, children);
+        const int childIndex = cube.getChildIndex(center);
+        if (children[childIndex] == nullptr) return false;
+        cube = cube.getChild(childIndex);
+        node = children[childIndex];
+        chain.push_back({node, cube});
+    }
+    if (node != chunk) return false;
+    const BoundingCube chunkCube = chain.back().second;
+
+    GpuTopologyBuilder builder(tree, out, targetLod);
+
+    // Table entry 0 MUST be the world root: the shader's findCellAt starts its
+    // descent there (mirroring the CPU walker). Claim it before any other node.
+    const uint32_t rootId = builder.addNode(chain[0].first, chain[0].second);
+    builder.collectCells(chunk, chunkCube);
+    if (out.cells.empty()) return false;
+
+    // Sample points are cell corners nudged outward by one ulp, so one cell of
+    // margin covers everything collectBreaks can query.
+    float cellSize = 0.0f;
+    for (uint32_t id : out.cells) cellSize = std::max(cellSize, out.nodes[id].cubeSize);
+    const glm::vec3 chunkMin = chunkCube.getMin();
+    const float chunkLength = chunkCube.getLengthX();
+    builder.domainMin = chunkMin - glm::vec3(cellSize);
+    builder.domainMax = chunkMin + glm::vec3(chunkLength + cellSize);
+
+    // Start the descent at the world root, exactly like the CPU walker:
+    // anchor-the-chunk tricks are wrong because sample points nudged across the
+    // chunk boundary follow the sibling's path, so only the root is guaranteed
+    // to be on every descent path.
+    builder.descend(rootId, chain[0].first, chain[0].second);
+
+    out.targetLod = targetLod;
+    out.fromId = builder.addNode(chunk, chunkCube);
+    out.fromBrush = chunk->brushIndex;
+    out.rootMin = tree.getMin();
+    out.rootSize = tree.getLengthX();
+    return true;
+}
 }
 
 LocalScene::LocalScene()
@@ -207,54 +367,137 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                     skip = (it != emittedVersion_.end() && it->second == params.node->version);
                 }
                 if (!skip) {
-                    std::function<Vertex(OctreeNode*, const BoundingCube&)> vertexFn = nullptr;
-                    if (gOctreeMeshCompute) {
-                        std::vector<OctreeMeshCell> cells;
-                        std::vector<OctreeNode*> cellNodes;
-                        std::function<void(OctreeNode*, const BoundingCube&)> collect =
-                            [&](OctreeNode* n, const BoundingCube& c) {
-                                if (!n) return;
-                                if (n->getType() == SpaceType::Surface && n->getLod() > 0) {
-                                    OctreeMeshCell cell;
-                                    for (int i = 0; i < 8; ++i) cell.sdf[i] = n->sdf[i];
-                                    cell.cubeMin = c.getMin();
-                                    cell.cubeSize = c.getLengthX();
-                                    cell.brushIndex = n->brushIndex;
-                                    cells.push_back(cell);
-                                    cellNodes.push_back(n);
+                    long trianglesCount = 0;
+                    Tesselator nodeTesselator(&trianglesCount);
+
+                    bool gpuTopology = false;
+                    if (gOctreeTopologyCompute && gpuTopologyEnabled()) {
+                        OctreeTopologyInput topoInput;
+                        if (buildGpuTopologyInput(*tree, params.node, params.cube, chunkLod, topoInput)) {
+                            OctreeTopologyResult topoResult = gOctreeTopologyCompute(topoInput);
+                            if (!topoResult.truncated && topoResult.vertexCount >= 3u) {
+                                static bool loggedGpuTopology = false;
+                                if (!loggedGpuTopology) {
+                                    loggedGpuTopology = true;
+                                    std::cerr << "[LocalScene] GPU topology walker active (OctreeTriangles.comp): "
+                                              << topoInput.nodes.size() << " nodes, "
+                                              << topoInput.cells.size() << " cells, "
+                                              << topoResult.triangleCount << " triangles\n";
                                 }
-                                OctreeNode* ch[8] = {};
-                                n->getChildren(*tree->allocator, ch);
-                                for (int i = 0; i < 8; ++i)
-                                    if (ch[i]) collect(ch[i], c.getChild(i));
-                            };
-                        collect(params.node, params.cube);
-                        if (!cells.empty()) {
-                            auto res = gOctreeMeshCompute(cells, 0.0f);
-                            std::unordered_map<OctreeNode*, Vertex> gpuVerts;
-                            for (size_t i = 0; i < cellNodes.size() && i < res.positions.size(); ++i) {
-                                OctreeNode* n = cellNodes[i];
-                                glm::vec3 pos(res.positions[i].x, res.positions[i].y, res.positions[i].z);
-                                glm::vec3 nrm(res.normals[i].x, res.normals[i].y, res.normals[i].z);
-                                Vertex v(pos, nrm, glm::vec2(0.0f), n->brushIndex);
-                                v.hsv = n->hsv;
-                                gpuVerts[n] = v;
+                                for (size_t i = 0; i + 3u <= topoResult.vertexCount; i += 3u) {
+                                    const OctreeTopologyVertex& r0 = topoResult.vertices[i + 0];
+                                    const OctreeTopologyVertex& r1 = topoResult.vertices[i + 1];
+                                    const OctreeTopologyVertex& r2 = topoResult.vertices[i + 2];
+                                    Vertex v0(r0.position, r0.normal, glm::vec2(0.0f), r0.brushIndex);
+                                    Vertex v1(r1.position, r1.normal, glm::vec2(0.0f), r1.brushIndex);
+                                    Vertex v2(r2.position, r2.normal, glm::vec2(0.0f), r2.brushIndex);
+                                    v0.hsv = r0.hsv;
+                                    v1.hsv = r1.hsv;
+                                    v2.hsv = r2.hsv;
+                                    nodeTesselator.handle(v0, v1, v2);
+                                }
+                                gpuTopology = true;
+
+                                // One-shot A/B verification against the CPU walker
+                                // (exact same SDF vertex path: no GPU mesh hook).
+                                if (topologySelfCheckEnabled()) {
+                                    static bool selfChecked = false;
+                                    if (!selfChecked) {
+                                        selfChecked = true;
+                                        long refCount = 0;
+                                        Tesselator refTesselator(&refCount);
+                                        tree->iterateTriangles(params.node, params.cube, params.level,
+                                                               refTesselator, &context, chunkLod,
+                                                               std::function<Vertex(OctreeNode*, const BoundingCube&)>());
+                                        const Geometry& gGpu = nodeTesselator.geometry;
+                                        const Geometry& gCpu = refTesselator.geometry;
+                                        const size_t compared = std::min(gGpu.indices.size(), gCpu.indices.size());
+                                        size_t posMismatch = 0;
+                                        size_t uvMismatch = 0;
+                                        size_t firstBad = SIZE_MAX;
+                                        for (size_t i = 0; i < compared; ++i) {
+                                            const Vertex& a = gGpu.vertices[gGpu.indices[i]];
+                                            const Vertex& b = gCpu.vertices[gCpu.indices[i]];
+                                            if (a.position != b.position) {
+                                                ++posMismatch;
+                                                if (firstBad == SIZE_MAX) firstBad = i;
+                                            }
+                                            if (a.texCoord != b.texCoord) ++uvMismatch;
+                                        }
+                                        std::cerr << "[LocalScene] topology self-check (" << topoInput.cells.size()
+                                                  << " cells, " << topoInput.nodes.size() << " nodes): gpu triangles="
+                                                  << (gGpu.indices.size() / 3) << " cpu triangles=" << (gCpu.indices.size() / 3)
+                                                  << " index entries compared=" << compared
+                                                  << " gpu verts=" << gGpu.vertices.size()
+                                                  << " cpu verts=" << gCpu.vertices.size()
+                                                  << " position mismatches=" << posMismatch
+                                                  << " uv mismatches=" << uvMismatch << "\n";
+                                        if (firstBad != SIZE_MAX) {
+                                            const Vertex& a = gGpu.vertices[gGpu.indices[firstBad]];
+                                            const Vertex& b = gCpu.vertices[gCpu.indices[firstBad]];
+                                            std::cerr << "[LocalScene]   first mismatch at index " << firstBad
+                                                      << " gpu=(" << a.position.x << ", " << a.position.y << ", " << a.position.z
+                                                      << ") cpu=(" << b.position.x << ", " << b.position.y << ", " << b.position.z
+                                                      << ")\n";
+                                        }
+                                    }
+                                }
+                            } else if (topoResult.truncated) {
+                                std::cerr << "[LocalScene] GPU topology output arena overflowed; "
+                                             "falling back to the CPU walker\n";
                             }
-                            vertexFn = [&gpuVerts](OctreeNode* n, const BoundingCube& c) -> Vertex {
-                                auto it = gpuVerts.find(n);
-                                if (it != gpuVerts.end()) return it->second;
-                                glm::vec3 pos = SDF::getPosition(n->sdf, c);
-                                glm::vec3 nrm = SDF::getNormalFromPosition(n->sdf, c, pos);
-                                Vertex v(pos, nrm, glm::vec2(0.0f), n->brushIndex);
-                                v.hsv = n->hsv;
-                                return v;
-                            };
                         }
                     }
 
-                    long trianglesCount = 0;
-                    Tesselator nodeTesselator(&trianglesCount);
-                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod, vertexFn);
+                    if (!gpuTopology) {
+                        std::function<Vertex(OctreeNode*, const BoundingCube&)> vertexFn = nullptr;
+                        if (gOctreeMeshCompute) {
+                            std::vector<OctreeMeshCell> cells;
+                            std::vector<OctreeNode*> cellNodes;
+                            std::function<void(OctreeNode*, const BoundingCube&)> collect =
+                                [&](OctreeNode* n, const BoundingCube& c) {
+                                    if (!n) return;
+                                    if (n->getType() == SpaceType::Surface && n->getLod() > 0) {
+                                        OctreeMeshCell cell;
+                                        for (int i = 0; i < 8; ++i) cell.sdf[i] = n->sdf[i];
+                                        cell.cubeMin = c.getMin();
+                                        cell.cubeSize = c.getLengthX();
+                                        cell.brushIndex = n->brushIndex;
+                                        cells.push_back(cell);
+                                        cellNodes.push_back(n);
+                                    }
+                                    OctreeNode* ch[8] = {};
+                                    n->getChildren(*tree->allocator, ch);
+                                    for (int i = 0; i < 8; ++i)
+                                        if (ch[i]) collect(ch[i], c.getChild(i));
+                                };
+                            collect(params.node, params.cube);
+                            if (!cells.empty()) {
+                                auto res = gOctreeMeshCompute(cells, 0.0f);
+                                std::unordered_map<OctreeNode*, Vertex> gpuVerts;
+                                for (size_t i = 0; i < cellNodes.size() && i < res.positions.size(); ++i) {
+                                    OctreeNode* n = cellNodes[i];
+                                    glm::vec3 pos(res.positions[i].x, res.positions[i].y, res.positions[i].z);
+                                    glm::vec3 nrm(res.normals[i].x, res.normals[i].y, res.normals[i].z);
+                                    Vertex v(pos, nrm, glm::vec2(0.0f), n->brushIndex);
+                                    v.hsv = n->hsv;
+                                    gpuVerts[n] = v;
+                                }
+                                vertexFn = [&gpuVerts](OctreeNode* n, const BoundingCube& c) -> Vertex {
+                                    auto it = gpuVerts.find(n);
+                                    if (it != gpuVerts.end()) return it->second;
+                                    glm::vec3 pos = SDF::getPosition(n->sdf, c);
+                                    glm::vec3 nrm = SDF::getNormalFromPosition(n->sdf, c, pos);
+                                    Vertex v(pos, nrm, glm::vec2(0.0f), n->brushIndex);
+                                    v.hsv = n->hsv;
+                                    return v;
+                                };
+                            }
+                        }
+
+                        tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod, vertexFn);
+                    }
+
                     {
                         std::lock_guard<std::mutex> lock(emittedMutex_);
                         emittedVersion_[nodeId] = params.node->version;

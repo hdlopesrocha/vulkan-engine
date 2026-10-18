@@ -1,0 +1,799 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : enable
+
+// GPU port of the adaptive Surface-Nets topology walker
+// (Octree::iterateTriangles in space/Octree.cpp).
+//
+// The CPU walker is hierarchical: every cell at targetLod scans its 12 edges,
+// collectBreaks() recursively subdivides an edge by the cube bounds of the
+// four quadrant cells it samples (which may live at coarser/finer LoD levels
+// or in neighbouring chunks), and emitSegment() rebuilds the polygon of the
+// surface quadrants with the owner/dedup/rotation/winding rules.
+//
+// The shader runs one invocation per scan cell and reproduces that walk over a
+// flattened octree neighborhood uploaded by LocalScene: node indices replace
+// the OctreeNode pointers, the descent mirrors findCellAt (root-consistent
+// cubes, same getChildIndex arithmetic, same stop condition), and the float
+// operation order of every helper is kept so the emitted triangles agree with
+// the CPU walker.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0,  scalar) readonly buffer InSdf0  { vec4 sdf0[]; };
+layout(set = 0, binding = 1,  scalar) readonly buffer InSdf1  { vec4 sdf1[]; };
+layout(set = 0, binding = 2,  scalar) readonly buffer InCube  { vec4 cubeMinSize[]; };
+layout(set = 0, binding = 3,  scalar) readonly buffer InMeta  { ivec4 meta[]; };   // lod, type, brush, flags
+layout(set = 0, binding = 4,  scalar) readonly buffer InHsv   { vec4 nodeHsv[]; };
+layout(set = 0, binding = 5,  scalar) readonly buffer InChild03 { ivec4 child03[]; };
+layout(set = 0, binding = 6,  scalar) readonly buffer InChild47 { ivec4 child47[]; };
+layout(set = 0, binding = 7,  scalar) readonly buffer InCells { uint cellIds[]; };
+
+// Vertex payloads: xyz plus one packed slot (the brush index is bit-cast into
+// outPos.w) so the readback stays three vec4 buffers per vertex.
+layout(set = 0, binding = 8,  scalar) writeonly buffer OutPos  { vec4 outPos[]; };
+layout(set = 0, binding = 9,  scalar) writeonly buffer OutNrm  { vec4 outNrm[]; };
+layout(set = 0, binding = 10, scalar) writeonly buffer OutHsv  { vec4 outHsv[]; };
+layout(set = 0, binding = 11) buffer Counters { uint vertexCount; uint overflowCount; };
+
+layout(push_constant) uniform PC {
+    uint cellCount;
+    int targetLod;
+    int fromId;
+    int fromBrush;
+    vec4 rootMinSize;   // xyz = world root min, w = world root size
+    float worldSize;    // Octree::getLengthX() (edge.eps base)
+    uint maxVertices;
+} pc;
+
+const int TYPE_EMPTY = 0;
+const int TYPE_SURFACE = 1;
+const int TYPE_SOLID = 2;
+const int DISCARD_BRUSH = -1;
+const uint INVALID_ID = 0xFFFFFFFFu;
+#define INF (uintBitsToFloat(0x7F800000u))
+
+// CUBE_CORNERS convention: bit2 = x, bit1 = y, bit0 = z (math/Common.hpp).
+const vec3 CORNERS[8] = vec3[](
+    vec3(0, 0, 0), vec3(0, 0, 1), vec3(0, 1, 0), vec3(0, 1, 1),
+    vec3(1, 0, 0), vec3(1, 0, 1), vec3(1, 1, 0), vec3(1, 1, 1)
+);
+// SDF_EDGES (sdf/SDF.hpp).
+const ivec2 EDGES[12] = ivec2[](
+    ivec2(0, 1), ivec2(1, 3), ivec2(2, 3), ivec2(0, 2),
+    ivec2(4, 5), ivec2(5, 7), ivec2(6, 7), ivec2(4, 6),
+    ivec2(0, 4), ivec2(1, 5), ivec2(2, 6), ivec2(3, 7)
+);
+// quadrantSigns: SIGNS[axis][quadrant][0/1] flattened.
+const int QS[24] = int[24](
+    -1, -1,  -1, 1,   1, 1,   1, -1,
+    -1, -1,   1, -1,  1, 1,  -1, 1,
+    -1, -1,  -1, 1,   1, 1,   1, -1
+);
+
+struct Cell {
+    uint id;
+    vec3 mn;
+    float sz;
+    bool valid;
+};
+
+struct EdgeSpan {
+    int axis;
+    int u;
+    int v;
+    float fixedU;
+    float fixedV;
+    float start;
+    float end;
+    float eps;
+};
+
+// ---------------------------------------------------------------- node data
+
+float nodeSdf(uint id, int idx) {
+    vec4 v = (idx < 4) ? sdf0[id] : sdf1[id];
+    return v[idx & 3];
+}
+ivec4 nodeMeta(uint id) { return meta[id]; }
+int nodeLod(uint id) { return meta[id].x; }
+int nodeType(uint id) { return meta[id].y; }
+int nodeBrush(uint id) { return meta[id].z; }
+bool nodeIsLeaf(uint id) { return (meta[id].w & 1) != 0; }
+vec3 nodeMin(uint id) { return cubeMinSize[id].xyz; }
+float nodeSize(uint id) { return cubeMinSize[id].w; }
+vec3 nodeHsvOf(uint id) { return nodeHsv[id].xyz; }
+int nodeChild(uint id, int i) {
+    ivec4 c = (i < 4) ? child03[id] : child47[id];
+    return c[i & 3];
+}
+// AbstractBoundingBox::getCorner = min + getShift(i) * getLength()
+vec3 nodeCorner(uint id, int i) { return nodeMin(id) + CORNERS[i] * nodeSize(id); }
+// AbstractBoundingBox::getCenter = (getMin() + getMax()) * 0.5f
+vec3 nodeCenter(uint id) { return (nodeMin(id) + (nodeMin(id) + vec3(nodeSize(id)))) * 0.5; }
+
+bool isFiniteF(float v) { return !(isnan(v) || isinf(v)); }
+
+// SDF::eval — INFINITY corners are "no data" and skipped.
+int evalSdfType(uint id) {
+    bool hasPositive = false;
+    bool hasNegative = false;
+    for (int i = 0; i < 8; ++i) {
+        float v = nodeSdf(id, i);
+        if (v == INF) {
+            continue;
+        } else if (v >= 0.0) {
+            hasPositive = true;
+        } else {
+            hasNegative = true;
+        }
+    }
+    if (!hasPositive && !hasNegative) return TYPE_EMPTY;
+    return (hasNegative && hasPositive) ? TYPE_SURFACE : (hasPositive ? TYPE_EMPTY : TYPE_SOLID);
+}
+
+// SDF.cpp lerpSDF: guarded so INFINITY endpoints never produce NaN.
+float lerpSDF(float a, float b, float t) {
+    if (t <= 0.0) return a;
+    if (t >= 1.0) return b;
+    if (a == INF || b == INF) return INF;
+    return a + (b - a) * t;
+}
+
+// SDF::interpolate
+float cellInterp(Cell c, vec3 position) {
+    vec3 local = (position - c.mn) / vec3(c.sz);
+    float x = local.x, y = local.y, z = local.z;
+    if (x == 0.0) {
+        if (y == 0.0) {
+            if (z == 0.0) return nodeSdf(c.id, 0);
+            if (z == 1.0) return nodeSdf(c.id, 1);
+        }
+        if (y == 1.0) {
+            if (z == 0.0) return nodeSdf(c.id, 2);
+            if (z == 1.0) return nodeSdf(c.id, 3);
+        }
+    } else if (x == 1.0) {
+        if (y == 0.0) {
+            if (z == 0.0) return nodeSdf(c.id, 4);
+            if (z == 1.0) return nodeSdf(c.id, 5);
+        }
+        if (y == 1.0) {
+            if (z == 0.0) return nodeSdf(c.id, 6);
+            if (z == 1.0) return nodeSdf(c.id, 7);
+        }
+    }
+    float v000 = lerpSDF(nodeSdf(c.id, 0), nodeSdf(c.id, 1), z);
+    float v010 = lerpSDF(nodeSdf(c.id, 2), nodeSdf(c.id, 3), z);
+    float v100 = lerpSDF(nodeSdf(c.id, 4), nodeSdf(c.id, 5), z);
+    float v110 = lerpSDF(nodeSdf(c.id, 6), nodeSdf(c.id, 7), z);
+    float v00 = lerpSDF(v000, v010, y);
+    float v10 = lerpSDF(v100, v110, y);
+    return lerpSDF(v00, v10, x);
+}
+
+// SDF::getNormalFromPosition
+vec3 cellNormal(Cell c, vec3 position) {
+    vec3 local = (position - c.mn) / vec3(c.sz);
+    float s0 = nodeSdf(c.id, 0), s1 = nodeSdf(c.id, 1), s2 = nodeSdf(c.id, 2), s3 = nodeSdf(c.id, 3);
+    float s4 = nodeSdf(c.id, 4), s5 = nodeSdf(c.id, 5), s6 = nodeSdf(c.id, 6), s7 = nodeSdf(c.id, 7);
+    float dx = (
+        (1.0 - local.y) * (1.0 - local.z) * (s4 - s0) +
+        (1.0 - local.y) * local.z * (s5 - s1) +
+        local.y * (1.0 - local.z) * (s6 - s2) +
+        local.y * local.z * (s7 - s3)
+    );
+    float dy = (
+        (1.0 - local.x) * (1.0 - local.z) * (s2 - s0) +
+        local.x * (1.0 - local.z) * (s3 - s1) +
+        (1.0 - local.x) * local.z * (s6 - s4) +
+        local.x * local.z * (s7 - s5)
+    );
+    float dz = (
+        (1.0 - local.x) * (1.0 - local.y) * (s1 - s0) +
+        (1.0 - local.x) * local.y * (s3 - s2) +
+        local.x * (1.0 - local.y) * (s5 - s4) +
+        local.x * local.y * (s7 - s6)
+    );
+    vec3 normal = vec3(dx, dy, dz) / vec3(c.sz);
+    float nl = length(normal);
+    if (!isFiniteF(nl) || nl < 1e-6) {
+        return vec3(0.0, 1.0, 0.0);
+    }
+    return normal / nl;
+}
+
+// glm::determinant(mat3) — column-major indexing m[col][row].
+float det3(mat3 m) {
+    return m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2])
+         - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2])
+         + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
+}
+
+// Math::solveLinearSystem (Cramer's rule, first column replaced).
+vec3 solveLinearSystem(mat3 A, vec3 b) {
+    float detA = det3(A);
+    if (abs(detA) < 1e-6) {
+        return vec3(0.0);
+    }
+    mat3 A1 = A;
+    mat3 A2 = A;
+    mat3 A3 = A;
+    A1[0] = b;
+    A2[1] = b;
+    A3[2] = b;
+    float x = det3(A1) / detA;
+    float y = det3(A2) / detA;
+    float z = det3(A3) / detA;
+    return vec3(x, y, z);
+}
+
+// SDF::getPosition (QEF with corner snap, sentinel guard and fallbacks).
+vec3 cellPos(Cell c) {
+    int type = evalSdfType(c.id);
+    if (type != TYPE_SURFACE) {
+        return nodeCenter(c.id);
+    }
+    for (int i = 0; i < 8; ++i) {
+        if (nodeSdf(c.id, i) == 0.0) {
+            return nodeCorner(c.id, i);
+        }
+    }
+
+    vec3 normals[8];
+    for (int i = 0; i < 8; ++i) {
+        normals[i] = cellNormal(c, nodeCorner(c.id, i));
+    }
+
+    mat3 ATA = mat3(0.0);
+    vec3 ATb = vec3(0.0);
+    vec3 massPoint = vec3(0.0);
+    int count = 0;
+
+    for (int i = 0; i < 12; ++i) {
+        ivec2 edge = EDGES[i];
+        float d0 = nodeSdf(c.id, edge.x);
+        float d1 = nodeSdf(c.id, edge.y);
+        if (!isFiniteF(d0) || !isFiniteF(d1)) {
+            continue;
+        }
+        if (abs(d0) > INF * 0.5f || abs(d1) > INF * 0.5f) {
+            continue;
+        }
+        bool sign0 = d0 < 0.0;
+        bool sign1 = d1 < 0.0;
+        if (sign0 != sign1) {
+            vec3 p0 = nodeCorner(c.id, edge.x);
+            vec3 p1 = nodeCorner(c.id, edge.y);
+            float denom = d0 - d1;
+            float t = (denom != 0.0) ? clamp(d0 / denom, 0.0, 1.0) : 0.5;
+            vec3 p = mix(p0, p1, t);
+            vec3 nm = mix(normals[edge.x], normals[edge.y], t);
+            float nl = length(nm);
+            if (!isFiniteF(nl) || nl < 1e-6) {
+                continue;
+            }
+            vec3 n = nm / nl;
+            ATA += outerProduct(n, n);
+            ATb += n * dot(n, p);
+            massPoint += p;
+            count++;
+        }
+    }
+
+    if (count == 0) {
+        vec3 fallback = vec3(0.0);
+        int n = 0;
+        for (int i = 0; i < 12; ++i) {
+            ivec2 edge = EDGES[i];
+            float d0 = nodeSdf(c.id, edge.x);
+            float d1 = nodeSdf(c.id, edge.y);
+            if (!isFiniteF(d0) || !isFiniteF(d1)) continue;
+            bool sign0 = d0 < 0.0;
+            bool sign1 = d1 < 0.0;
+            if (sign0 == sign1) continue;
+            float denom = d0 - d1;
+            float t = (denom != 0.0) ? clamp(d0 / denom, 0.0, 1.0) : 0.5;
+            fallback += mix(nodeCorner(c.id, edge.x), nodeCorner(c.id, edge.y), t);
+            ++n;
+        }
+        if (n > 0) {
+            return fallback / float(n);
+        }
+        return nodeCenter(c.id);
+    }
+
+    massPoint /= float(count);
+
+    ATA[0][0] += 1e-2;
+    ATA[1][1] += 1e-2;
+    ATA[2][2] += 1e-2;
+    ATb += massPoint * 1e-2;
+
+    vec3 result = solveLinearSystem(ATA, ATb);
+
+    if (any(isnan(result)) || any(isinf(result))) {
+        return massPoint;
+    }
+    if (any(isnan(massPoint)) || any(isinf(massPoint))) {
+        return nodeCenter(c.id);
+    }
+    result = clamp(result, c.mn, c.mn + vec3(c.sz));
+    return result;
+}
+
+// Per-invocation memo for the QEF vertex position. SDF::getPosition is a pure
+// function of the node's stored corners and cube, so memoizing is
+// value-identical to the CPU's repeated nodeVertex() calls and only removes
+// redundant work (the polygon dedup/emission queries the same cells several
+// times per segment).
+const int POS_MEMO = 8;
+uint gMemoId[POS_MEMO];
+vec3 gMemoPos[POS_MEMO];
+int gMemoCount = 0;
+
+vec3 cellPosCached(Cell c) {
+    for (int i = 0; i < gMemoCount; ++i) {
+        if (gMemoId[i] == c.id) {
+            return gMemoPos[i];
+        }
+    }
+    vec3 p = cellPos(c);
+    int slot = (gMemoCount < POS_MEMO) ? gMemoCount++ : int(c.id % uint(POS_MEMO));
+    gMemoId[slot] = c.id;
+    gMemoPos[slot] = p;
+    return p;
+}
+
+// ------------------------------------------------------------- findCellAt
+
+bool worldContains(vec3 pos) {
+    if (any(lessThan(pos, pc.rootMinSize.xyz))) return false;
+    if (any(greaterThan(pos, pc.rootMinSize.xyz + vec3(pc.rootMinSize.w)))) return false;
+    return true;
+}
+
+// Octree::iterateTriangles::findCellAt — plain root descent (the CPU's hint
+// cache is only an optimisation: it is required to be bit-identical to this).
+Cell findCellAt(vec3 pos) {
+    Cell none;
+    none.id = INVALID_ID;
+    none.mn = vec3(0.0);
+    none.sz = 0.0;
+    none.valid = false;
+
+    if (!worldContains(pos)) {
+        return none;
+    }
+
+    uint idx = 0u; // node table entry 0 is the descent anchor (topmost stop node)
+    while (!nodeIsLeaf(idx) && nodeLod(idx) > pc.targetLod) {
+        vec3 mn = nodeMin(idx);
+        float half_ = nodeSize(idx) * 0.5;
+        int childIndex = (pos.x >= mn.x + half_ ? 4 : 0)
+                       + (pos.y >= mn.y + half_ ? 2 : 0)
+                       + (pos.z >= mn.z + half_ ? 1 : 0);
+        int child = nodeChild(idx, childIndex);
+        if (child < 0) {
+            return none; // block/child absent -> NULL cell, same as the CPU
+        }
+        idx = uint(child);
+    }
+
+    Cell c;
+    c.id = idx;
+    c.mn = nodeMin(idx);
+    c.sz = nodeSize(idx);
+    c.valid = true;
+    return c;
+}
+
+bool isSurfaceCell(Cell c) {
+    return c.valid && nodeType(c.id) == TYPE_SURFACE && nodeLod(c.id) == pc.targetLod;
+}
+
+// ownerLess: cube size, then min, then identity (CPU uses pointer order; the
+// table order is a deterministic stand-in).
+bool ownerLess(Cell a, Cell b) {
+    if (a.sz != b.sz) return a.sz < b.sz;
+    if (a.mn.x != b.mn.x) return a.mn.x < b.mn.x;
+    if (a.mn.y != b.mn.y) return a.mn.y < b.mn.y;
+    if (a.mn.z != b.mn.z) return a.mn.z < b.mn.z;
+    return a.id < b.id;
+}
+
+// -------------------------------------------------------- edge and sampling
+
+void quadrantSigns(int axis, int quadrant, out int su, out int sv) {
+    su = QS[axis * 8 + quadrant * 2 + 0];
+    sv = QS[axis * 8 + quadrant * 2 + 1];
+}
+
+void edgeAxes(int axis, out int u, out int v) {
+    if (axis == 0) {
+        u = 1;
+        v = 2;
+    } else if (axis == 1) {
+        u = 0;
+        v = 2;
+    } else {
+        u = 0;
+        v = 1;
+    }
+}
+
+// std::nextafter for the +-infinity directions used by sideCoordinate.
+float nextafterF(float value, float towards) {
+    if (isnan(value) || isinf(value)) return value;
+    uint bits = floatBitsToUint(value);
+    if (towards > value) {
+        if (value == 0.0) return uintBitsToFloat(1u);
+        bits = (value > 0.0) ? (bits + 1u) : (bits - 1u);
+    } else {
+        if (value == 0.0) return uintBitsToFloat(0x80000001u);
+        bits = (value > 0.0) ? (bits - 1u) : (bits + 1u);
+    }
+    return uintBitsToFloat(bits);
+}
+
+float sideCoordinate(float value, int side) {
+    return nextafterF(value, side < 0 ? -INF : INF);
+}
+
+vec3 edgePoint(EdgeSpan edge, float t) {
+    vec3 p = vec3(0.0);
+    p[edge.axis] = t;
+    p[edge.u] = edge.fixedU;
+    p[edge.v] = edge.fixedV;
+    return p;
+}
+
+vec3 edgeSamplePoint(EdgeSpan edge, float t, int quadrant) {
+    int su, sv;
+    quadrantSigns(edge.axis, quadrant, su, sv);
+    vec3 p = vec3(0.0);
+    p[edge.axis] = t;
+    p[edge.u] = sideCoordinate(edge.fixedU, su);
+    p[edge.v] = sideCoordinate(edge.fixedV, sv);
+    return p;
+}
+
+EdgeSpan makeEdgeSpan(int edgeIndex, Cell c) {
+    ivec2 ec = EDGES[edgeIndex];
+    vec3 p0 = nodeCorner(c.id, ec.x);
+    vec3 p1 = nodeCorner(c.id, ec.y);
+    vec3 d = abs(p1 - p0);
+
+    EdgeSpan edge;
+    if (d.x >= d.y && d.x >= d.z) {
+        edge.axis = 0;
+    } else if (d.y >= d.x && d.y >= d.z) {
+        edge.axis = 1;
+    } else {
+        edge.axis = 2;
+    }
+    edgeAxes(edge.axis, edge.u, edge.v);
+    edge.fixedU = p0[edge.u];
+    edge.fixedV = p0[edge.v];
+    edge.start = min(p0[edge.axis], p1[edge.axis]);
+    edge.end = max(p0[edge.axis], p1[edge.axis]);
+    edge.eps = max(pc.worldSize, c.sz) * 1e-6;
+    return edge;
+}
+
+// ---------------------------------------------------------------- emission
+
+// Index of the scan cell this invocation is processing. Emission is
+// order-preserving per cell, and the service buckets the atomically appended
+// vertices by this index, so the final triangle order reproduces the CPU
+// walker's (cell-major, walkLadder order) exactly.
+uint gCellIndex;
+
+bool samePosition(vec3 a, vec3 b, float eps) {
+    vec3 d = a - b;
+    return dot(d, d) <= eps * eps;
+}
+
+void writeVertex(uint idx, vec3 p, vec3 n, int brush, vec3 h) {
+    outPos[idx] = vec4(p, uintBitsToFloat(uint(brush)));
+    outNrm[idx] = vec4(n, float(gCellIndex));
+    outHsv[idx] = vec4(h, 0.0);
+}
+
+// Octree::iterateTriangles::emitTriangle
+void emitTriangle(Cell c0, Cell c1, Cell c2, float eps) {
+    vec3 p0 = cellPosCached(c0);
+    vec3 p1 = cellPosCached(c1);
+    vec3 p2 = cellPosCached(c2);
+    if (samePosition(p0, p1, eps)) return;
+    if (samePosition(p1, p2, eps)) return;
+    if (samePosition(p2, p0, eps)) return;
+
+    int b0 = nodeBrush(c0.id);
+    int b1 = nodeBrush(c1.id);
+    int b2 = nodeBrush(c2.id);
+    if (b0 <= DISCARD_BRUSH) b0 = pc.fromBrush;
+    if (b1 <= DISCARD_BRUSH) b1 = pc.fromBrush;
+    if (b2 <= DISCARD_BRUSH) b2 = pc.fromBrush;
+    if (b0 <= DISCARD_BRUSH || b1 <= DISCARD_BRUSH || b2 <= DISCARD_BRUSH) return;
+
+    vec3 n0 = cellNormal(c0, p0);
+    vec3 n1 = cellNormal(c1, p1);
+    vec3 n2 = cellNormal(c2, p2);
+
+    uint base = atomicAdd(vertexCount, 3u);
+    if (base + 3u > pc.maxVertices) {
+        atomicAdd(overflowCount, 1u);
+        return;
+    }
+    writeVertex(base + 0u, p0, n0, b0, nodeHsvOf(c0.id));
+    writeVertex(base + 1u, p1, n1, b1, nodeHsvOf(c1.id));
+    writeVertex(base + 2u, p2, n2, b2, nodeHsvOf(c2.id));
+}
+
+// -------------------------------------------------------- break collection
+
+const int BREAK_CAP = 64;
+const int LOCAL_BREAK_CAP = 32;
+const int TASK_STACK = 256;
+
+float gBreaks[BREAK_CAP];
+int gBreakCount;
+float gLocal[LOCAL_BREAK_CAP];
+int gLocalCount;
+float gTaskStart[TASK_STACK];
+float gTaskEnd[TASK_STACK];
+int gTaskTop;
+
+void pushTask(float start, float end) {
+    if (gTaskTop >= TASK_STACK) return; // truncated stack: matches a capped buffer
+    gTaskStart[gTaskTop] = start;
+    gTaskEnd[gTaskTop] = end;
+    ++gTaskTop;
+}
+
+// addBreak into the accumulating global list (no-op when out of range/duplicate)
+void addBreakGlobal(float value, float start, float end, float eps) {
+    if (value <= start + eps || value >= end - eps) return;
+    for (int k = 0; k < gBreakCount; ++k) {
+        if (abs(gBreaks[k] - value) <= eps) return;
+    }
+    if (gBreakCount < BREAK_CAP) {
+        gBreaks[gBreakCount++] = value;
+    }
+}
+
+// addToBuffer on the per-recursion local list
+void addBreakLocal(float value, float start, float end, float eps) {
+    if (value <= start + eps || value >= end - eps) return;
+    for (int k = 0; k < gLocalCount; ++k) {
+        if (abs(gLocal[k] - value) <= eps) return;
+    }
+    if (gLocalCount < LOCAL_BREAK_CAP) {
+        gLocal[gLocalCount++] = value;
+    }
+}
+
+// Stable sort + unique (std::sort on the short CPU buffers keeps equal-key
+// order for these sizes, and std::unique keeps the first of a run).
+void sortUniqueLocal(float eps) {
+    for (int i = 1; i < gLocalCount; ++i) {
+        float v = gLocal[i];
+        int j = i - 1;
+        while (j >= 0 && gLocal[j] > v) {
+            gLocal[j + 1] = gLocal[j];
+            --j;
+        }
+        gLocal[j + 1] = v;
+    }
+    int m = 0;
+    for (int i = 0; i < gLocalCount; ++i) {
+        if (m > 0 && abs(gLocal[i] - gLocal[m - 1]) <= eps) continue;
+        gLocal[m++] = gLocal[i];
+    }
+    gLocalCount = m;
+}
+
+void sortUniqueGlobal(float eps) {
+    for (int i = 1; i < gBreakCount; ++i) {
+        float v = gBreaks[i];
+        int j = i - 1;
+        while (j >= 0 && gBreaks[j] > v) {
+            gBreaks[j + 1] = gBreaks[j];
+            --j;
+        }
+        gBreaks[j + 1] = v;
+    }
+    int m = 0;
+    for (int i = 0; i < gBreakCount; ++i) {
+        if (m > 0 && abs(gBreaks[i] - gBreaks[m - 1]) <= eps) continue;
+        gBreaks[m++] = gBreaks[i];
+    }
+    gBreakCount = m;
+}
+
+// collectBreaks: the CPU recursion is flattened into an explicit LIFO stack.
+// The CPU body is:
+//   for(i = 1; i + 1 < localCount; ++i) addBreak(breaks, localBreaks[i], start, end, eps);
+//   for(i = 1; i < localCount; ++i)      collectBreaks(edge, localBreaks[i-1], localBreaks[i], ...);
+// i.e. every interior break is appended first, then the sub-intervals are
+// visited left to right (each fully before the next). Sub-intervals are pushed
+// in reverse so the LIFO pop order reproduces that depth-first, left-to-right
+// order; the global addBreak order is therefore identical to the CPU's.
+void collectBreaks(EdgeSpan edge, float start, float end) {
+    gTaskTop = 0;
+    pushTask(start, end);
+    while (gTaskTop > 0) {
+        --gTaskTop;
+        float a = gTaskStart[gTaskTop];
+        float b = gTaskEnd[gTaskTop];
+        if (b - a <= edge.eps * 2.0) {
+            continue;
+        }
+
+        float mid = a + (b - a) * 0.5;
+        gLocalCount = 0;
+        gLocal[gLocalCount++] = a;
+        gLocal[gLocalCount++] = b;
+
+        for (int q = 0; q < 4; ++q) {
+            Cell cell = findCellAt(edgeSamplePoint(edge, mid, q));
+            if (!cell.valid) {
+                continue;
+            }
+            addBreakLocal(cell.mn[edge.axis], a, b, edge.eps);
+            addBreakLocal(cell.mn[edge.axis] + cell.sz, a, b, edge.eps);
+        }
+
+        sortUniqueLocal(edge.eps);
+        if (gLocalCount <= 2) {
+            continue;
+        }
+
+        for (int i = 1; i + 1 < gLocalCount; ++i) {
+            addBreakGlobal(gLocal[i], a, b, edge.eps);
+        }
+
+        for (int i = gLocalCount - 1; i >= 1; --i) {
+            pushTask(gLocal[i - 1], gLocal[i]);
+        }
+    }
+}
+
+// Octree::iterateTriangles::emitSegment
+void emitSegment(EdgeSpan edge, float start, float end, bool sign0, bool sign1) {
+    float mid = start + (end - start) * 0.5;
+    Cell cells[4];
+    for (int q = 0; q < 4; ++q) {
+        cells[q] = findCellAt(edgeSamplePoint(edge, mid, q));
+    }
+
+    Cell owner;
+    bool ownerValid = false;
+    for (int q = 0; q < 4; ++q) {
+        if (isSurfaceCell(cells[q]) && (!ownerValid || ownerLess(cells[q], owner))) {
+            owner = cells[q];
+            ownerValid = true;
+        }
+    }
+    if (!ownerValid) {
+        return;
+    }
+
+    vec3 p0 = edgePoint(edge, start);
+    vec3 p1 = edgePoint(edge, end);
+    float d0 = cellInterp(owner, p0);
+    float d1 = cellInterp(owner, p1);
+    bool s0 = (d0 == INF) ? sign0 : (d0 < 0.0);
+    bool s1 = (d1 == INF) ? sign1 : (d1 < 0.0);
+    if (s0 == s1) {
+        return;
+    }
+
+    Cell plist[4];
+    int pcount = 0;
+    for (int q = 0; q < 4; ++q) {
+        if (!isSurfaceCell(cells[q])) {
+            continue;
+        }
+        bool duplicate = (pcount > 0)
+            && (plist[pcount - 1].id == cells[q].id
+                || samePosition(cellPosCached(plist[pcount - 1]), cellPosCached(cells[q]), edge.eps));
+        if (!duplicate && pcount < 4) {
+            plist[pcount++] = cells[q];
+        }
+    }
+
+    if (pcount > 1) {
+        const Cell first = plist[0];
+        const Cell last = plist[pcount - 1];
+        if (first.id == last.id || samePosition(cellPosCached(first), cellPosCached(last), edge.eps)) {
+            --pcount;
+        }
+    }
+
+    for (int i = 0; i < pcount; ++i) {
+        for (int j = i + 1; j < pcount; ++j) {
+            if (plist[i].id == plist[j].id
+                || samePosition(cellPosCached(plist[i]), cellPosCached(plist[j]), edge.eps)) {
+                return;
+            }
+        }
+    }
+
+    // Rotate the polygon so `from` (the anchor) leads, for consistent UVs.
+    {
+        int it = -1;
+        for (int k = 0; k < pcount; ++k) {
+            if (plist[k].id == uint(pc.fromId)) {
+                it = k;
+                break;
+            }
+        }
+        if (it > 0 && it < pcount) {
+            Cell tmp[4];
+            int t = 0;
+            for (int k = it; k < pcount; ++k) tmp[t++] = plist[k];
+            for (int k = 0; k < it; ++k) tmp[t++] = plist[k];
+            for (int k = 0; k < pcount; ++k) plist[k] = tmp[k];
+        }
+    }
+
+    const bool solidAtStart = s0;
+    if (pcount == 3) {
+        if (solidAtStart) {
+            emitTriangle(plist[0], plist[1], plist[2], edge.eps);
+        } else {
+            emitTriangle(plist[0], plist[2], plist[1], edge.eps);
+        }
+    } else if (pcount == 4) {
+        if (solidAtStart) {
+            emitTriangle(plist[0], plist[1], plist[2], edge.eps);
+            emitTriangle(plist[0], plist[2], plist[3], edge.eps);
+        } else {
+            emitTriangle(plist[0], plist[3], plist[2], edge.eps);
+            emitTriangle(plist[0], plist[2], plist[1], edge.eps);
+        }
+    }
+}
+
+// Octree::iterateTriangles::scanCell
+void scanCell(uint cellId) {
+    Cell cell;
+    cell.id = cellId;
+    cell.mn = nodeMin(cellId);
+    cell.sz = nodeSize(cellId);
+    cell.valid = true;
+
+    for (int edgeIndex = 0; edgeIndex < 12; ++edgeIndex) {
+        ivec2 ec = EDGES[edgeIndex];
+        bool sign0 = nodeSdf(cellId, ec.x) < 0.0;
+        bool sign1 = nodeSdf(cellId, ec.y) < 0.0;
+        if (sign0 == sign1) {
+            continue;
+        }
+
+        EdgeSpan edge = makeEdgeSpan(edgeIndex, cell);
+        if (edge.end - edge.start <= edge.eps * 2.0) {
+            continue;
+        }
+
+        gBreaks[0] = edge.start;
+        gBreaks[1] = edge.end;
+        gBreakCount = 2;
+        collectBreaks(edge, edge.start, edge.end);
+        sortUniqueGlobal(edge.eps);
+
+        for (int i = 1; i < gBreakCount; ++i) {
+            if (gBreaks[i] - gBreaks[i - 1] > edge.eps * 2.0) {
+                emitSegment(edge, gBreaks[i - 1], gBreaks[i], sign0, sign1);
+            }
+        }
+    }
+}
+
+void main() {
+    uint gi = gl_GlobalInvocationID.x;
+    if (gi >= pc.cellCount) return;
+    gCellIndex = gi;
+    scanCell(cellIds[gi]);
+}
