@@ -17,10 +17,17 @@ The codebase is written in modern C++ (C++20 or newer) and prioritizes:
 
 ## Build & Run
 
+**Agents: always build with `make -j8 debug` and never redirect output into
+`logs/` yourself.** `make -j8 debug` already tees its output to
+`logs/build.log`, and `make run` / `make run-debug` tee all app output to
+`logs/run.log`; extra redirection only duplicates or truncates those logs.
+Release builds (`make` / `make -j8 all`) belong to the user's own runs, not to
+agent verification.
+
 | Command | Action |
 |---------|--------|
-| `make` / `make -j8 all` | Release build (app + server + shaders, ImGui enabled, `-O3 -march=native`); output is teed to `logs/build.log` |
-| `make debug` | Debug build (`-O0 -g -DDEBUG`, no ImGui); output is teed to `logs/build.log` |
+| `make -j8 debug` | **Agent build/verification command.** Debug build (`-O0 -g -DDEBUG`, no ImGui); output is teed to `logs/build.log` automatically |
+| `make` / `make -j8 all` | Release build (app + server + shaders, ImGui enabled, `-O3 -march=native`, user's own runs); output is teed to `logs/build.log` |
 | `make run` | Release build + run `bin/app` (CWD is `bin/`, never close the app or use timeouts, the program is always closed by the user); app output is teed to `logs/run.log` |
 | `make run-debug` | Debug build + run (same logging as `make run`) | (Never close the app or use timeouts, the program is always closed by the user)
 | `MSG="scope: subject" make commit` | Commit staged changes (`git add` first), archive the full message to `logs/<commit_hash>.log` and speak the commit subject aloud; **all agents must commit through this target, never bare `git commit`**. MSG must be an environment prefix, not a make variable |
@@ -117,7 +124,7 @@ VULKAN_GPU_ASSISTED=1 make run-debug
 grep -n "Validation Error\|VUID\|ERROR" logs/run.log
 ```
 
-GPU-assisted validation has a significant performance cost and should only be used during debugging. It catches errors that static validation cannot detect (e.g. out-of-bounds descriptor indexing, invalid descriptor set updates). Always check `logs/run.log` for validation errors after running with this flag. Build output is logged to `logs/build.log` the same way (`make` / `make debug`); check it when a build fails.
+GPU-assisted validation has a significant performance cost and should only be used during debugging. It catches errors that static validation cannot detect (e.g. out-of-bounds descriptor indexing, invalid descriptor set updates). Always check `logs/run.log` for validation errors after running with this flag. Build output from `make -j8 debug` is logged to `logs/build.log` the same way; check it when a build fails. Never add your own `> logs/... 2>&1` redirection: the make targets already log everything.
 
 Code submitted with validation errors is considered incorrect.
 
@@ -356,7 +363,7 @@ When modifying Vulkan code:
 8. Prefer portability over vendor-specific optimizations.
 9. Avoid hidden performance regressions.
 10. Keep changes localized.
-11. After a failed `make run` / `make run-debug`, search `logs/run.log` for the validation error before changing code; after a failed build, check `logs/build.log`.
+11. Build and verify with `make -j8 debug` only (never release `make`/`make all` for agent checks) and do not redirect output into `logs/` yourself: `make -j8 debug` tees to `logs/build.log` and `make run` / `make run-debug` tee to `logs/run.log`. After a failed build or run, read those files before changing code.
 12. Commit through `MSG="scope: subject" make commit` (never bare `git commit`) so the commit subject is announced with the alert voice and the message is archived in `logs/<commit_hash>.log`; stage files with `git add` first. Prefix MSG as an environment variable — make expands `$` in `make MSG=...` arguments and would silently alter the message.
 
 ---
