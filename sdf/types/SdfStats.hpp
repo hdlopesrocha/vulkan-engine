@@ -18,6 +18,4 @@ struct SdfStats {
     uint64_t lastHits = 0;           // shaded surface hits
     uint32_t lavaAnchors = 0;    // flame anchors from brush-4 lava chunks
     uint32_t lavaChunks = 0;     // lava-bearing chunks currently tracked
-    uint32_t rockAnchors = 0;    // boulder anchors from brush-7 rock chunks
-    uint32_t rockChunks = 0;     // rock-bearing chunks currently tracked
 };

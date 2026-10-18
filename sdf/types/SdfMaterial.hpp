@@ -33,7 +33,8 @@ struct SdfMaterial {
     float noiseScale = 2.5f;                          // offset 64
     float turbulence = 0.6f;                          // offset 68
     float riseSpeed = 1.5f;                           // offset 72
-    // Textured surface path (surface-mode hits, e.g. rocks): array layer in
+    // Textured surface path (surface-mode hits; reserved — no current SDF
+    // primitive uses it): array layer in
     // the scene albedo/normal/roughness/AO arrays and world metres per
     // texture repeat. Layer < 0 keeps the flat baseColor/roughness shading.
     float textureLayer = -1.0f;                       // offset 76

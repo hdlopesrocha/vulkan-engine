@@ -57,7 +57,7 @@ using OctreeTopologyTargetProvider =
 // Result of a resident (pool-writing) build. `bridge` is the host-visible
 // mirror of exactly what landed in the pool span (renderer Vertex layout, one
 // entry per deduped slot, plus the index stream): the CPU-side effect
-// consumers (vegetation / lava / rock / RT proxies) and the topology
+// consumers (vegetation / lava / RT proxies) and the topology
 // self-check read it.
 struct OctreeTopologyResidentResult {
     Geometry bridge;              // deduped mirror of the pool span + indices

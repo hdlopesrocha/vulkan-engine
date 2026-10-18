@@ -11,11 +11,9 @@
 #include "SdfLavaConfig.hpp"
 #include "SdfSmokeConfig.hpp"
 #include "SdfBulletConfig.hpp"
-#include "SdfRockConfig.hpp"
 
 struct SdfEffectConfig {
     SdfLavaConfig lava;
     SdfSmokeConfig smoke;
     SdfBulletConfig bullet;
-    SdfRockConfig rocks;
 };

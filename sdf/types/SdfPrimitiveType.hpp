@@ -25,11 +25,8 @@ enum class SdfPrimitiveType : uint32_t {
     // state buffer (set=1 binding 8). Marching uses the grown radius;
     // density handles growth envelope, tunnel, wake and refill.
     Smoke = 9,
-    // Rock boulder: Perlin-displaced sphere (static). params0.x = base
-    // radius, .y = noise frequency (per local unit), .z = displacement
-    // amplitude as a fraction of the radius; the instance seed offsets the
-    // noise lattice so every rock is unique. Bounds add the displacement.
-    Rock = 10,
+    // 10 was Rock (Perlin-displaced boulders) — removed; the value is
+    // retired so the remaining primitive IDs stay stable.
     // Grass clump (retired): SDF grass is removed; bladed grass renders as
     // triangle tufts in VegetationRenderer. Kept as an unused enum value so
     // other primitive IDs stay stable; the SDF evaluator returns a miss.

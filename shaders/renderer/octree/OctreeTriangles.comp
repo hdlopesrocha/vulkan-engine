@@ -57,7 +57,7 @@ layout(set = 0, binding = 15, scalar) writeonly buffer OutIdx   { uint poolIdx[]
 // Host-visible mirror of what the resident passes write into the device-local
 // pools: one 64-byte renderer Vertex per deduped slot (SAME slot index as the
 // pool) plus the chunk-local index stream. It is the CPU-side geometry the
-// effect consumers (vegetation / lava / rock / RT proxies) and the topology
+// effect consumers (vegetation / lava / RT proxies) and the topology
 // self-check read, and it keeps the pool buffers free of any TRANSFER_SRC
 // requirement (the GPU never reads the pools back).
 layout(set = 0, binding = 16, scalar) writeonly buffer OutBridgeVerts { vec4 bridgeVerts[]; };

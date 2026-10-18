@@ -44,15 +44,14 @@ layout(location = VARY_POSWORLD) in vec3 fragWorldPos;
 layout(location = VARY_BRUSHPATCH) flat in int fragContainerIndex;
 
 #include "../../includes/SceneBindings.glsl"
-// Scene texture arrays (set 0 bindings 1/2/3/12/13) for the textured rock
-// surface path; the main scene set is already first in the pipeline layout.
+// Scene texture arrays (set 0 bindings 1/2/3/12/13); the main scene set is
+// already first in the pipeline layout.
 #include "../../includes/Textures.glsl"
 #include "../../includes/sdf/SdfMaterial.glsl"
 #include "../../includes/sdf/SdfPrimitives.glsl"
 #include "../../includes/sdf/SdfOps.glsl"
 #include "../../includes/sdf/SdfModel.glsl"
 #include "../../includes/sdf/SdfNoise.glsl"
-#include "../../includes/sdf/SdfRock.glsl"
 // SDF grass retired (bladed grass in VegetationRenderer).
 #include "../../includes/sdf/SdfSmoke.glsl"
 // Shared wind field (set 0, binding 27) for the flame lean below. Requires
@@ -119,8 +118,8 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 //   Lipschitz 0.5 halving (:231-233): noise/spike deformations are not
 //     metric (|grad d| can exceed 1 by ~deform amplitude / feature size), so
 //     deformed definitions halve the canonical distance and the world step
-//     (d * ds) can no longer overestimate. Undeformed paths (rock sphere,
-//     rigid grass lean) skip it: exact distances there. A uniform factor
+//     (d * ds) can no longer overestimate. Undeformed paths skip it:
+//     exact distances there. A uniform factor
 //     cancels in the normal normalize, so shading is unaffected — only the
 //     step bound turns conservative (up to 2x more steps through deformed
 //     fields: the M12 Minimal tier pays this back with fewer budgeted steps).
@@ -221,14 +220,7 @@ float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
     if ((deform & SDF_DEFORM_REPEAT) != 0u) {
         q = opRepeat(q, abs(def.params1.xyz));
     }
-    float d;
-    if (def.prim == SDF_PRIM_ROCK) {
-        // Static Perlin-displaced sphere (no flame deformer): sdRock carries
-        // its own conservative Lipschitz bound, so no halving below.
-        d = sdRock(q, def.params0, inst.seed);
-    } else {
-        d = sdfPrimitive(q, def.prim, def.params0, def.params1);
-    }
+    float d = sdfPrimitive(q, def.prim, def.params0, def.params1);
     // Deformation runs in canonical flame space (flame ~3.2 units tall) so
     // waviness/spike SIZE stays constant under instance scaling; in raw
     // local units an x32 flame would get x32-stretched blobby features.
@@ -321,8 +313,8 @@ vec3 sdfSurfaceNormal(vec3 p, SdfInstance inst, SdfDefinition def,
 
 // H7 far path: 3-tap forward difference reusing the hit-step dBest as the
 // center tap (3 new evals instead of 4; 4 SDF evals per hit incl. the march
-// step, vs 5 before). Selected beyond sdfLodNear; the rock triplanar shade
-// downstream is unchanged (it only consumes the returned normal).
+// step, vs 5 before). Selected beyond sdfLodNear; downstream shading only
+// consumes the returned normal.
 vec3 sdfSurfaceNormalFD(vec3 p, SdfInstance inst, SdfDefinition def,
                         SdfMaterial mat, float time, float e, float dC, float lodT) {
     vec2 gwl = vec2(0.0);
@@ -339,63 +331,6 @@ float sdfProjDepth(vec3 ro, vec3 rd, float t) {
     vec4 c = ubo.viewProjection * vec4(ro + rd * t, 1.0);
     if (c.w <= 1e-6) return 0.0;
     return clamp(c.z / c.w, 0.0, 1.0);
-}
-
-// ── Textured rock surface ────────────────────────────────────────────────
-// Triplanar blend weights from a world normal (sharpened so one projection
-// dominates on flat faces).
-vec3 sdfTriplanarWeights(vec3 n) {
-    vec3 w = pow(abs(n), vec3(4.0));
-    return w / max(w.x + w.y + w.z, 1e-5);
-}
-
-// Triplanar albedo from the scene texture array (`layer` = material
-// textureLayer, `tiling` = world metres per texture repeat).
-vec3 sdfRockAlbedo(vec3 wp, vec3 n, int layer, float tiling) {
-    float inv = 1.0 / max(tiling, 1e-3);
-    vec3 w = sdfTriplanarWeights(n);
-    vec3 cx = texture(albedoArray, vec3(wp.zy * inv, float(layer))).rgb;
-    vec3 cy = texture(albedoArray, vec3(wp.xz * inv, float(layer))).rgb;
-    vec3 cz = texture(albedoArray, vec3(wp.xy * inv, float(layer))).rgb;
-    return cx * w.x + cy * w.y + cz * w.z;
-}
-
-// Triplanar normal (whiteout blend) from the scene normal array.
-vec3 sdfRockNormal(vec3 wp, vec3 n, int layer, float tiling) {
-    float inv = 1.0 / max(tiling, 1e-3);
-    vec3 w = sdfTriplanarWeights(n);
-    vec3 nx = texture(normalArray, vec3(wp.zy * inv, float(layer))).xyz * 2.0 - 1.0;
-    vec3 ny = texture(normalArray, vec3(wp.xz * inv, float(layer))).xyz * 2.0 - 1.0;
-    vec3 nz = texture(normalArray, vec3(wp.xy * inv, float(layer))).xyz * 2.0 - 1.0;
-    // Whiteout blend: fold the tangential components into each projection,
-    // then weight and swizzle each back into world space.
-    nx = vec3(nx.xy + n.zy, abs(nx.z) * n.x);
-    ny = vec3(ny.xy + n.xz, abs(ny.z) * n.y);
-    nz = vec3(nz.xy + n.xy, abs(nz.z) * n.z);
-    return normalize(nx.zyx * w.x + ny.xzy * w.y + nz.xyz * w.z);
-}
-
-// Lit textured rock color: triplanar albedo + normal, one directional light
-// with a hemisphere ambient. Runs only for surface hits (the rock zero
-// crossing shades opaque in every render mode).
-vec3 sdfRockShade(vec3 wp, vec3 n, vec3 L, SdfMaterial mat) {
-    // Guard the layer against the live array size (widget values may exceed
-    // the loaded layer count; out-of-range array layers are invalid reads).
-    int layer = clamp(int(mat.textureLayer + 0.5), 0,
-                      max(int(textureSize(albedoArray, 0).z) - 1, 0));
-    vec3 albedo = mat.baseColor.rgb * sdfRockAlbedo(wp, n, layer, mat.textureTiling);
-    vec3 nrm = sdfRockNormal(wp, n, layer, mat.textureTiling);
-    float rough = clamp(mat.roughness, 0.05, 1.0);
-    float ndl = max(dot(nrm, L), 0.0);
-    vec3 V = normalize(ubo.viewPosition - wp);
-    vec3 H = normalize(L + V);
-    float specPower = mix(8.0, 256.0, 1.0 - rough);
-    float spec = pow(max(dot(nrm, H), 0.0), specPower);
-    float specStrength = (1.0 - rough) * 0.5 + clamp(mat.metallic, 0.0, 1.0) * 0.3;
-    float up = clamp(0.5 + 0.5 * nrm.y, 0.0, 1.0);
-    vec3 ambient = mix(vec3(0.10), vec3(0.32), up);
-    return albedo * (ambient + 0.85 * ndl * ubo.lightColor)
-         + ubo.lightColor * spec * specStrength;
 }
 
 // Gold tracer shading for one analytic bullet sphere. All inputs are in the
@@ -789,17 +724,15 @@ void main() {
         minAbsD = min(minAbsD, abs(dBest));
 
         // Surface mode (or any mode hitting the zero crossing): shade opaque
-        // hit. Solid smoke shapes (Sphere/Cube) and rock boulders are opaque
-        // bodies in every render mode.
+        // hit. Solid smoke shapes (Sphere/Cube) are opaque bodies in every
+        // render mode.
         bool smokeSolid = (bestDef.prim == SDF_PRIM_SMOKE) &&
                           (smokeGpu.tuning.shape > 0.5);
-        bool rockSolid = (bestDef.prim == SDF_PRIM_ROCK);
-        if (dBest < eps && (renderMode == 0u || renderMode == 3u || smokeSolid || rockSolid)) {
+        if (dBest < eps && (renderMode == 0u || renderMode == 3u || smokeSolid)) {
             if (sdfProf) atomicAdd(sdfCounters[4], 1u);
             float e = max(eps * 2.0, 0.004);
             // H7: tiered normal reconstruction on the C3 distance uniforms
-            // (sdfLodNear <= 0 disables the tier: always tetrahedral). The
-            // rock triplanar shade below consumes nn unchanged.
+            // (sdfLodNear <= 0 disables the tier: always tetrahedral).
             float lodNearH7 = (sdfParams.sdfLodNear > 0.0) ? sdfParams.sdfLodNear : 1e5;
             vec3 nn = (t < lodNearH7)
                 ? sdfSurfaceNormal(p, bestInst, bestDef, bestMat, time, e, t)
@@ -807,13 +740,7 @@ void main() {
             vec3 L = -normalize(ubo.lightDirection);
             float ndl = max(dot(nn, L), 0.0);
             float alpha = clamp(bestMat.opacity, 0.0, 1.0);
-            if (rockSolid && bestMat.textureLayer >= 0.0) {
-                // Textured boulder: triplanar scene-array albedo + normal
-                // (the flat material color stays the fallback).
-                hitColor = sdfRockShade(p, nn, L, bestMat);
-            } else {
-                hitColor = bestMat.baseColor.rgb * (0.2 + ndl) * ubo.lightColor + bestMat.emission * 0.2;
-            }
+            hitColor = bestMat.baseColor.rgb * (0.2 + ndl) * ubo.lightColor + bestMat.emission * 0.2;
             if (renderMode == 3u) {
                 outColor = vec4(hitColor, alpha);
             } else {
