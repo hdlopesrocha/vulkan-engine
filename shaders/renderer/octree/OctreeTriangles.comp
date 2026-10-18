@@ -29,11 +29,39 @@ layout(set = 0, binding = 6,  scalar) readonly buffer InChild47 { ivec4 child47[
 layout(set = 0, binding = 7,  scalar) readonly buffer InCells { uint cellIds[]; };
 
 // Vertex payloads: xyz plus one packed slot (the brush index is bit-cast into
-// outPos.w) so the readback stays three vec4 buffers per vertex.
-layout(set = 0, binding = 8,  scalar) writeonly buffer OutPos  { vec4 outPos[]; };
-layout(set = 0, binding = 9,  scalar) writeonly buffer OutNrm  { vec4 outNrm[]; };
-layout(set = 0, binding = 10, scalar) writeonly buffer OutHsv  { vec4 outHsv[]; };
-layout(set = 0, binding = 11) buffer Counters { uint vertexCount; uint overflowCount; };
+// outPos.w) so the readback stays three vec4 buffers per vertex. Read-write:
+// the resident dedup pass reads them back to build the packed pool vertex.
+layout(set = 0, binding = 8,  scalar) buffer OutPos  { vec4 outPos[]; };
+layout(set = 0, binding = 9,  scalar) buffer OutNrm  { vec4 outNrm[]; };
+layout(set = 0, binding = 10, scalar) buffer OutHsv  { vec4 outHsv[]; };
+layout(set = 0, binding = 11) buffer Counters {
+    uint vertexCount;      // raw (per-triangle) vertices emitted by the walk
+    uint overflowCount;    // walk dropped a triangle (arena full)
+    uint uniqueVertexCount;// deduped vertices written into the resident pool
+    uint droppedCount;     // resident pool writes dropped (span full)
+};
+
+// ── GPU-resident output (optional, pc.resident != 0) ─────────────────────
+// The walk emits three vertices per triangle into the host-visible arena
+// above; a second pass dedups them into the renderer's packed Vertex pool and
+// a third pass rewrites the chunk-local index stream that references it. The
+// pool element is the renderer's 64-byte Vertex (see math/Vertex.hpp):
+//   vec4[0] position.xyz | color.x
+//   vec4[1] color.yz | texCoord.xy
+//   vec4[2] normal.xyz | brushIndex bits
+//   vec4[3] pad | hsv
+layout(set = 0, binding = 12, scalar) buffer RawKeys     { uint rawKeys[]; };     // per raw vertex: nodeIndex * 6 + plane
+layout(set = 0, binding = 13, scalar) buffer DedupTable  { uint dedupTable[]; };  // nodeIndex * 6 + plane -> slot + 1 (0 = free)
+layout(set = 0, binding = 14, scalar) writeonly buffer OutVerts { vec4 poolVerts[]; };
+layout(set = 0, binding = 15, scalar) writeonly buffer OutIdx   { uint poolIdx[]; };
+// Host-visible mirror of what the resident passes write into the device-local
+// pools: one 64-byte renderer Vertex per deduped slot (SAME slot index as the
+// pool) plus the chunk-local index stream. It is the CPU-side geometry the
+// effect consumers (vegetation / lava / rock / RT proxies) and the topology
+// self-check read, and it keeps the pool buffers free of any TRANSFER_SRC
+// requirement (the GPU never reads the pools back).
+layout(set = 0, binding = 16, scalar) writeonly buffer OutBridgeVerts { vec4 bridgeVerts[]; };
+layout(set = 0, binding = 17, scalar) writeonly buffer OutBridgeIdx   { uint bridgeIdx[]; };
 
 layout(push_constant) uniform PC {
     uint cellCount;
@@ -42,7 +70,22 @@ layout(push_constant) uniform PC {
     int fromBrush;
     vec4 rootMinSize;   // xyz = world root min, w = world root size
     float worldSize;    // Octree::getLengthX() (edge.eps base)
+    // Arena capacity. The arena only carries the non-resident readback: the
+    // resident pipeline ignores it (0 = no arena writes at all) because pass 1
+    // rebuilds every vertex from its dedup key instead of reading it back.
     uint maxVertices;
+    // Capacity of rawKeys[]: the hard bound on the walk's raw vertex count
+    // (3 per emitted triangle). The chunk-local index stream has exactly one
+    // entry per raw vertex, so this is also the index-span bound.
+    uint keyCapacity;
+    // Resident pipeline: pass 0 = walk, 1 = dedup + pool vertex write,
+    // 2 = index write. Ignored when resident == 0.
+    uint resident;
+    uint pass;
+    uint vertexBase;      // pool element index of this chunk's span
+    uint vertexCapacity;  // pool elements reserved for this chunk
+    uint indexBase;       // index pool element index of this chunk's span
+    uint indexCapacity;   // index pool elements reserved for this chunk
 } pc;
 
 const int TYPE_EMPTY = 0;
@@ -499,6 +542,28 @@ void writeVertex(uint idx, vec3 p, vec3 n, int brush, vec3 h) {
     outHsv[idx] = vec4(h, 0.0);
 }
 
+// Tesselator::triplanarPlane / triplanarMapping (space/Tesselator.cpp). The
+// resident pass reproduces the CPU vertex payload exactly so the GPU-written
+// pool holds the same Vertex the CPU tessellator would have uploaded.
+int triplanarPlane(vec3 normal) {
+    vec3 an = abs(normal);
+    if (an.x > an.y && an.x > an.z) {
+        return normal.x > 0.0 ? 0 : 1;
+    } else if (an.y > an.x && an.y > an.z) {
+        return normal.y > 0.0 ? 2 : 3;
+    }
+    return normal.z > 0.0 ? 4 : 5;
+}
+
+vec2 triplanarMapping(vec3 p, int plane) {
+    if (plane == 0) return vec2(-p.z, -p.y);
+    if (plane == 1) return vec2(p.z, -p.y);
+    if (plane == 2) return vec2(p.x, p.z);
+    if (plane == 3) return vec2(p.x, -p.z);
+    if (plane == 4) return vec2(p.x, -p.y);
+    return vec2(-p.x, -p.y);
+}
+
 // Octree::iterateTriangles::emitTriangle
 void emitTriangle(Cell c0, Cell c1, Cell c2, float eps) {
     vec3 p0 = cellPosCached(c0);
@@ -520,14 +585,47 @@ void emitTriangle(Cell c0, Cell c1, Cell c2, float eps) {
     vec3 n1 = cellNormal(c1, p1);
     vec3 n2 = cellNormal(c2, p2);
 
+    // One raw vertex per triangle corner. `base` is always consumed linearly
+    // (the triangle keeps its three consecutive slots), so a triangle that
+    // cannot be represented is reported through droppedCount and the chunk is
+    // skipped by the host instead of leaving a hole in the stream.
     uint base = atomicAdd(vertexCount, 3u);
-    if (base + 3u > pc.maxVertices) {
-        atomicAdd(overflowCount, 1u);
+    if (base + 3u > pc.keyCapacity) {
+        atomicAdd(droppedCount, 1u);
         return;
     }
-    writeVertex(base + 0u, p0, n0, b0, nodeHsvOf(c0.id));
-    writeVertex(base + 1u, p1, n1, b1, nodeHsvOf(c1.id));
-    writeVertex(base + 2u, p2, n2, b2, nodeHsvOf(c2.id));
+
+    // Arena (non-resident readback): the resident pipeline does not need it —
+    // pass 1 re-derives each vertex from its (node, plane) key — so it is
+    // best-effort there and its overflow never invalidates the packed-pool
+    // output.
+    if (pc.maxVertices > 0u) {
+        if (base + 3u <= pc.maxVertices) {
+            writeVertex(base + 0u, p0, n0, b0, nodeHsvOf(c0.id));
+            writeVertex(base + 1u, p1, n1, b1, nodeHsvOf(c1.id));
+            writeVertex(base + 2u, p2, n2, b2, nodeHsvOf(c2.id));
+        } else {
+            atomicAdd(overflowCount, 1u);
+            if (pc.resident == 0u) {
+                // Without the resident pipeline the arena IS the output: an
+                // overflow leaves a hole, so the caller must fall back.
+                atomicAdd(droppedCount, 1u);
+            }
+        }
+    }
+
+    // Resident path: tag each emitted vertex with its dedup key — the emitting
+    // node plus the triangle's triplanar plane (derived from the triangle's
+    // first vertex, matching Tesselator::handle's UV plane). The CPU
+    // tessellator keys on (position, normal, texCoord, brushIndex); both are
+    // functions of exactly (node id, plane), so same key <=> same vertex
+    // payload.
+    if (pc.resident != 0u) {
+        const uint plane = uint(triplanarPlane(n0));
+        rawKeys[base + 0u] = c0.id * 6u + plane;
+        rawKeys[base + 1u] = c1.id * 6u + plane;
+        rawKeys[base + 2u] = c2.id * 6u + plane;
+    }
 }
 
 // -------------------------------------------------------- break collection
@@ -791,8 +889,114 @@ void scanCell(uint cellId) {
     }
 }
 
+// ------------------------------------------------------- resident pipeline
+//
+// Pass 0 (walk) wrote one dedup key per raw vertex into rawKeys[]: the
+// emitting node plus the triangle's triplanar plane. Pass 1 claims the first
+// raw vertex of every key (atomicCompSwap on the direct-mapped table indexed
+// by the key), writes that representative into the renderer's packed Vertex
+// pool and publishes the slot in the table. Pass 2 rewrites the chunk-local
+// index stream: index i belongs to raw vertex i (triangles are emitted as
+// three consecutive vertices) and points at the deduped slot of its key.
+//
+// The representative's payload is REBUILT from the key (node + plane) rather
+// than read back from the arena: the walker's vertex payload is by
+// construction a pure function of the emitting node's SDF/cube/hsv/brush and
+// the plane, which is exactly why the key dedups the same vertices the CPU
+// tessellator's (position, normal, texCoord, brushIndex) hasher would. That
+// keeps the packed-pool output independent of the arena size, so the arena can
+// stay best-effort CPU-side bridge data.
+//
+// Note the vertex SLOT a key receives depends on which invocation wins the
+// claim, so the pool's vertex order (and with it the bridge mirror's) is not
+// reproducible run to run. The triangle SET — and therefore the rendered
+// surface, vegetation placement and the proxy boxes — is unaffected.
+
+void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int plane) {
+    const vec2 uv = triplanarMapping(p, plane) * 0.1;
+    const uint o = (pc.vertexBase + slot) * 4u;
+    // Vertex layout (math/Vertex.hpp), 4 x vec4 = 64 bytes:
+    //   position.xyz | color.x
+    //   color.yz    | texCoord.xy
+    //   normal.xyz  | brushIndex
+    //   _pad0       | hsv
+    const vec4 c0 = vec4(p, 1.0);
+    const vec4 c1 = vec4(1.0, 1.0, uv);
+    const vec4 c2 = vec4(n, uintBitsToFloat(uint(brush)));
+    const vec4 c3 = vec4(0.0, h);
+    poolVerts[o + 0u] = c0;
+    poolVerts[o + 1u] = c1;
+    poolVerts[o + 2u] = c2;
+    poolVerts[o + 3u] = c3;
+    // Host-visible mirror (same slot index), sized to the dedup key space by
+    // the host — no capacity check needed.
+    const uint b = slot * 4u;
+    bridgeVerts[b + 0u] = c0;
+    bridgeVerts[b + 1u] = c1;
+    bridgeVerts[b + 2u] = c2;
+    bridgeVerts[b + 3u] = c3;
+}
+
+void residentDedup(uint i) {
+    const uint key = rawKeys[i];
+    const uint old = atomicCompSwap(dedupTable[key], 0u, i + 1u);
+    if (old != 0u) return; // another invocation claimed this vertex first
+
+    const uint slot = atomicAdd(uniqueVertexCount, 1u);
+    if (slot >= pc.vertexCapacity) {
+        // The span is sized from the key space (unique <= key count), so this
+        // only happens on a sizing bug; the host sees droppedCount and skips
+        // the chunk rather than drawing a corrupt mesh.
+        atomicAdd(droppedCount, 1u);
+        dedupTable[key] = 1u; // slot 0, harmless: the chunk will not be drawn
+        return;
+    }
+    dedupTable[key] = slot + 1u;
+
+    // Rebuild the representative from the key. `plane` selects the UV mapping
+    // exactly like Tesselator::handle does for the triangle's first vertex.
+    const uint node = key / 6u;
+    const int plane = int(key % 6u);
+    Cell c;
+    c.id = node;
+    c.mn = nodeMin(node);
+    c.sz = nodeSize(node);
+    c.valid = true;
+    vec3 p = cellPos(c);
+    vec3 n = cellNormal(c, p);
+    int brush = nodeBrush(node);
+    if (brush <= DISCARD_BRUSH) brush = pc.fromBrush;
+    residentWriteVertex(slot, p, n, brush, nodeHsvOf(node), plane);
+}
+
+void residentIndex(uint i) {
+    const uint slot = dedupTable[rawKeys[i]] - 1u;
+    poolIdx[pc.indexBase + i] = slot;
+    bridgeIdx[i] = slot;
+}
+
 void main() {
     uint gi = gl_GlobalInvocationID.x;
+    if (pc.resident != 0u) {
+        // Both resident passes are bounded by the raw vertex count AND by the
+        // key capacity: the walk can overshoot keyCapacity by the corners of a
+        // dropped triangle, and those trailing slots must not be read.
+        const uint live = min(vertexCount, pc.keyCapacity);
+        if (pc.pass == 2u) {
+            if (gi < live) {
+                if (pc.indexBase + gi >= pc.indexCapacity) {
+                    atomicAdd(droppedCount, 1u);
+                    return;
+                }
+                residentIndex(gi);
+            }
+            return;
+        }
+        if (pc.pass == 1u) {
+            if (gi < live) residentDedup(gi);
+            return;
+        }
+    }
     if (gi >= pc.cellCount) return;
     gCellIndex = gi;
     scanCell(cellIds[gi]);

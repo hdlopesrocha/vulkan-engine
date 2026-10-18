@@ -141,8 +141,12 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
     auto addBarrier = [&](VkBuffer buf, VkAccessFlags2 dstAccess) {
         if (buf == VK_NULL_HANDLE) return;
         barriers[count].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        barriers[count].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
-        barriers[count].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        // COMPUTE_SHADER as a source: the octree topology pass writes the
+        // vertex/index pools directly (GPU-resident chunks — no host upload),
+        // so its shader writes must be made available to the cull's shader
+        // reads, the indirect draws and the acceleration-structure builds.
+        barriers[count].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        barriers[count].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
         // Acceleration-structure builds read the merged vertex/index buffers as
         // build inputs (real-geometry reflection BLAS) in the same command
         // buffer, so the destination must cover the build stage too.
@@ -310,6 +314,20 @@ void IndirectRenderer::flushStagedMetaWrites(VkCommandBuffer cmd, uint32_t frame
 
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
+        // Spans whose entry is being swapped by THIS flush: the copies below
+        // stop every later draw from referencing them, and in-flight frames
+        // still hold the previous commands, so release them here — the pool
+        // range only gets rewritten by future submissions, which the graphics
+        // queue orders after those frames.
+        spanFreeFlush_.swap(spanFreePending_[frame]);
+        for (const PendingSpanFree& f : spanFreeFlush_) {
+            if (f.baseVertex != UINT32_MAX && f.vertexCount > 0)
+                spaceAlloc.freeVertex(f.baseVertex, f.vertexCount);
+            if (f.firstIndex != UINT32_MAX && f.indexCount > 0)
+                spaceAlloc.freeIndex(f.firstIndex, f.indexCount);
+        }
+        spanFreeFlush_.clear();
+
         if (metaStagePending_[frame].empty()) return;
         metaStageFlush_.swap(metaStagePending_[frame]);
     }
@@ -2196,8 +2214,110 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
 
     std::lock_guard<std::recursive_mutex> guard(mutex);
 
-    uint32_t neededVerts = static_cast<uint32_t>(mesh.vertices.size());
-    uint32_t neededIdxs  = static_cast<uint32_t>(mesh.indices.size());
+    const uint32_t neededVerts = static_cast<uint32_t>(mesh.vertices.size());
+    const uint32_t neededIdxs  = static_cast<uint32_t>(mesh.indices.size());
+
+    // Empty geometry: no span is packed. Release the chunk's previous spans now
+    // (no upload will reference them), register the chunk so removal can free
+    // its slot, and zero the entry so the GPU never draws it.
+    if (neededVerts == 0 || neededIdxs == 0) {
+        auto existing = meshes.find(chunkId);
+        const bool isNewChunk = (existing == meshes.end() || !existing->second.active);
+        uint32_t slotIdx = isNewChunk ? UINT32_MAX : existing->second.slotIndex;
+        if (slotIdx == UINT32_MAX) {
+            slotIdx = slotAlloc.allocate(1, 1);
+            if (slotIdx == UINT32_MAX) return UINT32_MAX;
+        }
+        if (slotIdx >= slotAlloc.capacity()) return UINT32_MAX;
+        if (isNewChunk) {
+            MeshInfo m{};
+            m.id        = chunkId;
+            m.slotIndex = slotIdx;
+            m.active    = true;
+            m.boundsBase = boundsBase ? glm::vec4(*boundsBase, 0.0f) : glm::vec4(0.0f);
+            meshes[chunkId] = m;
+        } else {
+            MeshInfo::LevelData& prev = existing->second.level_;
+            if (prev.allocated) {
+                if (prev.oldVertexBase != UINT32_MAX) {
+                    spaceAlloc.freeVertex(prev.oldVertexBase, prev.oldVertexCount);
+                    spaceAlloc.freeIndex(prev.oldIndexBase, prev.oldIndexCount);
+                }
+                spaceAlloc.freeVertex(prev.baseVertex, prev.vertexCount);
+                spaceAlloc.freeIndex(prev.firstIndex, prev.indexCount);
+                prev = MeshInfo::LevelData{};
+            }
+        }
+        if (slotIdx < indirectCommands.size())
+            indirectCommands[slotIdx] = VkDrawIndexedIndirectCommand{};
+        activeMeshCountDirty_ = true;
+        {
+            VkDrawIndexedIndirectCommand zeroCmd{};
+            glm::vec4 zeroBounds[4] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
+            stageMeshMetaWrite(slotIdx, zeroCmd, zeroBounds, true);
+        }
+        return slotIdx;
+    }
+
+    SpanReservation r = reserveSpanLocked(chunkId, neededVerts, neededIdxs,
+                                          cubeMin, cubeMax, level, boundsBase);
+    if (r.slotIndex == UINT32_MAX || r.info == nullptr) return UINT32_MAX;
+    MeshInfo::LevelData& ld = r.info->level_;
+
+    if (!cubeMin || !cubeMax) {
+        // No chunk cube supplied: fall back to the mesh's own AABB.
+        glm::vec3 minp(FLT_MAX), maxp(-FLT_MAX);
+        for (const auto& v : mesh.vertices) {
+            minp = glm::min(minp, v.position);
+            maxp = glm::max(maxp, v.position);
+        }
+        ld.boundsMin = glm::vec4(minp, 0.0f);
+        ld.boundsMax = glm::vec4(maxp, 0.0f);
+    }
+    // Copy geometry data into the chunk's packed span (absolute positions).
+    copyGeometryToLevel(mesh, ld);
+
+    // Publish the CPU-side indirect command for this entry (the GPU buffers
+    // stay zeroed until the deferred writeSlotMeta after upload).
+    if (r.slotIndex < indirectCommands.size()) {
+        indirectCommands[r.slotIndex].indexCount    = ld.indexCount;
+        indirectCommands[r.slotIndex].instanceCount = 1;
+        indirectCommands[r.slotIndex].firstIndex    = ld.firstIndex;
+        indirectCommands[r.slotIndex].vertexOffset  = static_cast<int32_t>(ld.baseVertex);
+        indirectCommands[r.slotIndex].firstInstance = r.slotIndex;
+    }
+
+    // Zero the GPU indirect + bounds for THIS entry (staged for the next
+    // prepareCull) so the cull shader never sees stale/garbage data during the
+    // window between this publish and the deferred writeSlotMeta (upload
+    // completion). Fresh slots are redundant with initSlots zeroing, but
+    // recycled slots may retain stale bounds from a prior occupant. Staged
+    // (not memcpy'd): in-flight cull dispatches may still be reading this
+    // entry, and a torn write would be observed as garbage by the cull.
+    {
+        VkDrawIndexedIndirectCommand zeroCmd{};
+        glm::vec4 zeroBounds[4] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
+        stageMeshMetaWrite(r.slotIndex, zeroCmd, zeroBounds, true);
+    }
+
+    return r.slotIndex;
+}
+
+// Caller must hold `mutex`. Shared by the CPU-upload path (addMeshSlotted) and
+// the GPU-resident path (reserveGpuMeshSpan): claim the chunk's stable draw
+// entry, pack a new span of `neededVerts`/`neededIdxs` elements and register
+// the chunk's LevelData with it. The previous span is NOT freed here: in-flight
+// frames may still reference it, so it is moved to the old* fields and released
+// by whichever path completes the replacement (upload completion for uploads,
+// the staged meta flush for GPU-written spans). If an older span is already
+// pending (a previous republish that never completed), it is freed now: that
+// republish already zeroed the entry, so nothing references it anymore.
+IndirectRenderer::SpanReservation IndirectRenderer::reserveSpanLocked(
+    uint32_t chunkId, uint32_t neededVerts, uint32_t neededIdxs,
+    const glm::vec3* cubeMin, const glm::vec3* cubeMax, int level,
+    const glm::vec3* boundsBase)
+{
+    SpanReservation out;
 
     auto existing = meshes.find(chunkId);
     const bool isNewChunk = (existing == meshes.end() || !existing->second.active);
@@ -2211,7 +2331,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
             auto now = std::chrono::steady_clock::now();
             if (now - g_lastNoSlotLog >= std::chrono::seconds(1)) {
                 g_lastNoSlotLog = now;
-                std::cerr << "[IndirectRenderer] addMeshSlotted: no free draw block for chunk " << chunkId
+                std::cerr << "[IndirectRenderer] reserveSpan: no free draw block for chunk " << chunkId
                           << " (active=" << slotAlloc.activeCount()
                           << " capacity=" << slotAlloc.capacity()
                           << " usedVert=" << spaceAlloc.usedVertex()
@@ -2219,7 +2339,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
                           << " usedIdx=" << spaceAlloc.usedIndex()
                           << "/" << spaceAlloc.totalIndex() << ")" << std::endl;
             }
-            return UINT32_MAX;
+            return out;
         }
 #ifdef DEBUG
         if (slotAlloc.peakActiveCount() >= lastPeakLogged_ + 32) {
@@ -2230,154 +2350,248 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
 #endif
     }
     if (slotIdx >= slotAlloc.capacity()) {
-        std::cerr << "[IndirectRenderer] addMeshSlotted: slot " << slotIdx
+        std::cerr << "[IndirectRenderer] reserveSpan: slot " << slotIdx
                   << " out of range (capacity=" << slotAlloc.capacity() << ")" << std::endl;
-        return UINT32_MAX;
+        return out;
     }
-    const uint32_t entryIndex = slotIdx; // draw entry == slot (one entry per chunk)
 
-    // Pack this chunk's geometry into its own span of the shared element
-    // pools (first-fit/best-fit free-space allocator). The old span — if any —
-    // is NOT freed here: in-flight frames may still reference it, so it is
-    // recorded and released once the replacement upload completes (see
-    // uploadSlot). If the geometry is empty, release the old span now:
-    // nothing will be uploaded and the entry is zeroed below, so the old data
-    // is unreachable.
+    const uint32_t newVBase = spaceAlloc.allocateVertex(neededVerts);
+    const uint32_t newIBase = spaceAlloc.allocateIndex(neededIdxs);
+    if (newVBase == UINT32_MAX || newIBase == UINT32_MAX) {
+        // Roll back the partial allocation so the pool is not fragmented.
+        if (newVBase != UINT32_MAX) spaceAlloc.freeVertex(newVBase, neededVerts);
+        if (newIBase != UINT32_MAX) spaceAlloc.freeIndex(newIBase, neededIdxs);
+        auto now = std::chrono::steady_clock::now();
+        if (now - g_lastNoSlotLog >= std::chrono::seconds(1)) {
+            g_lastNoSlotLog = now;
+            std::cerr << "[IndirectRenderer] reserveSpan: element pool exhausted for chunk "
+                      << chunkId << " (verts=" << neededVerts
+                      << " idxs=" << neededIdxs << "; usedVert=" << spaceAlloc.usedVertex()
+                      << "/" << spaceAlloc.totalVertex()
+                      << " usedIdx=" << spaceAlloc.usedIndex()
+                      << "/" << spaceAlloc.totalIndex() << ")" << std::endl;
+        }
+        return out;
+    }
+
     MeshInfo* chunk = isNewChunk ? nullptr : &existing->second;
-    bool effectiveEmpty = (neededVerts == 0 || neededIdxs == 0);
-    if (!effectiveEmpty) {
-        uint32_t newVBase = spaceAlloc.allocateVertex(neededVerts);
-        uint32_t newIBase = spaceAlloc.allocateIndex(neededIdxs);
-        if (newVBase == UINT32_MAX || newIBase == UINT32_MAX) {
-            // Roll back the partial allocation so the pool is not fragmented.
-            if (newVBase != UINT32_MAX) spaceAlloc.freeVertex(newVBase, neededVerts);
-            if (newIBase != UINT32_MAX) spaceAlloc.freeIndex(newIBase, neededIdxs);
-            auto now = std::chrono::steady_clock::now();
-            if (now - g_lastNoSlotLog >= std::chrono::seconds(1)) {
-                g_lastNoSlotLog = now;
-                std::cerr << "[IndirectRenderer] addMeshSlotted: element pool exhausted for chunk "
-                          << chunkId << " (verts=" << neededVerts
-                          << " idxs=" << neededIdxs << "; usedVert=" << spaceAlloc.usedVertex()
-                          << "/" << spaceAlloc.totalVertex()
-                          << " usedIdx=" << spaceAlloc.usedIndex()
-                          << "/" << spaceAlloc.totalIndex() << ")" << std::endl;
+    if (chunk) {
+        MeshInfo::LevelData& prev = chunk->level_;
+        if (prev.allocated) {
+            if (prev.oldVertexBase != UINT32_MAX) {
+                spaceAlloc.freeVertex(prev.oldVertexBase, prev.oldVertexCount);
+                spaceAlloc.freeIndex(prev.oldIndexBase, prev.oldIndexCount);
             }
-            return UINT32_MAX;
+            prev.oldVertexBase = prev.baseVertex;
+            prev.oldVertexCount = prev.vertexCount;
+            prev.oldIndexBase  = prev.firstIndex;
+            prev.oldIndexCount = prev.indexCount;
         }
-
-        // Preserve the chunk's previous span for deferred freeing. On a fresh
-        // allocate (first publish) there is none. If an older span is already
-        // pending (a previous republish whose upload never completed), free it
-        // now: its entry was zeroed by that republish, so nothing references
-        // it anymore and waiting for a completion that will never fire would
-        // leak it.
-        if (chunk) {
-            MeshInfo::LevelData& prev = chunk->level_;
-            if (prev.allocated) {
-                if (prev.oldVertexBase != UINT32_MAX) {
-                    spaceAlloc.freeVertex(prev.oldVertexBase, prev.oldVertexCount);
-                    spaceAlloc.freeIndex(prev.oldIndexBase, prev.oldIndexCount);
-                }
-                prev.oldVertexBase = prev.baseVertex;
-                prev.oldVertexCount = prev.vertexCount;
-                prev.oldIndexBase  = prev.firstIndex;
-                prev.oldIndexCount = prev.indexCount;
-            }
-        }
-
-        if (isNewChunk) {
-            // A brand-new slot for a removed-and-recreated node: allocate a
-            // fresh entry and let the copy write into the packed span.
-            MeshInfo m{};
-            m.id         = chunkId;
-            m.slotIndex  = slotIdx;
-            m.active     = true;
-            m.boundsBase = boundsBase ? glm::vec4(*boundsBase, 0.0f) : glm::vec4(0.0f);
-            meshes[chunkId] = m;
-            chunk = &meshes[chunkId];
-        }
-
-        MeshInfo::LevelData& ld = chunk->level_;
-        ld.allocated    = true;
-        ld.baseVertex   = newVBase;
-        ld.vertexCount  = neededVerts;
-        ld.firstIndex   = newIBase;
-        ld.indexCount   = neededIdxs;
-        ld.level        = level;
-        if (cubeMin && cubeMax) {
-            ld.boundsMin = glm::vec4(*cubeMin, 0.0f);
-            ld.boundsMax = glm::vec4(*cubeMax, 0.0f);
-        } else if (mesh.vertices.empty()) {
-            ld.boundsMin = glm::vec4(0.0f);
-            ld.boundsMax = glm::vec4(0.0f);
-        } else {
-            glm::vec3 minp(FLT_MAX), maxp(-FLT_MAX);
-            for (const auto& v : mesh.vertices) {
-                minp = glm::min(minp, v.position);
-                maxp = glm::max(maxp, v.position);
-            }
-            ld.boundsMin = glm::vec4(minp, 0.0f);
-            ld.boundsMax = glm::vec4(maxp, 0.0f);
-        }
-        // Copy geometry data into the chunk's packed span (absolute positions).
-        copyGeometryToLevel(mesh, ld);
-
-        // Publish the CPU-side indirect command for this entry (the GPU
-        // buffers stay zeroed until the deferred writeSlotMeta after upload).
-        indirectCommands[entryIndex].indexCount    = ld.indexCount;
-        indirectCommands[entryIndex].instanceCount = 1;
-        indirectCommands[entryIndex].firstIndex    = ld.firstIndex;
-        indirectCommands[entryIndex].vertexOffset  = static_cast<int32_t>(ld.baseVertex);
-        indirectCommands[entryIndex].firstInstance = entryIndex;
-
-        // Also fill the mirror flat fields used by legacy-style callers that
-        // read the mesh info (e.g. stats).
-        chunk->baseVertex   = ld.baseVertex;
-        chunk->vertexCount  = ld.vertexCount;
-        chunk->firstIndex   = ld.firstIndex;
-        chunk->indexCount   = ld.indexCount;
-        chunk->drawIndex    = entryIndex;
-        chunk->boundsMin    = ld.boundsMin;
-        chunk->boundsMax    = ld.boundsMax;
-    } else {
-        // Empty geometry: zero the entry so the GPU never draws it, and free
-        // any previous span now (no upload will reference it). If the chunk is
-        // new, still register it so removeMeshSlotted can free the slot.
-        if (chunk) {
-            MeshInfo::LevelData& prev = chunk->level_;
-            if (prev.allocated) {
-                spaceAlloc.freeVertex(prev.baseVertex, prev.vertexCount);
-                spaceAlloc.freeIndex(prev.firstIndex, prev.indexCount);
-                prev = MeshInfo::LevelData{};
-            }
-        } else {
-            MeshInfo m{};
-            m.id        = chunkId;
-            m.slotIndex = slotIdx;
-            m.active    = true;
-            m.boundsBase = boundsBase ? glm::vec4(*boundsBase, 0.0f) : glm::vec4(0.0f);
-            meshes[chunkId] = m;
-        }
-        if (entryIndex < indirectCommands.size())
-            indirectCommands[entryIndex] = VkDrawIndexedIndirectCommand{};
     }
+    if (isNewChunk) {
+        // A brand-new slot for a removed-and-recreated node: allocate a fresh
+        // entry whose span is filled below.
+        MeshInfo m{};
+        m.id         = chunkId;
+        m.slotIndex  = slotIdx;
+        m.active     = true;
+        m.boundsBase = boundsBase ? glm::vec4(*boundsBase, 0.0f) : glm::vec4(0.0f);
+        meshes[chunkId] = m;
+        chunk = &meshes[chunkId];
+    }
+
+    MeshInfo::LevelData& ld = chunk->level_;
+    ld.allocated   = true;
+    ld.baseVertex  = newVBase;
+    ld.vertexCount = neededVerts;
+    ld.firstIndex  = newIBase;
+    ld.indexCount  = neededIdxs;
+    ld.level       = level;
+    if (cubeMin && cubeMax) {
+        ld.boundsMin = glm::vec4(*cubeMin, 0.0f);
+        ld.boundsMax = glm::vec4(*cubeMax, 0.0f);
+    } else {
+        ld.boundsMin = glm::vec4(0.0f);
+        ld.boundsMax = glm::vec4(0.0f);
+    }
+
+    // Flat mirrors used by legacy-style callers that read the mesh info.
+    chunk->baseVertex  = ld.baseVertex;
+    chunk->vertexCount = ld.vertexCount;
+    chunk->firstIndex  = ld.firstIndex;
+    chunk->indexCount  = ld.indexCount;
+    chunk->drawIndex   = slotIdx;
+    chunk->boundsMin   = ld.boundsMin;
+    chunk->boundsMax   = ld.boundsMax;
 
     activeMeshCountDirty_ = true; // new or resurrected entry
 
-    // Zero the GPU indirect + bounds for THIS entry (staged for the next
-    // prepareCull) so the cull shader never sees stale/garbage data during the
-    // window between this publish and the deferred writeSlotMeta (upload
-    // completion). Fresh slots are redundant with initSlots zeroing, but
-    // recycled slots may retain stale bounds from a prior occupant. Staged
-    // (not memcpy'd): in-flight cull dispatches may still be reading this
-    // entry, and a torn write would be observed as garbage by the cull.
+    out.slotIndex  = slotIdx;
+    out.info       = chunk;
+    out.baseVertex = newVBase;
+    out.firstIndex = newIBase;
+    return out;
+}
+
+// Caller must hold `mutex`. Queues a span for release together with the staged
+// meta flush of the same frame slot: as long as the draw entry still points at
+// the span, in-flight frames may draw it, so the free must not land before the
+// entry swap has been recorded.
+void IndirectRenderer::stageSpanFree(uint32_t baseVertex, uint32_t vertexCount,
+                                     uint32_t firstIndex, uint32_t indexCount) {
+    const uint32_t frame = (currentCullFrame + 1u) % MAX_CULL_FRAMES;
+    PendingSpanFree rec{};
+    rec.baseVertex = baseVertex;
+    rec.vertexCount = vertexCount;
+    rec.firstIndex = firstIndex;
+    rec.indexCount = indexCount;
+    spanFreePending_[frame].push_back(rec);
+}
+
+IndirectRenderer::GpuMeshSpan IndirectRenderer::reserveGpuMeshSpan(
+    uint32_t chunkId, uint32_t spanVertexCapacity, uint32_t spanIndexCapacity,
+    const glm::vec3* cubeMin, const glm::vec3* cubeMax, int level,
+    const glm::vec3* boundsBase)
+{
+    GpuMeshSpan span;
+    if (!slottedMode || spanVertexCapacity == 0 || spanIndexCapacity == 0) return span;
+
+    std::lock_guard<std::recursive_mutex> guard(mutex);
+
+    SpanReservation r = reserveSpanLocked(chunkId, spanVertexCapacity, spanIndexCapacity,
+                                          cubeMin, cubeMax, level, boundsBase);
+    if (r.slotIndex == UINT32_MAX || r.info == nullptr) return span;
+
+    // The GPU pass writes the span; until it reports back the entry must stay
+    // undrawn (staged zero, same reasoning as addMeshSlotted).
     {
         VkDrawIndexedIndirectCommand zeroCmd{};
         glm::vec4 zeroBounds[4] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
-        stageMeshMetaWrite(entryIndex, zeroCmd, zeroBounds, true);
+        stageMeshMetaWrite(r.slotIndex, zeroCmd, zeroBounds, true);
     }
 
-    return slotIdx;
+    span.slotIndex = r.slotIndex;
+    span.baseVertex = r.baseVertex;
+    span.vertexCapacity = spanVertexCapacity;
+    span.firstIndex = r.firstIndex;
+    span.indexCapacity = spanIndexCapacity;
+    span.vertexBuffer = vertexBuffer.buffer;
+    span.indexBuffer = indexBuffer.buffer;
+    return span;
+}
+
+bool IndirectRenderer::publishGpuMeshSpan(uint32_t slotIndex, uint32_t vertexCount,
+                                          uint32_t indexCount)
+{
+    if (!slottedMode) return false;
+
+    std::lock_guard<std::recursive_mutex> guard(mutex);
+
+    MeshInfo* info = nullptr;
+    for (auto& kv : meshes) {
+        if (kv.second.active && kv.second.slotIndex == slotIndex) {
+            info = &kv.second;
+            break;
+        }
+    }
+    if (info == nullptr || !info->level_.allocated) return false;
+
+    MeshInfo::LevelData& ld = info->level_;
+    if (vertexCount > ld.vertexCount || indexCount > ld.indexCount) {
+        std::cerr << "[IndirectRenderer] publishGpuMeshSpan: slot " << slotIndex
+                  << " reported v=" << vertexCount << "/" << ld.vertexCount
+                  << " i=" << indexCount << "/" << ld.indexCount
+                  << " exceeds the reserved span" << std::endl;
+        return false;
+    }
+
+    // Trim the reserved span to what the pass actually wrote. The tail is
+    // unreferenced (the entry is still zeroed), so it can go back to the pool
+    // immediately.
+    if (const uint32_t extraV = ld.vertexCount - vertexCount; extraV > 0)
+        spaceAlloc.freeVertex(ld.baseVertex + vertexCount, extraV);
+    if (const uint32_t extraI = ld.indexCount - indexCount; extraI > 0)
+        spaceAlloc.freeIndex(ld.firstIndex + indexCount, extraI);
+    ld.vertexCount = vertexCount;
+    ld.indexCount = indexCount;
+    info->vertexCount = vertexCount;
+    info->indexCount = indexCount;
+
+    if (vertexCount == 0 || indexCount == 0) {
+        if (slotIndex < indirectCommands.size())
+            indirectCommands[slotIndex] = VkDrawIndexedIndirectCommand{};
+        VkDrawIndexedIndirectCommand zeroCmd{};
+        glm::vec4 zeroBounds[4] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
+        stageMeshMetaWrite(slotIndex, zeroCmd, zeroBounds, true);
+        return false;
+    }
+
+    VkDrawIndexedIndirectCommand cmd{};
+    cmd.indexCount    = ld.indexCount;
+    cmd.instanceCount = 1;
+    cmd.firstIndex    = ld.firstIndex;
+    cmd.vertexOffset  = static_cast<int32_t>(ld.baseVertex);
+    cmd.firstInstance = slotIndex;
+    if (slotIndex < indirectCommands.size()) indirectCommands[slotIndex] = cmd;
+
+    // Same triple the upload path publishes: AABB min/max plus {cellSize,
+    // level, maxLevel} — the cull's distance-band test reads the level.
+    glm::vec4 bounds[4] = {
+        info->boundsMin,
+        info->boundsMax,
+        glm::vec4(info->boundsMax.x - info->boundsMin.x, static_cast<float>(ld.level),
+                  static_cast<float>(maxLodLevel_), 0.0f),
+        info->boundsBase
+    };
+    stageMeshMetaWrite(slotIndex, cmd, bounds, true);
+
+    // The pass is synchronous (its submission waited on a fence), so the old
+    // span only needs to outlive the in-flight frames whose cull still holds
+    // the previous command — released with the staged swap above.
+    if (ld.oldVertexBase != UINT32_MAX || ld.oldIndexBase != UINT32_MAX) {
+        stageSpanFree(ld.oldVertexBase, ld.oldVertexCount, ld.oldIndexBase, ld.oldIndexCount);
+        ld.oldVertexBase = UINT32_MAX;
+        ld.oldVertexCount = 0;
+        ld.oldIndexBase = UINT32_MAX;
+        ld.oldIndexCount = 0;
+    }
+    return true;
+}
+
+void IndirectRenderer::releaseGpuMeshSpan(uint32_t slotIndex)
+{
+    if (!slottedMode) return;
+
+    std::lock_guard<std::recursive_mutex> guard(mutex);
+
+    MeshInfo* info = nullptr;
+    for (auto& kv : meshes) {
+        if (kv.second.active && kv.second.slotIndex == slotIndex) {
+            info = &kv.second;
+            break;
+        }
+    }
+    if (info == nullptr) return;
+
+    MeshInfo::LevelData& ld = info->level_;
+    if (ld.allocated) {
+        if (ld.oldVertexBase != UINT32_MAX || ld.oldIndexBase != UINT32_MAX) {
+            spaceAlloc.freeVertex(ld.oldVertexBase, ld.oldVertexCount);
+            spaceAlloc.freeIndex(ld.oldIndexBase, ld.oldIndexCount);
+        }
+        spaceAlloc.freeVertex(ld.baseVertex, ld.vertexCount);
+        spaceAlloc.freeIndex(ld.firstIndex, ld.indexCount);
+        ld = MeshInfo::LevelData{};
+        info->baseVertex = 0;
+        info->vertexCount = 0;
+        info->firstIndex = 0;
+        info->indexCount = 0;
+    }
+    if (slotIndex < indirectCommands.size())
+        indirectCommands[slotIndex] = VkDrawIndexedIndirectCommand{};
+    VkDrawIndexedIndirectCommand zeroCmd{};
+    glm::vec4 zeroBounds[4] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
+    stageMeshMetaWrite(slotIndex, zeroCmd, zeroBounds, true);
 }
 
 void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)

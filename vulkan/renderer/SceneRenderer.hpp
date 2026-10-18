@@ -25,6 +25,7 @@ class World;
 #include <vector>
 #include "../../space/Model3DVersion.hpp"
 #include "../../space/ThreadPool.hpp"
+#include "../../services/OctreeTopologyTypes.hpp"
 #include "solid/SolidRenderer.hpp"
 #include "vegetation/VegetationRenderer.hpp"
 #include "water/WaterRenderer.hpp"
@@ -258,6 +259,18 @@ public:
         float minSize, 
         ThreadPool* poolOverride = nullptr
     );
+
+    // ── GPU-resident chunk build ─────────────────────────────────────────────
+    // Runs the GPU topology pass for one chunk and hands the publisher an
+    // Octree::LoDMesh that already lives in the renderer's packed pools
+    // (gpuSlot/gpuVertexCount/gpuIndexCount set, `geom` = the host-visible
+    // mirror for the CPU-side effect consumers). Non-resident builds keep the
+    // old path (slot allocation + vertex upload). Returns true when this
+    // function took ownership of the node (published or deliberately skipped),
+    // false when the caller must fall back to the CPU walker.
+    bool buildChunkResident(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData,
+                            uint8_t chunkLod, uint32_t version, OctreeTopologyInput& topoInput,
+                            IndirectRenderer& ir, GeometryHandler onGeometry);
 
     // ── Slotted-mode chunk processing ────────────────────────────────────────
     // Initialize the slotted rendering pipeline for solid and water layers.

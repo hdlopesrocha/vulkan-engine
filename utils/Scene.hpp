@@ -10,6 +10,7 @@
 #include "../math/Geometry.hpp"
 #include "../space/Octree.hpp"
 #include "../space/OctreeNodeData.hpp"
+#include "../services/OctreeTopologyTypes.hpp"
 
 // Dynamic scene layers: the Scene owns a list of layers (octrees) instead of
 // two fixed members. Layer is the index into that list.
@@ -89,6 +90,36 @@ public:
     // re-tessellates instead of being skipped as up-to-date. Default no-op.
     virtual void invalidateTessellationCache(Layer layer) { (void)layer; }
     virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride = nullptr) = 0;
+
+    // ── GPU-resident chunk topology (app path) ───────────────────────────────
+    // The app does not tessellate on the CPU: it flattens the octree
+    // neighborhood the GPU topology walker needs for one chunk
+    // (services/OctreeTopologyCompute) and the compute pass writes the chunk's
+    // deduped vertices and index stream straight into the renderer's packed
+    // pools. requestModel3D stays the CPU/server path.
+    enum class ChunkTopologyStatus {
+        Ready,      // `out` holds this revision's neighborhood: run the GPU pass
+        UpToDate,   // this revision is already on the GPU: skip the chunk
+        Unavailable // this scene cannot flatten its nodes: use the CPU path
+    };
+    // `chunkLod` is the node's stored (1-based) chunk level: the walk target is
+    // exactly this value and the published mesh rung is chunkLod - 1, matching
+    // the CPU path's callback. `version` is the node revision the caller
+    // captured (commit passes the same value back, so a concurrent brush edit
+    // re-emits instead of being swallowed). LocalScene implements this;
+    // RemoteScene has no octree to flatten (its chunks arrive as meshes from
+    // the server).
+    virtual ChunkTopologyStatus buildChunkTopology(Layer layer, OctreeNodeData& data,
+                                                   uint8_t chunkLod, uint32_t version,
+                                                   OctreeTopologyInput& out) {
+        (void)layer; (void)data; (void)chunkLod; (void)version; (void)out;
+        return ChunkTopologyStatus::Unavailable;
+    }
+    // Records that `version` of this chunk is live on the GPU, so a later walk
+    // of the same revision is skipped (UpToDate).
+    virtual void commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint32_t version) {
+        (void)layer; (void)emittingNodeId; (void)version;
+    }
     // Collect SDF debug cubes the same way requestModel3D collects meshes: the
     // walk emits one callback per node that carries a drawable SDF face, with the
     // node's own cube (band box) so the caller can place a debug cube. Boxes are

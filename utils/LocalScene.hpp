@@ -51,6 +51,9 @@ public:
     void stopPools();
 
     void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride = nullptr) override;
+    ChunkTopologyStatus buildChunkTopology(Layer layer, OctreeNodeData& data, uint8_t chunkLod,
+                                           uint32_t version, OctreeTopologyInput& out) override;
+    void commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint32_t version) override;
     void requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride = nullptr) override;
     void requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride = nullptr) override;
     bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override;

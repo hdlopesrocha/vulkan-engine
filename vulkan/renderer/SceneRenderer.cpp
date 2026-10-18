@@ -9,6 +9,8 @@
 
 #include <stdexcept>
 #include "../../utils/LocalScene.hpp"
+#include "../../services/OctreeTopologyCompute.hpp"
+#include "../../space/OctreeTriangleTessellator.hpp"
 #include "../includes/shader/locations.hpp"
 #include "../includes/debug/DebugModes.hpp"
 #include "../../math/ContainmentType.hpp"
@@ -24,6 +26,80 @@
 #include <cstdlib>
 
 namespace {
+// ── GPU-resident chunk topology ─────────────────────────────────────────────
+// The app does not tessellate chunk meshes on the CPU: LocalScene flattens the
+// chunk's SDF neighborhood and OctreeTopologyCompute writes the deduped
+// vertices + index stream straight into the renderer's packed pools. The CPU
+// walker stays reachable as an explicit A/B switch (VULKAN_CPU_TOPOLOGY=1) and
+// as the fallback for scenes that cannot flatten their nodes.
+bool chunkTopologyResidentEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("VULKAN_CPU_TOPOLOGY");
+        return !(v != nullptr && v[0] == '1' && v[1] == '\0');
+    }();
+    return enabled;
+}
+
+// One-shot verification aid: the first resident chunk is rebuilt with the CPU
+// walker and the two triangle sets are compared. VULKAN_TOPOLOGY_SELFCHECK=1.
+bool topologySelfCheckEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("VULKAN_TOPOLOGY_SELFCHECK");
+        return v != nullptr && v[0] == '1' && v[1] == '\0';
+    }();
+    return enabled;
+}
+
+// Hash of a renderable vertex payload: exactly the fields the CPU tessellator
+// dedups on (position, normal, texCoord, brushIndex) — the fields both the
+// packed-pool write and the shading read.
+uint64_t vertexPayloadHash(const Vertex& v) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](float f) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &f, sizeof(bits));
+        h = (h ^ bits) * 1099511628211ull;
+    };
+    mix(v.position.x); mix(v.position.y); mix(v.position.z);
+    mix(v.normal.x);   mix(v.normal.y);   mix(v.normal.z);
+    mix(v.texCoord.x); mix(v.texCoord.y);
+    mix(static_cast<float>(v.brushIndex));
+    return h;
+}
+
+// Canonical per-triangle key: the cyclic rotation of the three vertex payload
+// hashes that starts at the smallest one. Rotation (not sorting) keeps the
+// winding, so two meshes compare equal only when they carry the same triangles
+// with the same orientation — independent of the order each tessellator
+// emitted or deduped them in.
+struct TriangleKey {
+    uint64_t a = 0, b = 0, c = 0;
+};
+
+bool triangleKeyLess(const TriangleKey& l, const TriangleKey& r) {
+    if (l.a != r.a) return l.a < r.a;
+    if (l.b != r.b) return l.b < r.b;
+    return l.c < r.c;
+}
+
+std::vector<TriangleKey> triangleKeys(const Geometry& g) {
+    std::vector<TriangleKey> keys;
+    keys.reserve(g.indices.size() / 3);
+    for (size_t i = 0; i + 2 < g.indices.size(); i += 3) {
+        const uint64_t h[3] = {
+            vertexPayloadHash(g.vertices[g.indices[i + 0]]),
+            vertexPayloadHash(g.vertices[g.indices[i + 1]]),
+            vertexPayloadHash(g.vertices[g.indices[i + 2]])
+        };
+        int best = 0;
+        if (h[1] < h[best]) best = 1;
+        if (h[2] < h[best]) best = 2;
+        keys.push_back(TriangleKey{h[best], h[(best + 1) % 3], h[(best + 2) % 3]});
+    }
+    std::sort(keys.begin(), keys.end(), triangleKeyLess);
+    return keys;
+}
+
 // Stable-slot pool capacities (pre-allocated GPU buffers, never reallocated).
 //
 // Every mesh-bearing octree node occupies one slot: each chunk (chunkLod 0)
@@ -1595,20 +1671,42 @@ size_t SceneRenderer::publishPendingMeshes(
             }
         }
 
-        if (lod.geom.vertices.empty() || lod.geom.indices.empty()) continue;
+        const bool gpuResident = (lod.gpuSlot != UINT32_MAX);
+        const bool hasGeometry = !lod.geom.vertices.empty() && !lod.geom.indices.empty();
+        if (!gpuResident && !hasGeometry) continue;
 
         const glm::vec3 cubeMin = lod.boundsMin;
         const glm::vec3 cubeMax = lod.boundsMax;
 
+        const bool frontier = (lod.lod == 0);
+        uint32_t slotIdx = UINT32_MAX;
+        if (gpuResident) {
+            // The compute pass already wrote the chunk's geometry into its
+            // packed span and published the draw entry (the submission was
+            // fence-waited, so the data is live): nothing to allocate or
+            // upload. The chunk goes straight to ReadyToSwap; the mirrored CPU
+            // geometry below still feeds the effect consumers.
+            slotIdx = lod.gpuSlot;
+            if (oldSlot != UINT32_MAX && oldSlot != slotIdx) ir->removeMeshSlotted(oldSlot);
+            if (world_ && frontier) {
+                world_->chunkManager().setSlotIndex(base, slotIdx);
+                world_->chunkManager().finishUpload(base);
+            }
+            // Hybrid RT: the scene BLAS reads the merged vertex/index pools the
+            // pass just wrote from another queue. Re-dirty the AS so a build
+            // that overlapped the write cannot leave these chunks' triangles
+            // broken (a stale BLAS is never rebuilt by camera moves/LoD).
+            if (rayTracing) rayTracing->requestSceneBlasRefresh();
+        } else {
         // Publish the mesh into its single draw entry slot. The slot index is
         // the chunk's stable slot (one draw entry per chunk); `lod.lod` is the
         // chunk's 0-based band rung (0 = finest published rung), published in the
         // bounds meta for the GPU's per-chunk distance band test (entryLevel).
-        const uint32_t slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base),
-                                                    &cubeMin,
-                                                    &cubeMax,
-                                                    lod.lod,
-                                                    &lod.boundsBase);
+        slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base),
+                                     &cubeMin,
+                                     &cubeMax,
+                                     lod.lod,
+                                     &lod.boundsBase);
         if (slotIdx == UINT32_MAX) continue; // no free block / element pool exhausted
 
         // addMeshSlotted re-publishes the existing chunk slot in place when
@@ -1620,7 +1718,6 @@ size_t SceneRenderer::publishPendingMeshes(
         // upload starts; the deferred completion frees any replaced old slot
         // and promotes the chunk to ReadyToSwap once resident. Coarse
         // ancestor cells (level > 0) are not tracked by the ChunkManager.
-        const bool frontier = (lod.lod == 0);
         if (world_ && frontier)
             world_->chunkManager().setSlotIndex(base, slotIdx);
 
@@ -1639,6 +1736,7 @@ size_t SceneRenderer::publishPendingMeshes(
                 if (this->rayTracing)
                     this->rayTracing->requestSceneBlasRefresh();
             });
+        }
 
         {
             auto& chunkMap = layerChunks(layer);
@@ -2055,6 +2153,140 @@ void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
     if (world_) world_->chunkManager().processSwapQueue();
 }
 
+// ── GPU-resident chunk build ────────────────────────────────────────────────
+// The app's chunk path: the octree neighborhood is flattened (LocalScene), the
+// compute pass writes the chunk's deduped vertices and index stream straight
+// into the renderer's packed pools, and the publisher receives a LoDMesh whose
+// geometry is already resident (gpuSlot/gpuVertexCount/gpuIndexCount) plus the
+// pass's host-visible mirror for the CPU-side effect consumers. No vertex data
+// is ever uploaded. Returns false only when the resident pipeline is
+// unavailable (caller falls back to the CPU walker); once the GPU build starts,
+// a failure means the chunk is skipped with a log — never a CPU fallback.
+bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
+                                       OctreeNodeData& nodeData, uint8_t chunkLod,
+                                       uint32_t version, OctreeTopologyInput& topoInput,
+                                       IndirectRenderer& ir, GeometryHandler onGeometry) {
+    OctreeTopologyCompute* topo = OctreeTopologyCompute::getGlobal();
+    if (topo == nullptr || topo->app == nullptr) return false;
+
+    {
+        static std::atomic<bool> loggedPath{false};
+        bool expected = false;
+        if (loggedPath.compare_exchange_strong(expected, true))
+            std::cerr << "[SceneRenderer] GPU-resident chunk builds active: only node SDF tables are "
+                         "sent to the GPU, OctreeTriangles.comp writes the packed pools\n";
+    }
+
+    const uint32_t chunkId = static_cast<uint32_t>(nid);
+    const BoundingCube& cube = nodeData.cube;
+    const glm::vec3 cubeMin = cube.getMin();
+    const glm::vec3 cubeMax = cube.getMax();
+    const int lod = static_cast<int>(chunkLod) - 1;
+    const bool frontier = (lod == 0);
+
+    // The walk's raw vertex count is only known after the first submission, so
+    // the span is reserved from a provider callback: it runs on this thread
+    // (between the two submissions) with the exact sizes.
+    OctreeTopologyResidentResult res = topo->computeResident(
+        topoInput, [&](const OctreeTopologyDemand& d) -> OctreeTopologyTarget {
+            IndirectRenderer::GpuMeshSpan span = ir.reserveGpuMeshSpan(chunkId, d.suggestedVertexCapacity,
+                                                     d.rawVertexCount, &cubeMin, &cubeMax,
+                                                     lod, &cubeMin);
+            OctreeTopologyTarget t;
+            if (span.slotIndex == UINT32_MAX) return t; // no slot / pool space
+            t.vertexBuffer = span.vertexBuffer;
+            t.baseVertex = span.baseVertex;
+            t.vertexCapacity = span.vertexCapacity;
+            t.indexBuffer = span.indexBuffer;
+            t.firstIndex = span.firstIndex;
+            t.indexCapacity = span.indexCapacity;
+            t.slotIndex = span.slotIndex;
+            return t;
+        });
+
+    const auto skipChunk = [&](const char* what) {
+        // The span was reserved but nothing usable was written: hand it back to
+        // the pool. The chunk stays unbuilt (logged) — the app never falls back
+        // to the CPU walker.
+        if (res.slotIndex != UINT32_MAX) ir.releaseGpuMeshSpan(res.slotIndex);
+        if (world_ && frontier) world_->chunkManager().cancelRebuild(static_cast<ChunkManager::ChunkId>(chunkId));
+        std::cerr << "[SceneRenderer] GPU chunk build " << what << " (chunk=" << chunkId
+                  << ", lod=" << lod << "): chunk skipped\n";
+    };
+
+    if (!res.ok) { skipChunk("failed"); return true; }
+
+    // Empty chunk (no surface at this revision): nothing to draw, but the
+    // revision is settled (recorded by the caller's commit).
+    if (res.indexCount < 3u || res.poolVertexCount == 0u) {
+        if (res.slotIndex != UINT32_MAX) ir.releaseGpuMeshSpan(res.slotIndex);
+        if (world_ && frontier) world_->chunkManager().cancelRebuild(static_cast<ChunkManager::ChunkId>(chunkId));
+        return true;
+    }
+
+    if (!ir.publishGpuMeshSpan(res.slotIndex, res.poolVertexCount, res.indexCount)) {
+        skipChunk("could not publish its span");
+        return true;
+    }
+
+    // One-shot A/B verification against the CPU walker of the same node. The
+    // mirror is deduped and in pool-slot order while the CPU mesh is deduped in
+    // walk order, so the triangles are compared as an order-independent
+    // multiset of canonical (payload-hash) triples: identical triangle sets
+    // with matching vertex payloads, independent of emission order.
+    if (topologySelfCheckEnabled()) {
+        static std::atomic<bool> selfChecked{false};
+        bool expected = false;
+        if (selfChecked.compare_exchange_strong(expected, true)) {
+            Octree* tree = scene.getLayerOctree(layer);
+            if (tree != nullptr) {
+                std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
+                long refTriangles = 0;
+                Tesselator refTesselator(&refTriangles);
+                ThreadContext refContext;
+                OctreeTriangleTessellator(*tree).iterateTriangles(
+                    nodeData.node, nodeData.cube, nodeData.level, refTesselator, &refContext,
+                    chunkLod, std::function<Vertex(OctreeNode*, const BoundingCube&)>());
+                const std::vector<TriangleKey> gpuKeys = triangleKeys(res.bridge);
+                const std::vector<TriangleKey> cpuKeys = triangleKeys(refTesselator.geometry);
+                const size_t compared = std::min(gpuKeys.size(), cpuKeys.size());
+                size_t mismatches = 0;
+                size_t firstBad = SIZE_MAX;
+                for (size_t i = 0; i < compared; ++i) {
+                    if (std::memcmp(&gpuKeys[i], &cpuKeys[i], sizeof(TriangleKey)) != 0) {
+                        ++mismatches;
+                        if (firstBad == SIZE_MAX) firstBad = i;
+                    }
+                }
+                std::cerr << "[SceneRenderer] resident topology self-check ("
+                          << topoInput.cells.size() << " cells, " << topoInput.nodes.size()
+                          << " nodes): gpu triangles=" << (res.indexCount / 3)
+                          << " cpu triangles=" << (refTesselator.geometry.indices.size() / 3)
+                          << " gpu verts=" << res.poolVertexCount
+                          << " cpu verts=" << refTesselator.geometry.vertices.size()
+                          << " compared=" << compared << " mismatches=" << mismatches;
+                if (firstBad != SIZE_MAX)
+                    std::cerr << " (first mismatch at " << firstBad << ")";
+                std::cerr << "\n";
+            }
+        }
+    }
+
+    Octree::LoDMesh lm;
+    lm.geom = std::move(res.bridge);
+    lm.lod = static_cast<uint8_t>(lod);
+    lm.version = version;
+    lm.cellSize = cube.getLength().x;
+    lm.boundsMin = cubeMin;
+    lm.boundsMax = cubeMax;
+    lm.boundsBase = cubeMin;
+    lm.gpuSlot = res.slotIndex;
+    lm.gpuVertexCount = res.poolVertexCount;
+    lm.gpuIndexCount = res.indexCount;
+    onGeometry(layer, nid, lm);
+    return true;
+}
+
 void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, float minSize, ThreadPool* poolOverride) {
 
     // Every cell with a chunkLod (stored 1..5, the +1-shifted uint8_t space)
@@ -2065,23 +2297,54 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     // handler below filter empty geometry).
     const uint8_t chunkLod = nodeData.node ? nodeData.node->getChunkLod() : 0;
     if (chunkLod < 1) return;
+    const uint32_t version = nodeData.node->version;
 
+    // ── GPU-resident build ──────────────────────────────────────────────────
+    // Sends only the chunk's flattened SDF neighborhood to the GPU; the
+    // compute pass writes the geometry straight into the packed pools. The CPU
+    // walker below stays the server path / A/B fallback (VULKAN_CPU_TOPOLOGY=1)
+    // and the fallback for scenes that cannot flatten their nodes.
+    bool handled = false;
+    if (chunkTopologyResidentEnabled()) {
+        if (IndirectRenderer* ir = indirectForLayer(layer)) {
+            OctreeTopologyInput topoInput;
+            const Scene::ChunkTopologyStatus status =
+                scene.buildChunkTopology(layer, nodeData, chunkLod, version, topoInput);
+            if (status == Scene::ChunkTopologyStatus::UpToDate) {
+                handled = true; // this revision is already live on the GPU
+            } else if (status == Scene::ChunkTopologyStatus::Ready) {
+                handled = buildChunkResident(scene, layer, nid, nodeData, chunkLod, version,
+                                             topoInput, *ir, onGeometry);
+                if (handled) scene.commitChunkTopology(layer, reinterpret_cast<uintptr_t>(nodeData.node), version);
+            }
+        }
+    }
+
+    if (!handled) {
+    {
+        static std::atomic<bool> loggedCpuPath{false};
+        bool expected = false;
+        if (loggedCpuPath.compare_exchange_strong(expected, true))
+            std::cerr << "[SceneRenderer] CPU chunk tessellation active (VULKAN_CPU_TOPOLOGY=1, "
+                         "no resident pipeline, or this scene cannot flatten its nodes)\n";
+    }
     // NOTE: the walk emits one callback per cell on the root path (each
     // ancestor at its own level); the cube passed is the EMITTING cell's own
     // cube — the band center and the meta cellSize must come from it, never
     // from nodeData (the added node), or every ancestor would publish the
     // frontier cell's size.
-    scene.requestModel3D(layer, nodeData, [&layer,&onGeometry,&nodeData](const Geometry& geo, uint8_t lod, uint version, uintptr_t emittingNodeId, const BoundingCube& cube, const BoundingCube& baseCube) {
+    scene.requestModel3D(layer, nodeData, [&layer,&onGeometry,&nodeData](const Geometry& geo, uint8_t lod, uint meshVersion, uintptr_t emittingNodeId, const BoundingCube& cube, const BoundingCube& baseCube) {
         Octree::LoDMesh lm;
         lm.geom = geo;
         lm.lod = lod;
-        lm.version = version;
+        lm.version = meshVersion;
         lm.cellSize = cube.getLength().x;
         lm.boundsMin = cube.getMin();
         lm.boundsMax = cube.getMax();
         lm.boundsBase = baseCube.getMin();
         onGeometry(layer, reinterpret_cast<NodeID>(emittingNodeId), lm);
     }, poolOverride);
+    }
 
     // SDF debug cubes: collected through the SAME node walk as the solid meshes
     // (requestSDFCubes walks the chunk subtree and emits lod==1 nodes that carry a

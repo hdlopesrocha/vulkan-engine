@@ -36,28 +36,6 @@ constexpr uint32_t kSceneBundleVersionV1 = 1;
 constexpr uint32_t kSceneBundleVersionV2 = 2;
 constexpr uint32_t kSceneBundleVersion = kSceneBundleVersionV2;
 
-// GPU triangle-topology path is on by default; VULKAN_CPU_TOPOLOGY=1 forces
-// the CPU walker (A/B comparison and a fallback for drivers that cannot run
-// the compute pass).
-bool gpuTopologyEnabled() {
-    static const bool enabled = []() {
-        const char* v = std::getenv("VULKAN_CPU_TOPOLOGY");
-        return !(v != nullptr && v[0] == '1' && v[1] == '\0');
-    }();
-    return enabled;
-}
-
-// One-shot verification aid: for the first GPU-tessellated chunk, re-run the
-// CPU walker (SDF vertex path, no GPU mesh hook) and compare the produced
-// geometry index by index. VULKAN_TOPOLOGY_SELFCHECK=1.
-bool topologySelfCheckEnabled() {
-    static const bool enabled = []() {
-        const char* v = std::getenv("VULKAN_TOPOLOGY_SELFCHECK");
-        return v != nullptr && v[0] == '1' && v[1] == '\0';
-    }();
-    return enabled;
-}
-
 bool cubeIntersectsCube(const glm::vec3& aMin, const glm::vec3& aMax, const glm::vec3& bMin, const glm::vec3& bMax) {
     for (int i = 0; i < 3; ++i) {
         if (aMax[i] < bMin[i] || aMin[i] > bMax[i]) return false;
@@ -332,6 +310,45 @@ void LocalScene::resetAllLayers() {
 }
 
 
+// ── GPU-resident chunk topology ─────────────────────────────────────────────
+// Flattens this chunk's SDF neighborhood for the compute pass. Returns
+// UpToDate when the node's current revision is already live on the GPU (the
+// walk would produce the same mesh), Unavailable when the chunk cannot be
+// flattened (no octree/stale parameters) so the caller falls back to the CPU
+// walker.
+Scene::ChunkTopologyStatus LocalScene::buildChunkTopology(Layer layer, OctreeNodeData& data,
+                                                          uint8_t chunkLod, uint32_t version,
+                                                          OctreeTopologyInput& out) {
+    std::shared_ptr<Octree> tree;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        if (layer < 0 || static_cast<size_t>(layer) >= layers_.size())
+            return ChunkTopologyStatus::Unavailable;
+        tree = layers_[static_cast<size_t>(layer)].octree;
+    }
+    if (!tree || data.node == nullptr || chunkLod < 1) return ChunkTopologyStatus::Unavailable;
+
+    {
+        std::lock_guard<std::mutex> lock(emittedMutex_);
+        auto it = emittedVersion_.find(reinterpret_cast<uintptr_t>(data.node));
+        if (it != emittedVersion_.end() && it->second == version) return ChunkTopologyStatus::UpToDate;
+    }
+
+    // Root-consistent flattening reads the tree structure (ancestor chain,
+    // children blocks), so it runs under the shared lock; the GPU pass itself
+    // only touches the flattened copy.
+    std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
+    if (!buildGpuTopologyInput(*tree, data.node, data.cube, static_cast<int>(chunkLod), out))
+        return ChunkTopologyStatus::Unavailable;
+    return ChunkTopologyStatus::Ready;
+}
+
+void LocalScene::commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint32_t version) {
+    (void)layer;
+    std::lock_guard<std::mutex> lock(emittedMutex_);
+    emittedVersion_[emittingNodeId] = version;
+}
+
 void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride) {
     std::shared_ptr<Octree> tree;
     {
@@ -371,86 +388,13 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                     long trianglesCount = 0;
                     Tesselator nodeTesselator(&trianglesCount);
 
-                    bool gpuTopology = false;
-                    if (gOctreeTopologyCompute && gpuTopologyEnabled()) {
-                        OctreeTopologyInput topoInput;
-                        if (buildGpuTopologyInput(*tree, params.node, params.cube, chunkLod, topoInput)) {
-                            OctreeTopologyResult topoResult = gOctreeTopologyCompute(topoInput);
-                            if (!topoResult.truncated && topoResult.vertexCount >= 3u) {
-                                static bool loggedGpuTopology = false;
-                                if (!loggedGpuTopology) {
-                                    loggedGpuTopology = true;
-                                    std::cerr << "[LocalScene] GPU topology walker active (OctreeTriangles.comp): "
-                                              << topoInput.nodes.size() << " nodes, "
-                                              << topoInput.cells.size() << " cells, "
-                                              << topoResult.triangleCount << " triangles\n";
-                                }
-                                for (size_t i = 0; i + 3u <= topoResult.vertexCount; i += 3u) {
-                                    const OctreeTopologyVertex& r0 = topoResult.vertices[i + 0];
-                                    const OctreeTopologyVertex& r1 = topoResult.vertices[i + 1];
-                                    const OctreeTopologyVertex& r2 = topoResult.vertices[i + 2];
-                                    Vertex v0(r0.position, r0.normal, glm::vec2(0.0f), r0.brushIndex);
-                                    Vertex v1(r1.position, r1.normal, glm::vec2(0.0f), r1.brushIndex);
-                                    Vertex v2(r2.position, r2.normal, glm::vec2(0.0f), r2.brushIndex);
-                                    v0.hsv = r0.hsv;
-                                    v1.hsv = r1.hsv;
-                                    v2.hsv = r2.hsv;
-                                    nodeTesselator.handle(v0, v1, v2);
-                                }
-                                gpuTopology = true;
-
-                                // One-shot A/B verification against the CPU walker
-                                // (exact same SDF vertex path: no GPU mesh hook).
-                                if (topologySelfCheckEnabled()) {
-                                    static bool selfChecked = false;
-                                    if (!selfChecked) {
-                                        selfChecked = true;
-                                        long refCount = 0;
-                                        Tesselator refTesselator(&refCount);
-                                        OctreeTriangleTessellator(*tree).iterateTriangles(params.node, params.cube, params.level,
-                                                                                          refTesselator, &context, chunkLod,
-                                                                                          std::function<Vertex(OctreeNode*, const BoundingCube&)>());
-                                        const Geometry& gGpu = nodeTesselator.geometry;
-                                        const Geometry& gCpu = refTesselator.geometry;
-                                        const size_t compared = std::min(gGpu.indices.size(), gCpu.indices.size());
-                                        size_t posMismatch = 0;
-                                        size_t uvMismatch = 0;
-                                        size_t firstBad = SIZE_MAX;
-                                        for (size_t i = 0; i < compared; ++i) {
-                                            const Vertex& a = gGpu.vertices[gGpu.indices[i]];
-                                            const Vertex& b = gCpu.vertices[gCpu.indices[i]];
-                                            if (a.position != b.position) {
-                                                ++posMismatch;
-                                                if (firstBad == SIZE_MAX) firstBad = i;
-                                            }
-                                            if (a.texCoord != b.texCoord) ++uvMismatch;
-                                        }
-                                        std::cerr << "[LocalScene] topology self-check (" << topoInput.cells.size()
-                                                  << " cells, " << topoInput.nodes.size() << " nodes): gpu triangles="
-                                                  << (gGpu.indices.size() / 3) << " cpu triangles=" << (gCpu.indices.size() / 3)
-                                                  << " index entries compared=" << compared
-                                                  << " gpu verts=" << gGpu.vertices.size()
-                                                  << " cpu verts=" << gCpu.vertices.size()
-                                                  << " position mismatches=" << posMismatch
-                                                  << " uv mismatches=" << uvMismatch << "\n";
-                                        if (firstBad != SIZE_MAX) {
-                                            const Vertex& a = gGpu.vertices[gGpu.indices[firstBad]];
-                                            const Vertex& b = gCpu.vertices[gCpu.indices[firstBad]];
-                                            std::cerr << "[LocalScene]   first mismatch at index " << firstBad
-                                                      << " gpu=(" << a.position.x << ", " << a.position.y << ", " << a.position.z
-                                                      << ") cpu=(" << b.position.x << ", " << b.position.y << ", " << b.position.z
-                                                      << ")\n";
-                                        }
-                                    }
-                                }
-                            } else if (topoResult.truncated) {
-                                std::cerr << "[LocalScene] GPU topology output arena overflowed; "
-                                             "falling back to the CPU walker\n";
-                            }
-                        }
-                    }
-
-                    if (!gpuTopology) {
+                    // CPU walker path. The app does not come through here: its
+                    // chunks are built by the GPU topology pass straight into
+                    // the packed pools (Scene::buildChunkTopology +
+                    // OctreeTopologyCompute::computeResident). This remains the
+                    // server/headless path and the explicit
+                    // VULKAN_CPU_TOPOLOGY=1 fallback.
+                    {
                         std::function<Vertex(OctreeNode*, const BoundingCube&)> vertexFn = nullptr;
                         if (gOctreeMeshCompute) {
                             std::vector<OctreeMeshCell> cells;

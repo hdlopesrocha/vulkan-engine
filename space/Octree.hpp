@@ -36,6 +36,14 @@ class Octree: public BoundingCube {
         glm::vec3 boundsMin = glm::vec3(0.0f); // emitting cell's world bounds (band center + meta)
         glm::vec3 boundsMax = glm::vec3(0.0f);
         glm::vec3 boundsBase = glm::vec3(0.0f); // emitting chunk's own min corner (informational; the GPU rung gate derives parent cells from the tree root lattice)
+        // GPU-resident builds (services/OctreeTopologyCompute): the compute
+        // pass already wrote the chunk's deduped vertices and index stream
+        // straight into the renderer's packed pools, so the publisher must NOT
+        // allocate a slot or upload anything. `geom` is then only the
+        // host-visible mirror the CPU-side effect consumers read.
+        uint32_t gpuSlot = UINT32_MAX;   // packed-pool slot holding the mesh
+        uint32_t gpuVertexCount = 0;     // deduped vertices written into the span
+        uint32_t gpuIndexCount = 0;      // index stream length (== draw index count)
     };
 
 

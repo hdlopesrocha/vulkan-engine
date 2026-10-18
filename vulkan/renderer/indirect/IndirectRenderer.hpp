@@ -136,6 +136,36 @@ public:
                             int level = 0, const glm::vec3* boundsBase = nullptr);
     void removeMeshSlotted(uint32_t slotIndex);
 
+    // ── GPU-resident spans (no host upload) ─────────────────────────────────
+    // The octree topology compute pass (services/OctreeTopologyCompute) writes
+    // a chunk's deduped vertices and chunk-local indices straight into these
+    // packed pools; the host only reserves the span and publishes the draw
+    // entry, so no vertex/index data ever crosses the bus in the upload
+    // direction. Sequence per build:
+    //   reserveGpuMeshSpan()  — pick the slot, reserve the worst-case span,
+    //                           record the previous span for deferred release;
+    //   <compute pass writes baseVertex/firstIndex .. +counts>
+    //   publishGpuMeshSpan()  — trim the span to the reported counts and stage
+    //                           the draw command + bounds;
+    //   releaseGpuMeshSpan()  — the pass was skipped (arena/span overflow or a
+    //                           device fault): free the reservation, the chunk
+    //                           stays undrawn.
+    struct GpuMeshSpan {
+        uint32_t slotIndex = UINT32_MAX;
+        uint32_t baseVertex = 0;     // pool element index the pass writes at
+        uint32_t vertexCapacity = 0; // element budget reserved for the pass
+        uint32_t firstIndex = 0;     // index pool element index the pass writes at
+        uint32_t indexCapacity = 0;  // index element budget reserved for the pass
+        VkBuffer vertexBuffer = VK_NULL_HANDLE;
+        VkBuffer indexBuffer = VK_NULL_HANDLE;
+    };
+    GpuMeshSpan reserveGpuMeshSpan(uint32_t chunkId, uint32_t spanVertexCapacity,
+                                   uint32_t spanIndexCapacity,
+                                   const glm::vec3* cubeMin, const glm::vec3* cubeMax,
+                                   int level, const glm::vec3* boundsBase);
+    bool publishGpuMeshSpan(uint32_t slotIndex, uint32_t vertexCount, uint32_t indexCount);
+    void releaseGpuMeshSpan(uint32_t slotIndex);
+
     // Maximum LoD ladder level present in the tree. Written into each entry's
     // bounds meta as `lodMeta.z` and used by the GPU distance-band test to clamp
     // the selected level. MUST equal the tree's real ladder depth
@@ -534,6 +564,23 @@ private:
     // mergedVertices/mergedIndices (absolute offsets). Requires slotted mode.
     void copyGeometryToLevel(const Geometry& mesh, MeshInfo::LevelData& ld);
 
+    // Caller must hold `mutex`. Allocates the chunk's draw entry on first use,
+    // packs a new span of `neededVerts`/`neededIdxs` elements, registers the
+    // chunk's LevelData with it and moves any previous span to the old* fields
+    // for deferred release. `boundsFromCube` is false when the caller has no
+    // cube and wants the mesh AABB (NULL cubeMin/cubeMax). Returns slotIndex ==
+    // UINT32_MAX on failure (no draw block / pools exhausted).
+    struct SpanReservation {
+        uint32_t slotIndex = UINT32_MAX;
+        MeshInfo* info = nullptr;
+        uint32_t baseVertex = 0;
+        uint32_t firstIndex = 0;
+    };
+    SpanReservation reserveSpanLocked(uint32_t chunkId, uint32_t neededVerts,
+                                      uint32_t neededIdxs, const glm::vec3* cubeMin,
+                                      const glm::vec3* cubeMax, int level,
+                                      const glm::vec3* boundsBase);
+
     // Write one draw command into the host-visible indirect buffer at `index`.
     // The Buffer wrapper uses a persistent mapping, so map/unmap are cheap.
     void writeIndirectCommand(const Buffer& buffer, uint32_t index,
@@ -694,7 +741,10 @@ private:
     size_t indexCapacity = 0;
     size_t meshCapacity = 0;
 
-    uint32_t currentCullFrame = 0;
+    // Current slot of the per-frame cull buffers. Written once per frame by the
+    // main thread (setCullFrame) and read from worker threads when a GPU-built
+    // chunk stages its draw-entry swap, so it is atomic.
+    std::atomic<uint32_t> currentCullFrame{0};
 
     // ── Staged meta writes ───────────────────────────────────────────────────
     // Host-side publishes (draw command + bounds) must NEVER memcpy directly
@@ -717,6 +767,22 @@ private:
     std::array<Buffer, MAX_CULL_FRAMES> metaStageBuffers{};
     std::array<uint32_t, MAX_CULL_FRAMES> metaStageCapBytes{};
     VulkanApp* app_ = nullptr;
+    // Spans replaced by a GPU-resident rebuild, released together with the
+    // staged meta write that swaps their draw entry (same frame slot as
+    // metaStagePending_): until that write is recorded, in-flight frames may
+    // still draw the old span.
+    struct PendingSpanFree {
+        uint32_t baseVertex = UINT32_MAX;
+        uint32_t vertexCount = 0;
+        uint32_t firstIndex = UINT32_MAX;
+        uint32_t indexCount = 0;
+    };
+    std::array<std::vector<PendingSpanFree>, MAX_CULL_FRAMES> spanFreePending_;
+    std::vector<PendingSpanFree> spanFreeFlush_;
+    // Caller must hold `mutex`. Queues a span for release with the next staged
+    // meta flush of the same frame slot.
+    void stageSpanFree(uint32_t baseVertex, uint32_t vertexCount,
+                       uint32_t firstIndex, uint32_t indexCount);
     // Caller must hold `mutex`. Queues a host-side write for flushStagedMetaWrites.
     void stageMeshMetaWrite(uint32_t entryIndex, const VkDrawIndexedIndirectCommand& cmd,
                             const glm::vec4* bounds, bool boundsValid);
