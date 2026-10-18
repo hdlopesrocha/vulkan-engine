@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Test asset for the SVG extrusion brush (MainSceneLoader + Brush3dWidget).
+     Deliberately exercises: a <path> polygon (star, yellow), a cubic-curve
+     <path> (clover, green), a ring built from two <circle> elements (magenta
+     outer + white hole; even-odd turns the inner circle into a hole), a
+     <rect> (red bar), a <polygon> (blue triangle) and a stroke-only <line>
+     (open contour, fill disabled). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <path d="M 55.00,10.00 L 65.58,40.44 L 97.80,41.09 L 72.12,60.56 L 81.45,91.41 L 55.00,73.00 L 28.55,91.41 L 37.88,60.56 L 12.20,41.09 L 44.42,40.44 Z" fill="#ffcc00"/>
+  <g transform="translate(55,150)" fill="#33cc66">
+    <path d="M 0,-32 C 18,-32 18,-8 38,-8 C 18,-8 18,16 0,16 C -18,16 -18,-8 -38,-8 C -18,-8 -18,-32 0,-32 Z"/>
+  </g>
+  <g transform="translate(150,55)">
+    <circle cx="0" cy="0" r="34" fill="#cc44cc"/>
+    <circle cx="0" cy="0" r="16" fill="#ffffff"/>
+  </g>
+  <rect x="112" y="140" width="72" height="26" rx="6" fill="#e04030"/>
+  <polygon points="118,128 152,88 186,128" fill="rgb(60,120,220)"/>
+  <line x1="10" y1="185" x2="190" y2="185" stroke="#000000" stroke-width="2"/>
+</svg>

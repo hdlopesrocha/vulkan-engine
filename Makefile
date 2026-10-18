@@ -421,6 +421,7 @@ server: $(SERVER_OBJS) web
 	@if [ -d server/web/dist ]; then mkdir -p $(OUT_DIR)/web && cp -a server/web/dist/. $(OUT_DIR)/web/ || true; fi
 	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
 	@if [ -d scripts ]; then mkdir -p $(OUT_DIR)/scripts && cp -a scripts/. $(OUT_DIR)/scripts/ || true; fi
+	@if [ -d svg ]; then cp -a svg $(OUT_DIR)/ || true; fi
 
 $(OUT): $(BUILD_MODE_STAMP) $(OBJS)
 	@echo "Linking: $(OUT)"
@@ -432,6 +433,7 @@ $(OUT): $(BUILD_MODE_STAMP) $(OBJS)
 	@if [ -d fonts ]; then cp -a fonts $(OUT_DIR)/ || true; fi
 	@if [ -d scenes ]; then cp -a scenes $(OUT_DIR)/ || true; fi
 	@if [ -d scripts ]; then mkdir -p $(OUT_DIR)/scripts && cp -a scripts/. $(OUT_DIR)/scripts/ || true; fi
+	@if [ -d svg ]; then cp -a svg $(OUT_DIR)/ || true; fi
 	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi
 	@date "+%Y-%m-%d %H:%M:%S" > $(OUT_DIR)/build_timestamp.txt
 

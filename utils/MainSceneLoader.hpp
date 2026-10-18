@@ -47,10 +47,13 @@
 #include "../sdf/RoadSpline.hpp"
 #include "../sdf/RoadDistanceFunction.hpp"
 #include "../sdf/TriangleStripDistanceFunction.hpp"
+#include "../sdf/SvgShape.hpp"
+#include "../sdf/SvgPolygonDistanceFunction.hpp"
 
 
 #include "LandBrush.hpp"
 #include "SimpleBrush.hpp"
+#include "SvgBrush.hpp"
 #include "WaterBrush.hpp"
 #include "NormalBrush.hpp"
 
@@ -355,6 +358,34 @@ public:
             BoxDistanceFunction function = BoxDistanceFunction(model, sizePerTile);
             opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), sizePerTile*0.25, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
+        // SVG extrusion brush test: the uploaded SVG's closed shapes are
+        // extruded along the brush's local Y axis and intersected with the
+        // brush box (Scale = half extents) — a "cookie-cutter" stamp. Each
+        // vertex takes the fill colour of the SVG contour containing it
+        // (SimpleBrush material index + HSV tint), so the drawing's colours
+        // appear on the mesh.
+        {
+            std::cout << "\topaqueLayer.add(svg extrusion \u2229 box)" << std::endl;
+            SvgShape svgShape;
+            std::string svgError;
+            std::string svgResolved;
+            if (SvgShape::loadFromFileResolved("svg/test_logo.svg", svgShape, svgError, &svgResolved)) {
+                auto shape = std::make_shared<const SvgShape>(std::move(svgShape));
+                std::cout << "\t\tsvg '" << svgResolved << "': " << shape->contours.size()
+                          << " contours" << std::endl;
+                const glm::vec3 center(-1500.0f, 1400.0f, 2000.0f);
+                Transformation model(glm::vec3(300.0f, 120.0f, 300.0f), center, 0.0f, 0.0f, 0.0f);
+                SvgPolygonDistanceFunction function(shape, model, sizePerTile);
+                SvgBrush brush(shape, model, /*materialIndex=*/15, glm::vec3(0.0f, 0.5f, 0.5f),
+                               /*tintFromFill=*/true);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, brush,
+                                  sizePerTile * 0.5f, simplifier, opaqueUpdateHandler,
+                                  opaqueDeleteHandler);
+            } else {
+                std::cerr << "\tsvg brush skipped: " << svgError << std::endl;
+            }
+        }
+
         glm::vec3 fireSpotPosition(0.0f, 1200.0f, 0.0f);
         float fireSpotHeight = 64.0f;
         float fireSpotRadius = 128.0f;

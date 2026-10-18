@@ -6,13 +6,18 @@
 #include "../events/SetBrushPaintModeEvent.hpp"
 #include "../events/SetBrushDragModeEvent.hpp"
 #include <imgui.h>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
+#include <string>
 #include "components/ImGuiHelpers.hpp"
+#include "../sdf/SvgShape.hpp"
 
 // Static label arrays for combo boxes
 const char* Brush3dWidget::sdfTypeNames[] = {
-    "Sphere", "Box", "Capsule", "Octahedron", "Pyramid", "Torus", "Cone", "Cylinder", "Tapered Cylinder", "Tapered Capsule"
+    "Sphere", "Box", "Capsule", "Octahedron", "Pyramid", "Torus", "Cone", "Cylinder",
+    "Tapered Cylinder", "Tapered Capsule", "SVG Extrusion"
 };
 const char* Brush3dWidget::brushModeNames[] = { "Add", "Remove", "Paint" };
 const char* Brush3dWidget::layerNames[] = { "Opaque", "Transparent" };
@@ -97,6 +102,20 @@ void Brush3dWidget::render() {
     }
 
     ImGui::Separator();
+
+    // SVG upload dialog: rendered every frame (also while closed), applies the
+    // picked file to the currently selected entry.
+    {
+        std::filesystem::path chosenSvg;
+        if (svgPicker_.render(chosenSvg)) {
+            const int sel = manager.getSelectedIndex();
+            if (sel >= 0 && sel < static_cast<int>(entriesRef.size())) {
+                entriesRef[sel].svgPath = chosenSvg.string();
+                svgStatus_.clear();
+                dirty = true;
+            }
+        }
+    }
 
     // Auto-rebuild when any brush parameter changes.
     // Rebuild is triggered once per frame when `dirty` is set by
@@ -249,6 +268,43 @@ void Brush3dWidget::renderEntry(int index) {
         if (ImGui::DragFloat3("Point B", &e.capsuleB.x, 1.0f)) dirty = true;
         if (ImGui::DragFloat("Radius A", &e.taperedCapsuleRadii.x, 0.01f, 0.01f, 10.0f)) dirty = true;
         if (ImGui::DragFloat("Radius B", &e.taperedCapsuleRadii.y, 0.01f, 0.01f, 10.0f)) dirty = true;
+    }
+
+    // SVG extrusion parameters (sdfType 10): profile from an uploaded SVG,
+    // extruded along local Y and intersected with the Scale box.
+    if (e.sdfType == 10) {
+        ImGui::SeparatorText("SVG Extrusion (profile \u2229 box)");
+        char pathBuf[512];
+        std::snprintf(pathBuf, sizeof(pathBuf), "%s", e.svgPath.c_str());
+        ImGui::SetNextItemWidth(320.0f);
+        if (ImGui::InputText("SVG File", pathBuf, sizeof(pathBuf))) {
+            e.svgPath = pathBuf;
+            svgStatus_.clear();
+            dirty = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Upload SVG...##svg")) {
+            svgPicker_.open(e.svgPath.empty() ? std::filesystem::path("svg") : std::filesystem::path(e.svgPath),
+                            false, "Mode: Open");
+        }
+        ImGuiHelpers::SetTooltipIfHovered("Pick an SVG file; its closed shapes become the brush profile");
+        if (ImGui::Checkbox("Tint by SVG fill colours", &e.svgTintFromFill)) dirty = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Reload SVG")) {
+            SvgShape probe;
+            std::string err;
+            if (SvgShape::loadFromFileResolved(e.svgPath, probe, err)) {
+                svgStatus_ = "loaded " + std::to_string(probe.contours.size()) + " contours";
+            } else {
+                svgStatus_ = err;
+            }
+        }
+        if (!svgStatus_.empty()) {
+            const bool ok = svgStatus_.rfind("loaded", 0) == 0;
+            ImGui::TextColored(ok ? ImVec4(0.2f, 0.9f, 0.2f, 1.0f) : ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                               "%s", svgStatus_.c_str());
+        }
+        ImGui::TextDisabled("Profile in local XZ; extruded along Y, clipped to the Scale box");
     }
 
     // Effect

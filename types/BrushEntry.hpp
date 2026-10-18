@@ -1,11 +1,15 @@
 #pragma once
 
+#include <string>
+
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 // Represents one SDF brush entry with all parameters needed to populate the scene
 struct BrushEntry {
-    // SDF primitive: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,6=Cone,7=Cylinder,8=TaperedCylinder,9=TaperedCapsule
+    // SDF primitive: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,
+    // 6=Cone,7=Cylinder,8=TaperedCylinder,9=TaperedCapsule,10=SVG extrusion
+    // (profile ∩ box: the SVG is extruded along local Y and clipped to Scale).
     int sdfType = 3;
     // Operation: 0=ADD, 1=REMOVE
     int brushMode = 0;
@@ -51,4 +55,8 @@ struct BrushEntry {
     float opacity = 0.5f;
     // Per-vertex HSV tint (H=0..360, S=0..1, V=0..1)
     glm::vec3 hsv = glm::vec3(0.0f, 0.5f, 0.5f);
+    // SVG extrusion (sdfType 10): uploaded SVG file and whether each vertex
+    // takes the fill colour of the SVG contour containing it.
+    std::string svgPath = "svg/test_logo.svg";
+    bool svgTintFromFill = true;
 };

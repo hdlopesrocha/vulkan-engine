@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Widget.hpp"
+#include "components/FilePicker.hpp"
 #include "../math/BrushMode.hpp"
 #include "../utils/Scene.hpp"
 #include <glm/glm.hpp>
@@ -44,6 +45,9 @@ private:
     bool dirty = false;
     EventManager* eventManager = nullptr;
     Scene* scene_ = nullptr;
+    // "Upload SVG..." file dialog for the SVG extrusion brush (sdfType 10).
+    FilePicker svgPicker_{"Select SVG File", ".svg"};
+    std::string svgStatus_;
     // selected index is owned by the manager
 
     static const char* sdfTypeNames[];

@@ -33,6 +33,9 @@
 #include "vulkan/renderer/SceneQueues.hpp"
 #include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
+#include "utils/SvgBrush.hpp"
+#include "sdf/SvgPolygonDistanceFunction.hpp"
+#include "sdf/SvgShape.hpp"
 #include "utils/BlenderExport.hpp"
 #include "utils/SceneMaterialTable.hpp"
 #include "utils/RemoteScene.hpp"
@@ -4029,6 +4032,38 @@ void MyApp::setupVegetationTextures() {
     }
 }
 
+// Parsed-SVG cache for the SVG brush (sdfType 10). Keyed by the path as typed
+// in the widget; failed loads are cached as null so a broken file logs once.
+static std::shared_ptr<const SvgShape> loadSvgShapeCached(const std::string& path,
+                                                          std::string* error = nullptr) {
+    static std::mutex mutex;
+    static std::unordered_map<std::string, std::shared_ptr<const SvgShape>> cache;
+    static std::unordered_map<std::string, std::string> errors;
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto it = cache.find(path);
+    if (it != cache.end()) {
+        if (error) *error = errors[path];
+        return it->second;
+    }
+    SvgShape shape;
+    std::string err;
+    std::string resolved;
+    if (!SvgShape::loadFromFileResolved(path, shape, err, &resolved)) {
+        errors[path] = err;
+        cache[path] = nullptr;
+        if (error) *error = err;
+        std::cerr << "[SvgBrush] " << err << std::endl;
+        return nullptr;
+    }
+    auto shared = std::make_shared<const SvgShape>(std::move(shape));
+    std::cout << "[SvgBrush] loaded '" << resolved << "': " << shared->contours.size()
+              << " contours" << std::endl;
+    errors[path].clear();
+    cache[path] = shared;
+    if (error) error->clear();
+    return shared;
+}
+
 // Construct a brush primitive for both the current transform (fn2) and the
 // sweep start (fn1), wrap the pair in SweepSignedDistanceFunction when
 // sweepMode is on, then run callback on the resulting function. `args` are
@@ -4089,6 +4124,18 @@ static void forEachBrushSDF(const BrushEntry& entry, const Transformation& model
             applyPrimitive<TaperedCapsuleDistanceFunction>(entry, model, sweepStart, minSize, callback,
                 entry.capsuleA, entry.capsuleB, entry.taperedCapsuleRadii.x, entry.taperedCapsuleRadii.y);
             break;
+        case 10: { // SVG extrusion intersected with the brush box
+            std::string svgError;
+            std::shared_ptr<const SvgShape> shape = loadSvgShapeCached(entry.svgPath, &svgError);
+            if (!shape) {
+                std::cerr << logPrefix << " SVG brush (" << entry.svgPath << "): " << svgError
+                          << std::endl;
+                break;
+            }
+            applyPrimitive<SvgPolygonDistanceFunction>(entry, model, sweepStart, minSize,
+                                                       callback, shape);
+            break;
+        }
         default:
             std::cerr << logPrefix << " Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
             break;
@@ -4266,7 +4313,19 @@ void MyApp::applyBrushToScene() {
 
     // cachedSweepStart was already set by updateBrushPreview — use the same pair
     Transformation model(entry.scale, entry.translate, entry.rot);
-    SimpleBrush brush(entry.materialIndex, entry.hsv);
+    SimpleBrush simpleBrush(entry.materialIndex, entry.hsv);
+    // The SVG brush colours each vertex with the fill of the contour that
+    // contains it (engine HSV tint); other brushes tint uniformly.
+    std::unique_ptr<SvgBrush> svgBrush;
+    if (entry.sdfType == 10) {
+        if (std::shared_ptr<const SvgShape> shape = loadSvgShapeCached(entry.svgPath, nullptr)) {
+            svgBrush = std::make_unique<SvgBrush>(shape, model, entry.materialIndex, entry.hsv,
+                                                  entry.svgTintFromFill);
+        }
+    }
+    const TexturePainter& brush =
+        svgBrush ? static_cast<const TexturePainter&>(*svgBrush)
+                 : static_cast<const TexturePainter&>(simpleBrush);
 
     Simplifier simplifier(0.95f, 0.2f, true);
     auto applyEntry = [&](SignedDistanceFunction& wrappedFunc) {

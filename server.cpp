@@ -35,6 +35,16 @@ uint16_t parsePort(int argc, char** argv) {
     return port;
 }
 
+// --generate forces the procedural MainSceneLoader scene even when a saved
+// scene bundle exists (headless scene/brush testing).
+bool parseGenerateArg(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--generate") return true;
+    }
+    return false;
+}
+
 std::string parseExportGlbArg(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -77,6 +87,7 @@ int main(int argc, char** argv) {
     const std::string sceneArg = parseSceneArg(argc, argv);
     const std::string exportGlb = parseExportGlbArg(argc, argv);
     const bool exportMode = !exportGlb.empty();
+    const bool forceGenerate = parseGenerateArg(argc, argv);
 
     LocalScene mainScene;
     WebServer web(port);
@@ -153,7 +164,10 @@ int main(int argc, char** argv) {
 
     // Load AFTER the web server is up so live octree updates stream to
     // browsers that are already connected.
-    const std::string scenePath = findDefaultScene(sceneArg);
+    const std::string scenePath = forceGenerate ? std::string() : findDefaultScene(sceneArg);
+    if (forceGenerate) {
+        std::cout << "server: --generate: building the procedural MainSceneLoader scene\n";
+    }
     auto t0 = std::chrono::steady_clock::now();
     if (!scenePath.empty()) {
         std::cout << "server: loading scene file '" << scenePath << "'\n";
