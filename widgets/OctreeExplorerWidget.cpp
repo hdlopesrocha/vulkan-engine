@@ -37,10 +37,10 @@ void OctreeExplorerWidget::render() {
     if (selectedLayer < 0 || static_cast<size_t>(selectedLayer) >= nLayers)
         selectedLayer = 0;
     if (exportBlenderCallback_) {
-        if (ImGui::Button("Export to Blender (.glb)")) exportBlenderCallback_();
+        if (ImGui::Button("Export to Blender (.blend)")) exportBlenderCallback_();
         ImGuiHelpers::SetTooltipIfHovered(
-            "Tessellate the current octree and write a .glb mesh, embedded textures,\n"
-            "and a Blender setup script next to it");
+            "Tessellate the current octree and write a ready-to-render Blender scene\n"
+            "(materials, engine camera, sun, packed textures) plus the .glb source data");
         ImGui::Separator();
     }
     const std::string curName = scene->layerName(selectedLayer);

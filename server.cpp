@@ -45,11 +45,15 @@ bool parseGenerateArg(int argc, char** argv) {
     return false;
 }
 
-std::string parseExportGlbArg(int argc, char** argv) {
+// --export-glb <path> / --export-blend <path>: same exporter, the extension
+// selects the output (.glb writes the interchange file, .blend additionally
+// runs Blender headlessly to save the scene).
+std::string parseExportArg(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--export-glb" && i + 1 < argc) return argv[++i];
+        if ((a == "--export-glb" || a == "--export-blend") && i + 1 < argc) return argv[++i];
         if (a.rfind("--export-glb=", 0) == 0) return a.substr(13);
+        if (a.rfind("--export-blend=", 0) == 0) return a.substr(15);
     }
     return {};
 }
@@ -85,7 +89,7 @@ int main(int argc, char** argv) {
 
     const uint16_t port = parsePort(argc, argv);
     const std::string sceneArg = parseSceneArg(argc, argv);
-    const std::string exportGlb = parseExportGlbArg(argc, argv);
+    const std::string exportGlb = parseExportArg(argc, argv);
     const bool exportMode = !exportGlb.empty();
     const bool forceGenerate = parseGenerateArg(argc, argv);
 
@@ -190,7 +194,7 @@ int main(int argc, char** argv) {
 
     if (exportMode) {
         blender_export::Options options;
-        options.glbPath = exportGlb;
+        options.outputPath = exportGlb;
         const blender_export::Stats stats =
             blender_export::exportSceneToBlender(mainScene, options, {},
                 [](float f, const std::string& phase) {
@@ -199,7 +203,13 @@ int main(int argc, char** argv) {
         if (!stats.ok) {
             std::cerr << "server: Blender export failed: " << stats.error << std::endl;
         } else {
-            std::cout << "server: Blender export ok: " << stats.glbPath
+            if (stats.blendWritten) {
+                std::cout << "server: Blender scene saved: " << stats.blendPath << std::endl;
+            }
+            if (!stats.warning.empty()) {
+                std::cerr << "server: warning: " << stats.warning << std::endl;
+            }
+            std::cout << "server: Blender export ok: " << stats.outputPath
                       << " script=" << stats.scriptPath
                       << " config=" << stats.configPath << std::endl;
         }

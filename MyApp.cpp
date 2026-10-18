@@ -353,8 +353,8 @@ public:
     std::unique_ptr<RadialMenuHandler> radialMenuHandler;
     WidgetManager widgetManager;
     FilePicker scenePicker_{"Scene File Picker", ".scene"};
-    FilePicker blenderPicker_{"Blender Export Picker", ".glb"};
-    char blenderExportBuf_[512] = "scenes/octree.glb";
+    FilePicker blenderPicker_{"Blender Export Picker", ".blend"};
+    char blenderExportBuf_[512] = "scenes/octree.blend";
     // Background Blender export (utils/BlenderExport). The worker walks the
     // octree under shared locks; brush edits (unique lock) wait for it.
     std::atomic<bool> blenderExportRunning_{false};
@@ -3094,13 +3094,19 @@ public:
             return;
         }
         blender_export::Options options;
-        options.glbPath = path;
+        options.outputPath = path;
         options.cancel = &blenderExportCancel_;
         if (sceneRenderer && sceneRenderer->vegetationRenderer) {
             options.billboardCount = sceneRenderer->vegetationRenderer->billboardCount;
             options.billboardScale = sceneRenderer->vegetationRenderer->billboardScale;
         }
         options.lightDirection = light.getDirection();
+        // Carry the live engine view into the Blender scene: the generated
+        // camera starts exactly where the app camera is looking.
+        options.haveCamera = true;
+        options.cameraPosition = camera.getPosition();
+        options.cameraTarget = camera.getPosition() + camera.getForward() * 2048.0f;
+        options.cameraFovYDegrees = camera.getFovYDegrees();
         const blender_export::Extras extras = collectBlenderExportExtras();
 
         blenderExportCancel_.store(false);
@@ -3135,8 +3141,13 @@ public:
         blenderExportStatusPending_ = true;
         std::lock_guard<std::mutex> lock(blenderExportMutex_);
         if (blenderExportStats_.ok) {
-            std::cout << "[MyApp] Blender export ok: " << blenderExportStats_.glbPath
-                      << std::endl;
+            const std::string& wrote = blenderExportStats_.blendWritten
+                                            ? blenderExportStats_.blendPath
+                                            : blenderExportStats_.outputPath;
+            std::cout << "[MyApp] Blender export ok: " << wrote << std::endl;
+            if (!blenderExportStats_.warning.empty()) {
+                std::cerr << "[MyApp] warning: " << blenderExportStats_.warning << std::endl;
+            }
         } else {
             std::cerr << "[MyApp] Blender export failed: " << blenderExportStats_.error
                       << std::endl;
@@ -3154,7 +3165,7 @@ public:
                 if (ImGui::MenuItem("Save Scene...")) scenePicker_.open(sceneFolderBuf, true,  "Mode: Save");
                 if (ImGui::MenuItem("Load Scene...")) scenePicker_.open(sceneFolderBuf, false, "Mode: Load");
                 ImGui::Separator();
-                if (ImGui::MenuItem("Export to Blender (.glb)..."))
+                if (ImGui::MenuItem("Export to Blender (.blend)..."))
                     blenderPicker_.open(blenderExportBuf_, true, "Mode: Export");
                 ImGui::Separator();
                 if (ImGui::MenuItem("Exit")) requestClose();
@@ -3465,16 +3476,31 @@ public:
                 stats = blenderExportStats_;
             }
             if (stats.ok) {
-                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "Export complete");
+                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f),
+                                   stats.blendWritten ? "Blender scene exported"
+                                                      : "Export complete");
                 ImGui::Text("%zu chunks, %zu solid tris, %zu water tris",
                             stats.chunks, stats.solidTriangles, stats.waterTriangles);
                 ImGui::Text("%zu grass tufts, %zu SDF instances, %zu materials",
                             stats.grassInstances, stats.sdfInstances, stats.usedMaterials);
                 ImGui::Separator();
-                ImGui::TextDisabled("%s", stats.glbPath.c_str());
+                if (stats.blendWritten) {
+                    ImGui::TextDisabled("%s", stats.blendPath.c_str());
+                }
+                if (!stats.outputPath.empty()) {
+                    ImGui::TextDisabled("%s", stats.outputPath.c_str());
+                }
                 ImGui::TextDisabled("%s", stats.scriptPath.c_str());
                 ImGui::TextDisabled("%s", stats.configPath.c_str());
                 ImGui::TextDisabled("%s", stats.readmePath.c_str());
+                if (!stats.blenderLogPath.empty()) {
+                    ImGui::TextDisabled("%s", stats.blenderLogPath.c_str());
+                }
+                if (!stats.warning.empty()) {
+                    ImGui::Spacing();
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.1f, 1.0f), "%s",
+                                       stats.warning.c_str());
+                }
             } else {
                 ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Export failed");
                 ImGui::TextWrapped("%s", stats.error.c_str());

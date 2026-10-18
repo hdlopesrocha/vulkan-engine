@@ -1,4 +1,5 @@
 #include "Camera.hpp"
+#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -67,4 +68,11 @@ void Camera::onEvent(const EventPtr &event) {
 // Moved from header: immediate translation
 void Camera::translate(const glm::vec3 &d) {
     position += d;
+}
+
+float Camera::getFovYDegrees() const {
+    // glm::perspective puts 1/tan(fovY/2) in [1][1].
+    const float m11 = projection[1][1];
+    if (!(m11 > 1e-6f)) return 60.0f;
+    return glm::degrees(2.0f * std::atan(1.0f / m11));
 }

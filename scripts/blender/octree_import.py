@@ -989,28 +989,51 @@ def setup_world_and_light(cfg, opts):
         bg.inputs["Strength"].default_value = 0.35
 
 
-def frame_camera(objects):
+def engine_to_blender(v):
+    """Engine (x, y, z) Y-up right-handed -> Blender (x, -z, y) Z-up."""
+    return Vector((float(v[0]), -float(v[2]), float(v[1])))
+
+
+def setup_camera(cfg, objects):
+    """Create the scene camera: the engine's view when the sidecar carries it,
+    otherwise an auto-framed three-quarter view of the meshes."""
     scene = bpy.context.scene
-    mins = Vector((1e30, 1e30, 1e30))
-    maxs = Vector((-1e30, -1e30, -1e30))
-    for obj in objects:
-        if obj.type != 'MESH':
-            continue
-        for corner in obj.bound_box:
-            p = obj.matrix_world @ Vector(corner)
-            mins = Vector((min(mins[i], p[i]) for i in range(3)))
-            maxs = Vector((max(maxs[i], p[i]) for i in range(3)))
-    if mins.x > maxs.x:
-        return
-    center = (mins + maxs) * 0.5
-    size = max((maxs - mins).length, 1.0)
     cam_data = bpy.data.cameras.new("OctreeCamera")
     cam = bpy.data.objects.new("OctreeCamera", cam_data)
     scene.collection.objects.link(cam)
-    cam.location = center + Vector((0.55, -0.85, 0.5)) * size
-    cam.rotation_euler = (center - cam.location).to_track_quat('-Z', 'Y').to_euler()
-    cam_data.lens = 40.0
-    cam_data.clip_end = size * 10.0
+
+    info = cfg.get("camera") or {}
+    if info.get("position") is not None:
+        pos = engine_to_blender(info["position"])
+        target = engine_to_blender(info.get("target", [0.0, 0.0, 0.0]))
+        cam.location = pos
+        cam.rotation_euler = (target - pos).to_track_quat('-Z', 'Y').to_euler()
+        fov = float(info.get("fovY", 60.0))
+        cam_data.sensor_fit = 'VERTICAL'
+        cam_data.angle = math.radians(fov)
+        cam_data.clip_start = 0.1
+        cam_data.clip_end = max(1000.0, (target - pos).length * 20.0)
+        print("[octree-import] camera from engine: pos=%s fovY=%.1f" % (tuple(pos), fov))
+    else:
+        mins = Vector((1e30, 1e30, 1e30))
+        maxs = Vector((-1e30, -1e30, -1e30))
+        for obj in objects:
+            if obj.type != 'MESH':
+                continue
+            for corner in obj.bound_box:
+                p = obj.matrix_world @ Vector(corner)
+                mins = Vector((min(mins[i], p[i]) for i in range(3)))
+                maxs = Vector((max(maxs[i], p[i]) for i in range(3)))
+        if mins.x > maxs.x:
+            return
+        center = (mins + maxs) * 0.5
+        size = max((maxs - mins).length, 1.0)
+        cam.location = center + Vector((0.55, -0.85, 0.5)) * size
+        cam.rotation_euler = (center - cam.location).to_track_quat('-Z', 'Y').to_euler()
+        cam_data.lens = 40.0
+        cam_data.clip_end = size * 10.0
+        print("[octree-import] camera auto-framed (no engine camera in the export)")
+
     scene.camera = cam
 
 
@@ -1097,13 +1120,20 @@ def main():
         print("[octree-import] sdf instances:", sdf_count)
 
     setup_world_and_light(cfg, opts)
-    frame_camera([o for o in bpy.data.objects if o.type == 'MESH'])
+    setup_camera(cfg, [o for o in bpy.data.objects if o.type == 'MESH'])
     configure_render(opts)
 
     scene["octree_export_config"] = config_path
     scene["octree_export_stats"] = json.dumps(cfg.get("stats", {}))
 
     if opts["save_blend"]:
+        # Pack the extracted texture tiles into the .blend so the saved scene
+        # is self-contained (the tiles are only needed at import time).
+        try:
+            bpy.ops.file.pack_all()
+            print("[octree-import] packed textures into the .blend")
+        except Exception as exc:  # noqa: BLE001 - pack failures are non-fatal
+            print("[octree-import] pack_all failed:", exc)
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(opts["save_blend"]))
         print("[octree-import] saved", opts["save_blend"])
 

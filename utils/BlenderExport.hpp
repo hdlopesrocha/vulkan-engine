@@ -72,7 +72,10 @@ struct Extras {
 };
 
 struct Options {
-    std::string glbPath; // output path (extension .glb)
+    // Output path. `.glb` writes the interchange file + sidecar + setup script;
+    // `.blend` additionally runs Blender headlessly to build the scene and
+    // save a ready-to-render .blend (the glb stays as the intermediate).
+    std::string outputPath;
     // Optional cooperative cancellation (checked between chunks/layers).
     std::atomic<bool>* cancel = nullptr;
     bool includeWater = true;
@@ -91,6 +94,20 @@ struct Options {
 
     glm::vec3 lightDirection{-0.35f, -0.86f, -0.37f};
     glm::vec3 lightColor{1.0f, 1.0f, 0.9f};
+
+    // `.blend` step: Blender executable (PATH lookup; BLENDER_EXECUTABLE
+    // overrides) and whether the intermediate .glb is deleted once the .blend
+    // exists (the .blend packs its textures, so nothing references it).
+    std::string blenderExecutable = "blender";
+    bool pruneIntermediateGlb = true;
+
+    // Optional engine camera carried into the Blender scene: the script places
+    // the camera at `cameraPosition` looking at `cameraTarget` with the
+    // engine's vertical FOV. Without it the script auto-frames the terrain.
+    bool haveCamera = false;
+    glm::vec3 cameraPosition{0.0f};
+    glm::vec3 cameraTarget{0.0f};
+    float cameraFovYDegrees = 60.0f;
     float triplanarThreshold = 0.12f;
     float triplanarExponent = 1.0f;
 };
@@ -109,11 +126,17 @@ struct Stats {
     size_t usedMaterials = 0;
     size_t embeddedImages = 0;
 
-    std::string glbPath;
+    std::string outputPath;   // the .glb that was written (empty if pruned)
+    std::string blendPath;    // the .blend, when one was produced
     std::string scriptPath;
     std::string configPath;
     std::string readmePath;
     std::string tileDir;
+    std::string blenderLogPath;
+    // Non-fatal problem (e.g. Blender missing): the glb + script are still
+    // valid, the caller should surface this as a warning.
+    std::string warning;
+    bool blendWritten = false;
 };
 
 using ProgressFn = std::function<void(float fraction, const std::string& phase)>;

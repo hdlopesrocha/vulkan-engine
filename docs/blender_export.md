@@ -6,33 +6,50 @@ document describes the workflow, the implementation and the known limitations.
 
 ## Workflow
 
-1. In the running app choose **File -> Export to Blender (.glb)...** (or press
-   **Export to Blender (.glb)** in the *Octree Explorer* widget). Pick an output
-   path; `.glb` is appended automatically if missing.
+1. In the running app choose **File -> Export to Blender (.blend)...** (or
+   press **Export to Blender (.blend)** in the *Octree Explorer* widget). Pick
+   an output path; `.blend` is appended automatically if missing.
 2. The export runs on a background thread (progress window, cancellable).
    Brush edits wait for it because the exporter holds each layer's shared lock.
-3. Next to the chosen file the exporter writes:
+3. The exporter writes the interchange files and then runs **Blender
+   headlessly** to build and save the scene:
 
    | File | Contents |
    |------|----------|
-   | `<name>.glb` | tessellated octree mesh, water mesh, grass point cloud, embedded textures |
-   | `<name>.octree.json` | material table, mixer definitions, light/water/grass/SDF metadata, stats |
+   | `<name>.blend` | ready-to-render scene: imported mesh, blended materials, engine camera, sun, packed textures |
+   | `<name>.glb` | tessellated octree mesh, embedded textures (intermediate; removed once the .blend exists) |
+   | `<name>.octree.json` | material table, mixer definitions, camera/light/water/grass/SDF metadata, stats |
    | `<name>_blender.py` | Blender 4.x importer + material builder |
+   | `<name>_blender.log` | headless Blender output of the `.blend` step |
    | `<name>_README.txt` | short usage note |
-   | `<name>_tiles/` | UDIM texture tiles, written by the Blender script |
+   | `<name>_tiles/` | UDIM texture tiles, written by the Blender script (not needed after packing) |
 
-4. Open Blender 4.x and either
-   - run `blender --background --python <name>_blender.py -- <name>.octree.json`
-     (add `--render out.png` and/or `--save-blend scene.blend`), or
-   - open `<name>_blender.py` in the *Scripting* workspace and press
-     **Run Script**; with no argument it looks for the sidecar next to the
-     script.
+4. Open the `.blend` in Blender 4.x — it already has the camera, sun, world and
+   materials configured and renders as-is (the textures are packed, so the
+   scene is self-contained). To re-run the setup from the source data:
 
-The resulting scene does not need the engine or any external texture file: the
-script extracts the embedded JPEGs, builds UDIM tile files and configures the
-materials. The tiles are plain files so Blender's image loader can use them; the
-`.blend` can be saved and moved as long as the tile folder is kept next to it
-(pack the images in Blender if you need a single file).
+   ```sh
+   blender --background --python <name>_blender.py -- <name>.octree.json \
+           [--save-blend scene.blend] [--render out.png]
+   ```
+
+   or open `<name>_blender.py` in the *Scripting* workspace and press
+   **Run Script** (with no argument it looks for the sidecar next to it).
+
+If Blender is not installed (or not on `PATH`), the `.blend` step is skipped
+with a warning and the `.glb`, sidecar and setup script remain as a manual
+route; set `BLENDER_EXECUTABLE=/path/to/blender` to point at a specific binary.
+
+### Camera
+
+The Blender scene gets a camera named `OctreeCamera`:
+
+- exported from the app: the camera is placed at the engine camera's position
+  looking at 2048 m ahead of it, with the engine's vertical FOV
+  (`Camera::getFovYDegrees`), so the `.blend` opens on the same view you
+  exported from;
+- headless/server exports carry no camera, so the script auto-frames the
+  terrain bounds instead.
 
 Headless export (no GPU/display) is available for validation:
 

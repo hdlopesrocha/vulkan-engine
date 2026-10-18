@@ -19,6 +19,9 @@ public:
     glm::vec3 getForward() const { return glm::normalize(glm::rotate(orientation, glm::vec3(0.0f, 0.0f, -1.0f))); }
     glm::vec3 getUp() const { return glm::normalize(glm::rotate(orientation, glm::vec3(0.0f, 1.0f, 0.0f))); }
     glm::vec3 getRight() const { return glm::normalize(glm::cross(getForward(), getUp())); }
+    // Vertical field of view (degrees) of the stored projection matrix; 60
+    // when no perspective projection has been set yet.
+    float getFovYDegrees() const;
 
     // Tunables
     float speed = 512.0f;

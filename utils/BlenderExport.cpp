@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -537,23 +538,29 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
         }
     }
 
-    if (options.glbPath.empty()) {
+    if (options.outputPath.empty()) {
         stats.error = "empty output path";
         return stats;
     }
 
-    fs::path outPath(options.glbPath);
-    if (outPath.extension() != ".glb") outPath += ".glb";
-    fs::path outDir = outPath.parent_path();
+    fs::path requested(options.outputPath);
+    std::string ext = requested.extension().string();
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const bool blendMode = (ext == ".blend");
+    if (!blendMode && ext != ".glb") requested += ".glb";
+    fs::path outDir = requested.parent_path();
     if (outDir.empty()) outDir = ".";
+    const std::string stem = requested.stem().string();
+    // The interchange file is always a .glb next to the requested output; a
+    // .blend request runs Blender on it afterwards.
+    const fs::path outPath = outDir / (stem + ".glb");
+    const fs::path blendPath = outDir / (stem + ".blend");
     std::error_code ec;
     fs::create_directories(outDir, ec);
     if (ec) {
         stats.error = "cannot create output directory '" + outDir.string() + "': " + ec.message();
         return stats;
     }
-
-    const std::string stem = outPath.stem().string();
     const std::vector<SceneTextureTriple> triples = sceneTextureTriples();
     const std::vector<SceneMixerDesc> mixers = sceneMixerDescs();
     const size_t materialCount =
@@ -873,7 +880,7 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
         stats.error = writeError;
         return stats;
     }
-    stats.glbPath = outPath.string();
+    stats.outputPath = outPath.string();
 
     report(0.75f, "writing Blender setup");
 
@@ -890,6 +897,11 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
          << ",\"exponent\":" << jnum(options.triplanarExponent) << "}";
     json << ",\"light\":{\"direction\":" << jvec(options.lightDirection)
          << ",\"color\":" << jvec(options.lightColor) << "}";
+    if (options.haveCamera) {
+        json << ",\"camera\":{\"position\":" << jvec(options.cameraPosition)
+             << ",\"target\":" << jvec(options.cameraTarget)
+             << ",\"fovY\":" << jnum(options.cameraFovYDegrees) << "}";
+    }
     json << ",\"water\":{\"color\":" << jvec(glm::vec3(0.10f, 0.32f, 0.45f))
          << ",\"alpha\":0.72}";
     json << ",\"grass\":{\"count\":" << grassPoints.size()
@@ -1039,25 +1051,88 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
         if (readme) {
             readme << "Octree Blender export\n"
                    << "=====================\n\n"
-                   << "Files:\n"
-                   << "  " << outPath.filename().string() << "           tessellated octree (.glb)\n"
-                   << "  " << configPath.filename().string() << "    material table / scene sidecar\n"
-                   << "  " << scriptPath.filename().string() << "     Blender importer + material builder\n"
-                   << "  " << (stem + "_tiles/") << "           texture tiles written by the script\n\n"
-                   << "Usage (Blender 4.x):\n"
-                   << "  blender --background --python " << scriptPath.filename().string()
+                   << "Files:\n";
+            if (blendMode) {
+                readme << "  " << blendPath.filename().string()
+                       << "   ready-to-render Blender scene (camera + sun + packed textures)\n";
+            }
+            readme << "  " << outPath.filename().string()
+                   << "   tessellated octree (.glb, intermediate)\n"
+                   << "  " << configPath.filename().string()
+                   << "   material table / scene sidecar\n"
+                   << "  " << scriptPath.filename().string()
+                   << "   Blender importer + material builder\n"
+                   << "  " << (stem + "_tiles/")
+                   << "   texture tiles written by the script\n";
+            if (blendMode) {
+                readme << "  " << (stem + "_blender.log")
+                       << "   headless Blender output (import log)\n";
+            }
+            readme << "\n";
+            if (blendMode) {
+                readme << "Open " << blendPath.filename().string()
+                       << " directly: the scene is configured (materials, camera, sun) and\n"
+                       << "the textures are packed, so it renders without the other files.\n\n"
+                       << "To rebuild the scene from the source data:\n";
+            } else {
+                readme << "Usage (Blender 4.x):\n";
+            }
+            readme << "  blender --background --python " << scriptPath.filename().string()
                    << " -- \"" << configPath.filename().string() << "\"\n"
-                   << "  or open Blender, go to the Scripting workspace, open\n"
-                   << "  " << scriptPath.filename().string() << " and press Run Script.\n\n"
+                   << "      [--save-blend <file.blend>] [--render <png>]\n"
+                   << "  or open " << scriptPath.filename().string()
+                   << " in Blender's Scripting workspace and press Run Script.\n\n"
                    << "The script imports the glb, extracts the embedded textures, builds the\n"
-                   << "triplanar material blend, creates grass blades and SDF proxy objects.\n"
-                   << "Add --render <png> to render a validation image, and --save-blend\n"
-                   << " <file.blend> to save the configured scene.\n\n"
+                   << "triplanar material blend, creates grass blades and SDF proxy objects,\n"
+                   << "places the engine camera (or auto-frames the terrain when the export\n"
+                   << "carried none), adds a sun and packs the textures when saving a .blend.\n\n"
                    << "Grass tufts are capped (BLENDER_EXPORT_MAX_GRASS overrides the limit);\n"
                    << "the cap is logged when it drops instances.\n";
         }
     }
     stats.readmePath = readmePath.string();
+
+    // ── .blend step: run Blender headlessly on the setup script ────────────
+    if (blendMode) {
+        if (cancelled()) {
+            stats.error = "cancelled";
+            return stats;
+        }
+        report(0.9f, "running Blender (headless)");
+        std::string exe = options.blenderExecutable;
+        if (const char* env = std::getenv("BLENDER_EXECUTABLE")) {
+            if (*env) exe = env;
+        }
+        const fs::path logPath = outDir / (stem + "_blender.log");
+        stats.blenderLogPath = logPath.string();
+        std::ostringstream cmd;
+        cmd << exe << " --background --python-exit-code 1 --python '" << scriptPath.string()
+            << "' -- '" << configPath.string() << "' --save-blend '" << blendPath.string()
+            << "' > '" << logPath.string() << "' 2>&1";
+        std::cout << "[BlenderExport] " << cmd.str() << std::endl;
+        const int rc = std::system(cmd.str().c_str());
+        std::error_code blendEc;
+        const bool blendExists = fs::exists(blendPath, blendEc) &&
+                                 fs::file_size(blendPath, blendEc) > 0;
+        if (rc == 0 && blendExists) {
+            stats.blendWritten = true;
+            stats.blendPath = blendPath.string();
+            std::cout << "[BlenderExport] wrote '" << stats.blendPath << "'" << std::endl;
+            if (options.pruneIntermediateGlb) {
+                std::error_code rmEc;
+                if (fs::remove(outPath, rmEc)) {
+                    std::cout << "[BlenderExport] removed intermediate '" << outPath.string()
+                              << "'" << std::endl;
+                    stats.outputPath.clear();
+                }
+            }
+        } else {
+            stats.warning = "Blender step failed (exit " + std::to_string(rc) + "); see '" +
+                            logPath.string() +
+                            "'. The .glb, sidecar and setup script are ready to import manually.";
+            std::cerr << "[BlenderExport] " << stats.warning << std::endl;
+        }
+    }
 
     report(1.0f, "done");
     stats.ok = true;
@@ -1065,7 +1140,8 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
         std::cerr << "[BlenderExport] grass capped at " << maxGrass
                   << " tufts; " << grassDropped << " tufts omitted\n";
     }
-    std::cout << "[BlenderExport] wrote '" << stats.glbPath << "' ("
+    const std::string wrotePath = stats.blendWritten ? stats.blendPath : stats.outputPath;
+    std::cout << "[BlenderExport] wrote '" << wrotePath << "' ("
               << stats.solidTriangles << " solid tris, " << stats.waterTriangles
               << " water tris, " << stats.grassInstances << " grass tufts, "
               << stats.sdfInstances << " SDF instances, " << stats.embeddedImages
