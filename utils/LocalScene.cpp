@@ -2,6 +2,7 @@
 #include "../space/OctreeFile.hpp"
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeAllocator.hpp"
+#include "../services/OctreeMeshTypes.hpp"
 #include "../space/IteratorHandler.hpp"
 #include "../sdf/SDF.hpp"
 #include "../math/Math.hpp"
@@ -206,9 +207,54 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                     skip = (it != emittedVersion_.end() && it->second == params.node->version);
                 }
                 if (!skip) {
+                    std::function<Vertex(OctreeNode*, const BoundingCube&)> vertexFn = nullptr;
+                    if (gOctreeMeshCompute) {
+                        std::vector<OctreeMeshCell> cells;
+                        std::vector<OctreeNode*> cellNodes;
+                        std::function<void(OctreeNode*, const BoundingCube&)> collect =
+                            [&](OctreeNode* n, const BoundingCube& c) {
+                                if (!n) return;
+                                if (n->getType() == SpaceType::Surface && n->getLod() > 0) {
+                                    OctreeMeshCell cell;
+                                    for (int i = 0; i < 8; ++i) cell.sdf[i] = n->sdf[i];
+                                    cell.cubeMin = c.getMin();
+                                    cell.cubeSize = c.getLengthX();
+                                    cell.brushIndex = n->brushIndex;
+                                    cells.push_back(cell);
+                                    cellNodes.push_back(n);
+                                }
+                                OctreeNode* ch[8] = {};
+                                n->getChildren(*tree->allocator, ch);
+                                for (int i = 0; i < 8; ++i)
+                                    if (ch[i]) collect(ch[i], c.getChild(i));
+                            };
+                        collect(params.node, params.cube);
+                        if (!cells.empty()) {
+                            auto res = gOctreeMeshCompute(cells, 0.0f);
+                            std::unordered_map<OctreeNode*, Vertex> gpuVerts;
+                            for (size_t i = 0; i < cellNodes.size() && i < res.positions.size(); ++i) {
+                                OctreeNode* n = cellNodes[i];
+                                glm::vec3 pos(res.positions[i].x, res.positions[i].y, res.positions[i].z);
+                                glm::vec3 nrm(res.normals[i].x, res.normals[i].y, res.normals[i].z);
+                                Vertex v(pos, nrm, glm::vec2(0.0f), n->brushIndex);
+                                v.hsv = n->hsv;
+                                gpuVerts[n] = v;
+                            }
+                            vertexFn = [&gpuVerts](OctreeNode* n, const BoundingCube& c) -> Vertex {
+                                auto it = gpuVerts.find(n);
+                                if (it != gpuVerts.end()) return it->second;
+                                glm::vec3 pos = SDF::getPosition(n->sdf, c);
+                                glm::vec3 nrm = SDF::getNormalFromPosition(n->sdf, c, pos);
+                                Vertex v(pos, nrm, glm::vec2(0.0f), n->brushIndex);
+                                v.hsv = n->hsv;
+                                return v;
+                            };
+                        }
+                    }
+
                     long trianglesCount = 0;
                     Tesselator nodeTesselator(&trianglesCount);
-                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod);
+                    tree->iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod, vertexFn);
                     {
                         std::lock_guard<std::mutex> lock(emittedMutex_);
                         emittedVersion_[nodeId] = params.node->version;
@@ -264,7 +310,7 @@ void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCub
                 for (size_t i = 0; i < 8; ++i) sdf[i] = params.node->sdf[i];
                 callback(params.cube, sdf, 1u, params.node->version,
                          reinterpret_cast<uintptr_t>(params.node),
-                         static_cast<uint32_t>(params.node->vertex.brushIndex));
+                         static_cast<uint32_t>(params.node->brushIndex));
             }
             // Keep descending so finer SDF nodes (also at lod==1 in deeper chunks)
             // are visited; the lod==1 filter above selects exactly the right cells.

@@ -1,0 +1,104 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : enable
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, scalar) readonly buffer InSdf0 { vec4 sdf0[]; };
+layout(set = 0, binding = 1, scalar) readonly buffer InSdf1 { vec4 sdf1[]; };
+layout(set = 0, binding = 2, scalar) readonly buffer InCube { vec4 cubeMin[]; }; // xyz=min, w=size
+layout(set = 0, binding = 3, scalar) readonly buffer InBrush { int brushIndex[]; };
+
+layout(set = 0, binding = 4, scalar) writeonly buffer OutPositions { vec4 positions[]; };
+layout(set = 0, binding = 5, scalar) writeonly buffer OutNormals { vec4 normals[]; };
+layout(set = 0, binding = 6) buffer Counters { uint vertexCount; };
+
+layout(push_constant) uniform PC { uint cellCount; float isoValue; } pc;
+
+const vec3 CORNER[8] = vec3[](
+    vec3(0,0,0), vec3(1,0,0), vec3(1,1,0), vec3(0,1,0),
+    vec3(0,0,1), vec3(1,0,1), vec3(1,1,1), vec3(0,1,1)
+);
+const int EDGES[12][2] = int[12][2](
+    int[](0,1), int[](1,2), int[](2,3), int[](3,0),
+    int[](4,5), int[](5,6), int[](6,7), int[](7,4),
+    int[](0,4), int[](1,5), int[](2,6), int[](3,7)
+);
+
+float sdfAt(uint gi, int idx) {
+    if (idx < 4) return sdf0[gi][idx];
+    return sdf1[gi][idx - 4];
+}
+
+vec3 cellCorner(uint gi, int idx) {
+    vec3 mn = cubeMin[gi].xyz;
+    float sz = cubeMin[gi].w;
+    return mn + CORNER[idx] * sz;
+}
+
+float interpSDF(int gi, vec3 u) {
+    u = clamp(u, vec3(0.0), vec3(1.0));
+    float c000 = sdfAt(gi,0); float c100 = sdfAt(gi,1);
+    float c110 = sdfAt(gi,2); float c010 = sdfAt(gi,3);
+    float c001 = sdfAt(gi,4); float c101 = sdfAt(gi,5);
+    float c111 = sdfAt(gi,6); float c011 = sdfAt(gi,7);
+    float x=u.x,y=u.y,z=u.z;
+    float c00 = mix(c000,c100,x);
+    float c01 = mix(c001,c101,x);
+    float c10 = mix(c010,c110,x);
+    float c11 = mix(c011,c111,x);
+    float c0 = mix(c00,c10,y);
+    float c1 = mix(c01,c11,y);
+    return mix(c0,c1,z);
+}
+
+void main() {
+    uint gi = gl_GlobalInvocationID.x;
+    if (gi >= pc.cellCount) return;
+
+    float sz = cubeMin[gi].w;
+    vec3 mn = cubeMin[gi].xyz;
+
+    vec3 acc = vec3(0.0);
+    int nCross = 0;
+    for (int e = 0; e < 12; ++e) {
+        int a = EDGES[e][0];
+        int b = EDGES[e][1];
+        float da = sdfAt(gi,a) - pc.isoValue;
+        float db = sdfAt(gi,b) - pc.isoValue;
+        if ((da < 0.0) != (db < 0.0)) {
+            float t = da / (da - db);
+            vec3 pa = cellCorner(gi,a);
+            vec3 pb = cellCorner(gi,b);
+            acc += mix(pa, pb, t);
+            ++nCross;
+        }
+    }
+    if (nCross == 0) return;
+
+    vec3 pos = acc / float(nCross);
+
+    float c000 = sdfAt(gi,0); float c100 = sdfAt(gi,1);
+    float c110 = sdfAt(gi,2); float c010 = sdfAt(gi,3);
+    float c001 = sdfAt(gi,4); float c101 = sdfAt(gi,5);
+    float c111 = sdfAt(gi,6); float c011 = sdfAt(gi,7);
+
+    float eps = sz * 1e-3;
+    vec3 g = vec3(0.0);
+    for (int ax = 0; ax < 3; ++ax) {
+        vec3 pPlus = pos; pPlus[ax] += eps;
+        vec3 pMinus = pos; pMinus[ax] -= eps;
+        vec3 uP = clamp((pPlus - mn) / sz, vec3(0.0), vec3(1.0));
+        vec3 uM = clamp((pMinus - mn) / sz, vec3(0.0), vec3(1.0));
+        float interpP = mix(mix(mix(c000,c100,uP.x), mix(c010,c110,uP.x), uP.y),
+                            mix(mix(c001,c101,uP.x), mix(c011,c111,uP.x), uP.y), uP.z);
+        float interpM = mix(mix(mix(c000,c100,uM.x), mix(c010,c110,uM.x), uM.y),
+                            mix(mix(c001,c101,uM.x), mix(c011,c111,uM.x), uM.y), uM.z);
+        g[ax] = (interpP - interpM) / (2.0 * eps);
+    }
+    float glen = length(g);
+    vec3 nrm = (glen > 1e-6) ? (g / glen) : vec3(0.0, 1.0, 0.0);
+
+    uint idx = atomicAdd(vertexCount, 1);
+    positions[idx] = vec4(pos, uintBitsToFloat(brushIndex[gi]));
+    normals[idx] = vec4(nrm, 0.0);
+}

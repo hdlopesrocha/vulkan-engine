@@ -100,6 +100,8 @@
 #include "world/World.hpp"
 #include "vulkan/renderer/DescriptorWriter.hpp"
 #include "services/TextureMixer.hpp"
+#include "services/OctreeMeshCompute.hpp"
+#include "services/OctreeMeshTypes.hpp"
 #include "utils/ShadowParams.hpp"
 #include "space/ThreadPool.hpp"
 #include "space/Octree.hpp"
@@ -329,6 +331,7 @@ public:
 
     // Texture editing / UI helpers
     std::shared_ptr<TextureMixer> textureMixer;
+    std::shared_ptr<OctreeMeshCompute> octreeMeshCompute;
     std::vector<MixerParameters> mixerParams;
     std::vector<MaterialProperties> materials;
     // Application-owned per-layer water parameters (initialized in setup)
@@ -471,6 +474,11 @@ public:
         
         textureMixer = std::make_shared<TextureMixer>();
         textureMixer->init(this, &textureArrayManager);
+        octreeMeshCompute = std::make_shared<OctreeMeshCompute>();
+        octreeMeshCompute->init(this);
+        gOctreeMeshCompute = [this](const std::vector<OctreeMeshCell>& cells, float iso) {
+            return octreeMeshCompute->compute(cells, iso);
+        };
         textureMixer->attachTextureArrayManager(&textureArrayManager);
         // Record into member so UI can display counts
         mixerParams.clear();
