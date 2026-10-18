@@ -23,6 +23,7 @@ The codebase is written in modern C++ (C++20 or newer) and prioritizes:
 | `make debug` | Debug build (`-O0 -g -DDEBUG`, no ImGui); output is teed to `logs/build.log` |
 | `make run` | Release build + run `bin/app` (CWD is `bin/`, never close the app or use timeouts, the program is always closed by the user); app output is teed to `logs/run.log` |
 | `make run-debug` | Debug build + run (same logging as `make run`) | (Never close the app or use timeouts, the program is always closed by the user)
+| `MSG="scope: subject" make commit` | Commit staged changes (`git add` first) and speak the commit subject aloud; **all agents must commit through this target, never bare `git commit`**. MSG must be an environment prefix, not a make variable |
 | `make shaders` | Compile `shaders/**/*.{vert,frag,geom,comp,tesc,tese}` → `bin/shaders/**/*.spv` via `glslc` (fallback `glslangValidator`) |
 | `make server` | Build headless `bin/server` (no Vulkan/UI linkage, no widgets) |
 | `make clean` | Remove `bin/` and generated SPIR-V |
@@ -356,6 +357,7 @@ When modifying Vulkan code:
 9. Avoid hidden performance regressions.
 10. Keep changes localized.
 11. After a failed `make run` / `make run-debug`, search `logs/run.log` for the validation error before changing code; after a failed build, check `logs/build.log`.
+12. Commit through `MSG="scope: subject" make commit` (never bare `git commit`) so the commit subject is announced with the alert voice; stage files with `git add` first. Prefix MSG as an environment variable — make expands `$` in `make MSG=...` arguments and would silently alter the message.
 
 ---
 
