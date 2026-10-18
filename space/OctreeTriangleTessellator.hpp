@@ -84,4 +84,12 @@ public:
                           ThreadContext * context,
                           int targetLod = 0,
                           const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn = nullptr);
+
+private:
+    // One walk over the tree: its fixed inputs, the per-call state (anchor,
+    // caches) and the steps of the walk, defined in the .cpp. iterateTriangles()
+    // builds one per call. The steps are members rather than lambdas, so a call
+    // no longer constructs them and the recursive steps (collectBreaks,
+    // walkLadder) need no std::function.
+    struct Walk;
 };

@@ -12,22 +12,31 @@
 // itself is unchanged, only the owning object became OctreeTriangleTessellator's
 // `tree` member (member accesses are tree.*) and getNodeIndex(pos, cube) — a
 // forwarder — became cube.getChildIndex(pos), which it is value-identical to.
+// The walk's steps are members of Walk below (declared in the header, defined
+// here); they used to be function-local lambdas.
 
 bool OctreeTriangleTessellator::EdgeCell::isSurface(int targetLod) const {
     return node != NULL && node->getType() == SpaceType::Surface &&
         node->getLod() == targetLod;
 }
 
-void OctreeTriangleTessellator::iterateTriangles(
-        OctreeNode * from,
-        const BoundingCube &fromCube,
-        int fromLevel,
-        OctreeNodeTriangleHandler &func,
-        ThreadContext * context,
-        int targetLod,
-        const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn) {
-    OctreeSharedLock lock(tree.treeMutex);
+// One walk: the fixed inputs, the per-call state (anchor and caches) and the
+// steps of the walk. iterateTriangles() builds one per call.
+//
+// The steps used to be function-local lambdas. As members they are not
+// constructed on every call, and the two recursive steps (collectBreaks,
+// walkLadder) recurse directly instead of through a std::function.
+struct OctreeTriangleTessellator::Walk {
+    // Inputs, fixed for the duration of the walk.
+    const Octree &tree;
+    OctreeNode *from = NULL;
+    const BoundingCube &fromCube;
+    OctreeNodeTriangleHandler &func;
+    ThreadContext *context = NULL;
+    int targetLod = 0;
+    const std::function<Vertex(OctreeNode*, const BoundingCube&)> &vertexFn;
 
+    // Per-call state.
     // Anchor for the upper-traversal cache: findCellAt climbs from a cached
     // ancestor of this cell (via context->parentOf) instead of the root. The
     // parent links (and their child indices) are registered/seeded by the tree
@@ -54,12 +63,24 @@ void OctreeTriangleTessellator::iterateTriangles(
     // so cached results are reusable and bit-identical to a fresh lookup.
     tsl::robin_map<glm::vec3, EdgeCell> cellCache;
 
-    auto samePosition = [](const glm::vec3 &a, const glm::vec3 &b, float eps) {
+    Walk(const Octree &tree_, OctreeNode *from_, const BoundingCube &fromCube_,
+         OctreeNodeTriangleHandler &func_, ThreadContext *context_, int targetLod_,
+         const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn_)
+        : tree(tree_), from(from_), fromCube(fromCube_), func(func_),
+          context(context_), targetLod(targetLod_), vertexFn(vertexFn_) {
+        // Anchor the cache on `from`: its ancestor chain (seeded by the
+        // traversal, rooted at the world root) is already in context->parentOf,
+        // so neighbor lookups climb from a cached parent instead of the root.
+        hint.node = from;
+        hint.cube = fromCube;
+    }
+
+    static bool samePosition(const glm::vec3 &a, const glm::vec3 &b, float eps) {
         glm::vec3 d = a - b;
         return glm::dot(d, d) <= eps * eps;
-    };
+    }
 
-    auto edgeAxes = [](int axis, int &u, int &v) {
+    static void edgeAxes(int axis, int &u, int &v) {
         if (axis == 0) {
             u = 1; v = 2;
         } else if (axis == 1) {
@@ -67,11 +88,11 @@ void OctreeTriangleTessellator::iterateTriangles(
         } else {
             u = 0; v = 1;
         }
-    };
+    }
 
-    // `this` replaces the implicit `this` of the original member function.
-    auto findCellAt = [this, context, &hint, &fromCube, &cachedChainNode, &cachedChainNodes,
-            &cachedChainIndices, &cachedChainLen, &cachedChainOk, &cellCache, targetLod](const glm::vec3 &pos) {
+    // Descends to the cell containing pos, starting from the cached anchor
+    // when context->parentOf can rebuild the parent chain, and memoizes it.
+    EdgeCell findCellAt(const glm::vec3 &pos) {
         auto cacheHit = cellCache.find(pos);
         if(cacheHit != cellCache.end()) {
             return cacheHit->second;
@@ -173,20 +194,14 @@ void OctreeTriangleTessellator::iterateTriangles(
         }
         cellCache[pos] = result;
         return result;
-    };
+    }
 
-    // Anchor the cache on `from`: its ancestor chain (seeded by the traversal,
-    // rooted at the world root) is already in context->parentOf, so neighbor
-    // lookups climb from a cached parent instead of the root.
-    hint.node = from;
-    hint.cube = fromCube;
-
-    auto sideCoordinate = [](float value, int side) {
+    static float sideCoordinate(float value, int side) {
         return std::nextafter(value, side < 0 ? -std::numeric_limits<float>::infinity()
                                                :  std::numeric_limits<float>::infinity());
-    };
+    }
 
-    auto quadrantSigns = [](int axis, int quadrant, int &su, int &sv) {
+    static void quadrantSigns(int axis, int quadrant, int &su, int &sv) {
         static const int SIGNS[3][4][2] = {
             {{-1, -1}, {-1,  1}, { 1,  1}, { 1, -1}},
             {{-1, -1}, { 1, -1}, { 1,  1}, {-1,  1}},
@@ -194,17 +209,17 @@ void OctreeTriangleTessellator::iterateTriangles(
         };
         su = SIGNS[axis][quadrant][0];
         sv = SIGNS[axis][quadrant][1];
-    };
+    }
 
-    auto edgePoint = [](const EdgeSpan &edge, float t) {
+    static glm::vec3 edgePoint(const EdgeSpan &edge, float t) {
         glm::vec3 p(0.0f);
         p[edge.axis] = t;
         p[edge.u] = edge.fixedU;
         p[edge.v] = edge.fixedV;
         return p;
-    };
+    }
 
-    auto edgeSamplePoint = [&](const EdgeSpan &edge, float t, int quadrant) {
+    static glm::vec3 edgeSamplePoint(const EdgeSpan &edge, float t, int quadrant) {
         int su, sv;
         quadrantSigns(edge.axis, quadrant, su, sv);
 
@@ -213,9 +228,9 @@ void OctreeTriangleTessellator::iterateTriangles(
         p[edge.u] = sideCoordinate(edge.fixedU, su);
         p[edge.v] = sideCoordinate(edge.fixedV, sv);
         return p;
-    };
+    }
 
-    auto addBreak = [](std::vector<float> &breaks, float value, float start, float end, float eps) {
+    static bool addBreak(std::vector<float> &breaks, float value, float start, float end, float eps) {
         if(value <= start + eps || value >= end - eps) {
             return false;
         }
@@ -226,18 +241,18 @@ void OctreeTriangleTessellator::iterateTriangles(
         }
         breaks.push_back(value);
         return true;
-    };
+    }
 
-    auto sortUnique = [](std::vector<float> &values, float eps) {
+    static void sortUnique(std::vector<float> &values, float eps) {
         std::sort(values.begin(), values.end());
         values.erase(std::unique(values.begin(), values.end(), [eps](float a, float b) {
             return std::fabs(a - b) <= eps;
         }), values.end());
-    };
+    }
 
     // Fixed-buffer variant of addBreak/sortUnique to avoid a heap allocation in
     // the per-recursion localBreaks (its size is bounded; see collectBreaks).
-    auto addToBuffer = [](float *buf, int &count, int cap, float value, float start, float end, float eps) {
+    static bool addToBuffer(float *buf, int &count, int cap, float value, float start, float end, float eps) {
         if(value <= start + eps || value >= end - eps) {
             return false;
         }
@@ -251,18 +266,17 @@ void OctreeTriangleTessellator::iterateTriangles(
             return true;
         }
         return false;
-    };
+    }
 
-    auto sortUniqueBuf = [](float *buf, int &count, float eps) {
+    static void sortUniqueBuf(float *buf, int &count, float eps) {
         std::sort(buf, buf + count);
         float *newEnd = std::unique(buf, buf + count, [eps](float a, float b) {
             return std::fabs(a - b) <= eps;
         });
         count = int(newEnd - buf);
-    };
+    }
 
-    std::function<void(const EdgeSpan&, float, float, std::vector<float>&, int)> collectBreaks;
-    collectBreaks = [&](const EdgeSpan &edge, float start, float end, std::vector<float> &breaks, int depth) {
+    void collectBreaks(const EdgeSpan &edge, float start, float end, std::vector<float> &breaks, int depth) {
         if(end - start <= edge.eps * 2.0f) {
             return;
         }
@@ -298,9 +312,9 @@ void OctreeTriangleTessellator::iterateTriangles(
         for(int i = 1; i < localCount; ++i) {
             collectBreaks(edge, localBreaks[i - 1], localBreaks[i], breaks, depth + 1);
         }
-    };
+    }
 
-    auto makeEdgeSpan = [&](int edgeIndex, const BoundingCube &cellCube) {
+    EdgeSpan makeEdgeSpan(int edgeIndex, const BoundingCube &cellCube) const {
         glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];
         glm::vec3 p0 = cellCube.getCorner(edgeCorners.x);
         glm::vec3 p1 = cellCube.getCorner(edgeCorners.y);
@@ -321,9 +335,9 @@ void OctreeTriangleTessellator::iterateTriangles(
         edge.end = glm::max(p0[edge.axis], p1[edge.axis]);
         edge.eps = glm::max(tree.getLengthX(), cellCube.getLengthX()) * 1e-6f;
         return edge;
-    };
+    }
 
-    auto ownerLess = [](const EdgeCell &a, const EdgeCell &b) {
+    static bool ownerLess(const EdgeCell &a, const EdgeCell &b) {
         float al = a.cube.getLengthX();
         float bl = b.cube.getLengthX();
         if(al != bl) return al < bl;
@@ -334,18 +348,18 @@ void OctreeTriangleTessellator::iterateTriangles(
         if(amin.y != bmin.y) return amin.y < bmin.y;
         if(amin.z != bmin.z) return amin.z < bmin.z;
         return std::less<OctreeNode*>()(a.node, b.node);
-    };
+    }
 
-    auto nodeVertex = [&](OctreeNode *n, const BoundingCube &c) -> Vertex {
+    Vertex nodeVertex(OctreeNode *n, const BoundingCube &c) const {
         if (vertexFn) return vertexFn(n, c);
         glm::vec3 pos = SDF::getPosition(n->sdf, c);
         glm::vec3 norm = SDF::getNormalFromPosition(n->sdf, c, pos);
         Vertex v(pos, norm, glm::vec2(0.0f), n->brushIndex);
         v.hsv = n->hsv;
         return v;
-    };
+    }
 
-    auto emitTriangle = [&](const Vertex &a, const Vertex &b, const Vertex &c, float eps) {
+    void emitTriangle(const Vertex &a, const Vertex &b, const Vertex &c, float eps) {
         // a/b/c are vertices (not pointers) now; no null check needed.
         if(samePosition(a.position, b.position, eps)) return;
         if(samePosition(b.position, c.position, eps)) return;
@@ -369,9 +383,9 @@ void OctreeTriangleTessellator::iterateTriangles(
             || cc.brushIndex <= DISCARD_BRUSH_INDEX) return;
 
         func.handle(ca, cb, cc);
-    };
+    }
 
-    auto emitSegment = [&](const EdgeSpan &edge, float start, float end, bool sign0, bool sign1) {
+    void emitSegment(const EdgeSpan &edge, float start, float end, bool sign0, bool sign1) {
         float mid = start + (end - start) * 0.5f;
         EdgeCell cells[4];
         for(int q = 0; q < 4; ++q) {
@@ -496,15 +510,6 @@ void OctreeTriangleTessellator::iterateTriangles(
                 emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[2].node, plist[2].cube), nodeVertex(plist[1].node, plist[1].cube), edge.eps);
             }
         }
-    };
-
-    // Accept any ladder cell as the `from` anchor: a frontier simplified leaf
-    // (simplification 1, developed raw lod == 1 in the stored space) or an
-    // internal ancestor (simplification 0 but developed > 0). Reject only
-    // non-ladder leaves (stored lod 0).
-    if(from == NULL || from->getType() != SpaceType::Surface ||
-       (from->getLod() == 0u && from->getLod() == 0)) {
-        return;
     }
 
     // Scan ONE Surface-Nets cell: walk the 12 edges of cellCube with the
@@ -514,7 +519,7 @@ void OctreeTriangleTessellator::iterateTriangles(
     // the segment via the isSurface(targetLod) quadrant filter; the polygon
     // then closes with the remaining surface quadrants instead of leaving
     // open edges at LOD band boundaries and shape faces.
-    auto scanCell = [&](OctreeNode *cellNode, const BoundingCube &cellCube) {
+    void scanCell(OctreeNode *cellNode, const BoundingCube &cellCube) {
         for(int edgeIndex = 0; edgeIndex < 12; ++edgeIndex) {
             glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];
             bool sign0 = cellNode->sdf[edgeCorners.x] < 0.0f;
@@ -542,7 +547,7 @@ void OctreeTriangleTessellator::iterateTriangles(
                 }
             }
         }
-    };
+    }
 
     // Ladder mode: the level-k mesh is the AGGREGATE of the cells at lod k
     // inside the anchor (each cell's own stored corner samples, which are
@@ -551,7 +556,7 @@ void OctreeTriangleTessellator::iterateTriangles(
     // crossing when the surface is inside it — so every level emits its own
     // cell resolution (cell size frontierCell*2^k), which is what the
     // distance bands consume.
-    std::function<void(OctreeNode*, const BoundingCube&)> walkLadder = [&](OctreeNode *node, const BoundingCube &cube) {
+    void walkLadder(OctreeNode *node, const BoundingCube &cube) {
         if(node == NULL) return;
         // Stored (+1-shifted → uint8) lod: 0 = unset, 1 = frontier, k+1 = parent.
         const uint8_t lod = node->getLod();
@@ -571,6 +576,33 @@ void OctreeTriangleTessellator::iterateTriangles(
             }
         }
 
-    };
-    walkLadder(from, fromCube);
+    }
+
+    // Runs the walk: rejects non-ladder anchors, then walks the ladder.
+    void run() {
+        // Accept any ladder cell as the `from` anchor: a frontier simplified leaf
+        // (simplification 1, developed raw lod == 1 in the stored space) or an
+        // internal ancestor (simplification 0 but developed > 0). Reject only
+        // non-ladder leaves (stored lod 0).
+        if(from == NULL || from->getType() != SpaceType::Surface ||
+           (from->getLod() == 0u && from->getLod() == 0)) {
+            return;
+        }
+
+        walkLadder(from, fromCube);
+    }
+};
+
+void OctreeTriangleTessellator::iterateTriangles(
+        OctreeNode * from,
+        const BoundingCube &fromCube,
+        int fromLevel,
+        OctreeNodeTriangleHandler &func,
+        ThreadContext * context,
+        int targetLod,
+        const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn) {
+    OctreeSharedLock lock(tree.treeMutex);
+
+    Walk walk(tree, from, fromCube, func, context, targetLod, vertexFn);
+    walk.run();
 }
