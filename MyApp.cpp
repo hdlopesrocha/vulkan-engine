@@ -206,6 +206,31 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
     return { onAdded, onDeleted };
 }
 
+// ── Setup-phase voice alerts ──────────────────────────────────────────────
+// The setup steps below announce themselves through the shared alert queue
+// in sounds/: enqueue synchronously on sounds/play.sh (queue order == call
+// order) and leave playback to a detached drainer. This is the same queue
+// and script the Makefile alerts use, so app and build voices serialize
+// instead of overlapping. No-op when the sounds folder is missing (e.g. a
+// standalone copy of bin/).
+static void playSetupAlert(const char* name) {
+    namespace fs = std::filesystem;
+    static const fs::path script = [] {
+        std::error_code ec;
+        for (const char* candidate : {"../sounds/play.sh", "sounds/play.sh"})
+            if (fs::exists(candidate, ec)) return fs::weakly_canonical(candidate, ec);
+        return fs::path{};
+    }();
+    if (script.empty()) return;
+
+    const fs::path sound = script.parent_path() / (std::string(name) + ".mp3");
+    std::string cmd = "sh '" + script.string() + "' --enqueue '" + sound.string() + "'";
+    cmd += " </dev/null >/dev/null 2>&1; nohup sh '" + script.string()
+         + "' --drain </dev/null >/dev/null 2>&1 &";
+    const int status = std::system(cmd.c_str());
+    (void)status; // Alerts are best-effort; a failed spawn must not affect startup.
+}
+
 class MyApp : public VulkanApp, public IEventHandler {
 public:
     Settings settings;
@@ -582,6 +607,7 @@ public:
         // the generic VulkanApp framework) so the engine core stays agnostic about
         // scene bindings. Must exist before SceneRenderer::init() writes the static
         // descriptor set below.
+        playSetupAlert("setup-layout");
         sceneDescriptorLayout = std::make_unique<SceneDescriptorLayout>();
         sceneDescriptorLayout->create(*this);
 
@@ -655,6 +681,7 @@ public:
         // Create the World (owns Chunks, Octrees, and the ChunkManager state machine).
         // The renderer receives a reference to the World for chunk state queries
         // and proxy swap notifications.
+        playSetupAlert("setup-world");
         world = new World();
         sceneRenderer->setWorld(world);
 
@@ -720,6 +747,7 @@ public:
         if (sceneRenderer && sceneRenderer->vegetationRenderer)
             sceneRenderer->vegetationRenderer->init(this);
 
+        playSetupAlert("setup-textures");
         setupVegetationTextures();
         setupTextures();
 
@@ -728,6 +756,7 @@ public:
         // M12 (perf report 22): the vegetation offscreen targets render at
         // Settings::vegetationRenderScale.
         sceneRenderer->setVegetationRenderScale(settings.vegetationRenderScale);
+        playSetupAlert("setup-renderers");
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
 
         // Re-wire impostors now that VegetationRenderer::init() has stored the render pass.
@@ -735,6 +764,7 @@ public:
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
 
+        playSetupAlert("setup-ui");
         textureViewer = std::make_shared<TextureViewer>();
         textureViewer->init(&textureArrayManager, &materials);
         textureViewer->setOnMaterialChanged([this](size_t idx) {
@@ -918,6 +948,8 @@ public:
             generateMapPending = true; // Trigger initial map generation on first frame
             std::cout << "[MyApp::setup] No default scene found, generating procedural map\n";
         }
+
+        playSetupAlert("setup-ready");
     }
 
     // Move vegetation texture setup into its own method for clarity

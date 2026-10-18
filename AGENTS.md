@@ -19,15 +19,15 @@ The codebase is written in modern C++ (C++20 or newer) and prioritizes:
 
 | Command | Action |
 |---------|--------|
-| `make` / `make -j8 all` | Release build (app + server + shaders, ImGui enabled, `-O3 -march=native`) |
-| `make debug` | Debug build (`-O0 -g -DDEBUG`, no ImGui) |
-| `make run` | Release build + run `bin/app` (CWD is `bin/`, never close the app or use timeouts, the program is always closed by the user) |
-| `make run-debug` | Debug build + run | (Never close the app or use timeouts, the program is always closed by the user)
+| `make` / `make -j8 all` | Release build (app + server + shaders, ImGui enabled, `-O3 -march=native`); output is teed to `logs/build.log` |
+| `make debug` | Debug build (`-O0 -g -DDEBUG`, no ImGui); output is teed to `logs/build.log` |
+| `make run` | Release build + run `bin/app` (CWD is `bin/`, never close the app or use timeouts, the program is always closed by the user); app output is teed to `logs/run.log` |
+| `make run-debug` | Debug build + run (same logging as `make run`) | (Never close the app or use timeouts, the program is always closed by the user)
 | `make shaders` | Compile `shaders/**/*.{vert,frag,geom,comp,tesc,tese}` → `bin/shaders/**/*.spv` via `glslc` (fallback `glslangValidator`) |
 | `make server` | Build headless `bin/server` (no Vulkan/UI linkage, no widgets) |
 | `make clean` | Remove `bin/` and generated SPIR-V |
 | `make valgrind` | Debug build + valgrind with `valgrind.supp` |
-| `VULKAN_GPU_ASSISTED=1 make run-debug > logs/run.log 2>&1` | Debug build + run with GPU-assisted validation (see Validation section) |
+| `VULKAN_GPU_ASSISTED=1 make run-debug` | Debug build + run with GPU-assisted validation (see Validation section; run output is logged to `logs/run.log` automatically) |
 | `make install` | Install system deps + fetch ImGui + miniaudio into `third_party/` |
 | `make cloc` | Count lines of code (excludes `bin/`, `third_party/`) |
 | `make callgrind` | Profiling with valgrind callgrind + kcachegrind |
@@ -107,10 +107,16 @@ To enable GPU-assisted validation, set the environment variable `VULKAN_GPU_ASSI
 Run with:
 
 ```
-VULKAN_GPU_ASSISTED=1 make run-debug > logs/run.log 2>&1
+VULKAN_GPU_ASSISTED=1 make run-debug
 ```
 
-GPU-assisted validation has a significant performance cost and should only be used during debugging. It catches errors that static validation cannot detect (e.g. out-of-bounds descriptor indexing, invalid descriptor set updates). Always check `logs/run.log` for validation errors after running with this flag.
+`make run` / `make run-debug` tee all app output (stdout + stderr) to `logs/run.log`, so no manual redirection is needed. If a run fails or shows validation problems, search that log for the validation error before changing code:
+
+```
+grep -n "Validation Error\|VUID\|ERROR" logs/run.log
+```
+
+GPU-assisted validation has a significant performance cost and should only be used during debugging. It catches errors that static validation cannot detect (e.g. out-of-bounds descriptor indexing, invalid descriptor set updates). Always check `logs/run.log` for validation errors after running with this flag. Build output is logged to `logs/build.log` the same way (`make` / `make debug`); check it when a build fails.
 
 Code submitted with validation errors is considered incorrect.
 
@@ -349,6 +355,7 @@ When modifying Vulkan code:
 8. Prefer portability over vendor-specific optimizations.
 9. Avoid hidden performance regressions.
 10. Keep changes localized.
+11. After a failed `make run` / `make run-debug`, search `logs/run.log` for the validation error before changing code; after a failed build, check `logs/build.log`.
 
 ---
 

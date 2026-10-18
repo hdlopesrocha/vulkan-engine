@@ -93,3 +93,9 @@ imgui.ini
 # Web viewer build inputs/outputs
 node_modules/
 server/web/dist/
+
+# Alert-sound playback queue (runtime state of sounds/play.sh)
+/sounds/.queue.d/
+/sounds/.queue.lock
+# Runtime-synthesized alert phrases (sounds/say.sh cache)
+/sounds/.dynamic/
