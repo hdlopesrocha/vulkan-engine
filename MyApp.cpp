@@ -33,6 +33,8 @@
 #include "vulkan/renderer/SceneQueues.hpp"
 #include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
+#include "utils/BlenderExport.hpp"
+#include "utils/SceneMaterialTable.hpp"
 #include "utils/RemoteScene.hpp"
 #include "widgets/SettingsWidget.hpp"
 #include "widgets/SkyWidget.hpp"
@@ -136,7 +138,11 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
         // stable slot.
         renderer->processNodeLayer(*scene, layer, nid, nodeCopy,
             [renderer, cid, nodeCopy, target](Layer layer_, NodeID nid_, const Octree::LoDMesh& lodMesh) {
-                if (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty()) {
+                // GPU-resident builds (gpuSlot != UINT32_MAX) carry a live slot
+                // even when the host-side mirror is empty, so only CPU-built
+                // meshes without geometry are dropped here.
+                if (lodMesh.gpuSlot == UINT32_MAX &&
+                    (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty())) {
                     return; // no surface: nothing to publish
                 }
                 // lodMesh.lod is the 0-based band level (chunkLod - 1); the
@@ -347,10 +353,23 @@ public:
     std::unique_ptr<RadialMenuHandler> radialMenuHandler;
     WidgetManager widgetManager;
     FilePicker scenePicker_{"Scene File Picker", ".scene"};
+    FilePicker blenderPicker_{"Blender Export Picker", ".glb"};
+    char blenderExportBuf_[512] = "scenes/octree.glb";
+    // Background Blender export (utils/BlenderExport). The worker walks the
+    // octree under shared locks; brush edits (unique lock) wait for it.
+    std::atomic<bool> blenderExportRunning_{false};
+    std::atomic<bool> blenderExportFinished_{false};
+    std::atomic<bool> blenderExportCancel_{false};
+    std::atomic<float> blenderExportProgress_{0.0f};
+    std::mutex blenderExportMutex_;
+    std::string blenderExportPhase_;
+    blender_export::Stats blenderExportStats_;
+    std::thread blenderExportThread_;
+    bool blenderExportStatusPending_ = false;
     uint32_t loadedTextureLayers = 0;
     // The startup texture triple list, retained so a resolution-tier change
     // can re-upload the same content (perf report 23 C1).
-    std::vector<TextureTriple> textureTriples_;
+    std::vector<SceneTextureTriple> textureTriples_;
 
     // Global texture arrays and material manager (moved from SceneRenderer)
     TextureArrayManager textureArrayManager = TextureArrayManager();
@@ -432,7 +451,12 @@ public:
     // NOTE (hybrid RT §12): the 360° cubemap capture resources were deleted.
     // Solid/water reflections are hardware ray tracing now.
 
-    ~MyApp() {}
+    ~MyApp() {
+        // Cooperative cancel: the exporter checks this between chunks/layers,
+        // so closing the app cannot hang on a full-scene export.
+        blenderExportCancel_.store(true);
+        if (blenderExportThread_.joinable()) blenderExportThread_.join();
+    }
 
     // Rebuild the five material arrays at a new resolution: device idle, drop
     // the old views/images, re-upload the triples, re-point the mixer and
@@ -455,45 +479,26 @@ public:
         // many mixers, and keeps one editable/paint placeholder plus one
         // spare. The capacity is fixed at bring-up; triples that fail to load
         // only reduce usage below capacity (loadTriples skips them).
-        constexpr uint32_t kConfiguredMixerCount = 5;
-        constexpr uint32_t kPaintMargin = 2;   // editable placeholder + spare
         constexpr uint32_t kMinLayers = 8;
         const uint32_t arraySize = static_cast<uint32_t>(std::clamp(settings.textureArraySize, 256, 4096));
 
-        // Use shared TextureTriple defined in TextureArrayManager.hpp
-        const std::vector<TextureTriple> textureTriples = {
-            { "textures/Wall_Stone_010_COLOR.jpg", "textures/Wall_Stone_010_NORMAL.jpg", "textures/Wall_Stone_010_HEIGHT.jpg", "textures/Wall_Stone_010_ROUGH.jpg", "textures/Wall_Stone_010_OCC.jpg" },
-            { "textures/Ground_Dirt_007_COLOR.jpg", "textures/Ground_Dirt_007_NORMAL.jpg", "textures/Ground_Dirt_007_HEIGHT.jpg", "textures/Ground_Dirt_007_ROUGH.jpg", "textures/Ground_Dirt_007_OCC.jpg" },
-            { "textures/Dead_leaves_001_COLOR.jpg", "textures/Dead_leaves_001_NORMAL.jpg", "textures/Dead_leaves_001_HEIGHT.jpg", "textures/Dead_leaves_001_ROUGH.jpg", "textures/Dead_leaves_001_OCC.jpg" },
-            { "textures/Grass_001_COLOR.jpg", "textures/Grass_001_NORMAL.jpg", "textures/Grass_001_HEIGHT.jpg", "textures/Grass_001_ROUGH.jpg", "textures/Grass_001_OCC.jpg" },
-            { "textures/Lava_005_COLOR.jpg", "textures/Lava_005_NORMAL.jpg", "textures/Lava_005_HEIGHT.jpg", "textures/Lava_005_ROUGH.jpg", "textures/Lava_005_OCC.jpg" },
-            { "textures/Metal_Pattern_008_COLOR.jpg", "textures/Metal_Pattern_008_NORMAL.jpg", "textures/Metal_Pattern_008_HEIGHT.jpg", "textures/Metal_Pattern_008_ROUGH.jpg", "textures/Metal_Pattern_008_OCC.jpg" },
-            { "textures/Linoleum_Floor_001_COLOR.jpg", "textures/Linoleum_Floor_001_NORMAL.jpg", "textures/Linoleum_Floor_001_HEIGHT.jpg", "textures/Linoleum_Floor_001_ROUGH.jpg", "textures/Linoleum_Floor_001_OCC.jpg" },
-            { "textures/Rough_rock_021_COLOR.jpg", "textures/Rough_rock_021_NORMAL.jpg", "textures/Rough_rock_021_HEIGHT.jpg", "textures/Rough_rock_021_ROUGH.jpg", "textures/Rough_rock_021_OCC.jpg" },
-            { "textures/Sand_007_COLOR.jpg", "textures/Sand_007_NORMAL.jpg", "textures/Sand_007_HEIGHT.jpg", "textures/Sand_007_ROUGH.jpg", "textures/Sand_007_OCC.jpg" },
-            { "textures/Snow_001_COLOR.jpg", "textures/Snow_001_NORMAL.jpg", "textures/Snow_001_HEIGHT.jpg", "textures/Snow_001_ROUGH.jpg", "textures/Snow_001_OCC.jpg" },
-            { "textures/Sand_002_COLOR.jpg", "textures/Sand_002_NORMAL.jpg", "textures/Sand_002_HEIGHT.jpg", "textures/Sand_002_ROUGH.jpg", "textures/Sand_002_OCC.jpg" },
-            { "textures/Bark_001_COLOR.jpg", "textures/Bark_001_NORMAL.jpg", "textures/Bark_001_HEIGHT.jpg", "textures/Bark_001_ROUGH.jpg", "textures/Bark_001_OCC.jpg" },
-            { "textures/Concrete_Blocks_013_COLOR.jpg", "textures/Concrete_Blocks_013_NORMAL.jpg", "textures/Concrete_Blocks_013_HEIGHT.jpg", "textures/Concrete_Blocks_013_ROUGH.jpg", "textures/Concrete_Blocks_013_OCC.jpg" },
-            { "textures/Asphalt_001_COLOR.jpg", "textures/Asphalt_001_NORMAL.jpg", "textures/Asphalt_001_HEIGHT.jpg", "textures/Asphalt_001_ROUGH.jpg", "textures/Asphalt_001_OCC.jpg" },
-            { "textures/Stone_Floor_002_COLOR.jpg", "textures/Stone_Floor_002_NORMAL.jpg", "textures/Stone_Floor_002_HEIGHT.jpg", "textures/Stone_Floor_002_ROUGH.jpg", "textures/Stone_Floor_002_OCC.jpg" },
-            { "textures/Canyon_Rock_001_COLOR.jpg", "textures/Canyon_Rock_001_NORMAL.jpg", "textures/Canyon_Rock_001_HEIGHT.jpg", "textures/Canyon_Rock_001_ROUGH.jpg", "textures/Canyon_Rock_001_OCC.jpg" },
-            { "textures/Sapphire_001_COLOR.jpg", "textures/Sapphire_001_NORMAL.jpg", "textures/Sapphire_001_HEIGHT.jpg", "textures/Sapphire_001_ROUGH.jpg", "textures/Sapphire_001_OCC.jpg" },
-            { "textures/Rough_rock_006_COLOR.jpg", "textures/Rough_rock_006_NORMAL.jpg", "textures/Rough_rock_006_HEIGHT.jpg", "textures/Rough_rock_006_ROUGH.jpg", "textures/Rough_rock_006_OCC.jpg" },
-            { "textures/Crystal_Metal_001_COLOR.jpg", "textures/Crystal_Metal_001_NORMAL.jpg", "textures/Crystal_Metal_001_HEIGHT.jpg", "textures/Crystal_Metal_001_ROUGH.jpg", "textures/Crystal_Metal_001_OCC.jpg" },
-            { "textures/Sci-fi_Armor_001_COLOR.jpg", "textures/Sci-fi_Armor_001_NORMAL.jpg", "textures/Sci-fi_Armor_001_HEIGHT.jpg", "textures/Sci-fi_Armor_001_ROUGH.jpg", "textures/Sci-fi_Armor_001_OCC.jpg" },
-            { "textures/Greeble_Techno_002_COLOR.jpg", "textures/Greeble_Techno_002_NORMAL.jpg", "textures/Greeble_Techno_002_HEIGHT.jpg", "textures/Greeble_Techno_002_ROUGH.jpg", "textures/Greeble_Techno_002_OCC.jpg" },
+        // Shared table (utils/SceneMaterialTable): the same source of truth
+        // the Blender exporter reads, so layer indices, texture files and
+        // material parameters cannot drift between the renderer and exports.
+        textureTriples_ = sceneTextureTriples();
+        std::vector<TextureTriple> textureTriples;
+        textureTriples.reserve(textureTriples_.size());
+        for (const SceneTextureTriple& t : textureTriples_) {
+            textureTriples.push_back({t.albedo.c_str(), t.normal.c_str(), t.height.c_str(),
+                                      t.rough.c_str(), t.ao.c_str()});
+        }
 
-        };
-        // C1: retained so a resolution-tier change can re-upload the same list.
-        textureTriples_ = textureTriples;
-
-        uint32_t layerCount = static_cast<uint32_t>(textureTriples.size()) + kConfiguredMixerCount + kPaintMargin;
+        uint32_t layerCount = static_cast<uint32_t>(textureTriples.size()) + kSceneMixerCount + kScenePaintMargin;
         layerCount = std::max(layerCount, kMinLayers);
         std::cout << "[MyApp::setupTextures] texture arrays: " << layerCount
                   << " layers at " << arraySize << "^2 ("
-                  << textureTriples.size() << " triples + " << kConfiguredMixerCount
-                  << " mixers + " << kPaintMargin << " paint margin)\n";
+                  << textureTriples.size() << " triples + " << kSceneMixerCount
+                  << " mixers + " << kScenePaintMargin << " paint margin)\n";
         textureArrayManager.allocate(layerCount, arraySize, arraySize, this);
 
         // Bulk load the triples directly using TextureTriple vector already defined above
@@ -515,11 +520,13 @@ public:
         textureMixer->attachTextureArrayManager(&textureArrayManager);
         // Record into member so UI can display counts
         mixerParams.clear();
-        mixerParams.push_back(MixerParameters{loadedTextureLayers++, 3u, 8u}); // grassMixSand
-        mixerParams.push_back(MixerParameters{loadedTextureLayers++, 3u, 9u}); // grassMixSnow
-        mixerParams.push_back(MixerParameters{loadedTextureLayers++, 7u, 3u}); // rockMixGrass
-        mixerParams.push_back(MixerParameters{loadedTextureLayers++, 7u, 9u}); // rockMixSnow
-        mixerParams.push_back(MixerParameters{loadedTextureLayers++, 7u, 8u}); // rockMixSand
+        // Generated blend layers (targets continue after the source triples).
+        for (const SceneMixerDesc& d : sceneMixerDescs()) {
+            mixerParams.push_back(MixerParameters{
+                loadedTextureLayers++, d.primary, d.secondary,
+                d.perlinScale, d.perlinOctaves, d.perlinPersistence, d.perlinLacunarity,
+                d.perlinBrightness, d.perlinContrast, d.perlinSeed, d.perlinTime});
+        }
 
         for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
             primeImTextureLayer(i);
@@ -542,47 +549,8 @@ public:
         widgetManager.addWidget(textureMixerWidget);
 
         size_t materialCount = static_cast<size_t>(loadedTextureLayers) + 1;
-        materials.assign(materialCount, MaterialProperties{});
-          
-        // Table-driven material overrides: every entry below shares the same
-        // mapping/triplanar/invert defaults and only the listed values differ.
-        // reflectionStrength defaults to 0 (matte), matching the
-        // MaterialProperties{} baseline installed by the assign() above.
-        struct MaterialInit {
-            uint32_t index;
-            float tessLevel;
-            float tessMinLevel;
-            float tessMaxLevel;
-            float tessHeightScale;
-            float triplanarScaleU;
-            float triplanarScaleV;
-            float reflectionStrength;
-        };
-        static constexpr MaterialInit kMaterialInits[] = {
-            {  0u, 5.0f, 2.0f, 16.0f,  8.0f, 0.002f, 0.002f, 0.0f },
-            {  5u, 5.0f, 2.0f, 16.0f,  2.0f, 0.002f, 0.002f, 0.8f },
-            {  6u, 1.0f, 1.0f,  1.0f,  0.0f, 0.002f, 0.002f, 1.0f },
-            {  7u, 2.0f, 2.0f, 16.0f,  8.0f, 0.01f,  0.01f,  0.2f },
-            { 12u, 6.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.3f },
-            { 14u, 5.0f, 2.0f, 16.0f,  8.0f, 0.002f, 0.002f, 0.0f },
-            { 15u, 5.0f, 2.0f, 16.0f,  8.0f, 0.002f, 0.002f, 0.0f },
-            { 16u, 5.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.0f },
-            { 18u, 5.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.0f },
-            { 20u, 5.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.0f },
-        };
-        for (const MaterialInit& mi : kMaterialInits) {
-            MaterialProperties& mat = materials[mi.index];
-            mat.mappingMode = true;
-            mat.tessLevel = mi.tessLevel;
-            mat.tessMinLevel = mi.tessMinLevel;
-            mat.tessMaxLevel = mi.tessMaxLevel;
-            mat.tessHeightScale = mi.tessHeightScale;
-            mat.triplanar = true;
-            mat.triplanarScaleU = mi.triplanarScaleU;
-            mat.triplanarScaleV = mi.triplanarScaleV;
-            mat.invertHeight = true;
-            mat.reflectionStrength = mi.reflectionStrength;
-        }
+        // Same per-layer overrides the Blender exporter publishes.
+        materials = sceneMaterialProperties(materialCount);
 
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
@@ -3093,6 +3061,92 @@ public:
             std::chrono::high_resolution_clock::now() - cpuRecordT0).count();
     }
 
+    blender_export::Extras collectBlenderExportExtras() {
+        blender_export::Extras extras;
+        if (!sceneRenderer || !sceneRenderer->sdfRenderer) return extras;
+        const sdf_gpu::SdfScene& scene = sceneRenderer->sdfRenderer->exportScene();
+        extras.sdfDefinitions.reserve(scene.definitions().size());
+        for (const SdfDefinition& d : scene.definitions()) {
+            extras.sdfDefinitions.push_back(
+                {static_cast<uint32_t>(d.prim), d.params0, d.params1});
+        }
+        extras.sdfMaterials.reserve(scene.materials().size());
+        for (const SdfMaterial& m : scene.materials()) {
+            extras.sdfMaterials.push_back({m.baseColor, m.emission, m.emissionIntensity,
+                                           m.roughness, m.metallic, m.opacity,
+                                           m.textureLayer, m.textureTiling});
+        }
+        extras.sdfInstances.reserve(scene.instances().size());
+        for (const SdfInstance& i : scene.instances()) {
+            extras.sdfInstances.push_back({i.position, i.rotation, i.scale, i.heightScale,
+                                           i.radiusScale, i.intensity, i.seed,
+                                           i.defIdx, i.matIdx});
+        }
+        return extras;
+    }
+
+    void startBlenderExport(const std::string& path) {
+        if (blenderExportRunning_.exchange(true)) {
+            std::cout << "[MyApp] Blender export already running\n";
+            return;
+        }
+        if (!world || useRemote) {
+            // Same guard as Save Scene: exporting the empty local scene while
+            // rendering a remote one would write the wrong data.
+            std::cerr << "[MyApp] Blender export ignored in remote mode\n";
+            blenderExportRunning_.store(false);
+            return;
+        }
+        blender_export::Options options;
+        options.glbPath = path;
+        options.cancel = &blenderExportCancel_;
+        if (sceneRenderer && sceneRenderer->vegetationRenderer) {
+            options.billboardCount = sceneRenderer->vegetationRenderer->billboardCount;
+            options.billboardScale = sceneRenderer->vegetationRenderer->billboardScale;
+        }
+        options.lightDirection = light.getDirection();
+        const blender_export::Extras extras = collectBlenderExportExtras();
+
+        blenderExportCancel_.store(false);
+        blenderExportFinished_.store(false);
+        blenderExportProgress_.store(0.0f);
+        {
+            std::lock_guard<std::mutex> lock(blenderExportMutex_);
+            blenderExportPhase_ = "starting";
+            blenderExportStats_ = blender_export::Stats{};
+        }
+        std::cout << "[MyApp] Blender export -> " << path << " (background)\n";
+        blenderExportThread_ = std::thread([this, options, extras]() {
+            const blender_export::Stats stats = blender_export::exportSceneToBlender(
+                world->scene(), options, extras,
+                [this](float fraction, const std::string& phase) {
+                    blenderExportProgress_.store(fraction);
+                    std::lock_guard<std::mutex> lock(blenderExportMutex_);
+                    blenderExportPhase_ = phase;
+                });
+            {
+                std::lock_guard<std::mutex> lock(blenderExportMutex_);
+                blenderExportStats_ = stats;
+            }
+            blenderExportRunning_.store(false);
+            blenderExportFinished_.store(true);
+        });
+    }
+
+    void pollBlenderExport() {
+        if (!blenderExportFinished_.exchange(false)) return;
+        if (blenderExportThread_.joinable()) blenderExportThread_.join();
+        blenderExportStatusPending_ = true;
+        std::lock_guard<std::mutex> lock(blenderExportMutex_);
+        if (blenderExportStats_.ok) {
+            std::cout << "[MyApp] Blender export ok: " << blenderExportStats_.glbPath
+                      << std::endl;
+        } else {
+            std::cerr << "[MyApp] Blender export failed: " << blenderExportStats_.error
+                      << std::endl;
+        }
+    }
+
     void renderImGui() override {
         static char sceneFolderBuf[512] = "scenes/default.scene";
 
@@ -3103,6 +3157,9 @@ public:
                 ImGui::Separator();
                 if (ImGui::MenuItem("Save Scene...")) scenePicker_.open(sceneFolderBuf, true,  "Mode: Save");
                 if (ImGui::MenuItem("Load Scene...")) scenePicker_.open(sceneFolderBuf, false, "Mode: Load");
+                ImGui::Separator();
+                if (ImGui::MenuItem("Export to Blender (.glb)..."))
+                    blenderPicker_.open(blenderExportBuf_, true, "Mode: Export");
                 ImGui::Separator();
                 if (ImGui::MenuItem("Exit")) requestClose();
                 ImGui::EndMenu();
@@ -3135,6 +3192,16 @@ public:
                     pendingLoadPath = sceneFolderBuf;
                     loadScenePending = true;
                 }
+            }
+
+            std::filesystem::path chosenGlb;
+            if (blenderPicker_.render(chosenGlb)) {
+                const std::string s = chosenGlb.string();
+                if (s.size() < sizeof(blenderExportBuf_)) {
+                    std::memcpy(blenderExportBuf_, s.c_str(), s.size());
+                    blenderExportBuf_[s.size()] = '\0';
+                }
+                startBlenderExport(s);
             }
 
             // Small top-left overlay under the main menu bar showing FPS and visible count
@@ -3376,6 +3443,52 @@ public:
             radialMenu->Draw();
         }
 
+        // Blender export: progress while running, result modal when finished.
+        if (blenderExportRunning_.load()) {
+            std::string phase;
+            {
+                std::lock_guard<std::mutex> lock(blenderExportMutex_);
+                phase = blenderExportPhase_;
+            }
+            if (ImGui::Begin("Blender Export", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::TextUnformatted("Tessellating the octree and writing the .glb...");
+                ImGui::ProgressBar(blenderExportProgress_.load(), ImVec2(360.0f, 0.0f));
+                ImGui::TextDisabled("%s", phase.c_str());
+                if (ImGui::Button("Cancel")) blenderExportCancel_.store(true);
+            }
+            ImGui::End();
+        }
+        if (blenderExportStatusPending_) {
+            ImGui::OpenPopup("Blender Export Result");
+            blenderExportStatusPending_ = false;
+        }
+        if (ImGui::BeginPopupModal("Blender Export Result", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            blender_export::Stats stats;
+            {
+                std::lock_guard<std::mutex> lock(blenderExportMutex_);
+                stats = blenderExportStats_;
+            }
+            if (stats.ok) {
+                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "Export complete");
+                ImGui::Text("%zu chunks, %zu solid tris, %zu water tris",
+                            stats.chunks, stats.solidTriangles, stats.waterTriangles);
+                ImGui::Text("%zu grass tufts, %zu SDF instances, %zu materials",
+                            stats.grassInstances, stats.sdfInstances, stats.usedMaterials);
+                ImGui::Separator();
+                ImGui::TextDisabled("%s", stats.glbPath.c_str());
+                ImGui::TextDisabled("%s", stats.scriptPath.c_str());
+                ImGui::TextDisabled("%s", stats.configPath.c_str());
+                ImGui::TextDisabled("%s", stats.readmePath.c_str());
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Export failed");
+                ImGui::TextWrapped("%s", stats.error.c_str());
+            }
+            ImGui::Separator();
+            if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+
         // Render all widgets
         widgetManager.renderAll();
 
@@ -3540,6 +3653,10 @@ public:
     }
 
     void clean() override {
+    // Stop the Blender export worker before any scene/resource teardown: it
+    // holds the scene alive through world->scene().
+    blenderExportCancel_.store(true);
+    if (blenderExportThread_.joinable()) blenderExportThread_.join();
     // Exit viewpoint, logged next to the saved exit screenshot so a report
     // of "X is not visible" can be reproduced pixel-exact in the CPU probe
     // (same format as the startup [Camera Setup] line).
@@ -3858,7 +3975,13 @@ void MyApp::recreateTextureArrays(uint32_t size) {
     // creates the new, bumps version, notifies the allocation listeners once
     // with the new views), then re-upload the same triples.
     textureArrayManager.recreate(this, layers, size, size);
-    loadedTextureLayers = textureArrayManager.loadTriples(this, textureTriples_);
+    std::vector<TextureTriple> textureTripleViews;
+    textureTripleViews.reserve(textureTriples_.size());
+    for (const SceneTextureTriple& t : textureTriples_) {
+        textureTripleViews.push_back({t.albedo.c_str(), t.normal.c_str(), t.height.c_str(),
+                                      t.rough.c_str(), t.ao.c_str()});
+    }
+    loadedTextureLayers = textureArrayManager.loadTriples(this, textureTripleViews);
     if (loadedTextureLayers != textureTriples_.size()) {
         std::cerr << "[MyApp] texture-array rebuild loaded " << loadedTextureLayers
                   << " of " << textureTriples_.size() << " triples (capacity "
@@ -4427,6 +4550,7 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     startTessellationThreads("[MyApp::loadSceneFromFile] Scene tessellation complete\n");
 }
 void MyApp::postSubmit() {
+    pollBlenderExport();
     if (textureMixer) {
         textureMixer->flushPendingRequests(this);
         textureMixer->pollPendingGenerations(this);

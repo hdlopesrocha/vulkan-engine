@@ -82,6 +82,10 @@ public:
     // the render thread (or load path), NOT from a worker while prepareCull /
     // render for the same frame is recording.
     void setScene(const sdf_gpu::SdfScene& scene);    // Re-extract GPU mirrors from the pending scene if dirty (CPU only).
+    // Read-only CPU mirror of the merged effect scene (lava flames, rocks,
+    // smoke) for the Blender exporter. Call from the render thread; the scene
+    // is refreshed by the regular render path.
+    const sdf_gpu::SdfScene& exportScene() const { return pendingScene_; }
     // Returns true when a re-upload was staged.
     bool rebuildGridIfDirty();
     // Convenience: rebuildGridIfDirty() now (upload itself happens in

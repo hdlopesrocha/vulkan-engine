@@ -10,6 +10,7 @@
 #include "server/ChunkMesh.hpp"
 #include "server/ChunkSnapshot.hpp"
 #include "server/WebServer.hpp"
+#include "utils/BlenderExport.hpp"
 #include "utils/LocalScene.hpp"
 #include "utils/MainSceneLoader.hpp"
 
@@ -32,6 +33,15 @@ uint16_t parsePort(int argc, char** argv) {
         }
     }
     return port;
+}
+
+std::string parseExportGlbArg(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--export-glb" && i + 1 < argc) return argv[++i];
+        if (a.rfind("--export-glb=", 0) == 0) return a.substr(13);
+    }
+    return {};
 }
 
 std::string parseSceneArg(int argc, char** argv) {
@@ -65,6 +75,8 @@ int main(int argc, char** argv) {
 
     const uint16_t port = parsePort(argc, argv);
     const std::string sceneArg = parseSceneArg(argc, argv);
+    const std::string exportGlb = parseExportGlbArg(argc, argv);
+    const bool exportMode = !exportGlb.empty();
 
     LocalScene mainScene;
     WebServer web(port);
@@ -94,6 +106,7 @@ int main(int argc, char** argv) {
     // Layers 0/1 keep the historic opaque/transparent counters.
     auto makeUpsert = [&](Layer layer) -> Octree::OctreeNodeDataHandler {
         return [&, layer](const OctreeNodeData& nd) {
+            if (exportMode) return;
             web.pushUpsert(chunksnap::makeRecord(chunkIds, nd, static_cast<uint8_t>(layer)));
             if (layer == LAYER_OPAQUE) {
                 if ((++nSolid % 2000) == 0)
@@ -106,6 +119,7 @@ int main(int argc, char** argv) {
     };
     auto makeErase = [&](Layer layer) -> Octree::OctreeNodeDataHandler {
         return [&, layer](const OctreeNodeData& nd) {
+            if (exportMode) return;
             const uint64_t id = chunkIds.remove(nd.node);
             if (id != ChunkIdRegistry::kInvalid) web.pushDelete(id);
             if (layer == LAYER_OPAQUE) ++nSolidDel;
@@ -122,16 +136,20 @@ int main(int argc, char** argv) {
         erases.push_back(makeErase(static_cast<Layer>(i)));
     }
 
-    try {
-        web.start();
-    } catch (const std::exception& e) {
-        std::cerr << "server: web start failed: " << e.what() << std::endl;
-        return 1;
+    if (!exportMode) {
+        try {
+            web.start();
+        } catch (const std::exception& e) {
+            std::cerr << "server: web start failed: " << e.what() << std::endl;
+            return 1;
+        }
     }
 
-    std::cout << "server: viewer at http://localhost:" << port << "/  (ws /ws, health /health)\n"
-              << "server: open the page from the URL above so its WebSocket reaches /ws on the same host:port\n"
-              << "server: (use ?port=<p> or ?ws=ws://host:port/ws to point the page elsewhere)\n";
+    if (!exportMode) {
+        std::cout << "server: viewer at http://localhost:" << port << "/  (ws /ws, health /health)\n"
+                  << "server: open the page from the URL above so its WebSocket reaches /ws on the same host:port\n"
+                  << "server: (use ?port=<p> or ?ws=ws://host:port/ws to point the page elsewhere)\n";
+    }
 
     // Load AFTER the web server is up so live octree updates stream to
     // browsers that are already connected.
@@ -155,6 +173,25 @@ int main(int argc, char** argv) {
               << " transparent=" << nTrn << ")"
               << " upserts(opaque=" << nSolid.load() << " transparent=" << nLiquid.load() << ")"
               << " deletes(opaque=" << nSolidDel.load() << " transparent=" << nLiquidDel.load() << ")\n";
+
+    if (exportMode) {
+        blender_export::Options options;
+        options.glbPath = exportGlb;
+        const blender_export::Stats stats =
+            blender_export::exportSceneToBlender(mainScene, options, {},
+                [](float f, const std::string& phase) {
+                    std::cout << "[server] export " << int(f * 100.0f) << "% " << phase << "\n";
+                });
+        if (!stats.ok) {
+            std::cerr << "server: Blender export failed: " << stats.error << std::endl;
+        } else {
+            std::cout << "server: Blender export ok: " << stats.glbPath
+                      << " script=" << stats.scriptPath
+                      << " config=" << stats.configPath << std::endl;
+        }
+        mainScene.stopPools();
+        return stats.ok ? 0 : 1;
+    }
 
     while (g_run) std::this_thread::sleep_for(std::chrono::milliseconds(200));
 

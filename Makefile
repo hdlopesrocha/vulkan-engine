@@ -418,6 +418,8 @@ server: $(SERVER_OBJS) web
 	@mkdir -p $(OUT_DIR)
 	@$(CC) $(CFLAGS) $(SERVER_INCLUDES) server.cpp $(SERVER_OBJS) -o $(OUT_DIR)/server $(SERVER_LIBS) $(LDFLAGS)
 	@if [ -d server/web/dist ]; then mkdir -p $(OUT_DIR)/web && cp -a server/web/dist/. $(OUT_DIR)/web/ || true; fi
+	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
+	@if [ -d scripts ]; then mkdir -p $(OUT_DIR)/scripts && cp -a scripts/. $(OUT_DIR)/scripts/ || true; fi
 
 $(OUT): $(BUILD_MODE_STAMP) $(OBJS)
 	@echo "Linking: $(OUT)"

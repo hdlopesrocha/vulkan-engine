@@ -11,6 +11,7 @@
 #include "../../../math/Common.hpp" // for NodeID
 #include "VegetationRenderer.hpp"
 #include "../../../utils/FileReader.hpp"
+#include "../../../utils/GrassPlacement.hpp"
 #include <stdexcept>
 #include <cstring>
 #include <numeric>
@@ -2177,56 +2178,10 @@ void VegetationRenderer::drawColor(VulkanApp* app, VkCommandBuffer& commandBuffe
 // Mirrors the previous GPU compute path (now removed) on the CPU.  Avoids GPUVM
 // faults on RADV iGPUs where TCP cannot read storage buffers from any
 // memory type (device-local, host-visible, or concurrent-shared).
-
-namespace {
-
-// XorShift32 PRNG — matches compute shader behaviour.
-uint32_t xorshift32(uint32_t& state) {
-    state ^= state << 13;
-    state ^= state >> 17;
-    state ^= state << 5;
-    return state;
-}
-
-float randFloat(uint32_t& state) {
-    return float(xorshift32(state) & 0x00FFFFFFu) / float(0x01000000u);
-}
-
-// Position hash — matches posHash in the compute shader.
-uint32_t posHash(const glm::vec3& p) {
-    glm::ivec3 qi = glm::ivec3(glm::round(p * 8.0f));
-    uint32_t h = uint32_t(qi.x) * 1640531513u;
-    h ^= uint32_t(qi.y) * 2246822519u;
-    h ^= uint32_t(qi.z) * 3266489917u;
-    return h;
-}
-
-// 2D cell hash — matches cellHash in the compute shader.
-uint32_t cellHash(glm::ivec2 c) {
-    uint32_t h = uint32_t(c.x) * 1640531513u ^ uint32_t(c.y) * 2246822519u;
-    h ^= h >> 13;
-    h *= 0x45d9f3bu;
-    h ^= h >> 16;
-    return h;
-}
-
-// Biome noise — matches biomeNoise in the compute shader.
-float biomeNoise(const glm::vec2& xz) {
-    const float kBiomeScale = 50.0f;
-    glm::vec2 p = xz / kBiomeScale;
-    glm::ivec2 i = glm::ivec2(glm::floor(p));
-    glm::vec2 f = p - glm::vec2(i);
-    glm::vec2 u = f * f * (3.0f - 2.0f * f);
-
-    float a = float(cellHash(i + glm::ivec2(0, 0))) / 4294967295.0f;
-    float b = float(cellHash(i + glm::ivec2(1, 0))) / 4294967295.0f;
-    float c = float(cellHash(i + glm::ivec2(0, 1))) / 4294967295.0f;
-    float d = float(cellHash(i + glm::ivec2(1, 1))) / 4294967295.0f;
-
-    return glm::mix(glm::mix(a, b, u.x), glm::mix(c, d, u.x), u.y);
-}
-
-} // anonymous namespace
+//
+// The deterministic placement math (PRNG, hashes, biome gate, slot expansion)
+// lives in utils/GrassPlacement so the Blender exporter reproduces exactly
+// these tufts without a device.
 
 namespace {
 // Push constants for VegetationPlacement.comp (mirrors the shader block).
@@ -2624,86 +2579,23 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         instanceGenScratch.reserve(instanceCount * 8);
         std::vector<float>& validData = instanceGenScratch;
 
-        // Per-vertex normals ride parallel to positions (same indices).
-        const bool hasNormals = (pc.normals.size() == pc.positions.size());
-        // Per-vertex brush indices ride parallel to positions (same indices).
-        // Missing data falls back to accepting the sample (legacy behavior).
-        const bool hasBrushes = (pc.brushIndices.size() == pc.positions.size());
-        constexpr int kGrassBrush = 3; // LandBrush::grass: meadow brush
-
-        for (uint32_t tri = 0; tri < triCount; ++tri) {
-            const uint32_t tb = tri * 3;
-            const uint32_t i0 = pc.grassIndices[tb + 0];
-            const uint32_t i1 = pc.grassIndices[tb + 1];
-            const uint32_t i2 = pc.grassIndices[tb + 2];
-            if (i0 >= pc.positions.size() || i1 >= pc.positions.size() || i2 >= pc.positions.size()) continue;
-
-            const glm::vec3 v0 = pc.positions[i0];
-            const glm::vec3 v1 = pc.positions[i1];
-            const glm::vec3 v2 = pc.positions[i2];
-
-            // Steep triangles carry rock/mix-brushed verts (see
-            // LandBrush::paint), so the dominant-vertex test below rejects
-            // their samples; surviving tufts tilt onto the smooth normal in
-            // the vertex shader.
-            const glm::vec3 tc = (v0 + v1 + v2) / 3.0f;
-            const uint32_t tch = posHash(tc);
-
-            for (uint32_t s = 0; s < pc.instancesPerTriangle; ++s) {
-                uint32_t rng = pc.seed ^ tch ^ (tri * 2654435761u) ^ (s * 19349663u);
-                float u = randFloat(rng);
-                float v = randFloat(rng);
-                if (u + v > 1.0f) { u = 1.0f - u; v = 1.0f - v; }
-                float w = 1.0f - u - v;
-                glm::vec3 pos = u * v0 + v * v1 + w * v2;
-
-                // Dominant-vertex brush test: keep the sample only if the
-                // closest vertex (largest barycentric weight) is
-                // grass-brushed. This bounds spill to the grass verts'
-                // vicinity at any triangle size — coarse distant triangles
-                // keep their meadow coverage instead of going bald, while
-                // sand/rock/snow/lakebed samples are rejected (steep
-                // triangles carry no grass verts at all, so cliffs stay
-                // bare; surviving samples sit near high meadow verts, never
-                // underwater). Deterministic: all randomness here is
-                // hash-derived, unaffected by skips.
-                if (hasBrushes && i0 < pc.brushIndices.size() &&
-                    i1 < pc.brushIndices.size() && i2 < pc.brushIndices.size()) {
-                    const int dominantBrush = (u >= v && u >= w) ? pc.brushIndices[i0]
-                                            : (v >= w)          ? pc.brushIndices[i1]
-                                                                : pc.brushIndices[i2];
-                    if (dominantBrush != kGrassBrush) continue;
-                }
-
-                // Biome from spatially-coherent noise.
-                float noise = biomeNoise(glm::vec2(pos.x, pos.z));
-                if (noise < 0.40f) continue; // empty biome — skip entirely
-
-                float remapped = (noise - 0.40f) / 0.60f;
-                uint32_t bi = std::min(uint32_t(remapped * float(billboardCnt)), billboardCnt - 1u);
-
-                uint32_t rs = pc.seed ^ posHash(pos);
-                float rf = randFloat(rs);
-
-                // Smooth surface normal (barycentric interpolation): the blade
-                // tuft tilts onto this in the vertex shader so grass grows
-                // along the terrain normal instead of +Y.
-                glm::vec3 nrm(0.0f, 1.0f, 0.0f);
-                if (hasNormals) {
-                    nrm = u * pc.normals[i0] + v * pc.normals[i1] + w * pc.normals[i2];
-                    const float n2 = glm::dot(nrm, nrm);
-                    nrm = (n2 > 1e-8f) ? nrm * (1.0f / std::sqrt(n2)) : glm::vec3(0.0f, 1.0f, 0.0f);
-                }
-
-                validData.push_back(pos.x);
-                validData.push_back(pos.y);
-                validData.push_back(pos.z);
-                validData.push_back(float(bi) + rf);
-                validData.push_back(nrm.x);
-                validData.push_back(nrm.y);
-                validData.push_back(nrm.z);
-                validData.push_back(0.0f);
-            }
+        // Deterministic placement shared with the Blender exporter
+        // (utils/GrassPlacement): same PRNG/hashes/dominant-vertex test as the
+        // previous inline loop, byte-identical 8-float records. The exporter
+        // re-runs this per chunk without a device.
+        std::vector<grass::Instance> placed;
+        placed.reserve(instanceCount);
+        grass::placeInstances(pc.positions, pc.normals, pc.brushIndices,
+                              pc.grassIndices, billboardCnt, pc.seed, placed);
+        for (const grass::Instance& inst : placed) {
+            validData.push_back(inst.position.x);
+            validData.push_back(inst.position.y);
+            validData.push_back(inst.position.z);
+            validData.push_back(float(inst.variant) + inst.rotation);
+            validData.push_back(inst.normal.x);
+            validData.push_back(inst.normal.y);
+            validData.push_back(inst.normal.z);
+            validData.push_back(0.0f);
         }
 
         const uint32_t validCount = static_cast<uint32_t>(validData.size() / 8);
@@ -2924,10 +2816,6 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
 void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom) {
     if (geom.indices.size() < 3 || geom.vertices.empty()) return;
     try {
-        constexpr int kGrassBrushIndex = 3; // See LandBrush::grass.
-        // Instances per world-space unit² of triangle area.
-        constexpr float kVegetationDensity = 0.01f;
-
         // Create tightly-packed position buffer (vec3[]) for CPU-side
         // instance generation below.
         std::vector<glm::vec3> positions;
@@ -2944,71 +2832,12 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
         brushes.reserve(geom.vertices.size());
         for (const auto &v : geom.vertices) brushes.push_back(v.brushIndex);
 
-        // Build area-weighted virtual slots using unbiased stochastic rounding.
-        // expected = area * density (instances per world-space unit area)
-        // count = floor(expected) + Bernoulli(frac(expected))
-        // This preserves area-proportional density without bias.
-        const uint32_t chunkSeed = static_cast<uint32_t>(nid ^ (nid >> 32)) ^ 0x9e3779b9u;
-        std::mt19937 samplingRng(chunkSeed);
-        std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
-        auto collectSlots = [&](int brushIndex, std::vector<uint32_t>& out) {
-            for (size_t i = 0; i + 2 < geom.indices.size(); i += 3) {
-                const uint32_t i0 = geom.indices[i + 0];
-                const uint32_t i1 = geom.indices[i + 1];
-                const uint32_t i2 = geom.indices[i + 2];
-                if (i0 >= geom.vertices.size() || i1 >= geom.vertices.size() || i2 >= geom.vertices.size()) continue;
-                // Permissive: any grass-touching triangle contributes slots.
-                // Spill is trimmed per instance in processPendingChunks (only
-                // samples whose dominant barycentric vertex is grass-brushed
-                // survive), which keeps boundary coverage at any triangle
-                // size — coarse distant rungs would otherwise go bald, since
-                // their large triangles almost always span a brush boundary.
-                const bool hasBrush =
-                    geom.vertices[i0].brushIndex == brushIndex ||
-                    geom.vertices[i1].brushIndex == brushIndex ||
-                    geom.vertices[i2].brushIndex == brushIndex;
-                if (!hasBrush) continue;
-                const glm::vec3& v0 = geom.vertices[i0].position;
-                const glm::vec3& v1 = geom.vertices[i1].position;
-                const glm::vec3& v2 = geom.vertices[i2].position;
-                // Surviving triangles touch grass; steep ones are filtered
-                // per instance below (their verts are rock/mix-brushed, so
-                // the dominant-vertex test rejects their samples).
-                const glm::vec3 faceNormal = glm::cross(v1 - v0, v2 - v0);
-                const float area = 0.5f * glm::length(faceNormal);
-                const float expectedInstances = std::max(0.0f, area * kVegetationDensity);
-                uint32_t slotCount = static_cast<uint32_t>(std::floor(expectedInstances));
-                const float fractional = expectedInstances - static_cast<float>(slotCount);
-                if (unitDist(samplingRng) < fractional) {
-                    ++slotCount;
-                }
-                for (uint32_t s = 0; s < slotCount; ++s) {
-                    out.push_back(i0);
-                    out.push_back(i1);
-                    out.push_back(i2);
-                }
-            }
-        };
+        // Area-weighted virtual slots with unbiased stochastic rounding and a
+        // per-chunk shuffle; shared with the Blender exporter so the offline
+        // tufts match the rendered ones (utils/GrassPlacement).
         std::vector<uint32_t> grassIndices;
         grassIndices.reserve(geom.indices.size());
-        collectSlots(kGrassBrushIndex, grassIndices);
-
-        // Shuffle virtual triangle slots per chunk so reducing indirect instanceCount
-        // keeps a random spatial subset instead of always dropping the tail.
-        auto shuffleSlots = [&](std::vector<uint32_t>& slots, uint32_t salt) {
-            if (slots.size() < 6) return;
-            std::mt19937 shuffleRng(chunkSeed ^ salt);
-            const size_t triangleCount = slots.size() / 3;
-            for (size_t slot = triangleCount - 1; slot > 0; --slot) {
-                std::uniform_int_distribution<size_t> dist(0, slot);
-                const size_t other = dist(shuffleRng);
-                if (other == slot) continue;
-                for (size_t component = 0; component < 3; ++component) {
-                    std::swap(slots[slot * 3 + component], slots[other * 3 + component]);
-                }
-            }
-        };
-        shuffleSlots(grassIndices, 0x85ebca6bu);
+        grass::collectSlots(geom, static_cast<uintptr_t>(nid), grassIndices);
 
         // Each virtual triangle slot produces exactly 1 instance.
         uint32_t instancesPerTriangle = 1u;

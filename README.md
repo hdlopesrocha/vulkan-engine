@@ -49,6 +49,31 @@ VULKAN_GPU_ASSISTED=1 make run-debug > logs/run.log 2>&1
 
 ---
 
+## Blender Export
+
+**File -> Export to Blender (.glb)...** (or the button in the *Octree Explorer*
+widget) tessellates the current octree and writes a self-contained `.glb` with
+the terrain, water, grass tufts and embedded textures, a JSON sidecar, and a
+Blender 4.x setup script that rebuilds the solid renderer's triplanar material
+blending (per-vertex texture indices, up to three blended materials per face,
+normal/roughness/AO maps, HSV tint). SDF effect instances (lava flames,
+boulders) are exported as proxy objects when exporting from the app.
+
+```sh
+# import, configure materials, render/save from the command line
+blender --background --python octree_blender.py -- octree.octree.json \
+        --save-blend scene.blend --render preview.png
+```
+
+The headless server can produce the same export without a GPU for validation:
+`./server --export-glb /tmp/octree.glb`.
+
+See [docs/blender_export.md](docs/blender_export.md) for the full workflow,
+the shader-to-node-graph mapping, and the known limitations (lighting model,
+water waves, static grass, SDF proxies, CPU-baked mixer noise).
+
+---
+
 ## Rendering Architecture
 
 ### Dynamic Rendering

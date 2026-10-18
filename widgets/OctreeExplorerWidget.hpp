@@ -3,6 +3,7 @@
 #include "Widget.hpp"
 #include "../utils/LocalScene.hpp"
 #include <imgui.h>
+#include <functional>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -16,6 +17,10 @@ class OctreeExplorerWidget : public Widget {
 public:
     explicit OctreeExplorerWidget(Scene* scene, Camera* camera = nullptr);
     void setScene(Scene* s) { scene = s; }
+    // "Export to Blender (.glb)" button callback (opens the file picker in the app).
+    void setExportBlenderCallback(std::function<void()> callback) {
+        exportBlenderCallback_ = std::move(callback);
+    }
     void render() override;
     bool getShowDebugCubes() const { return showDebugCubes; }
 
@@ -42,6 +47,7 @@ private:
     bool showSdf = true;         // Show per-node SDF corner summary (min/max, sentinels, tooltip with all 8 corners)
     bool applyRayOpenState = false; // Apply ray-based open/closed state in next render pass
     bool rootRayOpen = false;
+    std::function<void()> exportBlenderCallback_;
     std::unordered_map<const OctreeNode*, bool> rayOpenState;
     
     // Color priority (higher = more important): dirty > chunk > simplified > leaf
