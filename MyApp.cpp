@@ -3157,6 +3157,11 @@ public:
     void renderImGui() override {
         static char sceneFolderBuf[512] = "scenes/default.scene";
 
+        // VULKAN_HIDE_UI=1: skip the widget/menu UI entirely (headless captures
+        // for diagnostics: the ImGui windows otherwise cover the 3D view).
+        static const bool hideUi = std::getenv("VULKAN_HIDE_UI") != nullptr;
+        if (hideUi) return;
+
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Generate Map")) generateMapPending = true;
