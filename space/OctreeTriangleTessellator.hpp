@@ -33,41 +33,11 @@ class ThreadContext;
 //   OctreeTriangleTessellator(tree).iterateTriangles(node, cube, level,
 //                                                    handler, context, lod);
 // The walk holds the tree's shared lock for its duration and nests safely
-// (see OctreeSharedLock).
+// (see OctreeSharedLock). The walk's cell and cube-edge types live in
+// space/EdgeCell.hpp and space/EdgeSpan.hpp.
 class OctreeTriangleTessellator {
     const Octree &tree;
 public:
-    // One cell visited by the walk: its node, its root-consistent cube and the
-    // +1-shifted STORED ladder level it sits at.
-    struct EdgeCell {
-        OctreeNode *node = NULL;
-        BoundingCube cube;
-        int level = 0;
-
-        // A cell is "surface at the walk's resolution": a ladder cell exactly
-        // at targetLod. With targetLod >= 1 the descent already stops at cells
-        // with lod == targetLod, so requiring lod equality here keeps coarse
-        // ladder levels (internal, non-simplified nodes) emitting their own
-        // cells while neighbors one level finer/coarser stay out. lod and
-        // targetLod are both in the +1-shifted STORED space.
-        bool isSurface(int targetLod) const;
-    };
-
-    // A sub-span of one cube edge: the edge's axis, the two other axes (u, v),
-    // where the edge sits on those axes (fixedU/fixedV) and how far it extends
-    // along the axis (start..end). eps is the degeneracy tolerance used when
-    // splitting at neighboring LOD boundaries.
-    struct EdgeSpan {
-        int axis = 0;
-        int u = 1;
-        int v = 2;
-        float fixedU = 0.0f;
-        float fixedV = 0.0f;
-        float start = 0.0f;
-        float end = 0.0f;
-        float eps = 1e-6f;
-    };
-
     explicit OctreeTriangleTessellator(const Octree &octree) : tree(octree) {}
 
     // Walks the subtree at `from` (pass the chunk node and its root-consistent

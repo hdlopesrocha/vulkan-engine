@@ -1,11 +1,12 @@
 #include "OctreeTriangleTessellator.hpp"
+#include "EdgeCell.hpp"
+#include "EdgeSpan.hpp"
 #include "Octree.hpp"
 #include "OctreeNode.hpp"
 #include "OctreeSharedLock.hpp"
 #include "../sdf/SDF.hpp"
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <vector>
 
 // Moved verbatim from Octree::iterateTriangles (space/Octree.cpp): the walk
@@ -14,11 +15,6 @@
 // forwarder — became cube.getChildIndex(pos), which it is value-identical to.
 // The walk's steps are members of Walk below (declared in the header, defined
 // here); they used to be function-local lambdas.
-
-bool OctreeTriangleTessellator::EdgeCell::isSurface(int targetLod) const {
-    return node != NULL && node->getType() == SpaceType::Surface &&
-        node->getLod() == targetLod;
-}
 
 // One walk: the fixed inputs, the per-call state (anchor and caches) and the
 // steps of the walk. iterateTriangles() builds one per call.
@@ -78,16 +74,6 @@ struct OctreeTriangleTessellator::Walk {
     static bool samePosition(const glm::vec3 &a, const glm::vec3 &b, float eps) {
         glm::vec3 d = a - b;
         return glm::dot(d, d) <= eps * eps;
-    }
-
-    static void edgeAxes(int axis, int &u, int &v) {
-        if (axis == 0) {
-            u = 1; v = 2;
-        } else if (axis == 1) {
-            u = 0; v = 2;
-        } else {
-            u = 0; v = 1;
-        }
     }
 
     // Descends to the cell containing pos, starting from the cached anchor
@@ -196,40 +182,6 @@ struct OctreeTriangleTessellator::Walk {
         return result;
     }
 
-    static float sideCoordinate(float value, int side) {
-        return std::nextafter(value, side < 0 ? -std::numeric_limits<float>::infinity()
-                                               :  std::numeric_limits<float>::infinity());
-    }
-
-    static void quadrantSigns(int axis, int quadrant, int &su, int &sv) {
-        static const int SIGNS[3][4][2] = {
-            {{-1, -1}, {-1,  1}, { 1,  1}, { 1, -1}},
-            {{-1, -1}, { 1, -1}, { 1,  1}, {-1,  1}},
-            {{-1, -1}, {-1,  1}, { 1,  1}, { 1, -1}}
-        };
-        su = SIGNS[axis][quadrant][0];
-        sv = SIGNS[axis][quadrant][1];
-    }
-
-    static glm::vec3 edgePoint(const EdgeSpan &edge, float t) {
-        glm::vec3 p(0.0f);
-        p[edge.axis] = t;
-        p[edge.u] = edge.fixedU;
-        p[edge.v] = edge.fixedV;
-        return p;
-    }
-
-    static glm::vec3 edgeSamplePoint(const EdgeSpan &edge, float t, int quadrant) {
-        int su, sv;
-        quadrantSigns(edge.axis, quadrant, su, sv);
-
-        glm::vec3 p(0.0f);
-        p[edge.axis] = t;
-        p[edge.u] = sideCoordinate(edge.fixedU, su);
-        p[edge.v] = sideCoordinate(edge.fixedV, sv);
-        return p;
-    }
-
     static bool addBreak(std::vector<float> &breaks, float value, float start, float end, float eps) {
         if(value <= start + eps || value >= end - eps) {
             return false;
@@ -291,7 +243,7 @@ struct OctreeTriangleTessellator::Walk {
         localBreaks[localCount++] = end;
 
         for(int q = 0; q < 4; ++q) {
-            EdgeCell cell = findCellAt(edgeSamplePoint(edge, mid, q));
+            EdgeCell cell = findCellAt(edge.samplePoint(mid, q));
             if(cell.node == NULL) {
                 continue;
             }
@@ -312,42 +264,6 @@ struct OctreeTriangleTessellator::Walk {
         for(int i = 1; i < localCount; ++i) {
             collectBreaks(edge, localBreaks[i - 1], localBreaks[i], breaks, depth + 1);
         }
-    }
-
-    EdgeSpan makeEdgeSpan(int edgeIndex, const BoundingCube &cellCube) const {
-        glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];
-        glm::vec3 p0 = cellCube.getCorner(edgeCorners.x);
-        glm::vec3 p1 = cellCube.getCorner(edgeCorners.y);
-        glm::vec3 d = glm::abs(p1 - p0);
-
-        EdgeSpan edge;
-        if(d.x >= d.y && d.x >= d.z) {
-            edge.axis = 0;
-        } else if(d.y >= d.x && d.y >= d.z) {
-            edge.axis = 1;
-        } else {
-            edge.axis = 2;
-        }
-        edgeAxes(edge.axis, edge.u, edge.v);
-        edge.fixedU = p0[edge.u];
-        edge.fixedV = p0[edge.v];
-        edge.start = glm::min(p0[edge.axis], p1[edge.axis]);
-        edge.end = glm::max(p0[edge.axis], p1[edge.axis]);
-        edge.eps = glm::max(tree.getLengthX(), cellCube.getLengthX()) * 1e-6f;
-        return edge;
-    }
-
-    static bool ownerLess(const EdgeCell &a, const EdgeCell &b) {
-        float al = a.cube.getLengthX();
-        float bl = b.cube.getLengthX();
-        if(al != bl) return al < bl;
-
-        glm::vec3 amin = a.cube.getMin();
-        glm::vec3 bmin = b.cube.getMin();
-        if(amin.x != bmin.x) return amin.x < bmin.x;
-        if(amin.y != bmin.y) return amin.y < bmin.y;
-        if(amin.z != bmin.z) return amin.z < bmin.z;
-        return std::less<OctreeNode*>()(a.node, b.node);
     }
 
     Vertex nodeVertex(OctreeNode *n, const BoundingCube &c) const {
@@ -389,7 +305,7 @@ struct OctreeTriangleTessellator::Walk {
         float mid = start + (end - start) * 0.5f;
         EdgeCell cells[4];
         for(int q = 0; q < 4; ++q) {
-            cells[q] = findCellAt(edgeSamplePoint(edge, mid, q));
+            cells[q] = findCellAt(edge.samplePoint(mid, q));
         }
 
         // Owner = positionally-smallest SURFACE ring cell. Non-surface
@@ -402,7 +318,7 @@ struct OctreeTriangleTessellator::Walk {
         EdgeCell owner = cells[0];
         bool ownerValid = false;
         for(int q = 0; q < 4; ++q) {
-            if(cells[q].isSurface(targetLod) && (!ownerValid || ownerLess(cells[q], owner))) {
+            if(cells[q].isSurface(targetLod) && (!ownerValid || EdgeCell::ownerLess(cells[q], owner))) {
                 owner = cells[q];
                 ownerValid = true;
             }
@@ -422,8 +338,8 @@ struct OctreeTriangleTessellator::Walk {
         // are always emitted. This duplicates boundary geometry but keeps the
         // mesh watertight across chunk seams.
 
-        glm::vec3 p0 = edgePoint(edge, start);
-        glm::vec3 p1 = edgePoint(edge, end);
+        glm::vec3 p0 = edge.point(start);
+        glm::vec3 p1 = edge.point(end);
         float d0 = SDF::interpolate(owner.node->sdf, p0, owner.cube);
         float d1 = SDF::interpolate(owner.node->sdf, p1, owner.cube);
         // The owner's field may carry INFINITY sentinels (an interpolated surface
@@ -529,7 +445,7 @@ struct OctreeTriangleTessellator::Walk {
                 continue;
             }
 
-            EdgeSpan edge = makeEdgeSpan(edgeIndex, cellCube);
+            EdgeSpan edge = EdgeSpan::fromCellEdge(edgeIndex, cellCube, tree.getLengthX());
             if(edge.end - edge.start <= edge.eps * 2.0f) {
                 continue;
             }
