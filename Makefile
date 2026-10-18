@@ -62,9 +62,13 @@ CFLAGS += -DHAS_WIIUSE -DWIIUSE_STATIC -DWIIUSE_COMPILE_LIB
 # Output directory for runtime binary and resources
 OUT_DIR = bin
 
-# Output directory for runtime binary and resources
-OUT_DIR = bin
-OBJ_DIR := $(OUT_DIR)/obj
+# Per-build-mode object tree. Release and debug compile DIFFERENT struct
+# layouts (NDEBUG drops Allocator<T>::deallocatedSet; USE_IMGUI gates widget
+# members), so their objects must NEVER share a directory: after switching
+# modes an incremental build would recompile only the changed files and link a
+# mixture whose sizes disagree, corrupting the heap at startup. This MUST be
+# defined before any object list below is derived from it.
+OBJ_DIR := $(OUT_DIR)/obj/$(BUILD)
 IMGUI_CORE_SRCS := third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp third_party/imgui/imgui_demo.cpp
 IMGUI_BACKEND_SRCS := third_party/imgui/backends/imgui_impl_vulkan.cpp third_party/imgui/backends/imgui_impl_glfw.cpp
 IMGUI_SRCS := $(IMGUI_CORE_SRCS) $(IMGUI_BACKEND_SRCS)
@@ -73,7 +77,23 @@ IMGUI_BACKEND_OBJS := $(patsubst third_party/imgui/backends/%.cpp,$(OBJ_DIR)/img
 IMGUI_OBJS := $(IMGUI_CORE_OBJS) $(IMGUI_BACKEND_OBJS)
 # shader sources and generated SPIR-V
 SRCS := $(wildcard MyApp.cpp world/*.cpp utils/*.cpp vulkan/*.cpp vulkan/core/*.cpp vulkan/resources/*.cpp vulkan/pipeline/*.cpp vulkan/renderer/*.cpp vulkan/renderer/*/*.cpp vulkan/streaming/*.cpp widgets/*.cpp widgets/components/*.cpp events/*.cpp math/*.cpp sdf/*.cpp sdf/gpu/*.cpp sdf/types/*.cpp space/*.cpp services/*.cpp server/*.cpp) third_party/miniaudio/miniaudio_impl.cpp
-OBJ_DIR := $(OUT_DIR)/obj
+
+# Build-mode stamp. The binary path is shared (bin/app) by both modes, so
+# switching modes has to force a relink: make cannot see that bin/app was
+# linked from the other mode's objects, and would otherwise leave the previous
+# mode's binary in place even though its prerequisites (this mode's objects)
+# are all older. The stamp's mtime only changes when the mode actually changes,
+# so ordinary builds do not relink.
+BUILD_MODE_STAMP := $(OUT_DIR)/obj/.build-mode
+
+.PHONY: FORCE
+FORCE:
+
+# Always runs, but only rewrites (and thus bumps the mtime of) the stamp when
+# the mode differs - make's relink check uses the mtime, not the contents.
+$(BUILD_MODE_STAMP): FORCE
+	@mkdir -p $(dir $@)
+	@if [ "`cat $@ 2>/dev/null`" != "$(BUILD)" ]; then echo "$(BUILD)" > $@; fi
 
 # Compose object lists, then forcibly filter out any absolute /imgui/*.o
 OBJS := $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(SRCS)) $(IMGUI_OBJS) $(WIIUSE_OBJS)
@@ -294,7 +314,7 @@ server: $(SERVER_OBJS) web
 	@$(CC) $(CFLAGS) $(SERVER_INCLUDES) server.cpp $(SERVER_OBJS) -o $(OUT_DIR)/server $(SERVER_LIBS) $(LDFLAGS)
 	@if [ -d server/web/dist ]; then mkdir -p $(OUT_DIR)/web && cp -a server/web/dist/. $(OUT_DIR)/web/ || true; fi
 
-$(OUT): $(OBJS)
+$(OUT): $(BUILD_MODE_STAMP) $(OBJS)
 	@echo "Linking: $(OUT)"
 	@$(CC) $(CFLAGS) $(INCLUDES) $(OBJS) -o $(OUT) $(LIBS) $(LDFLAGS)
 
