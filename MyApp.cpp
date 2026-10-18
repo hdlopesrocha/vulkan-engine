@@ -4627,6 +4627,35 @@ void MyApp::loadSceneFromFile(const std::string& path) {
 }
 void MyApp::postSubmit() {
     pollBlenderExport();
+    // VULKAN_STREAM_DIAG=1: periodic chunk-streaming counters (loaded/tracked
+    // per layer + the cull's visible counts) so a headless run can be checked
+    // for permanently missing regions without reading the UI overlay.
+    if (std::getenv("VULKAN_STREAM_DIAG") != nullptr && sceneRenderer) {
+        static auto lastDiag = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        static int diagTick = 0;
+        if (std::chrono::duration<double>(now - lastDiag).count() >= 20.0) {
+            lastDiag = now;
+            const size_t solidLoaded = sceneRenderer->solidRenderer
+                ? sceneRenderer->solidRenderer->getIndirectRenderer().getMeshCount() : 0;
+            const size_t waterLoaded = sceneRenderer->waterRenderer
+                ? sceneRenderer->waterRenderer->getIndirectRenderer().getMeshCount() : 0;
+            const SceneRenderer::StreamStats ss = sceneRenderer->streamStats();
+            std::cout << "[stream-diag] tick=" << ++diagTick
+                      << " solidLoaded=" << solidLoaded << " waterLoaded=" << waterLoaded
+                      << " tracked=" << sceneRenderer->getRegisteredModelCount()
+                      << " opaqueVisible=" << sceneRenderer->getLastOpaqueVisible()
+                      << " transparentVisible=" << sceneRenderer->getLastTransparentVisible()
+                      << " | topoReady=" << ss.topologyReady
+                      << " topoUpToDate=" << ss.topologyUpToDate
+                      << " topoUnavailable=" << ss.topologyUnavailable
+                      << " built=" << ss.residentBuilt
+                      << " empty=" << ss.residentEmpty
+                      << " failed=" << ss.residentFailed
+                      << " cpuFallback=" << ss.cpuFallback
+                      << std::endl;
+        }
+    }
     if (textureMixer) {
         textureMixer->flushPendingRequests(this);
         textureMixer->pollPendingGenerations(this);

@@ -82,9 +82,10 @@ layout(push_constant) uniform PC {
     // 2 = index write. Ignored when resident == 0.
     uint resident;
     uint pass;
-    uint vertexBase;      // pool element index of this chunk's span
+    uint vertexBase;      // span-relative base inside the bound pool window
+                          // (0 unless the descriptor offset needed padding)
     uint vertexCapacity;  // pool elements reserved for this chunk
-    uint indexBase;       // index pool element index of this chunk's span
+    uint indexBase;       // span-relative base inside the bound index window
     uint indexCapacity;   // index pool elements reserved for this chunk
 } pc;
 
@@ -984,10 +985,10 @@ void main() {
         const uint live = min(vertexCount, pc.keyCapacity);
         if (pc.pass == 2u) {
             if (gi < live) {
-                // `indexBase` is the ABSOLUTE pool element index of this
-                // chunk's span while `indexCapacity` is the span's LENGTH:
-                // the bound must be checked stream-relative (the host already
-                // proved indexCapacity >= raw vertex count).
+                // `indexBase` is this chunk's span-relative base inside the
+                // bound descriptor window and `indexCapacity` is the span's
+                // LENGTH: the bound is checked stream-relative (the host
+                // already proved indexCapacity >= raw vertex count).
                 if (gi >= pc.indexCapacity) {
                     atomicAdd(droppedCount, 1u);
                     return;

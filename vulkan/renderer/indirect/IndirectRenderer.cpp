@@ -330,6 +330,28 @@ void IndirectRenderer::flushStagedMetaWrites(VkCommandBuffer cmd, uint32_t frame
 
         if (metaStagePending_[frame].empty()) return;
         metaStageFlush_.swap(metaStagePending_[frame]);
+
+        // Collapse duplicate writes for the same slot (a zeroed reservation
+        // followed by the real publish in the same frame is the common case):
+        // the last write wins, and two vkCmdCopyBuffer copies to the same
+        // range in one command buffer trip synchronization validation's
+        // WRITE_AFTER_WRITE hazard.
+        if (metaStageFlush_.size() > 1) {
+            std::unordered_map<uint32_t, size_t> lastSlot;
+            lastSlot.reserve(metaStageFlush_.size());
+            size_t keep = 0;
+            for (size_t i = 0; i < metaStageFlush_.size(); ++i) {
+                const auto it = lastSlot.find(metaStageFlush_[i].entryIndex);
+                if (it == lastSlot.end()) {
+                    lastSlot.emplace(metaStageFlush_[i].entryIndex, keep);
+                    if (keep != i) metaStageFlush_[keep] = metaStageFlush_[i];
+                    ++keep;
+                } else {
+                    metaStageFlush_[it->second] = metaStageFlush_[i];
+                }
+            }
+            metaStageFlush_.resize(keep);
+        }
     }
 
     if (metaStageFlush_.empty()) return;

@@ -607,6 +607,12 @@ public:
             vkGetPhysicalDeviceProperties(physicalDevice, &props);
             return props.limits.maxStorageBufferRange;
         }
+        // VkDescriptorBufferInfo::offset must be a multiple of this.
+        VkDeviceSize getMinStorageBufferOffsetAlignment() const {
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(physicalDevice, &props);
+            return std::max<VkDeviceSize>(1, props.limits.minStorageBufferOffsetAlignment);
+        }
         // Whole-size storage-descriptor range for `buffer`, spec-clamped:
         // VUID-vkUpdateDescriptorSets range must be <= maxStorageBufferRange,
         // so large pools (e.g. the 256 MB merged vegetation instances) cannot

@@ -287,6 +287,40 @@ void OctreeTopologyCompute::uploadInput(const OctreeTopologyInput& input) {
 // target's pools. Bindings 12/13 always point at the keys/table; 14/15 fall
 // back to arena buffers when there is no target (the resident passes do not
 // run in that case, but every declared binding still needs a valid buffer).
+// A storage descriptor's range must not exceed
+// VkPhysicalDeviceLimits::maxStorageBufferRange (128 MB on some drivers, while
+// the packed pools are 768/192 MB) and its offset must be aligned. Bind the
+// chunk's own span instead of the whole pool: the range stays tiny and valid
+// on every device, and the shader's pool indices become span-relative
+// (`relVertexBase`/`relIndexBase` absorb the alignment padding, which is zero
+// whenever the alignment divides the 64/4-byte element stride).
+struct PoolSpanBinding {
+    VkDeviceSize vertexOffset = 0;
+    VkDeviceSize vertexRange = 0;
+    uint32_t relVertexBase = 0;
+    VkDeviceSize indexOffset = 0;
+    VkDeviceSize indexRange = 0;
+    uint32_t relIndexBase = 0;
+};
+
+static PoolSpanBinding makePoolSpanBinding(const OctreeTopologyTarget& target,
+                                           VkDeviceSize alignment) {
+    PoolSpanBinding b;
+    const VkDeviceSize align = std::max<VkDeviceSize>(1, alignment);
+    const VkDeviceSize vBytes = VkDeviceSize(target.vertexCapacity) * sizeof(Vertex);
+    const VkDeviceSize vAbsolute = VkDeviceSize(target.baseVertex) * sizeof(Vertex);
+    b.vertexOffset = vAbsolute & ~(align - 1);
+    b.vertexRange = vBytes;
+    b.relVertexBase = static_cast<uint32_t>((vAbsolute - b.vertexOffset) / sizeof(Vertex));
+
+    const VkDeviceSize iBytes = VkDeviceSize(target.indexCapacity) * sizeof(uint32_t);
+    const VkDeviceSize iAbsolute = VkDeviceSize(target.firstIndex) * sizeof(uint32_t);
+    b.indexOffset = iAbsolute & ~(align - 1);
+    b.indexRange = iBytes;
+    b.relIndexBase = static_cast<uint32_t>((iAbsolute - b.indexOffset) / sizeof(uint32_t));
+    return b;
+}
+
 void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget* target) {
     const bool resident = target != nullptr &&
                           target->vertexBuffer != VK_NULL_HANDLE &&
@@ -308,13 +342,22 @@ void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget* target)
     VkDescriptorBufferInfo infos[18];
     VkWriteDescriptorSet writes[18] = {};
     for (int b = 0; b < 18; ++b) {
-        infos[b] = {bufs[b], 0, VK_WHOLE_SIZE};
+        infos[b] = {bufs[b], 0, app->getClampedWholeSizeRange(bufs[b])};
         writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[b].dstSet = descSet;
         writes[b].dstBinding = b;
         writes[b].descriptorCount = 1;
         writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[b].pBufferInfo = &infos[b];
+    }
+    // Bindings 14/15 are the renderer's packed pools: bind this chunk's span
+    // (offset+range) so the descriptor stays inside every device's
+    // maxStorageBufferRange; the shader indexes it span-relative.
+    if (resident) {
+        const PoolSpanBinding span = makePoolSpanBinding(*target,
+                                                         app->getMinStorageBufferOffsetAlignment());
+        infos[14] = {bufs[14], span.vertexOffset, span.vertexRange};
+        infos[15] = {bufs[15], span.indexOffset, span.indexRange};
     }
     vkUpdateDescriptorSets(app->getDevice(), 18, writes, 0, nullptr);
 }
@@ -571,9 +614,11 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
 
     // Phase 2: dedup into the pool span + chunk-local index stream.
     writeDescriptors(&target);
-    pc.vertexBase = target.baseVertex;
+    const PoolSpanBinding poolSpan = makePoolSpanBinding(
+        target, app->getMinStorageBufferOffsetAlignment());
+    pc.vertexBase = poolSpan.relVertexBase; // span-relative inside binding 14
     pc.vertexCapacity = target.vertexCapacity;
-    pc.indexBase = target.firstIndex;
+    pc.indexBase = poolSpan.relIndexBase; // span-relative inside binding 15
     pc.indexCapacity = target.indexCapacity;
     const uint32_t vertexGroups = (uint32_t)((rawCount + 63) / 64);
 

@@ -42,12 +42,23 @@ bool chunkTopologyResidentEnabled() {
 
 // One-shot verification aid: the first resident chunk is rebuilt with the CPU
 // walker and the two triangle sets are compared. VULKAN_TOPOLOGY_SELFCHECK=1.
+// VULKAN_TOPOLOGY_SELFCHECK=1    -> verify the first 4 chunks
+// VULKAN_TOPOLOGY_SELFCHECK=all  -> verify every chunk (diagnostic; logs only
+//                                   the chunks whose triangle sets differ)
 bool topologySelfCheckEnabled() {
     static const bool enabled = []() {
         const char* v = std::getenv("VULKAN_TOPOLOGY_SELFCHECK");
-        return v != nullptr && v[0] == '1' && v[1] == '\0';
+        return v != nullptr && v[0] != '\0';
     }();
     return enabled;
+}
+
+bool topologySelfCheckAllChunks() {
+    static const bool all = []() {
+        const char* v = std::getenv("VULKAN_TOPOLOGY_SELFCHECK");
+        return v != nullptr && v[0] == 'a' && v[1] == 'l' && v[2] == 'l';
+    }();
+    return all;
 }
 
 // Tolerance-quantized payload keys for the self-check. The GPU and the CPU
@@ -173,6 +184,44 @@ size_t countMatched(const std::vector<TriangleKey>& a, const std::vector<Triangl
         }
     }
     return matched;
+}
+
+// Nearest-vertex distance from the GPU mirror to the CPU reference: a port
+// divergence shows as small deltas (same surface, different rounding), a wrong
+// tessellation as large ones. Both meshes are small (<= a few thousand verts);
+// the reference is sorted on x so each lookup scans a narrow window.
+struct VertexDeviation {
+    float maxDistance = 0.0f;
+    float meanDistance = 0.0f;
+    size_t over2 = 0; // vertices farther than 2 world units from the reference
+};
+
+VertexDeviation vertexDeviation(const Geometry& gpu, const Geometry& cpu, float searchWindow) {
+    VertexDeviation out;
+    if (gpu.vertices.empty() || cpu.vertices.empty()) return out;
+    std::vector<glm::vec3> ref;
+    ref.reserve(cpu.vertices.size());
+    for (const auto& v : cpu.vertices) ref.push_back(v.position);
+    std::sort(ref.begin(), ref.end(), [](const glm::vec3& a, const glm::vec3& b) {
+        return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z);
+    });
+    double sum = 0.0;
+    for (const auto& v : gpu.vertices) {
+        const float lo = v.position.x - searchWindow;
+        const float hi = v.position.x + searchWindow;
+        auto it = std::lower_bound(ref.begin(), ref.end(), lo,
+                                   [](const glm::vec3& p, float x) { return p.x < x; });
+        float best = std::numeric_limits<float>::max();
+        for (; it != ref.end() && it->x <= hi; ++it) {
+            best = std::min(best, glm::distance(v.position, *it));
+        }
+        if (best == std::numeric_limits<float>::max()) best = searchWindow; // no candidate
+        out.maxDistance = std::max(out.maxDistance, best);
+        sum += best;
+        if (best > 2.0f) ++out.over2;
+    }
+    out.meanDistance = static_cast<float>(sum / static_cast<double>(gpu.vertices.size()));
+    return out;
 }
 
 // Stable-slot pool capacities (pre-allocated GPU buffers, never reallocated).
@@ -387,6 +436,18 @@ IndirectRenderer* SceneRenderer::indirectForLayer(Layer layer) {
     const bool isWater = (layerRendererType(layer) == LayerRendererType::Water);
     if (isWater) return waterRenderer ? &waterRenderer->getIndirectRenderer() : nullptr;
     return solidRenderer ? &solidRenderer->getIndirectRenderer() : nullptr;
+}
+
+SceneRenderer::StreamStats SceneRenderer::streamStats() const {
+    StreamStats out;
+    out.topologyReady = streamStats_.topologyReady.load(std::memory_order_relaxed);
+    out.topologyUpToDate = streamStats_.topologyUpToDate.load(std::memory_order_relaxed);
+    out.topologyUnavailable = streamStats_.topologyUnavailable.load(std::memory_order_relaxed);
+    out.residentBuilt = streamStats_.residentBuilt.load(std::memory_order_relaxed);
+    out.residentEmpty = streamStats_.residentEmpty.load(std::memory_order_relaxed);
+    out.residentFailed = streamStats_.residentFailed.load(std::memory_order_relaxed);
+    out.cpuFallback = streamStats_.cpuFallback.load(std::memory_order_relaxed);
+    return out;
 }
 
 size_t SceneRenderer::getRegisteredModelCount() const {
@@ -2306,11 +2367,16 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                   << ", lod=" << lod << "): chunk skipped\n";
     };
 
-    if (!res.ok) { skipChunk("failed"); return true; }
+    if (!res.ok) {
+        streamStats_.residentFailed.fetch_add(1, std::memory_order_relaxed);
+        skipChunk("failed");
+        return true;
+    }
 
     // Empty chunk (no surface at this revision): nothing to draw, but the
     // revision is settled (recorded by the caller's commit).
     if (res.indexCount < 3u || res.poolVertexCount == 0u) {
+        streamStats_.residentEmpty.fetch_add(1, std::memory_order_relaxed);
         if (res.slotIndex != UINT32_MAX) ir.releaseGpuMeshSpan(res.slotIndex);
         if (world_ && frontier) world_->chunkManager().cancelRebuild(static_cast<ChunkManager::ChunkId>(chunkId));
         return true;
@@ -2329,9 +2395,11 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     if (topologySelfCheckEnabled()) {
         // A few chunks, not just the first: agreement is very high but a
         // single sample cannot tell a systematic difference from a
-        // chunk-specific degenerate QEF case.
+        // chunk-specific degenerate QEF case. `all` checks every chunk and
+        // only logs the mismatching ones.
         static std::atomic<int> selfCheckedCount{0};
-        if (selfCheckedCount.fetch_add(1) < 4) {
+        const int checked = selfCheckedCount.fetch_add(1);
+        if (topologySelfCheckAllChunks() || checked < 4) {
             Octree* tree = scene.getLayerOctree(layer);
             if (tree != nullptr) {
                 std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
@@ -2354,21 +2422,38 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                 const size_t matchedSorted = countMatched(gpuGeomSorted, cpuGeomSorted);
                 const size_t matchedCentroid = countMatched(gpuCentroid, cpuCentroid);
                 const size_t matchedFull = countMatched(gpuFull, cpuFull);
-                std::cerr << "[SceneRenderer] resident topology self-check ("
-                          << topoInput.cells.size() << " cells, " << topoInput.nodes.size()
-                          << " nodes): gpu triangles=" << (res.indexCount / 3)
-                          << " cpu triangles=" << (refTesselator.geometry.indices.size() / 3)
-                          << " gpu verts=" << res.poolVertexCount
-                          << " cpu verts=" << refTesselator.geometry.vertices.size()
-                          << " geometry=" << matchedGeom << "/" << gpuGeom.size()
-                          << " geometry(sorted)=" << matchedSorted << "/" << gpuGeomSorted.size()
-                          << " centroid=" << matchedCentroid << "/" << gpuCentroid.size()
-                          << " payload=" << matchedFull << "/" << gpuFull.size()
-                          << "\n";
+                const bool geomOk = matchedGeom == gpuGeom.size() &&
+                                    matchedGeom == cpuGeom.size();
+                const bool payloadOk = matchedFull == gpuFull.size() &&
+                                       matchedFull == cpuFull.size();
+                if (!topologySelfCheckAllChunks() || !geomOk || !payloadOk) {
+                    const VertexDeviation dev =
+                        vertexDeviation(res.bridge, refTesselator.geometry, 32.0f);
+                    std::cerr << "[SceneRenderer] resident topology self-check ("
+                              << topoInput.cells.size() << " cells, " << topoInput.nodes.size()
+                              << " nodes, layer=" << layer << ", cubeMin=("
+                              << cube.getMin().x << "," << cube.getMin().y << ","
+                              << cube.getMin().z << "), cubeSize=" << cube.getLengthX()
+                              << ", lod=" << int(chunkLod) - 1 << "): gpu triangles="
+                              << (res.indexCount / 3)
+                              << " cpu triangles=" << (refTesselator.geometry.indices.size() / 3)
+                              << " gpu verts=" << res.poolVertexCount
+                              << " cpu verts=" << refTesselator.geometry.vertices.size()
+                              << " geometry=" << matchedGeom << "/" << gpuGeom.size()
+                              << " geometry(sorted)=" << matchedSorted << "/"
+                              << gpuGeomSorted.size()
+                              << " centroid=" << matchedCentroid << "/" << gpuCentroid.size()
+                              << " payload=" << matchedFull << "/" << gpuFull.size()
+                              << " dev.max=" << dev.maxDistance
+                              << " dev.mean=" << dev.meanDistance
+                              << " dev.over2=" << dev.over2
+                              << "\n";
+                }
             }
         }
     }
 
+    streamStats_.residentBuilt.fetch_add(1, std::memory_order_relaxed);
     Octree::LoDMesh lm;
     lm.geom = std::move(res.bridge);
     lm.lod = static_cast<uint8_t>(lod);
@@ -2408,16 +2493,21 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
             const Scene::ChunkTopologyStatus status =
                 scene.buildChunkTopology(layer, nodeData, chunkLod, version, topoInput);
             if (status == Scene::ChunkTopologyStatus::UpToDate) {
+                streamStats_.topologyUpToDate.fetch_add(1, std::memory_order_relaxed);
                 handled = true; // this revision is already live on the GPU
             } else if (status == Scene::ChunkTopologyStatus::Ready) {
+                streamStats_.topologyReady.fetch_add(1, std::memory_order_relaxed);
                 handled = buildChunkResident(scene, layer, nid, nodeData, chunkLod, version,
                                              topoInput, *ir, onGeometry);
                 if (handled) scene.commitChunkTopology(layer, reinterpret_cast<uintptr_t>(nodeData.node), version);
+            } else {
+                streamStats_.topologyUnavailable.fetch_add(1, std::memory_order_relaxed);
             }
         }
     }
 
     if (!handled) {
+        streamStats_.cpuFallback.fetch_add(1, std::memory_order_relaxed);
     {
         static std::atomic<bool> loggedCpuPath{false};
         bool expected = false;

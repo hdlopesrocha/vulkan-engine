@@ -186,6 +186,31 @@ public:
     // Back-compat: total solid (opaque) count across Solid-mapped layers.
     size_t getRegisteredModelCount() const;
 
+    // Chunk-streaming counters (diagnostic; VULKAN_STREAM_DIAG prints them):
+    // how the GPU topology path resolved every node it was asked to build.
+    struct StreamStats {
+        uint64_t topologyReady = 0;
+        uint64_t topologyUpToDate = 0;
+        uint64_t topologyUnavailable = 0;
+        uint64_t residentBuilt = 0;   // resident pass produced geometry
+        uint64_t residentEmpty = 0;   // resident pass ran, no triangles
+        uint64_t residentFailed = 0;  // span/sizing failure (chunk skipped)
+        uint64_t cpuFallback = 0;     // resident disabled/unavailable -> CPU walk
+    };
+    StreamStats streamStats() const;
+
+    // Relaxed atomics written from the build path (worker/main threads).
+    struct StreamCounters {
+        std::atomic<uint64_t> topologyReady{0};
+        std::atomic<uint64_t> topologyUpToDate{0};
+        std::atomic<uint64_t> topologyUnavailable{0};
+        std::atomic<uint64_t> residentBuilt{0};
+        std::atomic<uint64_t> residentEmpty{0};
+        std::atomic<uint64_t> residentFailed{0};
+        std::atomic<uint64_t> cpuFallback{0};
+    };
+    StreamCounters streamStats_;
+
     // Remove all registered meshes for one layer (from both IRs — the layer
     // may have been remapped since its slots were published) and clear it.
     void removeAllLayerMeshes(Layer layer);
