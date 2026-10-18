@@ -156,16 +156,15 @@ procedural blade colours into vertex colours.
 ## SDF effects
 
 The Vulkan SDF renderer (`SdfRenderer`) owns the CPU-side `sdf_gpu::SdfScene`
-that feeds lava flames, boulders and smoke. The app passes its definitions,
+that feeds lava flames and smoke. The app passes its definitions,
 materials and instances to the exporter; the Blender script creates one proxy
 mesh per definition and links one object per instance with the engine transform
 (`R = Rx*Ry*Rz`, per-instance height/radius scale) and material (base colour,
 roughness, metallic, emission, opacity, texture layer via box projection).
 
 The proxies are approximations: the engine ray-marches the SDFs, so flame
-shapes/spikes, smoke density and the exact rock displacement are not
-reproduced. The exported boulders use a deterministic rough sphere; flames use
-a tapered cone.
+shapes/spikes and smoke density are not reproduced. Flames use a tapered cone;
+smoke uses a sphere.
 
 ## Limitations
 
@@ -219,7 +218,7 @@ Checks used during development:
   correction applied);
 - the Blender import reports the same triangle count as the glb;
 - rendering shows textured terrain, water and (close-up) grass blades;
-- a synthetic SDF sidecar (a few flame/rock instances) produces proxy objects
+- a synthetic SDF sidecar (a few flame instances) produces proxy objects
   at the expected world positions.
 
 ## Implementation map

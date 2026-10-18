@@ -60,7 +60,6 @@
 #include "widgets/QueueTimelineWidget.hpp"
 #include "widgets/WindWidget.hpp"
 #include "widgets/RaymarchWidget.hpp"
-#include "widgets/RocksWidget.hpp"
 #include "widgets/GrassWidget.hpp"
 #include "sdf/types/SdfScene.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
@@ -207,7 +206,6 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             if (renderer->debugSDFRenderer) renderer->debugSDFRenderer->removeCubesForNode(nid);
             if (renderer->sdfRenderer) {
                 renderer->sdfRenderer->removeLavaChunk(static_cast<uintptr_t>(nid));
-                renderer->sdfRenderer->removeRockChunk(static_cast<uintptr_t>(nid));
             }
             return;
         }
@@ -347,7 +345,6 @@ public:
     // marching widget covers the generic traversal plus the fire and
     // smoke shapes, which are just SDF primitives inside the renderer.
     std::shared_ptr<RaymarchWidget> raymarchWidget;
-    std::shared_ptr<RocksWidget> rocksWidget;
     std::shared_ptr<GrassWidget> grassWidget;
     std::shared_ptr<MusicWidget> mp3Widget;
     std::shared_ptr<OctreeExplorerWidget> octreeExplorerWidget;
@@ -772,9 +769,6 @@ public:
         raymarchWidget = std::make_shared<RaymarchWidget>(
             sceneRenderer->sdfRenderer.get(), &camera,
             sceneRenderer->vegetationRenderer.get());
-        // Brush-7 boulder instances: same generic SDF scene as the fire
-        // volumes; the widget edits the renderer's shared rock config.
-        rocksWidget = std::make_shared<RocksWidget>(sceneRenderer->sdfRenderer.get());
         // Bladed grass tufts (triangle blades + captured impostors).
         grassWidget = std::make_shared<GrassWidget>(sceneRenderer->vegetationRenderer.get());
         // Generic SDF fire volume (spec §19) is the fire path; flame
@@ -810,7 +804,6 @@ public:
         widgetManager.addWidget(queueTimelineWidget);
         widgetManager.addWidget(windWidget);
         widgetManager.addWidget(raymarchWidget);
-        widgetManager.addWidget(rocksWidget);
         widgetManager.addWidget(grassWidget);
         widgetManager.addWidget(mp3Widget);
         widgetManager.addWidget(impostorWidget);
@@ -3306,7 +3299,7 @@ public:
                             }
                         }
                     }
-                    // ── SDF engine (generic raymarch: fire/smoke/rocks/grass) ──
+                    // ── SDF engine (generic raymarch: fire/smoke) ──
                     ImGui::Separator();
                     ImGui::Text("--- SDF Engine ---");
                     if (sceneRenderer && sceneRenderer->sdfRenderer) {
@@ -3340,9 +3333,8 @@ public:
                                 cells > 0.0 ? static_cast<double>(st.lastCandidateEvals) / cells : 0.0,
                                 rays > 0.0 ? 100.0 * static_cast<double>(st.lastHits) / rays : 0.0);
                         }
-                        ImGui::Text("lava: %u/%u chunks  rocks: %u/%u chunks",
-                            st.lavaAnchors, st.lavaChunks,
-                            st.rockAnchors, st.rockChunks);
+                        ImGui::Text("lava: %u/%u chunks",
+                            st.lavaAnchors, st.lavaChunks);
                     } else {
                         ImGui::Text("no SDF renderer");
                     }
@@ -4388,7 +4380,6 @@ void MyApp::resetSceneState() {
         }
         if (sceneRenderer->sdfRenderer) {
             sceneRenderer->sdfRenderer->clearLava();
-            sceneRenderer->sdfRenderer->clearRocks();
         }
     }
 

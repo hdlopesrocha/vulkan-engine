@@ -56,8 +56,8 @@ widget) tessellates the current octree and writes a self-contained `.glb` with
 the terrain, water, grass tufts and embedded textures, a JSON sidecar, and a
 Blender 4.x setup script that rebuilds the solid renderer's triplanar material
 blending (per-vertex texture indices, up to three blended materials per face,
-normal/roughness/AO maps, HSV tint). SDF effect instances (lava flames,
-boulders) are exported as proxy objects when exporting from the app.
+normal/roughness/AO maps, HSV tint). SDF effect instances (lava flames
+and smoke) are exported as proxy objects when exporting from the app.
 
 ```sh
 # import, configure materials, render/save from the command line

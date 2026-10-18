@@ -64,7 +64,7 @@ struct SdfInstanceInfo {
 };
 
 struct Extras {
-    // sdf_gpu effect instances (rocks, flames, smoke); filled by the app from
+    // sdf_gpu effect instances (flames, smoke); filled by the app from
     // the renderer's CPU-side SdfScene. Empty in headless exports.
     std::vector<SdfPrimitiveInfo> sdfDefinitions;
     std::vector<SdfMaterialInfo> sdfMaterials;

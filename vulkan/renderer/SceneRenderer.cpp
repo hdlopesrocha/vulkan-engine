@@ -2031,7 +2031,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // scene rebuild (bounds + grids) runs at most once per frame here.
     if (sdfRenderer) {
         sdfRenderer->rebuildLavaIfDirty();
-        sdfRenderer->rebuildRocksIfDirty();
+
     }
 
     if (batch.empty()) {
@@ -2054,14 +2054,13 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // LayerRendererType), ChunkManager tracking and deferred-slot source.
     [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch,
         // onFinestPublished: grass chunks drive vegetation from their finest
-        // geometry; lava/rock chunks (finest rung only) drive the generic SDF
-        // fire and boulders. Ancestors nest over the same surface, so coarser
+        // geometry; lava chunks (finest rung only) drive the generic SDF
+        // fire volumes. Ancestors nest over the same surface, so coarser
         // rungs would stack duplicate anchors floating off the true surface.
         [this, app](NodeID nid, const Geometry& geom, uint8_t lod) {
             if (this->vegetationRenderer) this->vegetationRenderer->generateForChunk(app, nid, geom);
             if (lod == 0 && this->sdfRenderer) {
                 this->sdfRenderer->ingestLavaChunk(static_cast<uintptr_t>(nid), geom);
-                this->sdfRenderer->ingestRockChunk(static_cast<uintptr_t>(nid), geom);
             }
         });
 

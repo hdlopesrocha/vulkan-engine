@@ -55,7 +55,7 @@ public:
     int sdfMaxSteps = 64;
     int sdfSmokeSamples = 12;
     // Ray marching master gate: the generic SDF raymarcher (fire, smoke,
-    // rocks). The sky cloud raymarch has its own Volumetric Clouds toggle.
+    // smoke). The sky cloud raymarch has its own Volumetric Clouds toggle.
     // Minimal preset turns this off.
     bool rayMarchingEnabled = false;
     bool wireframeMode = false;

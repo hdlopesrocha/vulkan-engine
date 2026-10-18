@@ -96,7 +96,7 @@ void SettingsWidget::render() {
             // toggled
         }
         ImGuiComponents::TooltipOnHover("Master gate for the generic SDF raymarcher\n"
-                       "(fire, smoke, rocks, grass) and its grass shadows.\n"
+                       "(fire, smoke) and its grass shadows.\n"
                        "Off = cleared SDF targets (Minimal preset disables it).\n"
                        "The sky cloud raymarch has its own Volumetric Clouds toggle.");
         if (ImGui::Checkbox("Volumetric Clouds", &settings.cloudsEnabled)) {

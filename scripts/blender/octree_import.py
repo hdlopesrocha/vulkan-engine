@@ -901,25 +901,13 @@ def make_proxy(definition, material):
                                         depth=max(p0[1], 0.01))
     elif prim == 7:  # Plane
         bpy.ops.mesh.primitive_plane_add(size=2.0)
-    elif prim == 10:  # Rock: displaced icosphere
-        bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=3, radius=1.0)
-        obj = bpy.context.object
-        rng = np.random.RandomState(1234)
-        co = np.empty(len(obj.data.vertices) * 3, dtype=np.float32)
-        obj.data.vertices.foreach_get("co", co)
-        co = co.reshape(-1, 3)
-        r = np.linalg.norm(co, axis=1)
-        noise = np.sin(co[:, 0] * 5.3 + 1.7) * np.cos(co[:, 1] * 4.1) * np.sin(
-            co[:, 2] * 6.2 + 0.3)
-        co *= (1.0 + 0.28 * noise)[:, None]
-        obj.data.vertices.foreach_set("co", co.reshape(-1))
     else:  # Sphere / Smoke / RoundedBox / Capsule / Grass proxies
         bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=3, radius=1.0)
 
     obj = bpy.context.object
     if prim == 1:
         obj.scale = (max(p0[0], 0.01), max(p0[1], 0.01), max(p0[2], 0.01))
-    elif prim in (0, 9, 10):
+    elif prim in (0, 9):
         obj.scale = (max(p0[0], 0.01),) * 3
     elif prim == 2:  # RoundedBox: box proxy (rounding not reproduced)
         obj.scale = (max(p0[0], 0.01), max(p0[1], 0.01), max(p0[2], 0.01))
