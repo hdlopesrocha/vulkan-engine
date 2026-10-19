@@ -5,6 +5,8 @@
 #include "../vulkan/resources/Buffer.hpp"
 #include "../vulkan/resources/TextureArrayManager.hpp"
 
+#include <backends/imgui_impl_vulkan.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -213,6 +215,8 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
     uint32_t slotCount = 0;
     static constexpr uint32_t kMaxSlots = 32;
     std::array<VkImageView, kMaxSlots> slotStorageViews{};
+    std::array<VkImageView, kMaxSlots> slotPreviewViews{};
+    std::array<ImTextureID, kMaxSlots> slotPreviews{};
     std::array<VkImageLayout, kMaxSlots> slotLayouts{};
     uint32_t videoWidth = 0;
     uint32_t videoHeight = 0;
@@ -1492,6 +1496,8 @@ void VideoTextureService::shutdown() {
     impl.videoArray = TextureImage{};
     impl.videoSampler = VK_NULL_HANDLE;
     impl.slotStorageViews.fill(VK_NULL_HANDLE);
+    impl.slotPreviewViews.fill(VK_NULL_HANDLE);
+    impl.slotPreviews.fill(0);
     impl.initialized = false;
 }
 
@@ -1514,6 +1520,39 @@ VkSampler VideoTextureService::videoArraySampler() const { return impl_->videoSa
 uint32_t VideoTextureService::videoArrayMips() const { return impl_->videoMips; }
 uint32_t VideoTextureService::videoArrayWidth() const { return impl_->videoWidth; }
 uint32_t VideoTextureService::videoArrayHeight() const { return impl_->videoHeight; }
+
+ImTextureID VideoTextureService::previewTexture(uint32_t slot) {
+    Impl& impl = *impl_;
+    if (!impl.initialized || slot >= impl.slotCount) return 0;
+    if (impl.slotPreviews[slot]) return impl.slotPreviews[slot];
+    if (impl.videoArray.image == VK_NULL_HANDLE || impl.videoSampler == VK_NULL_HANDLE) return 0;
+
+    // Separate per-slot 2D view with the full mip chain (the compute-target
+    // storage view is mip-0 only); created on first preview use.
+    if (impl.slotPreviewViews[slot] == VK_NULL_HANDLE) {
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = impl.videoArray.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, impl.videoMips, slot, 1};
+        if (vkCreateImageView(impl.app->getDevice(), &viewInfo, nullptr,
+                              &impl.slotPreviewViews[slot]) != VK_SUCCESS) {
+            return 0;
+        }
+        impl.app->resources.addImageView(impl.slotPreviewViews[slot],
+                                         "VideoTextureService: preview view");
+    }
+    impl.slotPreviews[slot] = (ImTextureID)ImGui_ImplVulkan_AddTexture(
+        impl.videoSampler, impl.slotPreviewViews[slot], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return impl.slotPreviews[slot];
+}
+
+void VideoTextureService::invalidatePreviews() {
+    // Only drop the cached handles: the ImGui descriptor pool they came from has
+    // already been (or is about to be) recreated, so RemoveTexture is not valid.
+    impl_->slotPreviews.fill(0);
+}
 
 VideoTextureService::VideoState VideoTextureService::state(size_t index) const {
     Impl& impl = *impl_;
@@ -1753,6 +1792,8 @@ VkSampler VideoTextureService::videoArraySampler() const { return VK_NULL_HANDLE
 uint32_t VideoTextureService::videoArrayMips() const { return 1; }
 uint32_t VideoTextureService::videoArrayWidth() const { return 0; }
 uint32_t VideoTextureService::videoArrayHeight() const { return 0; }
+ImTextureID VideoTextureService::previewTexture(uint32_t) { return 0; }
+void VideoTextureService::invalidatePreviews() {}
 void VideoTextureService::shutdown() {}
 size_t VideoTextureService::count() const { return 0; }
 bool VideoTextureService::empty() const { return true; }

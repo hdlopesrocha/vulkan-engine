@@ -658,7 +658,7 @@ public:
                     videoTextureService->shutdown();
                     videoTextureService.reset();
                 } else {
-                    videoTextureWidget = std::make_shared<VideoTextureWidget>(videoTextureService, &textureArrayManager);
+                    videoTextureWidget = std::make_shared<VideoTextureWidget>(videoTextureService);
                     widgetManager.addWidget(videoTextureWidget);
                     std::cout << "[MyApp] video textures: " << videoTextureService->count()
                               << " base clip(s) loaded into " << videoTextureService->slotCapacity()
@@ -4060,6 +4060,9 @@ public:
         if (renderTargetsWidget) {
             renderTargetsWidget->invalidateImGuiDescriptors();
         }
+        if (videoTextureService) {
+            videoTextureService->invalidatePreviews();
+        }
 
         if (impostorService) {
             impostorService->invalidateImGuiDescriptors();
@@ -4161,6 +4164,9 @@ public:
             renderTargetsWidget->invalidateImGuiDescriptors();
         }
         textureArrayManager.invalidateImGuiDescriptors();
+        if (videoTextureService) {
+            videoTextureService->invalidatePreviews();
+        }
         if (impostorService) {
             impostorService->invalidateImGuiDescriptors();
         }
@@ -4177,6 +4183,9 @@ public:
         // Widget handles were nulled by preImGuiShutdown(); this is a no-op.
         if (renderTargetsWidget) {
             renderTargetsWidget->invalidateImGuiDescriptors();
+        }
+        if (videoTextureService) {
+            videoTextureService->invalidatePreviews();
         }
         if (impostorService) {
             impostorService->recreateImGuiDescriptors();

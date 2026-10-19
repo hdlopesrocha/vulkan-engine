@@ -19,9 +19,9 @@ std::string formatSeconds(double seconds) {
 }
 }  // namespace
 
-VideoTextureWidget::VideoTextureWidget(std::shared_ptr<VideoTextureService> videos_, TextureArrayManager* arrays,
+VideoTextureWidget::VideoTextureWidget(std::shared_ptr<VideoTextureService> videos_,
                                        const char* title_)
-    : Widget(title_, u8"\uf03d"), videos(std::move(videos_)), textureArrays(arrays) {}
+    : Widget(title_, u8"\uf03d"), videos(std::move(videos_)) {}
 
 void VideoTextureWidget::render() {
     if (!videos) return;
@@ -153,6 +153,18 @@ void VideoTextureWidget::render() {
                     s.stagingBytes / 1048576.0, static_cast<double>(s.compressedBytes) / 1048576.0,
                     static_cast<double>(s.frameCount) * 1024.0 * 1024.0 * 4.0 / 1048576.0);
 
+        // Live preview of the slot's current frame (the same texture the video
+        // materials sample; updates while playing or after a seek).
+        const ImTextureID preview = videos->previewTexture(s.slot);
+        if (preview) {
+            ImGui::Spacing();
+            ImGui::Image(preview, ImVec2(kPreviewSize, kPreviewSize));
+            ImGui::TextDisabled("slot %u live preview (frame %s)", s.slot,
+                                formatSeconds(s.frameTime).c_str());
+        } else {
+            ImGui::TextDisabled("slot %u has no preview yet", s.slot);
+        }
+
         bool playing = s.playing;
         if (ImGui::Checkbox("playing", &playing)) videos->setPlaying(index, playing);
         ImGui::SameLine();
@@ -173,6 +185,4 @@ void VideoTextureWidget::render() {
         }
         ImGui::EndTable();
     }
-    (void)textureArrays;
-    (void)kPreviewSize;
 }

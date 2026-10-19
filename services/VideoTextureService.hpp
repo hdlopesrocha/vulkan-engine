@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <imgui.h>
 #include <vulkan/vulkan.h>
 
 class VulkanApp;
@@ -160,6 +161,13 @@ public:
     uint32_t videoArrayMips() const;
     uint32_t videoArrayWidth() const;
     uint32_t videoArrayHeight() const;
+
+    // ImGui preview of one video slot: samples the slot's current frame live.
+    // The descriptor is created on first use and cached. Returns 0 when the
+    // slot or the video array is unavailable. Call invalidatePreviews() when
+    // the ImGui descriptor pool is recreated (swapchain rebuild/shutdown).
+    ImTextureID previewTexture(uint32_t slot);
+    void invalidatePreviews();
 
     size_t count() const;
     bool empty() const;
