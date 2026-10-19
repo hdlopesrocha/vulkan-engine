@@ -12,6 +12,9 @@ static Material toGPU(const MaterialProperties &m) {
     out.normalParams = glm::vec4(m.normalFlipY ? 1.0f : 0.0f, m.normalSwapXZ ? 1.0f : 0.0f, m.invertWidth ? 1.0f : 0.0f, 0.0f);
     out.tessLevelParams = glm::vec4(m.tessMinLevel, m.tessMaxLevel, m.reflectionStrength, 0.0f);
     out.roughnessAOParams = glm::vec4(m.roughnessFactor, m.aoFactor, m.useAO ? 1.0f : 0.0f, 0.0f);
+    out.layerParams = glm::vec4(static_cast<float>(m.kind), static_cast<float>(m.textureIndex),
+                                static_cast<float>(m.textureMapping), static_cast<float>(m.blendMode));
+    out.mappingOrigin = m.mappingOrigin;
     return out;
 }
 

@@ -13,6 +13,8 @@ struct Material {
     vec4 normalParams;     // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z = invertWidth (0/1)
     vec4 tessLevelParams;  // x = minLevel, y = maxLevel, z = reflectionStrength, w = reserved
     vec4 roughnessAOParams; // x = roughnessFactor, y = aoFactor, z = useAO (1.0/0.0)
+    vec4 layerParams;      // x = MaterialKind, y = textureIndex (-1 = own), z = TextureMappingMode, w = MaterialBlendMode
+    vec4 mappingOrigin;    // xyz = SdfGiven sphere center, w = radius
 };
 
 #endif // MATERIAL_GLSL

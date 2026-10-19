@@ -1,5 +1,95 @@
 #pragma once
 
+#include <cstdint>
+#include <glm/glm.hpp>
+
+// What a material samples: a layer of the scene texture arrays, one slot of the
+// video texture array, or the water params palette. Materials of kind Video are
+// shaded by the video layer renderer (rendered after solid and water so the
+// per-material blend mode can be applied against the composed scene color).
+enum class MaterialKind : uint32_t {
+    Texture = 0,
+    Video = 1,
+    Water = 2,
+};
+
+// Texture coordinate technique for a material (see shaders/includes/TextureMapping.glsl).
+enum class TextureMappingMode : uint32_t {
+    Triplanar = 0,   // weighted X/Y/Z projections from the world position
+    ProjectionX = 1, // single YZ plane projection
+    ProjectionY = 2, // single XZ plane projection
+    ProjectionZ = 3, // single XY plane projection
+    SdfGiven = 4,    // spherical coordinates around mappingOrigin (xyz center, w radius)
+    Custom = 5,      // mesh/painted UVs (fragUV)
+};
+
+// Photoshop-style blend modes applied per material by the video layer composite
+// (shaders/includes/BlendModes.glsl). Normal keeps the plain source-over result.
+enum class MaterialBlendMode : uint32_t {
+    Normal = 0,
+    Darken,
+    Multiply,
+    ColorBurn,
+    LinearBurn,
+    DarkerColor,
+    Lighten,
+    Screen,
+    ColorDodge,
+    LighterColor,
+    Overlay,
+    Difference,
+    Exclusion,
+    Subtract,
+    Divide,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+};
+
+inline const char* materialKindName(MaterialKind kind) {
+    switch (kind) {
+        case MaterialKind::Video: return "Video";
+        case MaterialKind::Water: return "Water";
+        default: return "Textures";
+    }
+}
+
+inline const char* textureMappingName(TextureMappingMode mode) {
+    switch (mode) {
+        case TextureMappingMode::ProjectionX: return "Projection X";
+        case TextureMappingMode::ProjectionY: return "Projection Y";
+        case TextureMappingMode::ProjectionZ: return "Projection Z";
+        case TextureMappingMode::SdfGiven: return "SDF Given";
+        case TextureMappingMode::Custom: return "Custom (UV)";
+        default: return "Triplanar";
+    }
+}
+
+inline const char* materialBlendModeName(MaterialBlendMode mode) {
+    switch (mode) {
+        case MaterialBlendMode::Darken: return "Darken";
+        case MaterialBlendMode::Multiply: return "Multiply";
+        case MaterialBlendMode::ColorBurn: return "Color Burn";
+        case MaterialBlendMode::LinearBurn: return "Linear Burn";
+        case MaterialBlendMode::DarkerColor: return "Darker Color";
+        case MaterialBlendMode::Lighten: return "Lighten";
+        case MaterialBlendMode::Screen: return "Screen";
+        case MaterialBlendMode::ColorDodge: return "Color Dodge";
+        case MaterialBlendMode::LighterColor: return "Lighter Color";
+        case MaterialBlendMode::Overlay: return "Overlay";
+        case MaterialBlendMode::Difference: return "Difference";
+        case MaterialBlendMode::Exclusion: return "Exclusion";
+        case MaterialBlendMode::Subtract: return "Subtract";
+        case MaterialBlendMode::Divide: return "Divide";
+        case MaterialBlendMode::Hue: return "Hue";
+        case MaterialBlendMode::Saturation: return "Saturation";
+        case MaterialBlendMode::Color: return "Color";
+        case MaterialBlendMode::Luminosity: return "Luminosity";
+        default: return "Normal";
+    }
+}
+
 // Material properties per texture (extracted from TextureManager.hpp)
 struct MaterialProperties {
     // Mapping enabled: false = disabled, true = enable tessellation + bump mapping
@@ -13,9 +103,9 @@ struct MaterialProperties {
     // Per-material distance-based tessellation range
     float tessMinLevel = 4.0f;
     float tessMaxLevel = 32.0f;
-    
+
     float ambientFactor = 0.4f;
-    
+
     float specularStrength = 0.5f;
     float shininess = 32.0f;
     // Mirror amount [0..1]: 1 = full environment mirror at every viewing
@@ -44,4 +134,23 @@ struct MaterialProperties {
     float roughnessFactor = 1.0f;
     float aoFactor = 1.0f;
     bool useAO = true;
+
+    // ── Material kind / texture selection ────────────────────────────────
+    // Textures: samples the material's own layer in the scene arrays.
+    // Video: samples slot `textureIndex` of the video texture array.
+    // Water: water params palette (surface shaders).
+    MaterialKind kind = MaterialKind::Texture;
+    // Layer the material samples. -1 = the material's own index (the classic
+    // one-material-per-layer behaviour); >= 0 lets several materials share a
+    // texture layer or point a Video material at a video slot.
+    int textureIndex = -1;
+
+    // ── Texture coordinates ─────────────────────────────────────────────
+    TextureMappingMode textureMapping = TextureMappingMode::Triplanar;
+    // SdfGiven: xyz = bounding-volume center, w = radius (0 keeps the default
+    // world-space sphere, useful for objects whose SDF bounds are unknown).
+    glm::vec4 mappingOrigin = glm::vec4(0.0f);
+
+    // ── Layer blending ──────────────────────────────────────────────────
+    MaterialBlendMode blendMode = MaterialBlendMode::Normal;
 };

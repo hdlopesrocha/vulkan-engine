@@ -3,6 +3,7 @@
 #include "../sky/SkyView.glsl"
 #include "../noise/Perlin.glsl"
 #include "../sky/Clouds.glsl"
+#include "../TextureMapping.glsl"
 // Solid (terrain) surface shading — extracted from SolidRenderer.frag so the
 // fragment entry point stays a thin dispatcher (see Phase-1 water-in-main
 // migration). Writes the global outColor; early returns (debug views,
@@ -120,115 +121,97 @@ void shadeSolidSurface() {
     if (e > 1.0) wt = pow(wt, vec3(e));
     float triWSum = wt.x + wt.y + wt.z + 1e-6;
     triW = wt / triWSum;
-    
-    // Sample albedo texture (triplanar when enabled)
-    vec3 albedoColor;
-    vec3 tripNormal0;
-    vec3 tripNormal1;
-    vec3 tripNormal2;
 
-    // Mix triplanar flag across the three materials
-    float triFlag = dot(vec3(float(materialNamed(materials[texIndices.x]).triplanarEnabled), float(materialNamed(materials[texIndices.y]).triplanarEnabled), float(materialNamed(materials[texIndices.z]).triplanarEnabled)), w);
+    // Per-corner material views: each corner of the triangle may use a
+    // different texture mapping mode (triplanar / single projection /
+    // SdfGiven sphere / custom UV).
+    MaterialNamed matA = materialNamed(materials[texIndices.x]);
+    MaterialNamed matB = materialNamed(materials[texIndices.y]);
+    MaterialNamed matC = materialNamed(materials[texIndices.z]);
 
-    // Compute triplanar UVs once per material and reuse across all map fetches below.
-    vec2 uv0X, uv0Y, uv0Z;
-    vec2 uv1X, uv1Y, uv1Z;
-    vec2 uv2X, uv2Y, uv2Z;
-    if (w.x > 0.0) computeTriplanarUVs(fragPosWorldNotDisplaced, texIndices.x, geomN, uv0X, uv0Y, uv0Z);
-    if (w.y > 0.0) computeTriplanarUVs(fragPosWorldNotDisplaced, texIndices.y, geomN, uv1X, uv1Y, uv1Z);
-    if (w.z > 0.0) computeTriplanarUVs(fragPosWorldNotDisplaced, texIndices.z, geomN, uv2X, uv2Y, uv2Z);
+    // Mix the triplanar flag across the three materials. Legacy mode-0
+    // materials with triplanarEnabled == false count as custom UV mapping.
+    float triFlag = dot(vec3(float(materialUsesTriplanarMapping(matA)),
+                             float(materialUsesTriplanarMapping(matB)),
+                             float(materialUsesTriplanarMapping(matC))), w);
+    usedTriplanar = triFlag > 0.5;
 
-    if (triFlag > 0.5) {
-        usedTriplanar = true;
-        // compute triplanar albedo per-layer then blend
-        vec3 a0 = w.x > 0.0 ? computeTriplanarAlbedoUVs(triW, texIndices.x, uv0X, uv0Y, uv0Z) : vec3(0.0);
-        vec3 a1 = w.y > 0.0 ? computeTriplanarAlbedoUVs(triW, texIndices.y, uv1X, uv1Y, uv1Z) : vec3(0.0);
-        vec3 a2 = w.z > 0.0 ? computeTriplanarAlbedoUVs(triW, texIndices.z, uv2X, uv2Y, uv2Z) : vec3(0.0);
-        albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
-        // If normal mapping/triplanar normal enabled per-material or global, compute blended triplanar normal
-        float mapFlag0 = float(materialNamed(materials[texIndices.x]).mappingEnabled);
-        float mapFlag1 = float(materialNamed(materials[texIndices.y]).mappingEnabled);
-        float mapFlag2 = float(materialNamed(materials[texIndices.z]).mappingEnabled);
-        if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || (ubo.normalMappingEnabled != 0u)) {
+    // Compute the UVs and blend weights for each corner's own mapping mode
+    // and reuse them across all map fetches below.
+    vec2 uv0X = vec2(0.0), uv0Y = vec2(0.0), uv0Z = vec2(0.0);
+    vec2 uv1X = vec2(0.0), uv1Y = vec2(0.0), uv1Z = vec2(0.0);
+    vec2 uv2X = vec2(0.0), uv2Y = vec2(0.0), uv2Z = vec2(0.0);
+    vec3 mw0 = vec3(1.0, 0.0, 0.0);
+    vec3 mw1 = vec3(1.0, 0.0, 0.0);
+    vec3 mw2 = vec3(1.0, 0.0, 0.0);
+    if (w.x > 0.0) computeMaterialUVs(texIndices.x, fragPosWorldNotDisplaced, geomN, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uv0X, uv0Y, uv0Z, mw0);
+    if (w.y > 0.0) computeMaterialUVs(texIndices.y, fragPosWorldNotDisplaced, geomN, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uv1X, uv1Y, uv1Z, mw1);
+    if (w.z > 0.0) computeMaterialUVs(texIndices.z, fragPosWorldNotDisplaced, geomN, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uv2X, uv2Y, uv2Z, mw2);
+
+    // Sample albedo per corner with that corner's own mapping weights. One-hot
+    // weights (projection / SdfGiven / custom) collapse to a single fetch.
+    vec3 a0 = w.x > 0.0 ? computeTriplanarAlbedoUVs(mw0, texIndices.x, uv0X, uv0Y, uv0Z) : vec3(0.0);
+    vec3 a1 = w.y > 0.0 ? computeTriplanarAlbedoUVs(mw1, texIndices.y, uv1X, uv1Y, uv1Z) : vec3(0.0);
+    vec3 a2 = w.z > 0.0 ? computeTriplanarAlbedoUVs(mw2, texIndices.z, uv2X, uv2Y, uv2Z) : vec3(0.0);
+    vec3 albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
+
+    // Compute normal mapping if enabled (per-material or global toggle).
+    // Triplanar-dominant patches use each corner's mapping weights; the
+    // non-triplanar path samples each corner at the UV of its dominant axis.
+    float mapFlag0 = float(matA.mappingEnabled);
+    float mapFlag1 = float(matB.mappingEnabled);
+    float mapFlag2 = float(matC.mappingEnabled);
+    if ((mapFlag0 * w.x + mapFlag1 * w.y + mapFlag2 * w.z) > 0.5 || (ubo.normalMappingEnabled != 0u)) {
+        if (usedTriplanar) {
             // C3: blend texels first, transform once (same weights/texels).
-            tripNormal0 = w.x > 0.0 ? computeTriplanarNormalBlended(triW, texIndices.x, N, uv0X, uv0Y, uv0Z) : vec3(0.0);
-            tripNormal1 = w.y > 0.0 ? computeTriplanarNormalBlended(triW, texIndices.y, N, uv1X, uv1Y, uv1Z) : vec3(0.0);
-            tripNormal2 = w.z > 0.0 ? computeTriplanarNormalBlended(triW, texIndices.z, N, uv2X, uv2Y, uv2Z) : vec3(0.0);
+            vec3 tripNormal0 = w.x > 0.0 ? computeTriplanarNormalBlended(mw0, texIndices.x, N, uv0X, uv0Y, uv0Z) : vec3(0.0);
+            vec3 tripNormal1 = w.y > 0.0 ? computeTriplanarNormalBlended(mw1, texIndices.y, N, uv1X, uv1Y, uv1Z) : vec3(0.0);
+            vec3 tripNormal2 = w.z > 0.0 ? computeTriplanarNormalBlended(mw2, texIndices.z, N, uv2X, uv2Y, uv2Z) : vec3(0.0);
             vec3 blended = tripNormal0 * w.x + tripNormal1 * w.y + tripNormal2 * w.z;
             worldNormal = normalize(blended);
-            
-            
-            // Diagnostic: detect invalid/degenerate normals and show red so we can find broken pixels.
-            // L14: gated on any debug view (uniform branch). Skipped in the
-            // normal view, where it never fires on valid assets — a degenerate
-            // normal there would render black instead of red, equally visible
-            // if assets ever regress.
-            if (ubo.debugMode != 0 && (isnan(worldNormal.x) || isnan(worldNormal.y) || isnan(worldNormal.z) || length(worldNormal) < 1e-6)) {
-                outColor = vec4(1.0, 0.0, 0.0, 1.0);
-                return;
-            }
+        } else {
+            // Sample the normal map per corner at its dominant mapped UV and
+            // blend in tangent space (C3: dead slots skipped).
+            vec2 nuv0 = dominantMappingUV(mw0, uv0X, uv0Y, uv0Z);
+            vec2 nuv1 = dominantMappingUV(mw1, uv1X, uv1Y, uv1Z);
+            vec2 nuv2 = dominantMappingUV(mw2, uv2X, uv2Y, uv2Z);
+            vec3 n0 = w.x > 0.0 ? texture(normalArray, vec3(nuv0, float(texIndices.x))).rgb * 2.0 - 1.0 : vec3(0.0);
+            vec3 n1 = w.y > 0.0 ? texture(normalArray, vec3(nuv1, float(texIndices.y))).rgb * 2.0 - 1.0 : vec3(0.0);
+            vec3 n2 = w.z > 0.0 ? texture(normalArray, vec3(nuv2, float(texIndices.z))).rgb * 2.0 - 1.0 : vec3(0.0);
+            vec3 nmap = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
+            // Build TBN matrix from geometry for UV-space normal mapping
+            vec3 T = normalize(dFdx(fragPosWorld));
+            vec3 B = normalize(cross(N, T));
+            T = normalize(cross(B, N)); // re-orthogonalize
+            mat3 TBN = mat3(T, B, N);
+            worldNormal = normalize(TBN * nmap);
         }
-    } else {
-        // Sample albedo from each layer and blend by barycentric weights.
-        // Zero-weight slots are skipped (C3): weight 0 contributes 0, so the
-        // fetch is provably dead — single-material interiors pay 1, not 3.
-        vec3 a0 = w.x > 0.0 ? texture(albedoArray, vec3(uv, float(texIndices.x))).rgb : vec3(0.0);
-        vec3 a1 = w.y > 0.0 ? texture(albedoArray, vec3(uv, float(texIndices.y))).rgb : vec3(0.0);
-        vec3 a2 = w.z > 0.0 ? texture(albedoArray, vec3(uv, float(texIndices.z))).rgb : vec3(0.0);
-        albedoColor = a0 * w.x + a1 * w.y + a2 * w.z;
-    }
 
-    // Compute normal mapping if enabled (per-material or global toggle)
-    if (!usedTriplanar && ((float(materialNamed(materials[texIndices.x]).mappingEnabled) * w.x + float(materialNamed(materials[texIndices.y]).mappingEnabled) * w.y + float(materialNamed(materials[texIndices.z]).mappingEnabled) * w.z) > 0.5 || (ubo.normalMappingEnabled != 0u))) {
-        // Sample normal map per-layer and blend in tangent space (C3: dead
-        // slots skipped, same argument as albedo above).
-        vec3 n0 = w.x > 0.0 ? texture(normalArray, vec3(uv, float(texIndices.x))).rgb * 2.0 - 1.0 : vec3(0.0);
-        vec3 n1 = w.y > 0.0 ? texture(normalArray, vec3(uv, float(texIndices.y))).rgb * 2.0 - 1.0 : vec3(0.0);
-        vec3 n2 = w.z > 0.0 ? texture(normalArray, vec3(uv, float(texIndices.z))).rgb * 2.0 - 1.0 : vec3(0.0);
-        vec3 nmap = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
-        // Build TBN matrix from geometry for UV-space normal mapping
-        vec3 T = normalize(dFdx(fragPosWorld));
-        vec3 B = normalize(cross(N, T));
-        T = normalize(cross(B, N)); // re-orthogonalize
-        mat3 TBN = mat3(T, B, N);
-        worldNormal = normalize(TBN * nmap);
-        // L14: same debug-view gate as the triplanar diagnostic above.
+        // Diagnostic: detect invalid/degenerate normals and show red so we can find broken pixels.
+        // L14: gated on any debug view (uniform branch). Skipped in the
+        // normal view, where it never fires on valid assets — a degenerate
+        // normal there would render black instead of red, equally visible
+        // if assets ever regress.
         if (ubo.debugMode != 0 && (isnan(worldNormal.x) || isnan(worldNormal.y) || isnan(worldNormal.z) || length(worldNormal) < 1e-6)) {
             outColor = vec4(1.0, 0.0, 0.0, 1.0);
             return;
         }
     }
 
-    // Sample roughness map (R channel). Triplanar path (C3): one fetch on
-    // the dominant projection per material instead of three.
-    float roughnessValue;
-    if (usedTriplanar) {
-        float r0 = w.x > 0.0 ? computeTriplanarRoughnessDominant(triW, texIndices.x, uv0X, uv0Y, uv0Z) : 0.0;
-        float r1 = w.y > 0.0 ? computeTriplanarRoughnessDominant(triW, texIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
-        float r2 = w.z > 0.0 ? computeTriplanarRoughnessDominant(triW, texIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
-        roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
-    } else {
-        float r0 = w.x > 0.0 ? texture(roughnessArray, vec3(uv, float(texIndices.x))).r : 0.0;
-        float r1 = w.y > 0.0 ? texture(roughnessArray, vec3(uv, float(texIndices.y))).r : 0.0;
-        float r2 = w.z > 0.0 ? texture(roughnessArray, vec3(uv, float(texIndices.z))).r : 0.0;
-        roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
-    }
+    // Sample roughness map (R channel). One fetch on the dominant projection
+    // of each corner's own mapping (triplanar or single projected UV).
+    float r0 = w.x > 0.0 ? computeTriplanarRoughnessDominant(mw0, texIndices.x, uv0X, uv0Y, uv0Z) : 0.0;
+    float r1 = w.y > 0.0 ? computeTriplanarRoughnessDominant(mw1, texIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
+    float r2 = w.z > 0.0 ? computeTriplanarRoughnessDominant(mw2, texIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
+    float roughnessValue = clamp(r0 * w.x + r1 * w.y + r2 * w.z, 0.0, 1.0);
     if (!roughnessEnabled) roughnessValue = 0.0;
 
-    // Sample ambient occlusion map (R channel). Triplanar path (C3): one
-    // fetch on the dominant projection per material instead of three.
-    float ambientOcclusion;
-    if (usedTriplanar) {
-        float ao0 = w.x > 0.0 ? computeTriplanarAODominant(triW, texIndices.x, uv0X, uv0Y, uv0Z) : 0.0;
-        float ao1 = w.y > 0.0 ? computeTriplanarAODominant(triW, texIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
-        float ao2 = w.z > 0.0 ? computeTriplanarAODominant(triW, texIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
-        ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
-    } else {
-        float ao0 = w.x > 0.0 ? texture(aoArray, vec3(uv, float(texIndices.x))).r : 0.0;
-        float ao1 = w.y > 0.0 ? texture(aoArray, vec3(uv, float(texIndices.y))).r : 0.0;
-        float ao2 = w.z > 0.0 ? texture(aoArray, vec3(uv, float(texIndices.z))).r : 0.0;
-        ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
-    }
+    // Sample ambient occlusion map (R channel), same dominant-projection
+    // fetch per corner as roughness above.
+    float ao0 = w.x > 0.0 ? computeTriplanarAODominant(mw0, texIndices.x, uv0X, uv0Y, uv0Z) : 0.0;
+    float ao1 = w.y > 0.0 ? computeTriplanarAODominant(mw1, texIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
+    float ao2 = w.z > 0.0 ? computeTriplanarAODominant(mw2, texIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
+    float ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
 
     // Lighting calculation
     vec3 toLight = -normalize(ubo.lightDirection);
@@ -654,28 +637,40 @@ void shadeSolidSurface() {
         return;
     }
     if (debugMode == DEBUG_MODE_NORMAL_MAP) {
-        // Raw normal-map samples (UV addressing) blended by barycentric weights.
-        vec3 rn0 = texture(normalArray, vec3(uv, float(texIndices.x))).rgb;
-        vec3 rn1 = texture(normalArray, vec3(uv, float(texIndices.y))).rgb;
-        vec3 rn2 = texture(normalArray, vec3(uv, float(texIndices.z))).rgb;
+        // Raw normal-map samples at each corner's dominant mapped UV, blended
+        // by barycentric weights.
+        vec2 nuv0 = dominantMappingUV(mw0, uv0X, uv0Y, uv0Z);
+        vec2 nuv1 = dominantMappingUV(mw1, uv1X, uv1Y, uv1Z);
+        vec2 nuv2 = dominantMappingUV(mw2, uv2X, uv2Y, uv2Z);
+        vec3 rn0 = texture(normalArray, vec3(nuv0, float(texIndices.x))).rgb;
+        vec3 rn1 = texture(normalArray, vec3(nuv1, float(texIndices.y))).rgb;
+        vec3 rn2 = texture(normalArray, vec3(nuv2, float(texIndices.z))).rgb;
         outColor = vec4(rn0 * w.x + rn1 * w.y + rn2 * w.z, 1.0);
         return;
     }
     if (debugMode == DEBUG_MODE_HEIGHT_MAP) {
-        // Final height/bump sample driving displacement: triplanar when the
-        // material uses triplanar mapping, UV addressing otherwise.
-        float h;
-        if (usedTriplanar) {
-            float b0 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x);
-            float b1 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y);
-            float b2 = sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.z);
-            h = b0 * w.x + b1 * w.y + b2 * w.z;
-        } else {
-            float h0 = texture(heightArray, vec3(uv, float(texIndices.x))).r;
-            float h1 = texture(heightArray, vec3(uv, float(texIndices.y))).r;
-            float h2 = texture(heightArray, vec3(uv, float(texIndices.z))).r;
-            h = h0 * w.x + h1 * w.y + h2 * w.z;
+        // Final height/bump sample driving displacement. Triplanar materials
+        // keep the world-space triplanar fetch; every other mapping mode
+        // samples at its dominant mapped UV.
+        float h0 = 0.0;
+        float h1 = 0.0;
+        float h2 = 0.0;
+        if (w.x > 0.0) {
+            h0 = materialUsesTriplanarMapping(matA)
+                ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x)
+                : texture(heightArray, vec3(dominantMappingUV(mw0, uv0X, uv0Y, uv0Z), float(texIndices.x))).r;
         }
+        if (w.y > 0.0) {
+            h1 = materialUsesTriplanarMapping(matB)
+                ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y)
+                : texture(heightArray, vec3(dominantMappingUV(mw1, uv1X, uv1Y, uv1Z), float(texIndices.y))).r;
+        }
+        if (w.z > 0.0) {
+            h2 = materialUsesTriplanarMapping(matC)
+                ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.z)
+                : texture(heightArray, vec3(dominantMappingUV(mw2, uv2X, uv2Y, uv2Z), float(texIndices.z))).r;
+        }
+        float h = h0 * w.x + h1 * w.y + h2 * w.z;
         outColor = vec4(vec3(h), 1.0);
         return;
     }

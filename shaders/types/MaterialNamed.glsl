@@ -27,6 +27,15 @@ struct MaterialNamed {
     float roughnessFactor;
     float aoFactor;
     bool useAO;
+    // Material kind (0 = texture, 1 = video, 2 = water), texture layer/slot
+    // (-1 = the material's own layer), coordinate technique
+    // (0 = triplanar, 1..3 = projection XYZ, 4 = SdfGiven, 5 = custom UV) and
+    // blend mode (0 = normal, 1..19 = shader blend modes).
+    int kind;
+    int textureIndex;
+    int textureMapping;
+    int blendMode;
+    vec4 mappingOrigin;
 };
 
 #endif // MATERIAL_NAMED_GLSL

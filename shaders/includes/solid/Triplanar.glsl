@@ -1,21 +1,16 @@
 // Triplanar projection utilities for albedo and normal mapping
 
-// Compute triplanar UVs from world-space position using triplanarParams.x/y as scale
+#include "../TextureMapping.glsl"
+
 // Compute triplanar UVs from world-space position using triplanarParams.x/y as scale.
-// Uses the geometric normal sign to match CPU-side orientation.
+// Uses the geometric normal sign to match CPU-side orientation. The per-axis
+// projection itself lives in TextureMapping.glsl (shared with the single-axis
+// mapping modes).
 void computeTriplanarUVs(in vec3 fragPosWorld, in int brushIndex, in vec3 geomN, out vec2 uvX, out vec2 uvY, out vec2 uvZ) {
-    vec2 scale = vec2(materialNamed(materials[brushIndex]).triplanarScaleU, materialNamed(materials[brushIndex]).triplanarScaleV);
-    // X projection -> sample YZ. Match CPU mapping: positive X => (-z, -y), negative X => (z, -y)
-    if (geomN.x >= 0.0) uvX = vec2(-fragPosWorld.z, -fragPosWorld.y) * scale;
-    else               uvX = vec2( fragPosWorld.z, -fragPosWorld.y) * scale;
-
-    // Y projection -> sample XZ. CPU mapping: positive Y => (x, z), negative Y => (x, -z)
-    if (geomN.y >= 0.0) uvY = vec2(fragPosWorld.x,  fragPosWorld.z) * scale;
-    else               uvY = vec2(fragPosWorld.x, -fragPosWorld.z) * scale;
-
-    // Z projection -> sample XY. CPU mapping: positive Z => (x, -y), negative Z => (-x, -y)
-    if (geomN.z >= 0.0) uvZ = vec2( fragPosWorld.x, -fragPosWorld.y) * scale;
-    else               uvZ = vec2(-fragPosWorld.x, -fragPosWorld.y) * scale;
+    MaterialNamed m = materialNamed(materials[brushIndex]);
+    uvX = textureMappingUV(m, TEXTURE_AXIS_X, fragPosWorld, geomN);
+    uvY = textureMappingUV(m, TEXTURE_AXIS_Y, fragPosWorld, geomN);
+    uvZ = textureMappingUV(m, TEXTURE_AXIS_Z, fragPosWorld, geomN);
 }
 
 // Sample albedo using precomputed triplanar UVs (weights already blended).
