@@ -170,8 +170,115 @@ bool WebServer::loadWebAsset(const std::string& rel, std::string& out, std::stri
     return true;
 }
 
+// Content type for a texture file (engine formats included: tif/tiff via GDAL,
+// dds/ktx2 for GPU-compressed data, hdr for environment maps).
+static const char* textureContentType(const std::string& lowerPath) {
+    auto ends = [&](const char* s) {
+        const size_t n = std::strlen(s);
+        return lowerPath.size() >= n && lowerPath.compare(lowerPath.size() - n, n, s) == 0;
+    };
+    if (ends(".png")) return "image/png";
+    if (ends(".jpg") || ends(".jpeg")) return "image/jpeg";
+    if (ends(".bmp")) return "image/bmp";
+    if (ends(".tga")) return "image/x-tga";
+    if (ends(".tif") || ends(".tiff")) return "image/tiff";
+    if (ends(".webp")) return "image/webp";
+    if (ends(".gif")) return "image/gif";
+    if (ends(".svg")) return "image/svg+xml";
+    if (ends(".hdr")) return "image/vnd.radiance";
+    if (ends(".exr")) return "image/x-exr";
+    if (ends(".dds")) return "image/vnd-ms.dds";
+    if (ends(".ktx")) return "image/ktx";
+    if (ends(".ktx2")) return "image/ktx2";
+    if (ends(".json")) return "application/json";
+    return "application/octet-stream";
+}
+
+bool WebServer::loadTextureAsset(const std::string& rel, std::string& out, std::string& contentType) {
+    if (rel.empty() || rel[0] == '/' || rel.find("..") != std::string::npos) return false;
+    std::lock_guard<std::mutex> l(indexMutex_);
+    if (textureRoot_.empty()) return false;
+    std::error_code ec;
+    const std::filesystem::path full = std::filesystem::path(textureRoot_) / rel;
+    if (!std::filesystem::is_regular_file(full, ec)) return false;
+    // Containment: the canonical path must stay inside the canonical root.
+    const std::filesystem::path root = std::filesystem::weakly_canonical(textureRoot_, ec);
+    const std::filesystem::path canon = std::filesystem::weakly_canonical(full, ec);
+    if (ec) return false;
+    const std::string rs = root.string();
+    const std::string cs = canon.string();
+    if (cs.size() < rs.size() || cs.compare(0, rs.size(), rs) != 0) return false;
+
+    std::ifstream f(canon, std::ios::binary);
+    if (!f) return false;
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    out = ss.str();
+    std::string lower = cs;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    contentType = textureContentType(lower);
+    return true;
+}
+
+std::string WebServer::listTexturesJson() {
+    std::lock_guard<std::mutex> l(indexMutex_);
+    std::ostringstream ss;
+    ss << "{\"root\":\"" << textureRoot_ << "\",\"count\":";
+    std::vector<std::pair<std::string, uintmax_t>> files;
+    if (!textureRoot_.empty()) {
+        std::error_code ec;
+        const std::filesystem::path root = std::filesystem::weakly_canonical(textureRoot_, ec);
+        if (!ec) {
+            for (std::filesystem::recursive_directory_iterator it(root, ec), end; it != end;
+                 it.increment(ec)) {
+                if (ec) break;
+                if (!it->is_regular_file(ec)) continue;
+                std::error_code relEc;
+                const std::string rel =
+                    std::filesystem::relative(it->path(), root, relEc).generic_string();
+                if (relEc) continue;
+                const uintmax_t size = it->file_size(ec);
+                files.emplace_back(rel, ec ? 0u : size);
+                if (files.size() >= 5000u) break; // bounded response
+            }
+        }
+    }
+    std::sort(files.begin(), files.end());
+    ss << files.size() << ",\"files\":[";
+    for (size_t i = 0; i < files.size(); ++i) {
+        std::string lower = files[i].first;
+        for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (i) ss << ",";
+        ss << "{\"path\":\"" << files[i].first << "\",\"size\":" << files[i].second
+           << ",\"mime\":\"" << textureContentType(lower) << "\"}";
+    }
+    ss << "]}\n";
+    return ss.str();
+}
+
 void WebServer::start() {
     if (running_) return;
+    if (textureRoot_.empty()) {
+        static const char* kTextureCandidates[] = {
+            "textures",        // CWD = bin/ (make copies the folder)
+            "../textures",     // CWD = bin/, source tree
+            "bin/textures",    // CWD = repo root
+            "./textures",
+        };
+        for (const char* p : kTextureCandidates) {
+            std::error_code ec;
+            if (std::filesystem::is_directory(p, ec)) {
+                textureRoot_ = p;
+                std::cout << "[web] serving textures from '" << textureRoot_
+                          << "' at /textures (list) and /textures/<path>\n";
+                break;
+            }
+        }
+        if (textureRoot_.empty()) {
+            std::cout << "[web] no textures directory found; /textures will report an empty list\n";
+        }
+    }
+
     listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listenFd_ < 0) throw std::runtime_error("web: socket() failed");
     int one = 1;
@@ -392,6 +499,17 @@ bool WebServer::handleHttpOrWs(int fd) {
            << ",\"meshes\":" << meshesSent() << "}\n";
         body = ss.str();
         ctype = "application/json";
+    } else if (path == "/textures" || path == "/textures/") {
+        body = listTexturesJson();
+        ctype = "application/json";
+    } else if (path.rfind("/textures/", 0) == 0) {
+        std::string texCtype;
+        if (!loadTextureAsset(path.substr(10), body, texCtype)) {
+            code = 404; codeText = "Not Found";
+            body = "texture not found\n";
+        } else {
+            ctype = texCtype;
+        }
     } else if (loadWebAsset(path.substr(1), body, ctype)) {
         // Built-app asset (vite dist/: ./assets/*, favicons, ...). Code path
         // unchanged on miss (falls through to 404 below).

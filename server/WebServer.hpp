@@ -40,6 +40,15 @@ public:
     void pushUpsert(const chunkproto::ChunkRecord& rec);
     void pushDelete(uint64_t id);
 
+    // Texture directory served over HTTP:
+    //   GET /textures           -> JSON listing (relative path, size, mime)
+    //   GET /textures/<rel>     -> the file bytes with a type-appropriate
+    //                              Content-Type (png/jpg/tif/dds/ktx2/...)
+    // Resolved automatically at start() from the usual texture locations; call
+    // setTextureRoot() before start() to point it somewhere else.
+    void setTextureRoot(const std::string& path) { textureRoot_ = path; }
+    const std::string& textureRoot() const { return textureRoot_; }
+
     // Snapshot provider for REQUEST_ALL (must be thread-safe).
     void setSnapshotProvider(std::function<std::vector<chunkproto::ChunkRecord>()> fn);
 
@@ -51,6 +60,12 @@ public:
     // thread-safe). Returns true when the id names a live chunk (mesh may
     // be empty for non-surface chunks).
     void setMeshProvider(std::function<bool(uint64_t, chunkproto::MeshData&)> fn);
+
+    // Reads one texture file under textureRoot_ (containment-checked) and
+    // returns its Content-Type. False when missing or outside the root.
+    bool loadTextureAsset(const std::string& rel, std::string& out, std::string& contentType);
+    // JSON listing of every texture file under textureRoot_.
+    std::string listTexturesJson();
 
     size_t clientCount() const;
     uint64_t upsertsSent() const;
@@ -118,6 +133,7 @@ private:
     // Web root serving the built Vue app (the directory holding the resolved
     // index.html, i.e. .../web). loadIndexHtml() sets it as a side effect.
     std::string webRoot_;
+    std::string textureRoot_;
     // Serve one static asset from webRoot_ (binary-safe). Returns false for
     // missing files / path escapes; contentType is set from the extension.
     bool loadWebAsset(const std::string& rel, std::string& out, std::string& contentType);
