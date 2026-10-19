@@ -64,6 +64,30 @@ public:
     bool roughnessEnabled = true;
     bool aoEnabled = true;
 
+    // ── Water droplets (GPU particle system + SDF ray-marched rendering) ──
+    // 2048 particles are simulated on the GPU (spatial-hash broad phase,
+    // sphere/SDF contacts, impulse solver) and rendered by ray marching their
+    // SDF spheres with refraction + reflection. The simulation is re-seeded
+    // inside `dropletSpawnRadius` around (0, dropletSpawnHeight, 0) every
+    // `dropletResetSeconds`; the spawn height defaults to the low cloud tier
+    // base (CloudSettings::lowBaseHeight) so droplets fall from cloud level.
+    // Physics and rendering are independent: the values below never change the
+    // terrain's rendering LOD and the render LOD never changes the collision.
+    bool dropletsEnabled = false;      // master gate (sim + draw)
+    int dropletCount = 2048;           // simulated particles (<= capacity 8192)
+    float dropletSpawnRadius = 128.0f; // spawn volume radius (m)
+    float dropletSpawnHeight = 2000.0f;// spawn volume center Y (m) = cloud level
+    float dropletRadius = 1.5f;        // particle sphere radius (m), sim + render
+    float dropletResetSeconds = 30.0f; // full re-seed interval (s)
+    float dropletGravity = 9.81f;      // m/s^2 (downward)
+    float dropletRestitution = 0.25f;  // bounce factor at SDF/water contacts
+    float dropletFriction = 0.35f;     // tangential (Coulomb-clamped) friction
+    float dropletDamping = 0.02f;      // per-second linear drag
+    float dropletIor = 1.333f;         // refraction index for the render
+    int dropletSolverIterations = 3;   // pairwise impulse iterations per substep
+    int dropletSubsteps = 4;           // fixed substeps per frame (dt = frame/n)
+    bool dropletStats = false;         // read contact/overflow counters (log)
+
     // Debug visuals
     bool showBoundingBoxes = false;
     bool showSDFDebug = false;

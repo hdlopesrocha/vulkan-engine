@@ -54,6 +54,8 @@ public:
     ChunkTopologyStatus buildChunkTopology(Layer layer, OctreeNodeData& data, uint8_t chunkLod,
                                            uint32_t version, OctreeTopologyInput& out) override;
     void commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint32_t version) override;
+    bool buildSdfRegionTable(Layer layer, const glm::vec3& min, const glm::vec3& max,
+                             std::vector<OctreeGpuNode>& out, size_t maxNodes) override;
     void requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride = nullptr) override;
     void requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride = nullptr) override;
     bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override;

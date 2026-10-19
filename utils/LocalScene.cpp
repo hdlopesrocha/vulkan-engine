@@ -349,6 +349,79 @@ void LocalScene::commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint
     emittedVersion_[emittingNodeId] = version;
 }
 
+// World-SDF query table for the GPU droplet/physics path. Walks the subtree(s)
+// intersecting the region with the same root-consistent cube replay the
+// topology flattening uses (cube.getChild(i) from the tree root), so a query
+// interpolates the identical corner values the mesh walker triangulates.
+bool LocalScene::buildSdfRegionTable(Layer layer, const glm::vec3& min, const glm::vec3& max,
+                                     std::vector<OctreeGpuNode>& out, size_t maxNodes) {
+    std::shared_ptr<Octree> tree;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return false;
+        tree = layers_[static_cast<size_t>(layer)].octree;
+    }
+    if (!tree || tree->root == nullptr || !tree->allocator) return false;
+
+    out.clear();
+    out.reserve(8192);
+
+    std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
+
+    bool truncated = false;
+    // Entry 0 is the world root (the shader's descent anchor); a child's index
+    // is patched into its parent record after the child has been appended
+    // (out may reallocate during the recursion, so the parent is re-indexed by
+    // id instead of holding a reference).
+    std::function<int32_t(OctreeNode*, const BoundingCube&)> addNode =
+        [&](OctreeNode* node, const BoundingCube& cube) -> int32_t {
+        if (node == nullptr) return -1;
+        const glm::vec3 cMin = cube.getMin();
+        const glm::vec3 cMax = cube.getMax();
+        if (!cubeIntersectsCube(cMin, cMax, min, max)) return -1;
+        if (out.size() >= maxNodes) {
+            truncated = true;
+            return -1;
+        }
+
+        const int32_t id = static_cast<int32_t>(out.size());
+        OctreeGpuNode rec{};
+        for (int i = 0; i < 8; ++i) rec.sdf[i] = node->sdf[i];
+        rec.cubeMin = cMin;
+        rec.cubeSize = cube.getLengthX();
+        rec.lod = static_cast<int32_t>(node->getLod());
+        rec.type = static_cast<int32_t>(node->getType());
+        rec.brushIndex = node->brushIndex;
+        rec.flags = node->isLeaf() ? 1 : 0;
+        rec.hsv = node->hsv;
+        for (int i = 0; i < 8; ++i) rec.children[i] = -1;
+        out.push_back(rec);
+
+        OctreeNode* children[8] = {};
+        node->getChildren(*tree->allocator, children);
+        for (int i = 0; i < 8; ++i) {
+            if (children[i] == nullptr) continue;
+            const int32_t childId = addNode(children[i], cube.getChild(i));
+            out[static_cast<size_t>(id)].children[i] = childId;
+        }
+        return id;
+    };
+
+    addNode(tree->root, static_cast<const BoundingCube&>(*tree));
+
+    if (truncated) {
+        std::cerr << "[LocalScene] SDF region table truncated (maxNodes=" << maxNodes
+                  << ", region " << min.x << "," << min.y << "," << min.z << " .. "
+                  << max.x << "," << max.y << "," << max.z << ")\n";
+        out.clear();
+        return false;
+    }
+    if (out.empty()) return false;
+    std::cout << "[LocalScene] SDF region table: " << out.size() << " nodes (region "
+              << (max.x - min.x) << " x " << (max.y - min.y) << " x " << (max.z - min.z) << " m)\n";
+    return true;
+}
+
 void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride) {
     std::shared_ptr<Octree> tree;
     {

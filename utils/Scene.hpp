@@ -120,6 +120,19 @@ public:
     virtual void commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint32_t version) {
         (void)layer; (void)emittingNodeId; (void)version;
     }
+    // Flattens every octree node whose cube intersects [min, max] into the same
+    // node layout the GPU topology pass consumes (entry 0 = world root, corner
+    // samples with INFINITY sentinels, children indices). This is the world-SDF
+    // query table for consumers that need distances outside the per-chunk
+    // topology path (GPU particle/physics collision); it reuses the exact same
+    // node representation, so a query interpolates the identical SDF the mesh
+    // walker triangulates. Returns false when the layer has no octree.
+    // `maxNodes` caps the table; a region that does not fit is reported false.
+    virtual bool buildSdfRegionTable(Layer layer, const glm::vec3& min, const glm::vec3& max,
+                                     std::vector<OctreeGpuNode>& out, size_t maxNodes) {
+        (void)layer; (void)min; (void)max; (void)out; (void)maxNodes;
+        return false;
+    }
     // Collect SDF debug cubes the same way requestModel3D collects meshes: the
     // walk emits one callback per node that carries a drawable SDF face, with the
     // node's own cube (band box) so the caller can place a debug cube. Boxes are

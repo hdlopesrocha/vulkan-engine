@@ -44,6 +44,7 @@
 #include "widgets/SkySettings.hpp"
 #include "widgets/CloudSettings.hpp"
 #include "widgets/CloudWidget.hpp"
+#include "widgets/DropletsWidget.hpp"
 #include "widgets/WaterWidget.hpp"
 #include "widgets/GraphicsQualityWidget.hpp"
 #include "widgets/RenderTargetsWidget.hpp"
@@ -107,6 +108,8 @@
 #include "services/OctreeMeshCompute.hpp"
 #include "services/OctreeMeshTypes.hpp"
 #include "services/OctreeTopologyCompute.hpp"
+#include "services/DropletSim.hpp"
+#include "vulkan/renderer/water/DropletRenderer.hpp"
 #include "services/OctreeTopologyTypes.hpp"
 #include "utils/ShadowParams.hpp"
 #include "space/ThreadPool.hpp"
@@ -379,6 +382,20 @@ public:
     std::shared_ptr<TextureMixer> textureMixer;
     std::shared_ptr<OctreeMeshCompute> octreeMeshCompute;
     std::shared_ptr<OctreeTopologyCompute> octreeTopologyCompute;
+    // ── Water droplets: GPU particle simulation + SDF ray-marched rendering ─
+    // The simulation owns device-local state buffers and collides against the
+    // cropped octree SDF table (same node layout as the topology pass), so the
+    // physics never needs a triangle mesh and never depends on the render mode.
+    std::shared_ptr<DropletSim> dropletSim;
+    std::unique_ptr<DropletRenderer> dropletRenderer;
+    std::shared_ptr<class DropletsWidget> dropletsWidget;
+    double dropletSeconds = 0.0;    // time since the last re-seed (s)
+    double dropletStatsClock = 0.0; // throttles the diagnostics readback
+    float dropletShapeRadius = -1.0f; // last uploaded particle radius
+    float dropletForcedDt = 0.0f;     // VULKAN_DROPLET_DT override (0 = frame dt)
+    glm::vec3 dropletRegionMin{0.0f};
+    glm::vec3 dropletRegionMax{0.0f};
+    uint32_t dropletDrawCount = 0;
     std::vector<MixerParameters> mixerParams;
     std::vector<MaterialProperties> materials;
     // Application-owned per-layer water parameters (initialized in setup)
@@ -571,6 +588,30 @@ public:
     }
 
      void setup() override {
+        // Headless droplet bring-up (validation/diagnostics): VULKAN_DROPLETS=1
+        // enables the simulation + rendering and the counter readback — the
+        // same state the Droplets widget produces.
+        if (const char* env = std::getenv("VULKAN_DROPLETS")) {
+            if (env[0] != '0') {
+                settings.dropletsEnabled = true;
+                settings.dropletStats = true;
+            }
+        }
+        if (const char* env = std::getenv("VULKAN_DROPLET_COUNT")) {
+            settings.dropletCount = std::max(1, std::min(std::atoi(env), 8192));
+        }
+        // VULKAN_DROPLET_DT forces a fixed per-frame simulation delta (headless
+        // validation on slow software rasterizers, where the real frame delta
+        // is clamped to 0.1 s and the fall would take minutes of wall time).
+        if (const char* env = std::getenv("VULKAN_DROPLET_DT")) {
+            dropletForcedDt = std::max(0.0f, static_cast<float>(std::atof(env)));
+        }
+        // VULKAN_DROPLET_RADIUS overrides the particle radius (visibility in
+        // low-resolution captures).
+        if (const char* env = std::getenv("VULKAN_DROPLET_RADIUS")) {
+            settings.dropletRadius = std::max(0.05f, static_cast<float>(std::atof(env)));
+        }
+
         // Build the scene descriptor layouts/sets. Owned by the application (not by
         // the generic VulkanApp framework) so the engine core stays agnostic about
         // scene bindings. Must exist before SceneRenderer::init() writes the static
@@ -741,6 +782,8 @@ public:
 
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         cloudWidget = std::make_shared<CloudWidget>(sceneRenderer->getCloudSettings());
+        dropletsWidget = std::make_shared<DropletsWidget>(settings);
+        widgetManager.addWidget(dropletsWidget);
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings, &shadowParams);
         // Water UI uses the application-owned water params vector and updates GPU state explicitly.
@@ -925,6 +968,8 @@ public:
     void applyBrushToScene();
     // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
     void generateMap();
+    // Builds the GPU droplet sim + renderer for the active scene (once).
+    void ensureDroplets();
     void action();
     // Clear GPU meshes, reset octrees, load from file and tessellate
     void loadSceneFromFile(const std::string& path);
@@ -2062,6 +2107,54 @@ public:
                     }
                 }
 
+                // GPU droplet simulation: recorded into this same command
+                // buffer before the color pass so the droplet draw below reads
+                // the freshly integrated state (the sim ends with a
+                // compute -> vertex/fragment barrier).
+                dropletDrawCount = 0;
+                if (settings.dropletsEnabled && dropletSim && dropletSim->ready()) {
+                    if (settings.dropletResetSeconds > 0.0f) {
+                        dropletSeconds += std::max(lastFrameDelta, 0.0f);
+                        if (dropletSeconds >= settings.dropletResetSeconds) {
+                            dropletSim->requestReset();
+                            dropletSeconds = 0.0;
+                        }
+                    }
+                    if (dropletsWidget && dropletsWidget->resetRequested) {
+                        dropletsWidget->resetRequested = false;
+                        dropletSim->requestReset();
+                        dropletSeconds = 0.0;
+                    }
+                    if (dropletShapeRadius != settings.dropletRadius) {
+                        dropletSim->setParticleShape(settings.dropletRadius, 1.0f);
+                        dropletShapeRadius = settings.dropletRadius;
+                    }
+                    DropletSim::Config simCfg;
+                    simCfg.particleCount = static_cast<uint32_t>(std::clamp(
+                        settings.dropletCount, 1, static_cast<int>(DropletSim::kMaxParticles)));
+                    simCfg.spawnRadius = settings.dropletSpawnRadius;
+                    simCfg.spawnCenter = glm::vec3(0.0f, settings.dropletSpawnHeight, 0.0f);
+                    simCfg.gravity = settings.dropletGravity;
+                    simCfg.restitution = settings.dropletRestitution;
+                    simCfg.friction = settings.dropletFriction;
+                    simCfg.damping = settings.dropletDamping;
+                    simCfg.waterLevel = 0.0f; // MainSceneLoader water box top
+                    simCfg.particleRadius = settings.dropletRadius;
+                    simCfg.solverIterations = settings.dropletSolverIterations;
+                    simCfg.substeps = settings.dropletSubsteps;
+                    simCfg.regionMin = dropletRegionMin;
+                    simCfg.regionMax = dropletRegionMax;
+                    // Fixed substep: the frame delta is split into `substeps`
+                    // equal slices, clamped so a hitch can never tunnel a
+                    // droplet through the SDF in one step.
+                    const float frameDt = (dropletForcedDt > 0.0f)
+                        ? dropletForcedDt
+                        : std::clamp(lastFrameDelta, 0.0f, 0.1f);
+                    const float substep = frameDt / static_cast<float>(std::max(1, simCfg.substeps));
+                    dropletSim->dispatch(solidCmd, substep, simCfg);
+                    dropletDrawCount = simCfg.particleCount;
+                }
+
                 // ── Instance 2: Color pass (load depth from prepass) ──
                 {
                     VkRenderingAttachmentInfo colorAtt{};
@@ -2130,6 +2223,20 @@ public:
                         // C2: release the single-pass selector so later
                         // external draws never inherit the depth-write twin.
                         this->sceneRenderer->solidRenderer->setDeferredColorDepthWrite(false);
+
+                        // Droplets: direct SDF ray marching in the same pass
+                        // after the opaque geometry (depth test against the
+                        // solid depth, no depth write, premultiplied coverage
+                        // blend). Reads the state the dispatches above wrote.
+                        if (settings.dropletsEnabled && dropletRenderer && dropletSim &&
+                            dropletSim->ready() && dropletDrawCount > 0u) {
+                            VkImageView skyView = this->sceneRenderer->skyRenderer
+                                ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx)
+                                : VK_NULL_HANDLE;
+                            dropletRenderer->draw(solidCmd, this, frameIdx, getMainDescriptorSet(),
+                                                  dropletSim->stateBuffer(), dropletDrawCount,
+                                                  1.0f, settings.dropletIor, 0.0f, skyView);
+                        }
                     }
 
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -3715,6 +3822,17 @@ public:
             impostorService->cleanup();
         }
 
+        // Droplet sim/renderer own device-local buffers created through the
+        // app; destroy them before the scene renderer drains its own resources.
+        if (dropletSim) {
+            dropletSim->destroy(this);
+            dropletSim.reset();
+        }
+        if (dropletRenderer) {
+            dropletRenderer->destroy(this);
+            dropletRenderer.reset();
+        }
+
         // Stop ALL thread pools BEFORE sceneRenderer->cleanup() drains the
         // upload queues. Workers may push new upload jobs via tessellation
         // callbacks; if pools are still running when streamer.destroy()
@@ -4551,6 +4669,46 @@ void MyApp::repopulateLayer(Layer layer) {
     std::thread([this, layer]() { dispatchLayerEvents(layer); }).detach();
 }
 
+// Builds (once) the GPU droplet simulation + renderer for the active scene.
+//
+// The collision table is the cropped octree SDF region: the same node layout
+// the GPU topology pass consumes (entry 0 = world root, corner samples with
+// INFINITY sentinels, children indices), so a droplet collides with the
+// identical trilinear SDF the terrain mesh is generated from. Rendering and
+// physics are independent: this table is never rebuilt because the render LoD
+// or the droplet's render settings change, only when the scene changes.
+void MyApp::ensureDroplets() {
+    if (useRemote || sceneRenderer == nullptr || !world) return;
+    if (!dropletRenderer) dropletRenderer = std::make_unique<DropletRenderer>();
+    if (!dropletRenderer->ready()) dropletRenderer->init(this);
+    if (!dropletSim) dropletSim = std::make_shared<DropletSim>();
+    if (dropletSim->ready()) return;
+
+    // Region: the spawn sphere plus a wide lateral margin, from below the water
+    // level up past the spawn height. Droplets that leave it are retired by the
+    // finalize pass, so the table never has to cover the whole map.
+    const float lateral = std::max(16.0f, settings.dropletSpawnRadius) * 2.5f;
+    const glm::vec3 center(0.0f, settings.dropletSpawnHeight, 0.0f);
+    const float rootMinY = world->scene().lodRootMin(0).y;
+    dropletRegionMin = glm::vec3(center.x - lateral, std::min(rootMinY, -100.0f), center.z - lateral);
+    dropletRegionMax = glm::vec3(center.x + lateral, center.y + lateral, center.z + lateral);
+
+    std::vector<OctreeGpuNode> nodes;
+    if (!world->scene().buildSdfRegionTable(0, dropletRegionMin, dropletRegionMax, nodes,
+                                            DropletSim::kMaxRegionNodes) ||
+        nodes.empty()) {
+        std::cerr << "[MyApp] droplet simulation disabled: no SDF region table for layer 0\n";
+        return;
+    }
+    dropletSim->init(this);
+    dropletSim->uploadRegion(nodes);
+    dropletSim->setParticleShape(settings.dropletRadius, 1.0f);
+    dropletSim->requestReset();
+    dropletShapeRadius = settings.dropletRadius;
+    std::cout << "[MyApp] droplet simulation ready: " << nodes.size() << " SDF nodes, "
+              << settings.dropletCount << " particles\n";
+}
+
 void MyApp::generateMap() {
     if (useRemote) {
         std::cout << "[MyApp::generateMap] ignored in remote mode (rendering server scene)\n";
@@ -4573,6 +4731,7 @@ void MyApp::generateMap() {
 
     // Tessellate chunks in background threads, one per layer.
     startTessellationThreads("[MyApp::generateMap] Scene chunk tessellation complete\n");
+    ensureDroplets();
 }
 
 void MyApp::loadRemoteScene() {
@@ -4629,9 +4788,44 @@ void MyApp::loadSceneFromFile(const std::string& path) {
 
     // Every layer tessellates on its own thread.
     startTessellationThreads("[MyApp::loadSceneFromFile] Scene tessellation complete\n");
+
+    // New scene: the old droplet region table belongs to the previous octree.
+    // Drop it so the lazy bring-up rebuilds the region from the loaded scene.
+    if (dropletSim) {
+        dropletSim->destroy(this);
+        dropletSim.reset();
+    }
+    ensureDroplets();
 }
 void MyApp::postSubmit() {
     pollBlenderExport();
+    // Droplet diagnostics: throttled counter readback (never in the hot path).
+    if (settings.dropletsEnabled && settings.dropletStats && dropletSim && dropletSim->ready()) {
+        dropletStatsClock += std::max(lastFrameDelta, 0.0f);
+        if (dropletStatsClock >= 1.0) {
+            dropletStatsClock = 0.0;
+            const DropletSim::Stats ds = dropletSim->readStats();
+            const DropletSim::Probe probe = dropletSim->probeParticles();
+            std::cout << "[droplets] pairContacts=" << ds.pairContacts
+                      << " terrain+escaped=" << ds.terrainAndEscaped
+                      << " gridOverflow=" << ds.gridOverflow
+                      << " maxContactsPerParticle=" << ds.maxContactsPerParticle
+                      << " | active=" << probe.activeCount
+                      << " y[min=" << probe.minY << " mean=" << probe.meanY
+                      << " max=" << probe.maxY << "]";
+            if (probe.probed > 0u) {
+                const glm::vec4& p0 = probe.positions[0];
+                const glm::vec4& v0 = probe.velocities[0];
+                std::cout << " | p0=(" << p0.x << "," << p0.y << "," << p0.z << ")"
+                          << " r=" << p0.w << " |v0|=" << v0.w;
+            }
+            std::cout << std::endl;
+        }
+    }
+    // Lazy bring-up: toggling the master gate on after startup builds the sim.
+    if (settings.dropletsEnabled && sceneRenderer && (!dropletSim || !dropletSim->ready())) {
+        ensureDroplets();
+    }
     // VULKAN_STREAM_DIAG=1: periodic chunk-streaming counters (loaded/tracked
     // per layer + the cull's visible counts) so a headless run can be checked
     // for permanently missing regions without reading the UI overlay.

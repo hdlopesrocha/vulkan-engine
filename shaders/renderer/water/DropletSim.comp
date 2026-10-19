@@ -1,0 +1,588 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : enable
+
+// GPU water-droplet simulation: one compute pass, several dispatches per frame.
+// The host selects the pass through pc.misc.w:
+//
+//   0 SPAWN        seed the particle inside the spawn sphere (deterministic)
+//   1 INTEGRATE    gravity + damping (semi-implicit Euler)
+//   2 GRID CLEAR   zero the spatial-hash bucket counts (covers GRID_BUCKETS)
+//   3 GRID SCATTER insert every active particle into its spatial-hash bucket
+//   4 CONTACTS     one solver iteration: particle-particle, terrain SDF and
+//                  water-plane contacts
+//   5 FINALIZE     retire escaped particles, settle the resting ones
+//
+// Everything lives in device-local storage buffers; the host only reads the
+// counters in gridExtra[0] back. The solver is Jacobi-style: an invocation
+// reads its neighbours' records but only ever writes its OWN record, so the
+// result never depends on workgroup execution order (the neighbourhood is the
+// fixed 27-cell block of the spatial hash and the only shared state is the
+// atomic counter block).
+//
+// Physics notes:
+//  * Pair contacts apply HALF of the impulse to each side (the mirrored thread
+//    of the pair applies the other half), which conserves momentum without any
+//    thread-order dependency.
+//  * Positional separation uses the split-impulse idea: it removes the overlap
+//    but adds no velocity, so resting stacks do not gain energy.
+//  * The world SDF gradient is the outward surface normal (the field is
+//    negative inside the solid, positive outside), so it is exactly the
+//    direction a penetrating droplet must be pushed along.
+//
+// The world SDF is evaluated straight out of the flattened octree table that
+// OctreeTriangles.comp consumes as well (bindings 4..9, same node semantics):
+// descend to the finest node whose cube contains the sample, then trilinearly
+// interpolate its 8 corner distances. INFINITY corners carry no data (they are
+// skipped) and a missing child means the sample is outside the uploaded table
+// (no collision).
+
+layout(local_size_x = 64) in; // == LOCAL_SIZE
+
+struct Droplet {
+    vec3 position;
+    float radius;
+    vec3 velocity;
+    float mass;
+    vec3 prevPosition;
+    uint flags;
+};
+
+layout(std430, set = 0, binding = 0, scalar) buffer DropletState { Droplet droplets[]; };
+// Spatial hash: bucket -> live particle count, and bucket -> GRID_MAX_PER_BUCKET
+// particle slots (a bucket that overflows drops its excess particles).
+layout(std430, set = 0, binding = 1, scalar) buffer GridCounts  { uint gridCounts[];  };
+layout(std430, set = 0, binding = 2, scalar) buffer GridEntries { uint gridEntries[]; };
+// [0] = (overflowCount, pairContacts, terrainContacts, maxContactsPerParticle).
+// Pass 4 adds its terrain contacts to .z; pass 5 has no dedicated slot in the
+// frozen interface and counts particles that left the region there as well, so
+// the host reads .z as "terrain contacts + escaped particles".
+layout(std430, set = 0, binding = 3, scalar) buffer GridExtra   { uvec4 gridExtra[]; };
+
+// Flattened octree node table (same layout as OctreeTriangles.comp bindings 0..6).
+layout(std430, set = 0, binding = 4, scalar) readonly buffer InSdf0    { vec4 sdf0[]; };       // sdf[0..3]
+layout(std430, set = 0, binding = 5, scalar) readonly buffer InSdf1    { vec4 sdf1[]; };       // sdf[4..7]
+layout(std430, set = 0, binding = 6, scalar) readonly buffer InCube   { vec4 cubeMinSize[]; }; // xyz min, w size
+layout(std430, set = 0, binding = 7, scalar) readonly buffer InMeta   { ivec4 meta[]; };       // (lod, type, brushIndex, flags)
+layout(std430, set = 0, binding = 8, scalar) readonly buffer InChild03 { ivec4 child03[]; };
+layout(std430, set = 0, binding = 9, scalar) readonly buffer InChild47 { ivec4 child47[]; };
+
+layout(push_constant) uniform PC {
+    vec4 spawnCenterRadius;  // xyz = spawn sphere center, w = spawn sphere radius
+    vec4 regionMin;          // xyz = simulation region min, w = water level (y)
+    vec4 regionMax;          // xyz = simulation region max, w = grid cell size
+    vec4 physics;            // x = gravity (positive, downward), y = restitution, z = friction, w = damping (per second)
+    vec4 misc;               // x = dt, y = particleCount, z = resetSeed (uint bits), w = pass
+} pc;
+
+const uint GRID_BUCKETS = 8192u;
+const uint GRID_MAX_PER_BUCKET = 64u;
+const uint LOCAL_SIZE = 64u;
+
+const uint FLAG_ACTIVE = 1u;
+
+const uint PASS_SPAWN = 0u;
+const uint PASS_INTEGRATE = 1u;
+const uint PASS_GRID_CLEAR = 2u;
+const uint PASS_GRID_SCATTER = 3u;
+const uint PASS_CONTACTS = 4u;
+const uint PASS_FINALIZE = 5u;
+
+// Octree node types (math/SpaceType.hpp): 0 empty, 1 surface, 2 solid.
+const int TYPE_EMPTY = 0;
+const int TYPE_SURFACE = 1;
+const int TYPE_SOLID = 2;
+
+// Distance returned when the world SDF has no data at a sample (missing child
+// or no finite corner): far beyond any droplet radius, so the sample counts as
+// "no collision" without ever turning into INFINITY/NaN arithmetic.
+const float SDF_NO_DATA = 1e6;
+
+// The solver works in velocity units (unit-mass contact), so the tangential
+// impulse is the tangential speed change clamped to the Coulomb cone
+// friction * |jn| in the same units.
+const float FRICTION_FACTOR = 1.0;
+
+// FINALIZE tuning: below SETTLE_SPEED the droplet is bled of its residual
+// velocity at SETTLE_DAMPING per second (strong, but frame-rate independent).
+const float SETTLE_SPEED = 0.02;
+const float SETTLE_DAMPING = 10.0;
+
+// Defensive bound on the octree descent: a malformed node table must never be
+// able to spin the shader forever (valid trees stop at leaves long before).
+const int MAX_DESCENT_DEPTH = 32;
+
+// ---------------------------------------------------------------- hashing
+
+// xorshift32 (same stream as VegetationPlacement.comp).
+uint xorshift32(inout uint state) {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+float randFloat(inout uint state) {
+    return float(xorshift32(state) & 0x00FFFFFFu) / float(0x01000000u);
+}
+
+// Deterministic per-particle spawn stream: the particle index mixed with the
+// host's reset seed, so a respawn with the same seed reproduces the same layout
+// exactly (no dependence on execution order).
+uint spawnSeed(uint i, uint seed) {
+    uint h = i * 2654435761u + seed * 2246822519u;
+    h ^= h >> 15;
+    h *= 0x2c1b3c6du;
+    h ^= h >> 12;
+    h *= 0x297a2d39u;
+    h ^= h >> 15;
+    return (h != 0u) ? h : 0x9E3779B9u; // xorshift32 must not start at 0
+}
+
+// Standard spatial hash (Teschner et al.): XOR of one large odd prime per axis.
+// The multiplies run in uint so negative cell coordinates wrap deterministically
+// instead of hitting signed-integer-overflow undefined behaviour.
+uint cellHash(ivec3 c) {
+    return (uint(c.x) * 73856093u) ^ (uint(c.y) * 19349663u) ^ (uint(c.z) * 83492791u);
+}
+
+// ---------------------------------------------------------------- node data
+
+float nodeSdf(uint id, int idx) {
+    vec4 v = (idx < 4) ? sdf0[id] : sdf1[id];
+    return v[idx & 3];
+}
+int nodeType(uint id) { return meta[id].y; }
+bool nodeIsLeaf(uint id) { return (meta[id].w & 1) != 0; }
+vec3 nodeMin(uint id) { return cubeMinSize[id].xyz; }
+float nodeSize(uint id) { return cubeMinSize[id].w; }
+int nodeChild(uint id, int i) {
+    ivec4 c = (i < 4) ? child03[id] : child47[id];
+    return c[i & 3];
+}
+
+bool isFiniteF(float v) { return !(isnan(v) || isinf(v)); }
+bool allFinite(vec3 v) { return isFiniteF(v.x) && isFiniteF(v.y) && isFiniteF(v.z); }
+
+// -------------------------------------------------------- world SDF lookup
+
+// Octree::iterateTriangles::findCellAt descent, without a target LoD: walk from
+// the world root (entry 0) down to the finest node whose cube contains pos and
+// stop at leaves. Returns false when a child is absent (the sample is outside
+// the uploaded table), when the root does not contain pos, or when the descent
+// hits its defensive depth cap without reaching a leaf.
+bool sdfNodeAt(vec3 pos, out uint nodeId) {
+    nodeId = 0u;
+
+    vec3 rootMin = nodeMin(0u);
+    float rootSize = nodeSize(0u);
+    if (any(lessThan(pos, rootMin)) || any(greaterThan(pos, rootMin + vec3(rootSize)))) {
+        return false; // outside the octree world: no terrain to collide with
+    }
+
+    uint idx = 0u;
+    for (int depth = 0; depth < MAX_DESCENT_DEPTH; ++depth) {
+        if (nodeIsLeaf(idx)) {
+            break;
+        }
+        // Same child selection arithmetic as findCellAt: bit2 = x, bit1 = y,
+        // bit0 = z, corner at min + 0.5 * size splits the cube.
+        vec3 mn = nodeMin(idx);
+        float halfSize = nodeSize(idx) * 0.5;
+        int childIndex = (pos.x >= mn.x + halfSize ? 4 : 0)
+                       + (pos.y >= mn.y + halfSize ? 2 : 0)
+                       + (pos.z >= mn.z + halfSize ? 1 : 0);
+        int child = nodeChild(idx, childIndex);
+        if (child < 0) {
+            return false; // child absent from the table
+        }
+        idx = uint(child);
+    }
+
+    nodeId = idx;
+    return true;
+}
+
+// World signed distance at `pos` (trilinear over the containing node's corners),
+// plus the cube size of that node for the gradient step. INFINITY corners are
+// "no data": they are replaced by the average of the finite corners so they
+// cannot poison the interpolation; a node with no finite corner at all (or an
+// empty node) returns SDF_NO_DATA, i.e. no collision.
+float sdfAt(vec3 pos, out float outCellSize) {
+    outCellSize = 1.0;
+
+    uint id;
+    if (!sdfNodeAt(pos, id)) {
+        return SDF_NO_DATA;
+    }
+    float sz = nodeSize(id);
+    if (!(sz > 0.0)) {
+        return SDF_NO_DATA;
+    }
+    outCellSize = sz;
+    if (nodeType(id) == TYPE_EMPTY) {
+        return SDF_NO_DATA; // no surface inside: nothing to push out of
+    }
+
+    float c[8];
+    float sum = 0.0;
+    int finiteCount = 0;
+    for (int i = 0; i < 8; ++i) {
+        float v = nodeSdf(id, i);
+        if (isFiniteF(v)) {
+            c[i] = v;
+            sum += v;
+            ++finiteCount;
+        } else {
+            c[i] = 0.0; // placeholder, replaced by the finite average below
+        }
+    }
+    if (finiteCount == 0) {
+        return SDF_NO_DATA;
+    }
+    if (finiteCount < 8) {
+        float avg = sum / float(finiteCount);
+        for (int i = 0; i < 8; ++i) {
+            if (!isFiniteF(nodeSdf(id, i))) {
+                c[i] = avg;
+            }
+        }
+    }
+
+    // Trilinear interpolation inside the node cube (corner bit convention:
+    // bit2 = x, bit1 = y, bit0 = z — same ordering as SDF::interpolate).
+    vec3 local = clamp((pos - nodeMin(id)) / sz, vec3(0.0), vec3(1.0));
+    float v000 = mix(c[0], c[1], local.z);
+    float v010 = mix(c[2], c[3], local.z);
+    float v100 = mix(c[4], c[5], local.z);
+    float v110 = mix(c[6], c[7], local.z);
+    float v00 = mix(v000, v010, local.y);
+    float v10 = mix(v100, v110, local.y);
+    return mix(v00, v10, local.x);
+}
+
+// Outward surface normal: central differences of the SDF, normalized. The
+// step is scaled by the containing node's cube size (clamped to 0.05 m so a
+// tiny leaf still gets a usable offset). A degenerate gradient falls back to
+// straight up, which is the only direction that is always "out" of the
+// horizontal terrain and of the water plane.
+vec3 sdfGradient(vec3 pos, float cellSize) {
+    float eps = max(0.05, 0.05 * cellSize);
+    float unused;
+    vec3 g;
+    g.x = sdfAt(pos + vec3(eps, 0.0, 0.0), unused) - sdfAt(pos - vec3(eps, 0.0, 0.0), unused);
+    g.y = sdfAt(pos + vec3(0.0, eps, 0.0), unused) - sdfAt(pos - vec3(0.0, eps, 0.0), unused);
+    g.z = sdfAt(pos + vec3(0.0, 0.0, eps), unused) - sdfAt(pos - vec3(0.0, 0.0, eps), unused);
+    float len = length(g);
+    if (!isFiniteF(len) || len < 1e-6) {
+        return vec3(0.0, 1.0, 0.0);
+    }
+    return g / len;
+}
+
+// ---------------------------------------------------------------- utilities
+
+// Particle count carried in the float push-constant slot (misc.y).
+uint simParticleCount() {
+    return uint(max(0.0, pc.misc.y));
+}
+
+bool isActive(uint i) {
+    return (droplets[i].flags & FLAG_ACTIVE) != 0u;
+}
+
+bool insideRegion(vec3 pos) {
+    return all(greaterThanEqual(pos, pc.regionMin.xyz))
+        && all(lessThanEqual(pos, pc.regionMax.xyz));
+}
+
+// ------------------------------------------------------------------ pass 0
+
+// SPAWN: deterministic uniform point inside the spawn ball plus a small,
+// upward-biased random velocity. radius and mass are host-owned: they are
+// pre-filled in the state buffer before this dispatch and are deliberately not
+// touched here (a respawn must keep the host's per-particle radius/mass).
+void spawnParticle(uint i) {
+    uint rng = spawnSeed(i, floatBitsToUint(pc.misc.z));
+
+    // Uniform in the ball: radial CDF r = R * u^(1/3) and a uniform direction
+    // on the sphere (Archimedes: z uniform, azimuth uniform).
+    float ur = randFloat(rng);
+    float uz = randFloat(rng);
+    float up = randFloat(rng);
+    float rad = pc.spawnCenterRadius.w * pow(ur, 1.0 / 3.0);
+    float z = 2.0 * uz - 1.0;
+    float s = sqrt(max(0.0, 1.0 - z * z));
+    float phi = 6.28318530717958647692 * up;
+    vec3 dir = vec3(s * cos(phi), z, s * sin(phi));
+    vec3 pos = pc.spawnCenterRadius.xyz + dir * rad;
+
+    // Small random velocity: uniform direction, magnitude <= 2 m/s. Folding the
+    // vertical component onto its absolute value biases the launch upward and
+    // can only shrink the magnitude, so the 2 m/s bound holds.
+    vec3 vdir = vec3(randFloat(rng), randFloat(rng), randFloat(rng)) * 2.0 - vec3(1.0);
+    float vl = length(vdir);
+    vdir = (vl > 1e-6) ? (vdir / vl) : vec3(0.0, 1.0, 0.0);
+    vec3 vel = vdir * (2.0 * randFloat(rng));
+    vel.y = 0.5 * (vel.y + abs(vel.y));
+
+    droplets[i].position = pos;
+    droplets[i].velocity = vel;
+    droplets[i].prevPosition = pos;
+    droplets[i].flags = FLAG_ACTIVE;
+}
+
+// ------------------------------------------------------------------ pass 1
+
+// INTEGRATE: semi-implicit Euler. Gravity is positive-downward in the push
+// constants, damping is a per-second factor applied multiplicatively.
+void integrateParticle(uint i) {
+    if (!isActive(i)) {
+        return;
+    }
+    float dt = pc.misc.x;
+    vec3 v = droplets[i].velocity;
+    v.y -= pc.physics.x * dt;
+    v *= max(0.0, 1.0 - pc.physics.w * dt);
+    droplets[i].prevPosition = droplets[i].position;
+    droplets[i].position += v * dt;
+    droplets[i].velocity = v;
+}
+
+// ------------------------------------------------------------------ pass 2
+
+void gridClear(uint b) {
+    gridCounts[b] = 0u;
+}
+
+// ------------------------------------------------------------------ pass 3
+
+// GRID SCATTER: bucket = cellHash(cell) % GRID_BUCKETS, slot claimed with an
+// atomic; buckets that overflow drop the excess particles (counted in
+// gridExtra[0].x) instead of writing out of bounds.
+void scatterParticle(uint i) {
+    if (!isActive(i)) {
+        return;
+    }
+    float cellSize = pc.regionMax.w;
+    vec3 pos = droplets[i].position;
+    if (!(cellSize > 0.0) || !allFinite(pos)) {
+        return; // no usable grid cell / NaN state (FINALIZE retires it)
+    }
+
+    ivec3 cell = ivec3(floor(pos / cellSize));
+    uint bucket = cellHash(cell) % GRID_BUCKETS;
+    uint slot = atomicAdd(gridCounts[bucket], 1u);
+    if (slot < GRID_MAX_PER_BUCKET) {
+        gridEntries[bucket * GRID_MAX_PER_BUCKET + slot] = i;
+    } else {
+        atomicAdd(gridExtra[0].x, 1u);
+    }
+}
+
+// ------------------------------------------------------------------ pass 4
+
+// CONTACTS: one solver iteration. Runs the 27-cell particle-particle sweep
+// first, then the terrain SDF and the water plane on the updated state.
+// Every impulse is applied half-and-half: the mirrored thread of a pair sees
+// -n and -vrel (same normal speed, so the same jn) and applies the other half,
+// which makes the pair momentum conserving in a purely Jacobi fashion.
+void contactSolve(uint i) {
+    if (!isActive(i)) {
+        return;
+    }
+    float cellSize = pc.regionMax.w;
+    if (!(cellSize > 0.0)) {
+        return;
+    }
+
+    const float e = max(0.0, pc.physics.y);  // restitution (guarded: e < 0 would flip impulses)
+    const float mu = max(0.0, pc.physics.z); // Coulomb coefficient (clamp() with an inverted range is undefined)
+    const uint count = simParticleCount();
+
+    vec3 pos = droplets[i].position;
+    vec3 vel = droplets[i].velocity;
+    float radius = droplets[i].radius;
+    if (!allFinite(pos) || !allFinite(vel)) {
+        return; // NaN state: leave it to FINALIZE
+    }
+
+    uint pairContacts = 0u;
+    uint terrainContacts = 0u;
+
+    // ---- particle-particle (27 neighbouring cells of the hash grid) --------
+    // Neighbours are read as-is: an invocation never writes another particle's
+    // record, so the sweep is order independent (benign read/write interleaving
+    // of the neighbours' own records only selects which Jacobi snapshot is seen).
+    ivec3 cell = ivec3(floor(pos / cellSize));
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                uint bucket = cellHash(cell + ivec3(dx, dy, dz)) % GRID_BUCKETS;
+                // Counts may exceed the capacity (overflowed buckets); clamp so
+                // the slot reads stay inside gridEntries[].
+                uint slotCount = min(gridCounts[bucket], GRID_MAX_PER_BUCKET);
+                for (uint s = 0u; s < slotCount; ++s) {
+                    uint j = gridEntries[bucket * GRID_MAX_PER_BUCKET + s];
+                    if (j == i || j >= count) {
+                        continue;
+                    }
+
+                    vec3 d = droplets[j].position - pos;
+                    float dist = length(d);
+                    float minDist = radius + droplets[j].radius;
+                    if (dist >= minDist || dist <= 1e-6) {
+                        continue;
+                    }
+
+                    vec3 n = d / dist; // points from i to j
+                    vec3 vrel = droplets[j].velocity - vel;
+                    float vn = dot(vrel, n);
+                    if (vn < 0.0) { // only an approaching pair exchanges impulse
+                        float jn = -(1.0 + e) * vn; // >= 0
+                        vel -= 0.5 * jn * n;        // half here, half in thread j
+
+                        // Coulomb friction: the tangential impulse is the
+                        // tangential relative speed, clamped to mu * |jn|. jt is
+                        // negative, so -jt * t drags i along the relative
+                        // tangential motion (thread j, seeing -t, gets the
+                        // reaction and momentum is preserved).
+                        vec3 vt = vrel - vn * n;
+                        float vtl = length(vt);
+                        if (vtl > 1e-6) {
+                            float jt = clamp(-vtl * FRICTION_FACTOR, -mu * jn, mu * jn);
+                            vel -= 0.5 * jt * (vt / vtl);
+                        }
+                    }
+
+                    // Split-impulse positional separation: push i out of the
+                    // overlap by half the penetration depth (the mirrored thread
+                    // removes the other half). No velocity is added, so the
+                    // correction cannot inject energy into a resting stack.
+                    pos += (-n) * (0.5 * max(0.0, minDist - dist));
+                    ++pairContacts;
+                }
+            }
+        }
+    }
+
+    // ---- terrain SDF -------------------------------------------------------
+    // Only inside the simulation region: outside it FINALIZE retires the
+    // particle, and the octree lookup is not meaningful there anyway.
+    if (insideRegion(pos)) {
+        float sdfCellSize;
+        float d = sdfAt(pos, sdfCellSize);
+        if (d < radius) {
+            // The gradient points from the solid (d < 0) towards the free space
+            // (d > 0), i.e. it is the outward normal: the direction that
+            // separates the droplet from the surface.
+            vec3 n = sdfGradient(pos, sdfCellSize);
+            pos += n * ((radius - d) * 0.5); // half of the penetration, soft
+            float vn = dot(vel, n);
+            if (vn < 0.0) {
+                vel -= (1.0 + e) * vn * n; // reflect the approach speed
+                vec3 vt = vel - dot(vel, n) * n;
+                float vtl = length(vt);
+                if (vtl > 1e-6) {
+                    // Coulomb friction: never remove more tangential speed than
+                    // the surface can supply (mu * |vn|), never reverse it.
+                    float dvt = min(mu * abs(vn), vtl);
+                    vel -= dvt * (vt / vtl);
+                }
+            }
+            ++terrainContacts;
+        }
+    }
+
+    // ---- water plane (y = regionMin.w) -------------------------------------
+    float waterLevel = pc.regionMin.w;
+    if (pos.y - radius < waterLevel) {
+        pos.y = waterLevel + radius;
+        float vn = vel.y;
+        if (vn < 0.0) {
+            vel.y -= (1.0 + 0.5 * e) * vn; // softer splash: half restitution
+            float vtl = length(vel.xz);
+            if (vtl > 1e-6) {
+                float dvt = min(mu * abs(vn), vtl);
+                vel.xz -= dvt * (vel.xz / vtl);
+            }
+        }
+    }
+
+    droplets[i].position = pos;
+    droplets[i].velocity = vel;
+
+    // gridExtra[0]: y = pair contacts, z = terrain contacts (+ the escaped
+    // counter of pass 5, the frozen interface has no separate slot for it),
+    // w = largest per-particle contact count seen this iteration.
+    if (pairContacts > 0u) {
+        atomicAdd(gridExtra[0].y, pairContacts);
+    }
+    if (terrainContacts > 0u) {
+        atomicAdd(gridExtra[0].z, terrainContacts);
+    }
+    atomicMax(gridExtra[0].w, pairContacts + terrainContacts);
+}
+
+// ------------------------------------------------------------------ pass 5
+
+// FINALIZE: retire particles that left the simulation region (with a small
+// margin so float noise on the boundary does not kill a valid droplet) or that
+// hold a non-finite state; settle the ones that have come to rest.
+void finalizeParticle(uint i) {
+    if (!isActive(i)) {
+        return;
+    }
+    vec3 pos = droplets[i].position;
+    vec3 vel = droplets[i].velocity;
+    float margin = max(0.5, droplets[i].radius);
+
+    bool escaped = any(lessThan(pos, pc.regionMin.xyz - vec3(margin)))
+                || any(greaterThan(pos, pc.regionMax.xyz + vec3(margin)))
+                || !allFinite(pos) || !allFinite(vel);
+    if (escaped) {
+        droplets[i].flags = 0u;
+        atomicAdd(gridExtra[0].z, 1u); // "left the region" counter
+        return;
+    }
+
+    float speed = length(vel);
+    if (speed < SETTLE_SPEED) {
+        // Resting droplet: bleed the residual velocity strongly but keep the
+        // particle active so it still renders as a settled droplet.
+        droplets[i].velocity = vel * max(0.0, 1.0 - SETTLE_DAMPING * pc.misc.x);
+    }
+}
+
+// ------------------------------------------------------------------- main
+
+void main() {
+    uint gi = gl_GlobalInvocationID.x;
+    uint pass = uint(pc.misc.w);
+
+    // The grid-clear dispatch covers the whole bucket table, independent of the
+    // particle count (GRID_BUCKETS / LOCAL_SIZE workgroups).
+    if (pass == PASS_GRID_CLEAR) {
+        if (gi >= GRID_BUCKETS) {
+            return;
+        }
+        gridClear(gi);
+        return;
+    }
+
+    // All other passes dispatch one invocation per particle; the host guarantees
+    // particleCount <= the state array length.
+    if (gi >= simParticleCount()) {
+        return;
+    }
+    if (pass == PASS_SPAWN) {
+        spawnParticle(gi);
+    } else if (pass == PASS_INTEGRATE) {
+        integrateParticle(gi);
+    } else if (pass == PASS_GRID_SCATTER) {
+        scatterParticle(gi);
+    } else if (pass == PASS_CONTACTS) {
+        contactSolve(gi);
+    } else if (pass == PASS_FINALIZE) {
+        finalizeParticle(gi);
+    }
+}
