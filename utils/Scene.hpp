@@ -163,4 +163,6 @@ public:
     // tree root min the chunks were tessellated against; per-chunk values
     // mis-align parent cells and cull most rungs).
     virtual glm::vec3 lodRootMin(Layer layer) const { return glm::vec3(0.0f); }
+    // Edge length of the layer's octree root cube (0 when there is no tree).
+    virtual float lodRootSize(Layer layer) const { (void)layer; return 0.0f; }
 };

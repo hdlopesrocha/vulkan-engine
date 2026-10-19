@@ -61,6 +61,7 @@ public:
     bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override;
     int maxChunkLod(Layer layer, float minSize) const override;
     glm::vec3 lodRootMin(Layer layer) const override;
+    float lodRootSize(Layer layer) const override;
     void loadScene(SceneLoaderCallback& callback, std::vector<Octree::OctreeNodeDataHandler> updateHandlers, std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) override;
     void reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) override;
     void invalidateTessellationCache(Layer layer) override;

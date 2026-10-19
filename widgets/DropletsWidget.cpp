@@ -52,8 +52,10 @@ void DropletsWidget::render() {
         ImGuiComponents::ColSeparator();
         ImGuiComponents::SliderFloatField("Spawn Radius (m)", &settings.dropletSpawnRadius, 16.0f, 512.0f, "%.0f",
             "Radius of the spawn volume centred at (0, Spawn Height, 0) (16..512 m).\nAll droplets are re-seeded inside this sphere.");
-        ImGuiComponents::SliderFloatField("Spawn Height (m)", &settings.dropletSpawnHeight, 100.0f, 8000.0f, "%.0f",
-            "Altitude droplets are re-seeded at (100..8000 m).");
+        ImGuiComponents::SliderFloatField("Spawn Height Above Terrain (m)", &settings.dropletSpawnHeight,
+            5.0f, 2000.0f, "%.0f",
+            "Height of the spawn centre above the height map (5..2000 m). The\n"
+            "droplets are re-seeded in a ball here and fall onto/into the terrain.");
         ImGuiComponents::SliderFloatField("Droplet Radius (m)", &settings.dropletRadius, 0.2f, 8.0f, "%.2f",
             "Particle sphere radius (0.2..8 m): the same value drives the SDF\ncollision query and the ray-marched render — physics and rendering never\ndiverge on the collision shape.");
     });

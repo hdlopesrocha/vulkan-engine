@@ -393,6 +393,9 @@ public:
     double dropletStatsClock = 0.0; // throttles the diagnostics readback
     float dropletShapeRadius = -1.0f; // last uploaded particle radius
     float dropletForcedDt = 0.0f;     // VULKAN_DROPLET_DT override (0 = frame dt)
+    // Spawn centre: (0, terrainHeight + dropletSpawnHeight, 0) — a ball of
+    // droplets hovering above the height map that then falls onto it.
+    glm::vec3 dropletSpawnCenter_{0.0f};
     glm::vec3 dropletRegionMin{0.0f};
     glm::vec3 dropletRegionMax{0.0f};
     uint32_t dropletDrawCount = 0;
@@ -803,6 +806,10 @@ public:
         cloudWidget = std::make_shared<CloudWidget>(sceneRenderer->getCloudSettings());
         dropletsWidget = std::make_shared<DropletsWidget>(settings);
         widgetManager.addWidget(dropletsWidget);
+        // Widget::isOpen defaults to false: show it so the droplet physics
+        // parameters and the instance count are reachable without hunting
+        // through the Widget menu.
+        dropletsWidget->show();
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings, &shadowParams);
         // Water UI uses the application-owned water params vector and updates GPU state explicitly.
@@ -2152,7 +2159,7 @@ public:
                     simCfg.particleCount = static_cast<uint32_t>(std::clamp(
                         settings.dropletCount, 1, static_cast<int>(DropletSim::kMaxParticles)));
                     simCfg.spawnRadius = settings.dropletSpawnRadius;
-                    simCfg.spawnCenter = glm::vec3(0.0f, settings.dropletSpawnHeight, 0.0f);
+                    simCfg.spawnCenter = dropletSpawnCenter_;
                     simCfg.gravity = settings.dropletGravity;
                     simCfg.restitution = settings.dropletRestitution;
                     simCfg.friction = settings.dropletFriction;
@@ -4720,14 +4727,15 @@ void MyApp::ensureDroplets() {
     if (!dropletSim) dropletSim = std::make_shared<DropletSim>();
     if (dropletSim->ready()) return;
 
-    // Region: the spawn sphere plus a wide lateral margin, from below the water
-    // level up past the spawn height. Droplets that leave it are retired by the
-    // finalize pass, so the table never has to cover the whole map.
+    // Region: a vertical column around the spawn XZ wide enough for the spawn
+    // ball plus its spread, spanning the whole octree height so the terrain
+    // surface is inside the table at every spawn position. Droplets that leave
+    // it are retired by the finalize pass, so it never has to cover the map.
     const float lateral = std::max(16.0f, settings.dropletSpawnRadius) * 2.5f;
-    const glm::vec3 center(0.0f, settings.dropletSpawnHeight, 0.0f);
-    const float rootMinY = world->scene().lodRootMin(0).y;
-    dropletRegionMin = glm::vec3(center.x - lateral, std::min(rootMinY, -100.0f), center.z - lateral);
-    dropletRegionMax = glm::vec3(center.x + lateral, center.y + lateral, center.z + lateral);
+    const glm::vec3 rootMin = world->scene().lodRootMin(0);
+    const glm::vec3 rootMax = rootMin + glm::vec3(world->scene().lodRootSize(0));
+    dropletRegionMin = glm::vec3(-lateral, rootMin.y, -lateral);
+    dropletRegionMax = glm::vec3(lateral, rootMax.y, lateral);
 
     std::vector<OctreeGpuNode> nodes;
     if (!world->scene().buildSdfRegionTable(0, dropletRegionMin, dropletRegionMax, nodes,
@@ -4739,10 +4747,15 @@ void MyApp::ensureDroplets() {
     dropletSim->init(this);
     dropletSim->uploadRegion(nodes);
     dropletSim->setParticleShape(settings.dropletRadius, 1.0f);
+    // Spawn on top of the height map: the table is uploaded, so the terrain
+    // height at the spawn XZ can be queried on the host.
+    const float terrainY = dropletSim->terrainHeightAt(0.0f, 0.0f);
+    dropletSpawnCenter_ = glm::vec3(0.0f, terrainY + std::max(5.0f, settings.dropletSpawnHeight), 0.0f);
     dropletSim->requestReset();
     dropletShapeRadius = settings.dropletRadius;
     std::cout << "[MyApp] droplet simulation ready: " << nodes.size() << " SDF nodes, "
-              << settings.dropletCount << " particles\n";
+              << settings.dropletCount << " particles, terrain Y=" << terrainY
+              << ", spawn centre Y=" << dropletSpawnCenter_.y << "\n";
 }
 
 void MyApp::generateMap() {

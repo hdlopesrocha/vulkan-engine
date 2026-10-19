@@ -68,16 +68,17 @@ public:
     // 2048 particles are simulated on the GPU (spatial-hash broad phase,
     // sphere/SDF contacts, impulse solver) and rendered by ray marching their
     // SDF spheres with refraction + reflection. The simulation is re-seeded
-    // inside `dropletSpawnRadius` around (0, dropletSpawnHeight, 0) every
-    // `dropletResetSeconds`; the spawn height defaults to the low cloud tier
-    // base (CloudSettings::lowBaseHeight) so droplets fall from cloud level.
+    // inside `dropletSpawnRadius` every `dropletResetSeconds`, centred at
+    // (0, terrainHeight + dropletSpawnHeight, 0) — i.e. a ball of droplets
+    // hovering above the height map that then falls onto and into it, colliding
+    // with the terrain SDF and with each other.
     // Physics and rendering are independent: the values below never change the
     // terrain's rendering LOD and the render LOD never changes the collision.
-    bool dropletsEnabled = false;      // master gate (sim + draw)
+    bool dropletsEnabled = true;       // master gate (sim + draw)
     int dropletCount = 2048;           // simulated particles (<= capacity 8192)
     float dropletSpawnRadius = 128.0f; // spawn volume radius (m)
-    float dropletSpawnHeight = 2000.0f;// spawn volume center Y (m) = cloud level
-    float dropletRadius = 1.5f;        // particle sphere radius (m), sim + render
+    float dropletSpawnHeight = 600.0f; // spawn centre height ABOVE the terrain (m)
+    float dropletRadius = 2.5f;        // particle sphere radius (m), sim + render
     float dropletResetSeconds = 30.0f; // full re-seed interval (s)
     float dropletGravity = 9.81f;      // m/s^2 (downward)
     float dropletRestitution = 0.25f;  // bounce factor at SDF/water contacts

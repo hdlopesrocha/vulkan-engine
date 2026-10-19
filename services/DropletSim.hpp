@@ -79,6 +79,12 @@ public:
     // any consumer of the droplet state). `dtSeconds` is the fixed substep.
     void dispatch(VkCommandBuffer cmd, float substepSeconds, const Config& cfg);
 
+    // Terrain surface height at (x, z) from the uploaded region table: marches
+    // the interpolated SDF upward from the region floor until it turns positive
+    // (outside the solid). Used to place the spawn volume just above the height
+    // map. Returns the region floor when no surface is found.
+    float terrainHeightAt(float x, float z) const;
+
     // Blocking counter readback (diagnostics only, never in the hot path).
     Stats readStats();
 
@@ -129,6 +135,8 @@ private:
     // pass: sdf0/1, cube, meta, children).
     Buffer bSdf0_{}, bSdf1_{}, bCube_{}, bMeta_{}, bChild03_{}, bChild47_{};
     std::vector<OctreeGpuNode> nodes_;
+    glm::vec3 regionMin_{0.0f};
+    glm::vec3 regionMax_{0.0f};
     size_t nodeCap_ = 0;
     bool nodesDirty_ = false;
 

@@ -343,6 +343,13 @@ Scene::ChunkTopologyStatus LocalScene::buildChunkTopology(Layer layer, OctreeNod
     return ChunkTopologyStatus::Ready;
 }
 
+float LocalScene::lodRootSize(Layer layer) const {
+    std::lock_guard<std::mutex> lock(layersMutex_);
+    const Octree* tree = layerOctreeLocked(layer);
+    if (!tree) return 0.0f;
+    return tree->getLengthX();
+}
+
 void LocalScene::commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint32_t version) {
     (void)layer;
     std::lock_guard<std::mutex> lock(emittedMutex_);

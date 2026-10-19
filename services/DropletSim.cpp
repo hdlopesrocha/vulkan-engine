@@ -230,6 +230,14 @@ void DropletSim::uploadRegion(const std::vector<OctreeGpuNode>& nodes) {
         c47[i] = glm::ivec4(n.children[4], n.children[5], n.children[6], n.children[7]);
     }
     nodes_ = nodes;
+    // Region bounds from the uploaded cubes (used by the CPU height query).
+    regionMin_ = glm::vec3(1e30f);
+    regionMax_ = glm::vec3(-1e30f);
+    for (size_t i = 0; i < count; ++i) {
+        const OctreeGpuNode& n = nodes_[i];
+        regionMin_ = glm::min(regionMin_, n.cubeMin);
+        regionMax_ = glm::max(regionMax_, n.cubeMin + glm::vec3(n.cubeSize));
+    }
     nodesDirty_ = true;
 }
 
@@ -415,6 +423,74 @@ void DropletSim::dispatch(VkCommandBuffer cmd, float substepSeconds, const Confi
     dep.memoryBarrierCount = 1;
     dep.pMemoryBarriers = &mb;
     vkCmdPipelineBarrier2(cmd, &dep);
+}
+
+// Interpolated SDF at `p` from the CPU copy of the node table: same descent as
+// the shader (finest node containing the point, trilinear corners, INFINITY
+// corners skipped). Returns a large positive value when the point is outside
+// the table (no collision there).
+float DropletSim::terrainHeightAt(float x, float z) const {
+    if (nodes_.empty()) return 0.0f;
+
+    auto sample = [&](const glm::vec3& p, float& cellSize) -> float {
+        cellSize = 1.0f;
+        uint32_t id = 0; // entry 0 = world root
+        for (int guard = 0; guard < 64; ++guard) {
+            const OctreeGpuNode& n = nodes_[id];
+            const float half = n.cubeSize * 0.5f;
+            const int child = (p.x >= n.cubeMin.x + half ? 4 : 0) +
+                              (p.y >= n.cubeMin.y + half ? 2 : 0) +
+                              (p.z >= n.cubeMin.z + half ? 1 : 0);
+            const int32_t next = n.children[child];
+            if (next < 0 || (n.flags & 1) != 0) break; // absent child or leaf
+            id = static_cast<uint32_t>(next);
+        }
+        const OctreeGpuNode& n = nodes_[id];
+        cellSize = n.cubeSize;
+        if (n.type == 0) return 1e30f; // empty node: no surface data
+        const glm::vec3 local = (p - n.cubeMin) / std::max(1e-6f, n.cubeSize);
+        const glm::vec3 t = glm::clamp(local, 0.0f, 1.0f);
+        float acc = 0.0f;
+        float wsum = 0.0f;
+        for (int i = 0; i < 8; ++i) {
+            const float v = n.sdf[i];
+            if (!std::isfinite(v) || std::fabs(v) > 1e30f) continue;
+            const float wx = (i & 4) ? t.x : (1.0f - t.x);
+            const float wy = (i & 2) ? t.y : (1.0f - t.y);
+            const float wz = (i & 1) ? t.z : (1.0f - t.z);
+            const float w = wx * wy * wz;
+            acc += v * w;
+            wsum += w;
+        }
+        if (wsum <= 1e-6f) return 1e30f;
+        return acc / wsum;
+    };
+
+    // March DOWNWARD from the top of the region: the first solid sample is the
+    // VISIBLE (top) surface at this XZ. Marching upward would stop at the first
+    // deeper crossing (an overhang, a cave roof, or a node without data), which
+    // put the spawn below the visible ground.
+    const float yTop = regionMax_.y - 1.0f;
+    const float yBottom = regionMin_.y + 1.0f;
+    if (yTop <= yBottom) return yBottom;
+    const float step = std::max(1.0f, (yTop - yBottom) / 2048.0f);
+    float cellSize = 1.0f;
+    for (float y = yTop; y >= yBottom; y -= step) {
+        const float d = sample(glm::vec3(x, y, z), cellSize);
+        if (!std::isfinite(d) || std::fabs(d) > 1e29f) continue; // no data here
+        if (d < 0.0f) {
+            // Inside the solid: the surface is between this sample and the one
+            // above it (linear interpolation on the two distances).
+            const float dAbove = sample(glm::vec3(x, y + step, z), cellSize);
+            if (std::isfinite(dAbove) && std::fabs(dAbove) < 1e29f && dAbove >= 0.0f) {
+                const float denom = std::max(1e-6f, dAbove - d);
+                const float t = (0.0f - dAbove) / denom;
+                return (y + step) + t * (-step);
+            }
+            return y;
+        }
+    }
+    return yBottom;
 }
 
 DropletSim::Probe DropletSim::probeParticles() {
