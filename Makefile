@@ -4,13 +4,17 @@ MAKE_JOBS ?= 8
 
 # Alert sounds, one voice per phase event:
 #   build   : build (start), build-success/build-error (completion)
+#   debug   : debug (start), debug-success/debug-error (completion) — selected
+#             instead of the build* alerts when BUILD=debug, so a debug build
+#             never announces itself with the release wording
 #   clean   : clean
 #   cloc    : cloc (start) + the counted number, spoken at run time by
 #             sounds/say.sh (dynamic text, cached in sounds/.dynamic/)
 #   shaders : shaders (start), shaders-success/shaders-error — played only
 #             when shaders actually need recompiling (make -q gate below)
-#   setup   : setup-layout/.../setup-ready — the MyApp startup steps, enqueued
-#             from playSetupAlert() in MyApp.cpp into the same queue
+#   setup   : setup-layout/.../setup-ready — announced when each MyApp startup
+#             step completes, enqueued from playSetupAlert() in MyApp.cpp into
+#             the same queue
 #   run     : run (start), run-success/run-error (app exit)
 #   commit  : the commit subject, spoken by sounds/say.sh after `make commit`
 # The mp3s live in sounds/ and speak the meaning of each alert: they are TTS
@@ -34,6 +38,13 @@ define PLAY_SOUND
 		nohup sh "$(SOUND_DIR)/play.sh" --drain </dev/null >/dev/null 2>&1 & \
 	fi; }
 endef
+
+# Pick the alert family for the active configuration. Recursive on purpose:
+# target-specific `debug: BUILD = debug` is only in effect while that target's
+# recipes run, so a parse-time conditional would always see the global release
+# value. `make` starts/succeeds/fails with build*, `make debug` with debug* —
+# never both.
+BUILD_ALERT = $(if $(filter debug,$(BUILD)),debug,build)
 
 # Speak the first compiler diagnostic from logs/build.log through
 # sounds/say.sh, so a failed (or warning-producing) build says what went
@@ -59,16 +70,19 @@ SOUND_PHRASES = \
 	"build=Build started" \
 	"build-success=Build succeeded" \
 	"build-error=Build failed" \
+	"debug=Debug build started" \
+	"debug-success=Debug build succeeded" \
+	"debug-error=Debug build failed" \
 	"clean=Build artifacts cleaned" \
 	"cloc=Counting lines of code" \
 	"shaders=Compiling shaders" \
 	"shaders-success=Shaders compiled" \
 	"shaders-error=Shader compilation failed" \
-	"setup-layout=Setting up the scene layout" \
-	"setup-world=Preparing the world" \
-	"setup-textures=Loading textures" \
-	"setup-renderers=Initializing renderers" \
-	"setup-ui=Creating the interface" \
+	"setup-layout=Scene layout ready" \
+	"setup-world=Space initialized" \
+	"setup-textures=Textures loaded" \
+	"setup-renderers=Renderers initialized" \
+	"setup-ui=UI created" \
 	"setup-ready=Setup complete" \
 	"run=Running the application" \
 	"run-success=Run finished successfully" \
@@ -154,6 +168,19 @@ DEPFLAGS = -MMD -MP
 VK_SDK_INCLUDE = -Ithird_party/Vulkan-Headers/include
 INCLUDES = $(VK_SDK_INCLUDE) `pkg-config --cflags glfw3 vulkan` -I. -isystem third_party/imgui -isystem third_party/imgui/backends -I/usr/include/stb
 LIBS = `pkg-config --libs glfw3 vulkan` -lstb -ljpeg -lz
+
+# Video textures (services/VideoTextureService): FFmpeg demux + decode with
+# hardware decoding where the device provides it (libavcodec's Vulkan Video
+# hwaccel when VK_KHR_video_decode_queue is present, else VAAPI), software
+# decode as the fallback. Optional dependency: without libav* the service
+# compiles to a stub that reports itself unavailable (the rest of the engine
+# is unaffected), and the server build never needs it.
+HAVE_FFMPEG := $(shell pkg-config --exists libavformat libavcodec libavutil libswscale && echo 1)
+ifeq ($(HAVE_FFMPEG),1)
+CFLAGS += -DHAVE_FFMPEG
+INCLUDES += $(shell pkg-config --cflags libavformat libavcodec libavutil libswscale)
+LIBS += $(shell pkg-config --libs libavformat libavcodec libavutil libswscale)
+endif
 
 # Wii Remote support via vendored wiiuse (third_party/wiiuse).
 # Auto-detects BlueZ so the library can be compiled even if not installed.
@@ -393,18 +420,20 @@ define make-obj-dirs
 endef
 
 # Sound-wrapped build: the real work lives in _all and is driven through a
-# sub-make so a failed build (or link) can still play the build-error alert,
-# while a successful one plays the build-success alert. BUILD is forwarded explicitly so
-# `make debug` / `make release` keep their target-specific configuration.
+# sub-make so a failed build (or link) can still play the error alert, while a
+# successful one plays the success alert. The alert family follows BUILD
+# (build* for release, debug* for debug), so the two never play together.
+# BUILD is forwarded explicitly so `make debug` / `make release` keep their
+# target-specific configuration.
 # stdout+stderr are teed to logs/build.log (like runs log to logs/run.log),
 # so a failed build can be inspected afterwards; bash PIPESTATUS keeps
 # make's exit code through the tee pipeline.
 all:
-	@$(call PLAY_SOUND,build)
+	@$(call PLAY_SOUND,$(BUILD_ALERT))
 	@mkdir -p logs
 	@bash -c '$(MAKE) --no-print-directory _all BUILD=$(BUILD) 2>&1 | tee logs/build.log; exit $${PIPESTATUS[0]}' \
-		|| { $(call PLAY_SOUND,build-error); $(call SPEAK_DIAGNOSTIC); exit 1; }
-	@$(call PLAY_SOUND,build-success)
+		|| { $(call PLAY_SOUND,$(BUILD_ALERT)-error); $(call SPEAK_DIAGNOSTIC); exit 1; }
+	@$(call PLAY_SOUND,$(BUILD_ALERT)-success)
 	@$(call SPEAK_DIAGNOSTIC)
 
 .PHONY: _all
@@ -441,6 +470,7 @@ $(OUT): $(BUILD_MODE_STAMP) $(OBJS)
 	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
 	@if [ -d fonts ]; then cp -a fonts $(OUT_DIR)/ || true; fi
 	@if [ -d scenes ]; then cp -a scenes $(OUT_DIR)/ || true; fi
+	@if [ -d video_textures ]; then cp -a video_textures $(OUT_DIR)/ || true; fi
 	@if [ -d scripts ]; then mkdir -p $(OUT_DIR)/scripts && cp -a scripts/. $(OUT_DIR)/scripts/ || true; fi
 	@if [ -d svg ]; then cp -a svg $(OUT_DIR)/ || true; fi
 	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi
@@ -541,6 +571,56 @@ valgrind: debug
 	@echo "Running valgrind with suppressions..."
 	@mkdir -p logs
 	@cd $(OUT_DIR) && valgrind --suppressions=../valgrind.supp --leak-check=full --show-leak-kinds=all ./app > ../logs/valgrind.log 2>&1; echo "Exit code: $$?"
+
+# ── Video texture assets ──────────────────────────────────────────────────
+# Convert the committed clips in videos/base/ (and, on demand, the optional
+# clips in videos/extra/) into texture-ready assets in video_textures/: square
+# center crop at VIDEO_SIZE (default 1024 = the default texture array size),
+# H.264 with a ~1 s keyframe interval so the decoder can reach any timestamp by
+# seeking to the preceding keyframe and decoding less than a second of frames,
+# no audio (a texture is silent), faststart for immediate playback, yuv420p for
+# universal decoder support. Originals are left untouched; an asset is
+# re-encoded only when its source is newer.
+# The service picks up video_textures/*.mp4 (see VideoTextureService), and
+# falls back to videos/ when no converted asset exists.
+VIDEO_SIZE ?= 1024
+VIDEO_CRF ?= 26
+VIDEO_PRESET ?= veryfast
+VIDEO_DIR := video_textures
+VIDEO_SRC_DIR := videos/base
+VIDEO_EXTRA_SRC_DIR := videos/extra
+VIDEO_EXTS := mp4 mov mkv webm
+VIDEO_SRCS := $(foreach e,$(VIDEO_EXTS),$(wildcard $(VIDEO_SRC_DIR)/*.$(e)))
+VIDEO_ASSETS := $(patsubst $(VIDEO_SRC_DIR)/%,$(VIDEO_DIR)/%.mp4,$(basename $(VIDEO_SRCS)))
+VIDEO_EXTRA_SRCS := $(foreach e,$(VIDEO_EXTS),$(wildcard $(VIDEO_EXTRA_SRC_DIR)/*.$(e)))
+VIDEO_EXTRA_ASSETS := $(patsubst $(VIDEO_EXTRA_SRC_DIR)/%,$(VIDEO_DIR)/%.mp4,$(basename $(VIDEO_EXTRA_SRCS)))
+
+.PHONY: videos
+videos: $(VIDEO_ASSETS)
+
+# Optional local clips: same conversion, same output directory.
+.PHONY: videos-extra
+videos-extra: $(VIDEO_EXTRA_ASSETS)
+
+# One pattern rule per supported source extension and source directory (same
+# target pattern, so make picks the variant whose prerequisite exists).
+define VIDEO_CONVERT_RULE
+$(VIDEO_DIR)/%.mp4: $(1)/%.$(2)
+	@mkdir -p $(VIDEO_DIR)
+	@echo "Converting video texture: $$< -> $$@"
+	@ffmpeg -hide_banner -loglevel error -y -i "$$<" \
+		-vf "crop=min(iw\,ih):min(iw\,ih),scale=$(VIDEO_SIZE):$(VIDEO_SIZE):flags=lanczos" \
+		-an -c:v libx264 -preset $(VIDEO_PRESET) -crf $(VIDEO_CRF) \
+		-g 30 -keyint_min 15 -sc_threshold 0 -pix_fmt yuv420p \
+		-movflags +faststart "$$@"
+endef
+$(foreach e,$(VIDEO_EXTS),$(eval $(call VIDEO_CONVERT_RULE,$(VIDEO_SRC_DIR),$(e))))
+$(foreach e,$(VIDEO_EXTS),$(eval $(call VIDEO_CONVERT_RULE,$(VIDEO_EXTRA_SRC_DIR),$(e))))
+
+# Remove converted assets (originals in videos/ are never touched)
+.PHONY: videos-clean
+videos-clean:
+	rm -rf $(VIDEO_DIR)
 
 .PHONY: commit
 # Commit the staged changes, store the full commit message in

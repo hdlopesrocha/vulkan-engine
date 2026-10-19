@@ -32,6 +32,7 @@ agent verification.
 | `make run-debug` | Debug build + run (same logging as `make run`) | (Never close the app or use timeouts, the program is always closed by the user)
 | `MSG="scope: subject" make commit` | Commit staged changes (`git add` first), archive the full message to `logs/<commit_hash>.log` and speak the commit subject aloud; **all agents must commit through this target, never bare `git commit`**. MSG must be an environment prefix, not a make variable |
 | `make shaders` | Compile `shaders/**/*.{vert,frag,geom,comp,tesc,tese}` → `bin/shaders/**/*.spv` via `glslc` (fallback `glslangValidator`) |
+| `make videos` | Convert `videos/*` → square, short-GOP `video_textures/*.mp4` (1024², `-crf 26`) used as animated brush layers; the converted dir is copied into `bin/` |
 | `make server` | Build headless `bin/server` (no Vulkan/UI linkage, no widgets) |
 | `make clean` | Remove `bin/` and generated SPIR-V |
 | `make valgrind` | Debug build + valgrind with `valgrind.supp` |
@@ -48,14 +49,14 @@ Compiler is `g++` (`-std=c++23 -pthread`). Dependencies via `pkg-config`: glfw3,
 Two entry points: `MyApp.cpp` (class `MyApp` extends `VulkanApp`) and `server.cpp` (headless).
 
 - `vulkan/` — Vulkan setup, resource management, renderers (`vulkan/renderer/`)
-- `vulkan/renderer/` — renderers grouped by subsystem (`water/`, `solid/`, `sdf/`, `rt/`, `sky/`, `vegetation/`, `shadow/`, `debug/`, `post/`, `indirect/`, `brush/`); scene infrastructure (SceneRenderer, SceneDescriptorLayout, descriptors/allocators/queues) stays at the root
+- `vulkan/renderer/` — renderers grouped by subsystem (`water/`, `solid/`, `video/`, `sdf/`, `rt/`, `sky/`, `vegetation/`, `shadow/`, `debug/`, `post/`, `indirect/`, `brush/`); scene infrastructure (SceneRenderer, SceneDescriptorLayout, descriptors/allocators/queues) stays at the root
 - `vulkan/ubo/` — GPU uniform buffer structs; `vulkan/ssbo/` — GPU storage-buffer element structs; `vulkan/includes/` — shared shader-interface headers (`shader/` locations + vertex layouts, `debug/` DebugModes)
 - `shaders/` — GLSL sources; per-renderer shaders live under `shaders/renderer/<subsystem>/` mirroring `vulkan/renderer/`, compute shaders under `shaders/computation/<subsystem>/` (mirroring the service/renderer that dispatches them; top-level ones like `TextureMixer.comp` sit at `shaders/computation/`), shared code in `shaders/{includes,ubo,ssbo,types}/`
 - `space/` — Octree, Tesselator (Surface Nets meshing), ThreadPool, ConcurrentQueue, Processor, Simplifier, OctreeVisibilityChecker
 - `sdf/` — SDF primitives (Box, Sphere, Capsule, Cylinder, Cone, Torus, HeightMap via GDAL, RoadDistanceFunction, TriangleStrip, OctreeDifferenceFunction, Wrapped* variants for composition)
 - `events/` — Input system (keyboard, gamepad, nunchuk), EventManager, IEventHandler
 - `math/` — Camera, Light, BoundingBox, Frustum, Plane, Ray, HeightMap, HeightMapTif, PerlinSurface, Transformation
-- `services/` — TextureMixer (compute texture blending), BillboardService, ImpostorService
+- `services/` — TextureMixer (compute texture blending), VideoTextureService (on-demand video decode → dedicated video texture array + video layer materials, see `docs/video_textures.md`), BillboardService, ImpostorService
 - `widgets/` — ImGui debug/editor UI (compiled only with `-DUSE_IMGUI`, i.e. release builds)
 - `tree/` — AttractorField, TreeGenerator, TreeHandler
 - `utils/` — LocalScene, MainSceneLoader, FileReader, SettingsFile, brush system (LandBrush, WaterBrush, Brush3dManager)
