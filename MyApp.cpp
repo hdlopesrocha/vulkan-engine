@@ -534,6 +534,12 @@ public:
         textureMixer->init(this, &textureArrayManager);
         octreeMeshCompute = std::make_shared<OctreeMeshCompute>();
         octreeMeshCompute->init(this);
+        // VULKAN_NO_GPU_VERTS=1: leave gOctreeMeshCompute null so the CPU
+        // walker solves every vertex itself with SDF::getPosition (A/B aid for
+        // the GPU per-cell vertex extraction).
+        if (std::getenv("VULKAN_NO_GPU_VERTS") != nullptr) {
+            std::cout << "[MyApp] VULKAN_NO_GPU_VERTS: using the CPU vertex solver only\n";
+        } else
         gOctreeMeshCompute = [this](const std::vector<OctreeMeshCell>& cells, float iso) {
             OctreeMeshResult res = octreeMeshCompute->compute(cells, iso);
             // VULKAN_MESHCHECK=1: A/B the GPU surface-vertex extraction against
