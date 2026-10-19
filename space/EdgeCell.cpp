@@ -2,9 +2,8 @@
 #include "OctreeNode.hpp"
 #include <functional>
 
-bool EdgeCell::isSurface(int targetLod) const {
-    return node != NULL && node->getType() == SpaceType::Surface &&
-        node->getLod() == targetLod;
+bool EdgeCell::isSurface() const {
+    return node != NULL && node->getType() == SpaceType::Surface;
 }
 
 bool EdgeCell::ownerLess(const EdgeCell &a, const EdgeCell &b) {

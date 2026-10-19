@@ -15,13 +15,18 @@ struct EdgeCell {
     BoundingCube cube;
     int level = 0;
 
-    // A cell is "surface at the walk's resolution": a ladder cell exactly
-    // at targetLod. With targetLod >= 1 the descent already stops at cells
-    // with lod == targetLod, so requiring lod equality here keeps coarse
-    // ladder levels (internal, non-simplified nodes) emitting their own
-    // cells while neighbors one level finer/coarser stay out. lod and
-    // targetLod are both in the +1-shifted STORED space.
-    bool isSurface(int targetLod) const;
+    // A cell contributes its vertex to a segment when it is a surface node, at
+    // ANY ladder level. The walk's own resolution picks which cells are SCANNED
+    // (walkLadder only scans cells at targetLod), but the four quadrants around
+    // an edge are resolved by findCellAt, which stops at cells of the walk's
+    // level or COARSER. Requiring lod equality here threw those coarser
+    // quadrants away, so a chunk and its coarser neighbour emitted different
+    // polygons on their shared edge and the surface opened up along every LoD
+    // band boundary (a sky gap where the two levels meet). Keeping them makes
+    // the coarse cell bridge against the finer ones — the per-edge stitching
+    // the span splitting exists for — and both sides of the seam now emit the
+    // same polygon from the same cells.
+    bool isSurface() const;
 
     // Ordering used to pick which of the four cells adjacent to an edge owns
     // the emitted segment: finest cube first, then position, then the node

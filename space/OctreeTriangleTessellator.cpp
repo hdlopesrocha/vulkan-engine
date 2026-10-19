@@ -309,16 +309,18 @@ struct OctreeTriangleTessellator::Walk {
         }
 
         // Owner = positionally-smallest SURFACE ring cell. Non-surface
-        // quadrants (Empty/Solid space, cells of a neighboring LOD level)
-        // never own the segment, but they do NOT abort it either: the segment
-        // still closes the mesh at the surface boundary (shape faces, chunk
-        // ladder seams, world edge) with the polygon of the surface quadrants
-        // alone. Aborting there left open edge chains along every face
-        // aligned with the cell grid.
+        // quadrants (Empty/Solid space) never own the segment, but they do NOT
+        // abort it either: the segment still closes the mesh at the surface
+        // boundary (shape faces, chunk ladder seams, world edge) with the
+        // polygon of the surface quadrants alone. Aborting there left open edge
+        // chains along every face aligned with the cell grid. Quadrants of a
+        // coarser ladder level are surface cells too and own the segment when
+        // they are the only crossing, which is how coarse cells bridge against
+        // finer LOD cells instead of leaving a gap at the band boundary.
         EdgeCell owner = cells[0];
         bool ownerValid = false;
         for(int q = 0; q < 4; ++q) {
-            if(cells[q].isSurface(targetLod) && (!ownerValid || EdgeCell::ownerLess(cells[q], owner))) {
+            if(cells[q].isSurface() && (!ownerValid || EdgeCell::ownerLess(cells[q], owner))) {
                 owner = cells[q];
                 ownerValid = true;
             }
@@ -363,7 +365,7 @@ struct OctreeTriangleTessellator::Walk {
         EdgeCell plist[4];
         int pcount = 0;
         for(int q = 0; q < 4; ++q) {
-            if(!cells[q].isSurface(targetLod)) {
+            if(!cells[q].isSurface()) {
                 continue;
             }
             bool duplicate = (pcount > 0)
@@ -431,10 +433,13 @@ struct OctreeTriangleTessellator::Walk {
     // Scan ONE Surface-Nets cell: walk the 12 edges of cellCube with the
     // cell's OWN stored corner samples and emit the segments whose owner
     // (finest of the four quadrant cells at the walk's resolution) lies
-    // inside the outer from-cube. Cells one level finer/coarser stay out of
-    // the segment via the isSurface(targetLod) quadrant filter; the polygon
-    // then closes with the remaining surface quadrants instead of leaving
-    // open edges at LOD band boundaries and shape faces.
+    // inside the outer from-cube. Quadrant cells of a coarser ladder level
+    // stay in the segment (isSurface() accepts any surface node) so that a
+    // chunk and its coarser neighbour emit the SAME polygon on a shared edge,
+    // which is what closes the surface across LoD band boundaries; the finer
+    // side's bridging triangles cover the level step. Non-surface cells
+    // (Empty/Solid space) are still dropped and the polygon closes with the
+    // remaining surface quadrants.
     void scanCell(OctreeNode *cellNode, const BoundingCube &cellCube) {
         for(int edgeIndex = 0; edgeIndex < 12; ++edgeIndex) {
             glm::ivec2 edgeCorners = SDF_EDGES[edgeIndex];

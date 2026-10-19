@@ -327,8 +327,13 @@ Cell findCellAt(vec3 pos) {
     return c;
 }
 
+// Same rule as the CPU EdgeCell::isSurface(): any surface node contributes,
+// whatever its ladder level. findCellAt stops at cells of this walk's level or
+// coarser, so a chunk and its coarser neighbour see the same four quadrants on
+// a shared edge; filtering by lod == targetLod here made the two sides emit
+// different polygons and opened the surface along every LoD band boundary.
 bool isSurfaceCell(Cell c) {
-    return c.valid && nodeType(c.id) == TYPE_SURFACE && nodeLod(c.id) == pc.targetLod;
+    return c.valid && nodeType(c.id) == TYPE_SURFACE;
 }
 
 // ownerLess: cube size, then min, then identity (CPU uses pointer order; the
