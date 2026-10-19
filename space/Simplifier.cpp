@@ -51,60 +51,10 @@ SimplificationResult Simplifier::simplify(
             return res;
         }
     }
-
-    // --- 3. Flatness detection from child surface normals ---
-    // Compute the average surface normal across all surface children.  If every
-    // child's normal lies within `angle` (cosine of max allowed deviation) of
-    // the average, the patch is considered flat and a generous SDF tolerance
-    // (`distance * cube_size`) is applied — allowing aggressive simplification
-    // of extended flat or gently sloped terrain.
-    // Curved patches (high normal variance) get half the tolerance so sharp
-    // ridges and concave features are not smoothed away.
-    glm::vec3 avgNormal(0.0f);
-    int surfaceCount = 0;
-    for(uint i = 0; i < 8; ++i) {
-        NodeOperationResult * child = &children[i];
-        if(child && child->resultType == SpaceType::Surface && child->node) {
-            BoundingCube childCube = cube.getChild(i);
-            glm::vec3 pos = SDF::getPosition(child->resultSDF, childCube);
-            glm::vec3 nrm = SDF::getNormalFromPosition(child->resultSDF, childCube, pos);
-            avgNormal += nrm;
-            ++surfaceCount;
-        }
-    }
-
     // Default to the full `distance` tolerance (flat-surface path).
     float toleranceMultiplier = distance;
-    if(surfaceCount >= 2) {
-        const float len = glm::length(avgNormal);
-        if(len > 1e-6f) {
-            avgNormal /= len;
-        }
-
-        // Find the child whose normal deviates most from the average.
-        float minDot = 1.0f;
-        for(uint i = 0; i < 8; ++i) {
-            NodeOperationResult * child = &children[i];
-            if(child && child->resultType == SpaceType::Surface && child->node) {
-                BoundingCube childCube = cube.getChild(i);
-                glm::vec3 pos = SDF::getPosition(child->resultSDF, childCube);
-                const glm::vec3 n = SDF::getNormalFromPosition(child->resultSDF, childCube, pos);
-                const float nLen = glm::length(n);
-                if(nLen > 1e-6f) {
-                    minDot = glm::min(minDot, glm::dot(avgNormal, n / nLen));
-                }
-            }
-        }
-
-        // `angle` is the cosine threshold (e.g. 0.95 ≈ 18°).  If any child's
-        // normal falls outside this cone the surface is curved: tighten the
-        // tolerance to half to preserve geometric detail.
-        if(minDot < angle) {
-            toleranceMultiplier = distance * 0.5f;
-        }
-    }
-
-    // --- 4. SDF re-interpolation error check with adaptive tolerance ---
+  
+    // --- 3. SDF re-interpolation error check with adaptive tolerance ---
     // For each surface child re-interpolate the parent SDF at the child's 8
     // corners and compare against the child's actual stored values.  If the
     // error exceeds the adaptive threshold the coarser representation would
