@@ -3,24 +3,16 @@
 
 // GPU surface-vertex extraction, one invocation per cell.
 //
-// This is a line-for-line port of the CPU reference the raster/CPU path uses:
+// The cell math is NOT implemented here: it comes from
+// includes/octree/SdfCell.glsl, the single shared bit-exact port of the CPU
+// functions the tessellator uses (SDF::eval, SDF::getPosition,
+// SDF::getNormalFromPosition, Math::solveLinearSystem). OctreeTriangles.comp
+// includes the same file, so the two GPU consumers can never disagree with each
+// other or with the CPU walker.
 //
-//   SDF::eval()                  -> evalType()
-//   SDF::getPosition()           -> cellPosition()
-//   SDF::getNormalFromPosition() -> cellNormal()
-//   Math::solveLinearSystem()    -> solveLinearSystem() (Cramer, glm::det order)
-//
-// The corner indexing is the octree/SDF convention (bit2 = x, bit1 = y,
-// bit0 = z), the edge table is SDF_EDGES and the QEF accumulation order matches
-// the CPU loop exactly, so a cell's vertex is bit-identical to the CPU walker's
-// `vertexFn` result for the same stored corners and cube. The earlier version
-// of this shader used a different corner convention, averaged the edge
-// crossings instead of solving the QEF and dropped the sentinel/fallback
-// handling, which is why its output did not match.
-//
-// Every cell emits exactly one vertex (non-surface cells emit their cube
-// centre, exactly like SDF::getPosition), so a consumer can index the output by
-// cell without holes.
+// Every cell emits exactly one vertex at the cell's own index (non-surface
+// cells emit their cube centre, exactly like SDF::getPosition), so a consumer
+// can index the output by cell without holes.
 
 layout(local_size_x = 64) in;
 
@@ -38,233 +30,26 @@ layout(push_constant) uniform PC {
     float isoValue; // unused: SDF::getPosition compares against 0 like the CPU
 } pc;
 
-// CUBE_CORNERS: bit2 = x, bit1 = y, bit0 = z (math/BoundingCube.hpp).
-const vec3 CORNERS[8] = vec3[](
-    vec3(0, 0, 0), vec3(0, 0, 1), vec3(0, 1, 0), vec3(0, 1, 1),
-    vec3(1, 0, 0), vec3(1, 0, 1), vec3(1, 1, 0), vec3(1, 1, 1)
-);
-// SDF_EDGES (sdf/SDF.hpp) — same order as the CPU loop.
-const ivec2 EDGES[12] = ivec2[](
-    ivec2(0, 1), ivec2(1, 3), ivec2(2, 3), ivec2(0, 2),
-    ivec2(4, 5), ivec2(5, 7), ivec2(6, 7), ivec2(4, 6),
-    ivec2(0, 4), ivec2(1, 5), ivec2(2, 6), ivec2(3, 7)
-);
+#include "../../includes/octree/SdfCell.glsl"
 
-const int TYPE_EMPTY = 0;
-const int TYPE_SURFACE = 1;
-const int TYPE_SOLID = 2;
-
-// Positive infinity as a bit pattern (same definition OctreeTriangles.comp
-// uses): comparing against it keeps the sentinel test exact.
-#define INF (uintBitsToFloat(0x7F800000u))
-
-bool isFiniteF(float v) { return !(isnan(v) || isinf(v)); }
-
-float sdfAt(uint gi, int idx) {
-    return (idx < 4) ? sdf0[gi][idx] : sdf1[gi][idx - 4];
-}
-
-vec3 cellCorner(uint gi, int idx) {
-    return cubeMin[gi].xyz + CORNERS[idx] * cubeMin[gi].w;
-}
-
-vec3 cellCenter(uint gi) {
-    return cubeMin[gi].xyz + vec3(cubeMin[gi].w * 0.5);
-}
-
-// SDF::eval — sign classification with the INFINITY sentinel skipped.
-int evalType(uint gi) {
-    bool hasPositive = false;
-    bool hasNegative = false;
-    for (int i = 0; i < 8; ++i) {
-        float v = sdfAt(gi, i);
-        if (v == INF) {
-            continue; // skip untouched corners
-        } else if (v >= 0.0f) {
-            hasPositive = true;
-        } else {
-            hasNegative = true;
-        }
+void cellSdf(uint gi, out float sdf[8]) {
+    for (int i = 0; i < 4; ++i) {
+        sdf[i] = sdf0[gi][i];
+        sdf[i + 4] = sdf1[gi][i];
     }
-    if (!hasPositive && !hasNegative) return TYPE_EMPTY;
-    return (hasNegative && hasPositive) ? TYPE_SURFACE : (hasPositive ? TYPE_EMPTY : TYPE_SOLID);
-}
-
-// SDF::getNormalFromPosition — analytic trilinear gradient at `position`.
-vec3 cellNormal(uint gi, vec3 position) {
-    float sz = cubeMin[gi].w;
-    // `precise`: the CPU reference is evaluated with strict IEEE rounding, so
-    // the shader must not let the compiler fuse/reassociate these expressions
-    // (the QEF below amplifies last-bit differences on ill-conditioned cells).
-    precise vec3 local = (position - cubeMin[gi].xyz) / sz;
-    float s0 = sdfAt(gi, 0), s1 = sdfAt(gi, 1), s2 = sdfAt(gi, 2), s3 = sdfAt(gi, 3);
-    float s4 = sdfAt(gi, 4), s5 = sdfAt(gi, 5), s6 = sdfAt(gi, 6), s7 = sdfAt(gi, 7);
-    precise float dx = (
-        (1.0 - local.y) * (1.0 - local.z) * (s4 - s0) +
-        (1.0 - local.y) * local.z * (s5 - s1) +
-        local.y * (1.0 - local.z) * (s6 - s2) +
-        local.y * local.z * (s7 - s3)
-    );
-    precise float dy = (
-        (1.0 - local.x) * (1.0 - local.z) * (s2 - s0) +
-        local.x * (1.0 - local.z) * (s3 - s1) +
-        (1.0 - local.x) * local.z * (s6 - s4) +
-        local.x * local.z * (s7 - s5)
-    );
-    precise float dz = (
-        (1.0 - local.x) * (1.0 - local.y) * (s1 - s0) +
-        (1.0 - local.x) * local.y * (s3 - s2) +
-        local.x * (1.0 - local.y) * (s5 - s4) +
-        local.x * local.y * (s7 - s6)
-    );
-    precise vec3 normal = vec3(dx, dy, dz) / sz;
-    precise float nl = sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
-    if (!isFiniteF(nl) || nl < 1e-6) {
-        return vec3(0.0, 1.0, 0.0);
-    }
-    return normal / nl;
-}
-
-// glm::determinant(mat3) — column-major indexing m[col][row].
-float det3(mat3 m) {
-    return m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2])
-         - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2])
-         + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
-}
-
-// Math::solveLinearSystem (Cramer's rule, first column replaced).
-vec3 solveLinearSystem(mat3 A, vec3 b) {
-    precise float detA = det3(A);
-    if (abs(detA) < 1e-6) {
-        return vec3(0.0);
-    }
-    mat3 A1 = A;
-    mat3 A2 = A;
-    mat3 A3 = A;
-    A1[0] = b;
-    A2[1] = b;
-    A3[2] = b;
-    precise float x = det3(A1) / detA;
-    precise float y = det3(A2) / detA;
-    precise float z = det3(A3) / detA;
-    return vec3(x, y, z);
-}
-
-// SDF::getPosition — QEF with corner snap, sentinel guard and fallbacks.
-vec3 cellPosition(uint gi) {
-    if (evalType(gi) != TYPE_SURFACE) {
-        return cellCenter(gi);
-    }
-    // Exact-zero corner: snap onto it so neighbouring cells sharing the corner
-    // emit the identical position (the CPU does the same).
-    for (int i = 0; i < 8; ++i) {
-        if (sdfAt(gi, i) == 0.0) {
-            return cellCorner(gi, i);
-        }
-    }
-
-    vec3 normals[8];
-    for (int i = 0; i < 8; ++i) {
-        normals[i] = cellNormal(gi, cellCorner(gi, i));
-    }
-
-    precise mat3 ATA = mat3(0.0);
-    precise vec3 ATb = vec3(0.0);
-    precise vec3 massPoint = vec3(0.0);
-    int count = 0;
-
-    for (int i = 0; i < 12; ++i) {
-        ivec2 edge = EDGES[i];
-        float d0 = sdfAt(gi, edge.x);
-        float d1 = sdfAt(gi, edge.y);
-        // Sentinels: INFINITY marks corners with no SDF data. A crossing
-        // against a sentinel corner yields t ~ 1.0 (vertex parked at the
-        // corner) with a wild plane normal, so both are skipped.
-        if (!isFiniteF(d0) || !isFiniteF(d1)) {
-            continue;
-        }
-        if (abs(d0) > INF * 0.5f || abs(d1) > INF * 0.5f) {
-            continue;
-        }
-        bool sign0 = d0 < 0.0;
-        bool sign1 = d1 < 0.0;
-        if (sign0 != sign1) {
-            vec3 p0 = cellCorner(gi, edge.x);
-            vec3 p1 = cellCorner(gi, edge.y);
-            float denom = d0 - d1;
-            float t = (denom != 0.0) ? clamp(d0 / denom, 0.0, 1.0) : 0.5;
-            // glm::mix(a, b, t) written out: drivers are free to rewrite
-            // the built-in as a + t*(b-a), which rounds differently.
-            vec3 p = p0 * (1.0 - t) + p1 * t;
-            vec3 nm = normals[edge.x] * (1.0 - t) + normals[edge.y] * t;
-            precise float nl = sqrt(nm.x * nm.x + nm.y * nm.y + nm.z * nm.z);
-            if (!isFiniteF(nl) || nl < 1e-6) {
-                continue;
-            }
-            precise vec3 n = nm / nl;
-            // glm::outerProduct(n, n) and glm::dot(n, p) written out: builtins
-            // are only required to be accurate to a few ulp, which the
-            // near-singular QEF below amplifies into visible position drift.
-            ATA += mat3(n * n.x, n * n.y, n * n.z);
-            ATb += n * (n.x * p.x + n.y * p.y + n.z * p.z);
-            massPoint += p;
-            count++;
-        }
-    }
-
-    if (count == 0) {
-        // No usable QEF crossing (only diagonal corners straddle and every edge
-        // pair is blocked by a sentinel): average the finite straddling edges so
-        // the vertex sits ON the real surface segment.
-        vec3 fallback = vec3(0.0);
-        int n = 0;
-        for (int i = 0; i < 12; ++i) {
-            ivec2 edge = EDGES[i];
-            float d0 = sdfAt(gi, edge.x);
-            float d1 = sdfAt(gi, edge.y);
-            if (!isFiniteF(d0) || !isFiniteF(d1)) continue;
-            bool sign0 = d0 < 0.0;
-            bool sign1 = d1 < 0.0;
-            if (sign0 == sign1) continue;
-            float denom = d0 - d1;
-            float t = (denom != 0.0) ? clamp(d0 / denom, 0.0, 1.0) : 0.5;
-            fallback += cellCorner(gi, edge.x) * (1.0 - t) + cellCorner(gi, edge.y) * t;
-            ++n;
-        }
-        if (n > 0) {
-            return fallback / float(n);
-        }
-        return cellCenter(gi);
-    }
-
-    massPoint /= float(count);
-
-    // Regularize toward the mass point so an underconstrained QEF does not
-    // spike (same 1e-2 factor as the CPU).
-    ATA[0][0] += 1e-2;
-    ATA[1][1] += 1e-2;
-    ATA[2][2] += 1e-2;
-    ATb += massPoint * 1e-2;
-
-    precise vec3 result = solveLinearSystem(ATA, ATb);
-
-    if (any(isnan(result)) || any(isinf(result))) {
-        return massPoint;
-    }
-    if (any(isnan(massPoint)) || any(isinf(massPoint))) {
-        return cellCenter(gi);
-    }
-    precise vec3 mn = cubeMin[gi].xyz;
-    result = clamp(result, mn, mn + vec3(cubeMin[gi].w));
-    return result;
 }
 
 void main() {
     uint gi = gl_GlobalInvocationID.x;
     if (gi >= pc.cellCount) return;
 
-    vec3 pos = cellPosition(gi);
-    vec3 nrm = cellNormal(gi, pos);
+    float sdf[8];
+    cellSdf(gi, sdf);
+    const vec3 mn = cubeMin[gi].xyz;
+    const float sz = cubeMin[gi].w;
+
+    const vec3 pos = sdfCellPosition(sdf, mn, sz);
+    const vec3 nrm = sdfCellNormal(sdf, mn, sz, pos);
 
     // One vertex per cell at the cell's own index: the host maps output i back
     // to input cell i (services/OctreeMeshCompute.cpp), so an atomic append
