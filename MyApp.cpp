@@ -600,6 +600,25 @@ public:
         if (const char* env = std::getenv("VULKAN_DROPLET_COUNT")) {
             settings.dropletCount = std::max(1, std::min(std::atoi(env), 8192));
         }
+        // Headless brush-preview bring-up (composite validation): add one
+        // default brush entry so the preview overlay renders without UI input.
+        // VULKAN_BRUSH_SCALE optionally overrides its uniform scale (a large
+        // value spans the visible water surface for depth-order checks).
+        if (std::getenv("VULKAN_BRUSH_PREVIEW") != nullptr) {
+            brushManager.addEntry();
+            if (BrushEntry* entry = brushManager.getSelectedEntry()) {
+                if (const char* sc = std::getenv("VULKAN_BRUSH_SCALE")) {
+                    entry->scale = glm::vec3(std::max(1.0f, static_cast<float>(std::atof(sc))));
+                }
+                if (const char* tr = std::getenv("VULKAN_BRUSH_TRANSLATE")) {
+                    float x = 0.0f, y = 0.0f, z = 0.0f;
+                    if (std::sscanf(tr, "%f,%f,%f", &x, &y, &z) == 3) {
+                        entry->translate = glm::vec3(x, y, z);
+                    }
+                }
+            }
+        }
+
         // VULKAN_DROPLET_DT forces a fixed per-frame simulation delta (headless
         // validation on slow software rasterizers, where the real frame delta
         // is clamped to 0.1 s and the fall would take minutes of wall time).
