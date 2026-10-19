@@ -7,8 +7,9 @@
 # `make cloc` uses this because the spoken number only exists at run time and
 # cannot come from a pre-rendered mp3. The phrase is synthesized with edge-tts
 # (same voice as `make sounds`, loudness-normalized the same way) and cached
-# under .dynamic/, so repeated runs are instant. When edge-tts is missing or
-# offline, ffmpeg's built-in flite voice is used instead (robotic but exact).
+# under .dynamic/, so repeated runs are instant. When edge-tts is missing,
+# broken or offline, ffmpeg's built-in flite voice is used instead (robotic
+# but exact).
 # If neither can synthesize the phrase nothing is played: PLAY_SOUND has
 # already announced the phase, so the silence is graceful.
 #
@@ -42,14 +43,33 @@ encode() {
 		</dev/null >/dev/null 2>&1
 }
 
-# Preferred path: edge-tts neural synthesis.
+# Preferred path: edge-tts neural synthesis. Resolve the binary instead of
+# trusting `command -v` alone: pipx installs it in ~/.local/bin (not always on
+# the PATH of non-login shells), and a stale symlink left behind by a removed
+# venv makes `command -v` return nothing. That silently degraded every error
+# announcement to the robotic flite voice, so probe --version and skip a
+# broken install.
+find_edge_tts() {
+	for candidate in "${SOUND_EDGE_TTS:-}" \
+		"$(command -v edge-tts 2>/dev/null)" \
+		"${HOME:-/nonexistent}/.local/bin/edge-tts"; do
+		[ -n "$candidate" ] || continue
+		[ -x "$candidate" ] || continue
+		"$candidate" --version >/dev/null 2>&1 || continue
+		printf '%s' "$candidate"
+		return 0
+	done
+	return 1
+}
+
 out=
-if command -v edge-tts >/dev/null 2>&1; then
+edge=$(find_edge_tts) || edge=
+if [ -n "$edge" ]; then
 	out=$cache/$(cache_key edge "$voice").mp3
 	if [ ! -s "$out" ]; then
 		raw=$cache/.raw.$$.mp3
 		tmp=$cache/.enc.$$.mp3
-		edge-tts --voice "$voice" --text "$text" --write-media "$raw" </dev/null >/dev/null 2>&1
+		"$edge" --voice "$voice" --text "$text" --write-media "$raw" </dev/null >/dev/null 2>&1
 		if [ -s "$raw" ] && encode "$tmp" -i "$raw" && [ -s "$tmp" ]; then
 			mv -f "$tmp" "$out"
 		fi

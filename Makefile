@@ -79,6 +79,10 @@ SOUND_PHRASES = \
 # (Ava/Emma/Andrew) are the most natural. Without edge-tts the target falls
 # back to ffmpeg's built-in flite voice (offline, but robotic).
 SOUND_VOICE ?= en-US-AvaMultilingualNeural
+# Export the voice so sounds/say.sh (compiler diagnostics, cloc count, commit
+# subject) uses the same voice as the checked-in alerts, including when
+# SOUND_VOICE is overridden on the make command line.
+export SOUND_VOICE
 
 .PHONY: sounds
 # Regenerate the checked-in alert sounds. Preferred path: edge-tts neural
@@ -92,12 +96,16 @@ sounds:
 		exit 1; }
 	@mkdir -p $(SOUND_DIR)
 	@trap 'rm -f $(SOUND_DIR)/.tts_*' EXIT; \
-	if command -v edge-tts >/dev/null 2>&1; then \
-		echo "Generating alert sounds with edge-tts voice $(SOUND_VOICE)"; \
+	edge="$$(command -v edge-tts 2>/dev/null)"; \
+	if [ -z "$$edge" ] && [ -x "$${HOME:-/nonexistent}/.local/bin/edge-tts" ]; then \
+		edge="$${HOME}/.local/bin/edge-tts"; \
+	fi; \
+	if [ -n "$$edge" ] && "$$edge" --version >/dev/null 2>&1; then \
+		echo "Generating alert sounds with edge-tts ($$edge) voice $(SOUND_VOICE)"; \
 		for pair in $(SOUND_PHRASES); do \
 			name=$${pair%%=*}; phrase=$${pair#*=}; \
 			echo "  $$name.mp3: \"$$phrase\""; \
-			edge-tts --voice $(SOUND_VOICE) --text "$$phrase" \
+			"$$edge" --voice $(SOUND_VOICE) --text "$$phrase" \
 				--write-media $(SOUND_DIR)/.tts_$$name.raw.mp3 || exit 1; \
 			ffmpeg -hide_banner -loglevel error -y \
 				-i $(SOUND_DIR)/.tts_$$name.raw.mp3 \
@@ -106,7 +114,8 @@ sounds:
 				$(SOUND_DIR)/$$name.mp3 || exit 1; \
 		done; \
 	else \
-		echo "edge-tts not found (pipx install edge-tts); using flite fallback"; \
+		echo "edge-tts is missing or broken (repair with: pipx install --force edge-tts)"; \
+		echo "using the robotic flite fallback"; \
 		for pair in $(SOUND_PHRASES); do \
 			name=$${pair%%=*}; phrase=$${pair#*=}; \
 			echo "  $$name.mp3: \"$$phrase\""; \
