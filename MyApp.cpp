@@ -530,7 +530,34 @@ public:
         octreeMeshCompute = std::make_shared<OctreeMeshCompute>();
         octreeMeshCompute->init(this);
         gOctreeMeshCompute = [this](const std::vector<OctreeMeshCell>& cells, float iso) {
-            return octreeMeshCompute->compute(cells, iso);
+            OctreeMeshResult res = octreeMeshCompute->compute(cells, iso);
+            // VULKAN_MESHCHECK=1: A/B the GPU surface-vertex extraction against
+            // the CPU reference (SDF::getPosition + getNormalFromPosition) for
+            // the cells of this call and report the worst deviation. The shader
+            // is a port of exactly those functions, so the deltas must be 0.
+            if (std::getenv("VULKAN_MESHCHECK") != nullptr) {
+                static std::atomic<int> checked{0};
+                float maxPos = 0.0f;
+                float maxNrm = 0.0f;
+                const size_t n = std::min(cells.size(), res.positions.size());
+                for (size_t i = 0; i < n; ++i) {
+                    const OctreeMeshCell& c = cells[i];
+                    BoundingCube cube(c.cubeMin, c.cubeSize);
+                    float sdfCopy[8];
+                    std::memcpy(sdfCopy, c.sdf, sizeof(sdfCopy));
+                    const glm::vec3 cpuPos = SDF::getPosition(sdfCopy, cube);
+                    const glm::vec3 cpuNrm = SDF::getNormalFromPosition(sdfCopy, cube, cpuPos);
+                    const glm::vec3 gpuPos(res.positions[i].x, res.positions[i].y, res.positions[i].z);
+                    const glm::vec3 gpuNrm(res.normals[i].x, res.normals[i].y, res.normals[i].z);
+                    maxPos = std::max(maxPos, glm::distance(cpuPos, gpuPos));
+                    maxNrm = std::max(maxNrm, glm::distance(cpuNrm, gpuNrm));
+                }
+                if (checked.fetch_add(1) < 8) {
+                    std::cout << "[meshcheck] cells=" << cells.size() << " maxPosDelta=" << maxPos
+                              << " maxNormalDelta=" << maxNrm << std::endl;
+                }
+            }
+            return res;
         };
         octreeTopologyCompute = std::make_shared<OctreeTopologyCompute>();
         octreeTopologyCompute->init(this);
