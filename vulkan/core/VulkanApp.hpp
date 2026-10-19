@@ -230,6 +230,13 @@ public:
         if (inFlightFences.empty()) return VK_NULL_HANDLE;
         return inFlightFences[currentFrame % inFlightFences.size()];
     }
+    // Cross-queue ordering aid: a submission that waits on this timeline at this
+    // value runs only after every frame submitted so far has finished executing.
+    // Used by VideoTextureService to update texture-array layers in place
+    // without racing frames that still sample the previous contents (a worker
+    // would otherwise have to guess which in-flight fence is the oldest).
+    VkSemaphore getFrameTimelineSemaphore() const { return frameTimeline; }
+    uint64_t getFrameTimelineValue() const { return frameTimelineValue.load(); }
 
     // texture and descriptor
     // Scene descriptor set layouts/sets live in SceneDescriptorLayout (owned by

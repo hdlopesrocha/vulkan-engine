@@ -1,0 +1,104 @@
+#version 460
+//
+// Video frame conversion (dispatched by VideoTextureService, one dispatch per
+// uploaded frame): a decoded 4:2:0 frame, tightly packed in ONE R8 image, into
+// the RGBA8 layer of the engine's texture array that the video's brush material
+// samples.
+//
+// Packed layout of `yuvPlane` (width = luma width, height = lumaH + lumaH/2):
+//   rows [0, lumaH)            luma, one byte per pixel
+//   rows [lumaH, lumaH + H/2)  interleaved chroma pairs (U0 V0 U1 V1 ...), so
+//                              chroma sample (cx, cy) is the texel pair
+//                              (2*cx, lumaH + cy) = U, (2*cx + 1, ...) = V.
+// This is NV12's byte layout; planar (yuv420p) frames are interleaved into it
+// by the uploader, so the shader has a single layout to handle.
+//
+// Sampling is texelFetch + manual bilinear: the packed plane is one texture, so
+// hardware filtering would mix luma with chroma at the plane boundary, and the
+// interleaved chroma needs per-channel filtering (U at even texels, V at odd
+// ones) rather than a vector filter across both. Scaling to the layer size is
+// bilinear for the same reason.
+//
+// The colour matrix and range scaling (BT.601/709/2020, limited/full) arrive as
+// push constants, so the shader carries no codec knowledge; the CPU derives
+// them from the decoded frame's metadata. The result is converted sRGB ->
+// linear exactly like every other albedo upload in TextureArrayManager (the
+// arrays store linear values, and the material shaders sample them raw).
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// R8 packed YUV plane (Y rows, then interleaved UV rows).
+layout(set = 0, binding = 0) uniform sampler2D yuvPlane;
+// Albedo array layer this frame belongs to (single-layer 2D view).
+layout(set = 0, binding = 1, rgba8) uniform image2D targetLayer;
+
+layout(push_constant) uniform VideoConvert {
+    ivec4 lumaSize;    // .xy = luma w/h, .zw = chroma w/h (in chroma samples)
+    ivec4 dstSize;     // .xy = target layer w/h
+    vec4 yuvOffset;    // rgb = matrix * yuv + offset (xyz; w unused)
+    vec4 matrixRow0;   // row-major 3x3, one vec4 per row
+    vec4 matrixRow1;
+    vec4 matrixRow2;
+} pc;
+
+float luma(const ivec2 p) {
+    return texelFetch(yuvPlane,
+                      ivec2(clamp(p.x, 0, pc.lumaSize.x - 1),
+                            clamp(p.y, 0, pc.lumaSize.y - 1)), 0).r;
+}
+
+// Chroma sample (cx, cy); oddX = 0 selects U, 1 selects V.
+float chroma(const int cx, const int cy, const int oddX) {
+    const int cw = pc.lumaSize.z;
+    const int ch = pc.lumaSize.w;
+    return texelFetch(yuvPlane,
+                      ivec2(2 * clamp(cx, 0, cw - 1) + oddX,
+                            pc.lumaSize.y + clamp(cy, 0, ch - 1)), 0).r;
+}
+
+vec3 srgbToLinear(const vec3 c) {
+    const bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+    const vec3 low = c / 12.92;
+    const vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(high, low, cutoff);
+}
+
+void main() {
+    const ivec2 dst = ivec2(gl_GlobalInvocationID.xy);
+    if (dst.x >= pc.dstSize.x || dst.y >= pc.dstSize.y) return;
+
+    // Output pixel centre -> source texel space of both planes.
+    const vec2 uv = (vec2(dst) + 0.5) / vec2(pc.dstSize.xy);
+
+    // Luma, manual bilinear.
+    const float lx = uv.x * float(pc.lumaSize.x) - 0.5;
+    const float ly = uv.y * float(pc.lumaSize.y) - 0.5;
+    const float bx = floor(lx);
+    const float by = floor(ly);
+    const float fx = lx - bx;
+    const float fy = ly - by;
+    const int x0 = int(bx);
+    const int y0 = int(by);
+    const float Y = mix(mix(luma(ivec2(x0, y0)), luma(ivec2(x0 + 1, y0)), fx),
+                        mix(luma(ivec2(x0, y0 + 1)), luma(ivec2(x0 + 1, y0 + 1)), fx), fy);
+
+    // Chroma, 4:2:0, per channel (U = even texels, V = odd texels).
+    const float cx = uv.x * float(pc.lumaSize.z) - 0.5;
+    const float cy = uv.y * float(pc.lumaSize.w) - 0.5;
+    const float cbx = floor(cx);
+    const float cby = floor(cy);
+    const float cfx = cx - cbx;
+    const float cfy = cy - cby;
+    const int kx = int(cbx);
+    const int ky = int(cby);
+    const float u = mix(mix(chroma(kx, ky, 0), chroma(kx + 1, ky, 0), cfx),
+                        mix(chroma(kx, ky + 1, 0), chroma(kx + 1, ky + 1, 0), cfx), cfy);
+    const float v = mix(mix(chroma(kx, ky, 1), chroma(kx + 1, ky, 1), cfx),
+                        mix(chroma(kx, ky + 1, 1), chroma(kx + 1, ky + 1, 1), cfx), cfy);
+
+    const vec3 yuv = vec3(Y, u, v);
+    const vec3 rgb = vec3(dot(pc.matrixRow0.xyz, yuv),
+                          dot(pc.matrixRow1.xyz, yuv),
+                          dot(pc.matrixRow2.xyz, yuv)) + pc.yuvOffset.xyz;
+
+    imageStore(targetLayer, dst, vec4(srgbToLinear(clamp(rgb, 0.0, 1.0)), 1.0));
+}
