@@ -560,6 +560,29 @@ public:
                 if (checked.fetch_add(1) < 8) {
                     std::cout << "[meshcheck] cells=" << cells.size() << " maxPosDelta=" << maxPos
                               << " maxNormalDelta=" << maxNrm << std::endl;
+                    // Dump the worst cell's inputs and both results so the
+                    // divergent step can be reproduced offline.
+                    size_t worst = 0;
+                    float worstD = -1.0f;
+                    for (size_t i = 0; i < n; ++i) {
+                        BoundingCube cube(cells[i].cubeMin, cells[i].cubeSize);
+                        float sdfCopy2[8];
+                        std::memcpy(sdfCopy2, cells[i].sdf, sizeof(sdfCopy2));
+                        const glm::vec3 cp = SDF::getPosition(sdfCopy2, cube);
+                        const glm::vec3 gp(res.positions[i].x, res.positions[i].y, res.positions[i].z);
+                        const float d = glm::distance(cp, gp);
+                        if (d > worstD) { worstD = d; worst = i; }
+                    }
+                    if (n > 0) {
+                        const OctreeMeshCell& wc = cells[worst];
+                        std::cout << "[meshcheck] worst cell size=" << wc.cubeSize
+                                  << " min=(" << wc.cubeMin.x << "," << wc.cubeMin.y << "," << wc.cubeMin.z << ")"
+                                  << " sdf=[";
+                        for (int k = 0; k < 8; ++k) std::cout << wc.sdf[k] << (k < 7 ? "," : "");
+                        std::cout << "] cpu=(" << 0 << ") gpu=(" << res.positions[worst].x << ","
+                                  << res.positions[worst].y << "," << res.positions[worst].z << ")"
+                                  << " delta=" << worstD << std::endl;
+                    }
                 }
             }
             return res;
