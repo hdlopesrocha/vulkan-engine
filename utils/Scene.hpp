@@ -24,11 +24,16 @@ constexpr Layer LAYER_TRANSPARENT = 1;
 // only decides which GPU pipeline a layer's chunks are published into.
 enum class LayerRendererType : uint8_t {
     Solid = 0,
-    Water = 1
+    Water = 1,
+    Video = 2
 };
 
 inline const char* layerRendererName(LayerRendererType r) {
-    return (r == LayerRendererType::Water) ? "Water" : "Solid";
+    switch (r) {
+        case LayerRendererType::Water: return "Water";
+        case LayerRendererType::Video: return "Video";
+        default: return "Solid";
+    }
 }
 
 

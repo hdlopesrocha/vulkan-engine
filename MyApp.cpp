@@ -52,6 +52,8 @@
 #include "services/ImpostorService.hpp"
 #include "widgets/TextureMixerWidget.hpp"
 #include "widgets/TextureViewerWidget.hpp"
+#include "services/VideoTextureService.hpp"
+#include "widgets/VideoTextureWidget.hpp"
 #include "widgets/CameraWidget.hpp"
 #include "events/ControllerManager.hpp"
 #include "widgets/ControllerParametersWidget.hpp"
@@ -218,12 +220,12 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
 }
 
 // ── Setup-phase voice alerts ──────────────────────────────────────────────
-// The setup steps below announce themselves through the shared alert queue
-// in sounds/: enqueue synchronously on sounds/play.sh (queue order == call
-// order) and leave playback to a detached drainer. This is the same queue
-// and script the Makefile alerts use, so app and build voices serialize
-// instead of overlapping. No-op when the sounds folder is missing (e.g. a
-// standalone copy of bin/).
+// Each setup step below announces itself through the shared alert queue in
+// sounds/ once it has completed: enqueue synchronously on sounds/play.sh
+// (queue order == call order) and leave playback to a detached drainer. This
+// is the same queue and script the Makefile alerts use, so app and build
+// voices serialize instead of overlapping. No-op when the sounds folder is
+// missing (e.g. a standalone copy of bin/).
 static void playSetupAlert(const char* name) {
     namespace fs = std::filesystem;
     static const fs::path script = [] {
@@ -381,6 +383,14 @@ public:
 
     // Texture editing / UI helpers
     std::shared_ptr<TextureMixer> textureMixer;
+    // Video textures: every loaded clip owns a slot of the dedicated video
+    // texture array; materials of kind Video reference that slot through
+    // textureIndex and are rendered by the video layer. Decoding is
+    // asynchronous (one worker per clip) and the render loop never waits.
+    std::shared_ptr<VideoTextureService> videoTextureService;
+    std::shared_ptr<VideoTextureWidget> videoTextureWidget;
+    int videoCubeMaterialIndex = -1;   // material used by MainSceneLoader's video cube
+    int sdfGivenMaterialIndex = -1;    // material used by MainSceneLoader's SdfGiven cube
     std::shared_ptr<OctreeMeshCompute> octreeMeshCompute;
     std::shared_ptr<OctreeTopologyCompute> octreeTopologyCompute;
     // ── Water droplets: GPU particle simulation + SDF ray-marched rendering ─
@@ -613,25 +623,102 @@ public:
             primeImTextureLayer(i);
         }
 
+        // Editable placeholder: the first paint-margin layer after the source
+        // triples and the generated mixers (video clips live in their own
+        // array and do not consume texture-array layers).
         uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
-
-
 
         // Trigger initial generation for configured mixers so UI previews show meaningful results
         // (Previously this was deferred to the user pressing "Generate" in the UI)
         std::cerr << "[TextureMixer] Running initial generation for configured mixers...\n";
-        // Prime ImGui descriptors so the texture viewer shows immediately
-        textureArrayManager.setLayerInitialized(editableLayer, true);
-        primeImTextureLayer(editableLayer);
 
         // Generate textures for all configured mixer entries (async submissions tracked by TextureMixer)
         textureMixer->generateInitialTextures(mixerParams);
         textureMixerWidget = std::make_shared<TextureMixerWidget>(textureMixer, mixerParams, "Texture Mixer");
         widgetManager.addWidget(textureMixerWidget);
 
-        size_t materialCount = static_cast<size_t>(loadedTextureLayers) + 1;
+        // ── Video textures ──────────────────────────────────────────────────
+        // Clips live in their own texture array (VideoTextureService) and are
+        // loaded at runtime; materials of kind Video reference a slot through
+        // textureIndex. MyApp loads the 3 base clips (videos/base/) at setup,
+        // the Videos widget can load more from videos/extra/ up to capacity.
+        if (std::getenv("VULKAN_NO_VIDEO") == nullptr) {
+            videoTextureService = std::make_shared<VideoTextureService>();
+            if (videoTextureService->initialize(this, &textureArrayManager)) {
+                const std::vector<VideoTextureService::AvailableVideo> available =
+                    VideoTextureService::listAvailableVideos();
+                size_t loaded = 0;
+                for (const auto& clip : available) {
+                    if (clip.category != "base") continue;
+                    if (videoTextureService->loadVideo(clip.path, clip.name) >= 0) ++loaded;
+                    if (loaded >= 3) break;
+                }
+                if (videoTextureService->empty()) {
+                    std::cerr << "[MyApp] no base video could be loaded (see [VideoTexture] log lines)\n";
+                    videoTextureService->shutdown();
+                    videoTextureService.reset();
+                } else {
+                    videoTextureWidget = std::make_shared<VideoTextureWidget>(videoTextureService, &textureArrayManager);
+                    widgetManager.addWidget(videoTextureWidget);
+                    std::cout << "[MyApp] video textures: " << videoTextureService->count()
+                              << " base clip(s) loaded into " << videoTextureService->slotCapacity()
+                              << " video slots" << std::endl;
+                    if (std::getenv("VULKAN_VIDEO_BENCH") != nullptr) {
+                        videoTextureService->runBenchmark(2, 8);
+                    }
+                }
+            } else {
+                videoTextureService.reset();
+            }
+        }
+
+        // Prime the editable placeholder layer (+ its ImGui preview).
+        textureArrayManager.setLayerInitialized(editableLayer, true);
+        primeImTextureLayer(editableLayer);
+
+        // Reserve material slots for Video-kind materials plus one extra demo
+        // material: video materials sample the video array through textureIndex
+        // instead of a material texture layer, so they need no layer in the five
+        // material arrays. MainSceneLoader's cubes paint with these slots.
+        const size_t kVideoMaterialCount = 4;
+        const size_t kExtraMaterialCount = kVideoMaterialCount + 1;
+        size_t materialCount = static_cast<size_t>(loadedTextureLayers) + 1 + kExtraMaterialCount;
         // Same per-layer overrides the Blender exporter publishes.
         materials = sceneMaterialProperties(materialCount);
+        for (size_t i = static_cast<size_t>(loadedTextureLayers) + 1;
+             i < static_cast<size_t>(loadedTextureLayers) + 1 + kVideoMaterialCount; ++i) {
+            MaterialProperties& m = materials[i];
+            m.kind = MaterialKind::Video;
+            m.textureIndex = static_cast<int>(i - (static_cast<size_t>(loadedTextureLayers) + 1));
+            m.textureMapping = TextureMappingMode::Triplanar;
+            m.blendMode = MaterialBlendMode::Normal;
+            m.triplanarScaleU = 0.0015f;
+            m.triplanarScaleV = 0.0015f;
+        }
+        // First video material: the demo cube, spherical SDF coordinates around
+        // its bounding volume and Screen blending (Solid -> Water -> Video).
+        if (videoTextureService) {
+            MaterialProperties& videoMat = materials[static_cast<size_t>(loadedTextureLayers) + 1];
+            videoMat.kind = MaterialKind::Video;
+            videoMat.textureIndex = 0;
+            videoMat.textureMapping = TextureMappingMode::SdfGiven;
+            videoMat.mappingOrigin = glm::vec4(0.0f, 512.0f, 512.0f * 8.0f, 320.0f);
+            videoMat.blendMode = MaterialBlendMode::Screen;
+            videoCubeMaterialIndex = static_cast<int>(loadedTextureLayers) + 1;
+        }
+        // Extra demo material: a Texture-kind material using SdfGiven spherical
+        // coordinates around the solid demo cube's bounding volume.
+        {
+            const size_t sdfIndex = static_cast<size_t>(loadedTextureLayers) + 1 + kVideoMaterialCount;
+            MaterialProperties& m = materials[sdfIndex];
+            m.kind = MaterialKind::Texture;
+            m.textureIndex = 6;  // existing decorative texture layer
+            m.textureMapping = TextureMappingMode::SdfGiven;
+            m.mappingOrigin = glm::vec4(0.0f, 512.0f, 512.0f * 9.0f, 320.0f);
+            m.blendMode = MaterialBlendMode::Normal;
+            m.triplanar = false;  // SdfGiven is the selected technique
+            sdfGivenMaterialIndex = static_cast<int>(sdfIndex);
+        }
 
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
@@ -689,6 +776,13 @@ public:
             }
         }
 
+        // Headless A/B switches for layer isolation (diagnostics only): each
+        // forces the matching Settings toggle off/on before the first frame.
+        if (std::getenv("VULKAN_NO_WATER") != nullptr) settings.waterEnabled = false;
+        if (std::getenv("VULKAN_NO_SOLID") != nullptr) settings.renderSolid = false;
+        if (std::getenv("VULKAN_NO_VEG") != nullptr) settings.vegetationEnabled = false;
+        if (std::getenv("VULKAN_WIREFRAME") != nullptr) settings.wireframeMode = true;
+
         // VULKAN_DROPLET_DT forces a fixed per-frame simulation delta (headless
         // validation on slow software rasterizers, where the real frame delta
         // is clamped to 0.1 s and the fall would take minutes of wall time).
@@ -705,9 +799,9 @@ public:
         // the generic VulkanApp framework) so the engine core stays agnostic about
         // scene bindings. Must exist before SceneRenderer::init() writes the static
         // descriptor set below.
-        playSetupAlert("setup-layout");
         sceneDescriptorLayout = std::make_unique<SceneDescriptorLayout>();
         sceneDescriptorLayout->create(*this);
+        playSetupAlert("setup-layout");
 
         // Build the scene render queues from the parallel graphics-family queue
         // pool built by VulkanApp::createLogicalDevice. They alias graphicsQueue
@@ -779,7 +873,6 @@ public:
         // Create the World (owns Chunks, Octrees, and the ChunkManager state machine).
         // The renderer receives a reference to the World for chunk state queries
         // and proxy swap notifications.
-        playSetupAlert("setup-world");
         world = new World();
         sceneRenderer->setWorld(world);
 
@@ -806,6 +899,7 @@ public:
         if (!useRemote) {
             std::cout << "[MyApp::setup] rendering LocalScene\n";
         }
+        playSetupAlert("setup-world");
 
         octreeExplorerWidget = std::make_shared<OctreeExplorerWidget>(&world->scene(), &camera);
         widgetManager.addWidget(octreeExplorerWidget);
@@ -845,26 +939,47 @@ public:
         if (sceneRenderer && sceneRenderer->vegetationRenderer)
             sceneRenderer->vegetationRenderer->init(this);
 
-        playSetupAlert("setup-textures");
         setupVegetationTextures();
         setupTextures();
+        playSetupAlert("setup-textures");
 
         // H9: the water offscreen targets render at Settings::waterRenderScale.
         sceneRenderer->setWaterRenderScale(settings.waterRenderScale);
         // M12 (perf report 22): the vegetation offscreen targets render at
         // Settings::vegetationRenderScale.
         sceneRenderer->setVegetationRenderScale(settings.vegetationRenderScale);
-        playSetupAlert("setup-renderers");
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
+
+        // Bind the video texture array now that both the service (setupTextures)
+        // and the video layer renderer exist.
+        if (sceneRenderer->videoRenderer) {
+            sceneRenderer->videoRenderer->setVideoTexture(this, videoTextureService.get());
+        }
 
         // Re-wire impostors now that VegetationRenderer::init() has stored the render pass.
         if (impostorService) impostorService->rewire();
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
+        playSetupAlert("setup-renderers");
 
-        playSetupAlert("setup-ui");
         textureViewer = std::make_shared<TextureViewer>();
         textureViewer->init(&textureArrayManager, &materials);
+        textureViewer->setVideoSlotNamesProvider([this]() {
+            std::vector<std::string> names;
+            if (!videoTextureService) return names;
+            const uint32_t capacity = videoTextureService->slotCapacity();
+            names.resize(capacity);
+            for (const auto& s : videoTextureService->states()) {
+                if (s.slot >= capacity) continue;
+                char label[128];
+                std::snprintf(label, sizeof(label), "%u: %s", s.slot, s.name.c_str());
+                names[s.slot] = label;
+            }
+            for (uint32_t i = 0; i < capacity; ++i) {
+                if (names[i].empty()) names[i] = std::to_string(i) + ": <empty>";
+            }
+            return names;
+        });
         textureViewer->setOnMaterialChanged([this](size_t idx) {
             materialManager.update(idx, materials[idx], this);
         });
@@ -973,6 +1088,7 @@ public:
             [this]() { syncLayers(); },
             [this](Layer layer) { repopulateLayer(layer); });
         widgetManager.addWidget(layersWidget);
+        playSetupAlert("setup-ui");
 
         // Create per-frame timestamp query pools for GPU profiling
         {
@@ -1202,6 +1318,13 @@ public:
         if (sceneRenderer && !isLoading) {
             // Dynamic layers: pick up LayersWidget add/remove without restart.
             syncLayers();
+            // Video-layer mesh uploads stage their indirect commands into the
+            // renderer's per-frame cull slot, so the slot must already match the
+            // frame being prepared (solid/water set theirs in preRenderPass; the
+            // video pass only culls later, after the uploads).
+            if (sceneRenderer->videoRenderer) {
+                sceneRenderer->videoRenderer->getIndirectRenderer().setCullFrame(getCurrentFrame());
+            }
             // Hybrid RT: water volumes join the proxy only while water renders.
             sceneRenderer->rtWaterProxyEnabled = settings.waterEnabled;
             std::deque<SceneRenderer::PendingMeshData> pendingBatch;
@@ -3253,6 +3376,20 @@ public:
         // avoiding any cross-CB layout hazard. It signals semWater, which
         // m_extraWaitSemaphores makes the composite (below) wait on.
 
+        // ── Video layer pass (Solid -> Water -> Video) ──
+        // Recorded on the main command buffer: the submit already waits on all
+        // async passes and on the video-array uploads (extra wait semaphores),
+        // so the composite sees current frames and no upload writes the array
+        // while this pass samples it.
+        if (sceneRenderer && sceneRenderer->videoRenderer) {
+            sceneRenderer->videoRenderer->draw(commandBuffer, this, frameIdx,
+                                               getMainDescriptorSet(),
+                                               camera.getViewProjectionMatrix(),
+                                               camera.getPosition(),
+                                               settings.lodBias,
+                                               settings.maxTargetLod);
+        }
+
         profileCpuRecord = std::chrono::duration<float, std::milli>(
             std::chrono::high_resolution_clock::now() - cpuRecordT0).count();
     }
@@ -3789,6 +3926,10 @@ public:
                 fireColorView = sceneRenderer->sdfRenderer->getSdfColorView(frameIdx);
                 fireDepthView = sceneRenderer->sdfRenderer->getSdfDepthView(frameIdx);
             }
+            VkImageView videoColorView = sceneRenderer->videoRenderer
+                                             ? sceneRenderer->videoRenderer->colorView(frameIdx) : VK_NULL_HANDLE;
+            VkImageView videoDepthView = sceneRenderer->videoRenderer
+                                             ? sceneRenderer->videoRenderer->depthView(frameIdx) : VK_NULL_HANDLE;
             float brushAlpha = 0.5f;
             float brushMode = 0.0f;
             const BrushEntry* brushEntry = brushManager.getSelectedEntry();
@@ -3832,6 +3973,8 @@ public:
                 bboxDepthView,
                 fireColorView,
                 fireDepthView,
+                videoColorView,
+                videoDepthView,
                 brushAlpha,
                 brushMode,
                 viewProj,
@@ -3893,6 +4036,14 @@ public:
     // before clean(), but draining the upload queues and stopping thread pools
     // may have left work in flight.
     deviceWaitIdle();
+
+    // Video decoding workers must stop before the device (and the array layers
+    // they upload into) go away. Deferred upload callbacks hold a weak reference
+    // to the service internals, so they become no-ops after shutdown().
+    if (videoTextureService) {
+        videoTextureService->shutdown();
+        videoTextureService.reset();
+    }
 
     // Remote streaming stops first: disconnect wakes mesh fetchers blocked on
     // the socket (they run on the gen pools stopped below), then joins the
@@ -4240,8 +4391,18 @@ void MyApp::recreateTextureArrays(uint32_t size) {
     }
 
     // Re-flag the editable placeholder layer (allocate() reset the flags).
-    uint32_t editableLayer = (loadedTextureLayers < layers) ? loadedTextureLayers : 0u;
-    textureArrayManager.setLayerInitialized(editableLayer, true);
+    // loadTriples() only returns the triple count, so the generated mixer
+    // layers are counted explicitly (mixerParams holds one entry per generated
+    // layer) — otherwise loadedTextureLayers would shrink to the triple count
+    // after every rebuild.
+    const uint32_t editableLayer = static_cast<uint32_t>(textureTriples_.size() + mixerParams.size());
+    loadedTextureLayers = std::min(editableLayer, layers);
+    if (editableLayer < layers) {
+        textureArrayManager.setLayerInitialized(editableLayer, true);
+    }
+    // The video array has its own size/lifetime and survives the rebuild; only
+    // the conversion push constants and descriptor bindings are refreshed.
+    if (videoTextureService) videoTextureService->onArraysRecreated();
 
     // The old images/samplers/views are deferred; every queue is idle, so this
     // runs the callbacks now and the transient double commitment is one call
@@ -4861,6 +5022,8 @@ void MyApp::generateMap() {
 
     // Build the octree (CPU only, no tessellation)
     MainSceneLoader loader;
+    loader.setVideoBrushIndex(videoCubeMaterialIndex);
+    loader.setSdfGivenBrushIndex(sdfGivenMaterialIndex);
     std::vector<Octree::OctreeNodeDataHandler> ups, dels;
     {
         std::lock_guard<std::mutex> lock(layersSyncMutex_);
@@ -5022,6 +5185,13 @@ void MyApp::postSubmit() {
     if (textureMixer) {
         textureMixer->flushPendingRequests(this);
         textureMixer->pollPendingGenerations(this);
+    }
+
+    // Video textures: advance playback clocks, publish decoded frames into the
+    // array layers and log diagnostics on request. This never blocks: when the
+    // requested frame is not decoded yet the layer keeps the previous frame.
+    if (videoTextureService) {
+        videoTextureService->update(std::clamp(lastFrameDelta, 0.0f, 0.25f));
     }
 
     if (brushApplyToScenePending) {

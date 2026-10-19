@@ -65,6 +65,13 @@ public:
     // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
     // distance=0.2: flat patches may have up to 20% cube-size SDF error (curved gets 10%).
     Simplifier simplifier = Simplifier(0.95f, 0.2f, true);
+    // Brush index of the first MaterialKind::Video material (set by MyApp after
+    // the material palette is built). Negative disables the demo video cube.
+    int videoBrushIndex = -1;
+    void setVideoBrushIndex(int index) { videoBrushIndex = index; }
+    // Brush index of the solid-layer cube demonstrating SdfGiven coordinates.
+    int sdfGivenBrushIndex = -1;
+    void setSdfGivenBrushIndex(int index) { sdfGivenBrushIndex = index; }
     MainSceneLoader() {};
     ~MainSceneLoader() = default;
 
@@ -507,6 +514,40 @@ public:
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, sizePerTile);
             opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+        }
+
+        // ── SdfGiven coordinate demo: a solid cube next to the object tests ──
+        // Painted with a Texture material whose textureMapping is SdfGiven, so
+        // the texture wraps spherically around the cube's bounding volume.
+        if (sdfGivenBrushIndex >= 0) {
+            std::cout << "\topaqueLayer.add(sdfGiven cube)" << std::endl;
+            glm::vec3 center = glm::vec3(0.0f, 512.0f, 512.0f * 9.0f);
+            glm::vec3 len = glm::vec3(512.0f);
+            BoundingBox box = BoundingBox(center - len * 0.5f, center + len * 0.5f);
+            Transformation model = Transformation(box.getLength() * 0.5f, box.getCenter(), 0, 0, 0);
+            BoxDistanceFunction function = BoxDistanceFunction(model, sizePerTile);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(sdfGivenBrushIndex),
+                              sizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+        }
+
+        // ── Video layer demo: a cube aligned with the other object tests ──
+        // Uses the first Video material (textureIndex = video slot 0, blend mode
+        // Screen, SDF-spherical coordinates). Rendered after solid and water so
+        // the blend mode composites against the finished scene color.
+        if (videoBrushIndex >= 0 && octrees.size() > 2 && octrees[2]) {
+            Octree& videoLayer = *octrees[2];
+            Octree::OctreeNodeDataHandler videoUpdateHandler;
+            Octree::OctreeNodeDataHandler videoDeleteHandler;
+            if (updateHandlers.size() > 2) videoUpdateHandler = updateHandlers[2];
+            if (deleteHandlers.size() > 2) videoDeleteHandler = deleteHandlers[2];
+            std::cout << "\tvideoLayer.add(cube)" << std::endl;
+            glm::vec3 center = glm::vec3(0.0f, 512.0f, 512.0f * 8.0f);
+            glm::vec3 len = glm::vec3(512.0f);
+            BoundingBox box = BoundingBox(center - len * 0.5f, center + len * 0.5f);
+            Transformation model = Transformation(box.getLength() * 0.5f, box.getCenter(), 0, 0, 0);
+            BoxDistanceFunction function = BoxDistanceFunction(model, sizePerTile);
+            videoLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(videoBrushIndex),
+                             sizePerTile, simplifier, videoUpdateHandler, videoDeleteHandler);
         }
 
 

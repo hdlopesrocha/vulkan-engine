@@ -47,6 +47,7 @@ public:
                 VkImageView sdfColorView, VkImageView sdfDepthView,
                 VkImageView bboxColorView, VkImageView bboxDepthView,
                 VkImageView fireColorView, VkImageView fireDepthView,
+                VkImageView videoColorView, VkImageView videoDepthView,
                 float brushAlpha, float brushMode,
                 const glm::mat4& viewProj, const glm::mat4& invViewProj,
                 const glm::vec3& viewPos,
@@ -72,7 +73,7 @@ private:
     // Write one frame slot's descriptor-buffer memory (bindings 0-7, 9-18 + 27).
     // Returns false when the DB path cannot be used (caller falls back).
     bool writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t slot,
-                                     const std::array<VkDescriptorImageInfo, 19>& imageInfos,
+                                     const std::array<VkDescriptorImageInfo, 21>& imageInfos,
                                      const VkDescriptorImageInfo& skyImageInfo,
                                      const VkDescriptorBufferInfo& bufferInfo,
                                      const VkDescriptorBufferInfo& windBufferInfo);
@@ -105,9 +106,9 @@ private:
     // vkCmdBindDescriptorBuffersEXT): cache miss triggers direct
     // DescriptorBufferHelper host writes (plain memcpys, no driver validation).
     struct FrameDescriptorSignature {
-        std::array<VkSampler, 19> samplers{};
-        std::array<VkImageView, 19> views{};
-        std::array<VkImageLayout, 19> layouts{};
+        std::array<VkSampler, 21> samplers{};
+        std::array<VkImageView, 21> views{};
+        std::array<VkImageLayout, 21> layouts{};
         VkBuffer uboBuffer = VK_NULL_HANDLE;
         VkDeviceSize uboOffset = 0;
         VkDeviceSize uboRange = 0;

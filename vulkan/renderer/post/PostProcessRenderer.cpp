@@ -64,7 +64,7 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     // brush back-face depth slot (binding 8) was removed with the brush
     // octree: the solid shader tests brushDistance() directly instead of
     // sampling a rasterized front/back depth pair.
-    std::array<VkDescriptorSetLayoutBinding, 19> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 21> bindings{};
 
     for (int i = 0; i < 6; ++i) {
         bindings[i].binding = i;
@@ -153,6 +153,19 @@ void PostProcessRenderer::createPipeline(VulkanApp* app) {
     bindings[18].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[18].descriptorCount = 1;
     bindings[18].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Video layer offscreen color (rgb = video color, a = encoded blend mode)
+    // and depth. Composited after water, so the per-material blend mode is
+    // applied against the composed scene color.
+    bindings[19].binding = 19;
+    bindings[19].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[19].descriptorCount = 1;
+    bindings[19].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[20].binding = 20;
+    bindings[20].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[20].descriptorCount = 1;
+    bindings[20].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     DescriptorAllocator descAlloc{device, app};
     // Descriptor-buffer path: the layout must carry DESCRIPTOR_BUFFER_BIT_EXT
@@ -278,7 +291,7 @@ void PostProcessRenderer::createDescriptorBuffers(VulkanApp* app) {
         descBuffers_[i] = b;
         descAddresses_[i] = addr;
     }
-    for (uint32_t binding = 0; binding < 19; ++binding) {
+    for (uint32_t binding = 0; binding < 21; ++binding) {
         if (binding == 8) continue; // removed brush back-face depth slot: no binding
         VkDeviceSize off = 0;
         app->fpGetDescriptorSetLayoutBindingOffsetEXT(device, descriptorSetLayout, binding, &off);
@@ -323,7 +336,7 @@ void PostProcessRenderer::destroyDescriptorBuffers(VulkanApp* app) {
 }
 
 bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t slot,
-                                    const std::array<VkDescriptorImageInfo, 19>& imageInfos,
+                                    const std::array<VkDescriptorImageInfo, 21>& imageInfos,
                                     const VkDescriptorImageInfo& skyImageInfo,
                                     const VkDescriptorBufferInfo& bufferInfo,
                                     const VkDescriptorBufferInfo& windBufferInfo) {
@@ -360,6 +373,8 @@ bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t s
     wImg(16, imageInfos[16]);
     wImg(17, imageInfos[17]);
     wImg(18, imageInfos[18]);
+    wImg(19, imageInfos[19]);
+    wImg(20, imageInfos[20]);
     // Dynamic binding 5 (UBO): address written once per slot; contents stream
     // via memcpy. vkGetDescriptorEXT forbids VK_WHOLE_SIZE, so the exact range
     // is passed.
@@ -392,6 +407,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
                                    VkImageView sdfColorView, VkImageView sdfDepthView,
                                    VkImageView bboxColorView, VkImageView bboxDepthView,
                                    VkImageView fireColorView, VkImageView fireDepthView,
+                                   VkImageView videoColorView, VkImageView videoDepthView,
                                    float brushAlpha, float brushMode,
                                    const glm::mat4& viewProj, const glm::mat4& invViewProj,
                                    const glm::vec3& viewPos,
@@ -435,7 +451,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     uniformBuffer.unmap(); // VMA persistent mapping
 
     // Prepare image infos and only write descriptors for valid image views
-    std::array<VkDescriptorImageInfo, 19> imageInfos{};
+    std::array<VkDescriptorImageInfo, 21> imageInfos{};
     {
         static bool diagPrinted = false;
         if (!diagPrinted) {
@@ -481,6 +497,9 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // Generic SDF volume (fire) offscreen color + depth.
     imageInfos[17] = {linearSampler, fireColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     imageInfos[18] = {linearSampler, fireDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Video layer color (encoded blend mode in A) + depth.
+    imageInfos[19] = {linearSampler, videoColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    imageInfos[20] = {linearSampler, videoDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     VkDescriptorBufferInfo bufferInfo{uniformBuffer.buffer, 0, sizeof(WaterUBO)};
     // Wind field UBO (binding 27): owned + streamed by VegetationRenderer;
@@ -502,7 +521,7 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
     // updates. UBO contents stream via mapped memcpy above. `valid` starts
     // false, so the first frame always writes.
     FrameDescriptorSignature sig;
-    for (int i = 0; i < 19; ++i) {
+    for (int i = 0; i < 21; ++i) {
         if (i == 5) continue; // binding 5 is the UBO, stored separately below
         sig.samplers[i] = imageInfos[i].sampler;
         sig.views[i] = imageInfos[i].imageView;
@@ -622,6 +641,17 @@ void PostProcessRenderer::render(VulkanApp* app, VkCommandBuffer cmd,
             writer.writeImage(currentDs, 18, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                               imageInfos[18].sampler, imageInfos[18].imageView,
                               imageInfos[18].imageLayout);
+        }
+        // Video layer color (binding 19) + depth (binding 20)
+        if (imageInfos[19].imageView != VK_NULL_HANDLE && imageInfos[19].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 19, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[19].sampler, imageInfos[19].imageView,
+                              imageInfos[19].imageLayout);
+        }
+        if (imageInfos[20].imageView != VK_NULL_HANDLE && imageInfos[20].sampler != VK_NULL_HANDLE) {
+            writer.writeImage(currentDs, 20, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              imageInfos[20].sampler, imageInfos[20].imageView,
+                              imageInfos[20].imageLayout);
         }
         // Shared wind field (binding 27) for the wind debug raymarch overlay.
         if (windFieldBuffer != VK_NULL_HANDLE) {

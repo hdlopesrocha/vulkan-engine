@@ -172,7 +172,7 @@ bool buildGpuTopologyInput(const Octree& tree, OctreeNode* chunk, const Bounding
 
 LocalScene::LocalScene()
     : threadPool(std::thread::hardware_concurrency()) {
-    layers_.reserve(2);
+    layers_.reserve(3);
     SceneLayer opaque;
     opaque.name = "Opaque";
     opaque.renderer = LayerRendererType::Solid;
@@ -185,6 +185,15 @@ LocalScene::LocalScene()
     transp.enabled = true;
     transp.octree = std::make_shared<Octree>(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9));
     layers_.push_back(std::move(transp));
+    // Video layer: geometry using MaterialKind::Video materials. It is drawn
+    // after solid and water so per-material blend modes can composite against
+    // the finished scene color.
+    SceneLayer video;
+    video.name = "Video";
+    video.renderer = LayerRendererType::Video;
+    video.enabled = true;
+    video.octree = std::make_shared<Octree>(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9));
+    layers_.push_back(std::move(video));
 }
 
 LocalScene::~LocalScene() = default;

@@ -3,6 +3,7 @@
 #include "../../ubo/WaterUBO.glsl"
 
 #include "../../includes/Locations.glsl"
+#include "../../includes/BlendModes.glsl"
 #include "../../includes/noise/Perlin.glsl"
 #include "../../includes/vegetation/WindField.glsl"
 
@@ -55,6 +56,10 @@ layout(set = 0, binding = 16) uniform sampler2D waterColumnTex;
 // emission, A = opacity) + depth. Owned by SdfRenderer.
 layout(set = 0, binding = 17) uniform sampler2D fireColorTex;
 layout(set = 0, binding = 18) uniform sampler2D fireDepthTex;
+// Video layer (Solid -> Water -> Video): rgb = video color, a = blend mode
+// encoded as (mode + 1) / 32 (0 = no video on this pixel), plus its depth.
+layout(set = 0, binding = 19) uniform sampler2D videoColorTex;
+layout(set = 0, binding = 20) uniform sampler2D videoDepthTex;
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -283,7 +288,23 @@ void main() {
     }
     vec3 afterWater = mix(baseColor, waterColor.rgb, waterAlpha);
 
+    // 4b. Video layer: composited after solid + water (Solid -> Water -> Video).
+    // The video pass writes the material's albedo in rgb and its blend mode in
+    // alpha (encoded as (mode + 1) / 32; 0 = no video). Every mode from
+    // BlendModes.glsl (Darken .. Luminosity) is applied against the composed
+    // scene color, and the video depth is occluded by the solid/vegetation
+    // obstacle depth like the other offscreen overlays.
     vec3 finalColor = afterWater;
+    {
+        const vec4 videoSample = texture(videoColorTex, uv);
+        const int videoMode = int(round(videoSample.a * 32.0)) - 1;
+        if (videoMode >= 0) {
+            const float videoDepth = texture(videoDepthTex, uv).r;
+            if (videoDepth < 1.0 && !(obstacleDepth < videoDepth)) {
+                finalColor = blendModeColor(videoMode, finalColor, clamp(videoSample.rgb, 0.0, 1.0));
+            }
+        }
+    }
 
     // (The brush overlay was composited in step 3, before water: see the
     // depth-ordered composite note there.)

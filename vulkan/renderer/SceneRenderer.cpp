@@ -318,6 +318,9 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (solidRenderer && app) {
         solidRenderer->cleanup(app);
     }
+    if (videoRenderer && app) {
+        videoRenderer->cleanup(app);
+    }
     if (shadowMapper && app) {
         shadowMapper->cleanup(app);
     }
@@ -368,6 +371,7 @@ void SceneRenderer::setCmdState(CommandBufferState* state) {
     if (sdfRenderer) sdfRenderer->setCmdState(state);
     if (waterWireframe) waterWireframe->setCmdState(state);
     if (waterRenderer) waterRenderer->setCmdState(state);
+    if (videoRenderer) videoRenderer->setCmdState(state);
     if (brushRenderer) brushRenderer->setCmdState(state);
 }
 
@@ -433,8 +437,9 @@ LayerRendererType SceneRenderer::layerRendererType(Layer layer) const {
 }
 
 IndirectRenderer* SceneRenderer::indirectForLayer(Layer layer) {
-    const bool isWater = (layerRendererType(layer) == LayerRendererType::Water);
-    if (isWater) return waterRenderer ? &waterRenderer->getIndirectRenderer() : nullptr;
+    const LayerRendererType type = layerRendererType(layer);
+    if (type == LayerRendererType::Video) return videoRenderer ? &videoRenderer->getIndirectRenderer() : nullptr;
+    if (type == LayerRendererType::Water) return waterRenderer ? &waterRenderer->getIndirectRenderer() : nullptr;
     return solidRenderer ? &solidRenderer->getIndirectRenderer() : nullptr;
 }
 
@@ -499,6 +504,7 @@ void SceneRenderer::removeAllLayerMeshes(Layer layer) {
 void SceneRenderer::removeAllMeshes() {
     if (solidRenderer) solidRenderer->getIndirectRenderer().removeAllMeshes();
     if (waterRenderer) waterRenderer->getIndirectRenderer().removeAllMeshes();
+    if (videoRenderer) videoRenderer->getIndirectRenderer().removeAllMeshes();
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
     for (auto& st : layerStates_) {
         if (!st) continue;
@@ -515,6 +521,7 @@ void SceneRenderer::removeAllMeshes() {
 
 void SceneRenderer::removeAllMeshesSolidOnly() {
     if (solidRenderer) solidRenderer->getIndirectRenderer().removeAllMeshes();
+    if (videoRenderer) videoRenderer->getIndirectRenderer().removeAllMeshes();
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
     for (size_t i = 0; i < layerStates_.size(); ++i) {
         if (!layerStates_[i]) continue;
@@ -573,6 +580,9 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     // Recreate offscreen targets that depend on swapchain size
     if (solidRenderer) {
         solidRenderer->createRenderTargets(app, width, height);
+    }
+    if (videoRenderer) {
+        videoRenderer->onSwapchainResized(app, width, height);
     }
     if (vegetationRenderer) {
         recreateVegetationTargets(app, width, height);
@@ -635,6 +645,7 @@ SceneRenderer::SceneRenderer() :
     postProcessRenderer(std::make_unique<PostProcessRenderer>()),
     solidRenderer(std::make_unique<SolidRenderer>()),
     waterRenderer(std::make_unique<WaterRenderer>()),
+    videoRenderer(std::make_unique<VideoRenderer>()),
     vegetationRenderer(std::make_unique<VegetationRenderer>()),
     brushRenderer(std::make_unique<BrushSdfRenderer>()),
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
@@ -717,6 +728,13 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     solidRenderer->destroyRenderTargets(app);
     solidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     solidRenderer->createPipelines(app);
+
+    if (videoRenderer) {
+        videoRenderer->init(app);
+        videoRenderer->destroyRenderTargets(app);
+        videoRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+        videoRenderer->createPipelines(app);
+    }
 
     // Create pipelines for all renderers (solid renderer now has its render pass ready)
     skyRenderer->init(app);
@@ -1999,7 +2017,7 @@ size_t SceneRenderer::publishPendingMeshes(
         // finest) lets grass appear across the whole visible terrain instead of
         // only in the thinnest high-detail disc around the camera, with no
         // overdraw because overlapping rungs are never simultaneously visible.
-        if (!isWaterLayer && vegetationRenderer && !lod.geom.vertices.empty()) {
+        if (layerRendererType(layer) == LayerRendererType::Solid && vegetationRenderer && !lod.geom.vertices.empty()) {
             onFinestPublished(nid, lod.geom, lod.lod);
         }
 
@@ -2251,6 +2269,16 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
     waterRenderer->getIndirectRenderer().initSlots(app, maxWaterChunks,
                                                         static_cast<uint32_t>(waterVertBytes),
                                                         static_cast<uint32_t>(waterIdxBytes));
+    // Video layer pool: small (a handful of SDF objects painted with video
+    // materials), rendered by its own indirect draw after water.
+    constexpr uint32_t kVideoPoolSlots = 128;
+    const uint64_t videoVertBytes = static_cast<uint64_t>(kVideoPoolSlots) * vertexBytesPerChunk;
+    const uint64_t videoIdxBytes = static_cast<uint64_t>(kVideoPoolSlots) * indexBytesPerChunk;
+    if (videoRenderer) {
+        videoRenderer->getIndirectRenderer().initSlots(app, kVideoPoolSlots,
+                                                       static_cast<uint32_t>(videoVertBytes),
+                                                       static_cast<uint32_t>(videoIdxBytes));
+    }
     // Bind the merged pools for real-triangle hit shading (bindings 24/25).
     // The device is idle here (init), so the classic set rewrite is safe.
     writeSceneVertexBindings(app);

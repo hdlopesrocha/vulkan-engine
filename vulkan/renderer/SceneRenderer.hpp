@@ -27,6 +27,7 @@ class World;
 #include "../../space/ThreadPool.hpp"
 #include "../../services/OctreeTopologyTypes.hpp"
 #include "solid/SolidRenderer.hpp"
+#include "video/VideoRenderer.hpp"
 #include "vegetation/VegetationRenderer.hpp"
 #include "water/WaterRenderer.hpp"
 #include "post/PostProcessRenderer.hpp"
@@ -70,6 +71,9 @@ public:
     std::unique_ptr<PostProcessRenderer> postProcessRenderer;
     std::unique_ptr<SolidRenderer> solidRenderer;
     std::unique_ptr<WaterRenderer> waterRenderer;
+    // Video layer (MaterialKind::Video geometry): rendered after solid/water
+    // into its own target and blended by the post-process composite.
+    std::unique_ptr<VideoRenderer> videoRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<BrushSdfRenderer> brushRenderer;
     std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
