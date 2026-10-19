@@ -89,6 +89,14 @@ public:
     int dropletSubsteps = 4;           // fixed substeps per frame (dt = frame/n)
     bool dropletStats = false;         // read contact/overflow counters (log)
 
+    // ── Scene server (serve THIS application's live scene) ─────────────────
+    // When enabled, MyApp starts a SceneServer bound to its own LocalScene:
+    // remote clients (the bundled web viewer, or another engine instance in
+    // --remote mode) receive the chunk ladder and every live octree edit, the
+    // same protocol bin/server speaks. Off by default; the port must be free.
+    bool serveScene = false;
+    int serveScenePort = 8090;
+
     // Debug visuals
     bool showBoundingBoxes = false;
     bool showSDFDebug = false;

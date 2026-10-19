@@ -267,6 +267,18 @@ void SettingsWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Shadow Effects");
         ImGuiComponents::ColSeparator();
+        if (ImGuiComponents::CheckboxField("Serve This Scene", &settings.serveScene,
+                "Start a SceneServer bound to this application's live scene: the bundled web\n"
+                "viewer and engine clients in --remote mode receive the chunk ladder plus every\n"
+                "live octree edit (same protocol as bin/server).")) {
+            // Applied by MyApp on the next frame (start/stop the server there).
+        }
+        if (settings.serveScene) {
+            ImGui::SetNextItemWidth(120.0f);
+            ImGui::InputInt("Server Port", &settings.serveScenePort);
+            settings.serveScenePort = std::clamp(settings.serveScenePort, 1024, 65535);
+        }
+
         if (ImGui::Checkbox("Enable Shadows", &settings.enableShadows)) {
 
         }

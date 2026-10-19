@@ -9,7 +9,7 @@
 #include "server/ChunkIds.hpp"
 #include "server/ChunkMesh.hpp"
 #include "server/ChunkSnapshot.hpp"
-#include "server/WebServer.hpp"
+#include "server/SceneServer.hpp"
 #include "utils/BlenderExport.hpp"
 #include "utils/LocalScene.hpp"
 #include "utils/MainSceneLoader.hpp"
@@ -94,49 +94,23 @@ int main(int argc, char** argv) {
     const bool forceGenerate = parseGenerateArg(argc, argv);
 
     LocalScene mainScene;
-    WebServer web(port);
-
-    // Opaque chunk ids: the wire protocol must never carry node pointers
-    // (see server/ChunkIds.hpp). One registry for the scene's lifetime.
-    ChunkIdRegistry chunkIds;
-
-    // Snapshot provider: full chunk listing for REQUEST_ALL.
-    web.setSnapshotProvider([&mainScene, &chunkIds]() {
-        return chunksnap::collectAll(chunkIds, mainScene);
-    });
-
-    // Scene-meta provider: root lattice + ladder depth per layer.
-    web.setMetaProvider([&mainScene]() {
-        return chunksnap::collectMeta(mainScene);
-    });
-
-    // Mesh provider: tessellate one chunk for REQUEST_MESH (wireframe overlay).
-    web.setMeshProvider([&mainScene, &chunkIds](uint64_t id, chunkproto::MeshData& mesh) {
-        return chunkmesh::buildChunkMesh(chunkIds, mainScene, id, mesh);
-    });
+    // The server class owns the transport + providers; the handlers below feed
+    // it live octree edits while the scene is built or edited.
+    SceneServer server(mainScene, port, /*verbose=*/true);
 
     std::atomic<uint64_t> nSolid{0}, nSolidDel{0}, nLiquid{0}, nLiquidDel{0};
-
-    // Dynamic layers: one upsert/erase pair per scene layer (index = Layer).
-    // Layers 0/1 keep the historic opaque/transparent counters.
     auto makeUpsert = [&](Layer layer) -> Octree::OctreeNodeDataHandler {
         return [&, layer](const OctreeNodeData& nd) {
             if (exportMode) return;
-            web.pushUpsert(chunksnap::makeRecord(chunkIds, nd, static_cast<uint8_t>(layer)));
-            if (layer == LAYER_OPAQUE) {
-                if ((++nSolid % 2000) == 0)
-                    std::cout << "[server] opaque upserts=" << nSolid.load() << "\n";
-            } else if (layer == LAYER_TRANSPARENT) {
-                if ((++nLiquid % 2000) == 0)
-                    std::cout << "[server] transparent upserts=" << nLiquid.load() << "\n";
-            }
+            server.pushUpsert(nd, static_cast<int>(layer));
+            if (layer == LAYER_OPAQUE) ++nSolid;
+            else if (layer == LAYER_TRANSPARENT) ++nLiquid;
         };
     };
     auto makeErase = [&](Layer layer) -> Octree::OctreeNodeDataHandler {
         return [&, layer](const OctreeNodeData& nd) {
             if (exportMode) return;
-            const uint64_t id = chunkIds.remove(nd.node);
-            if (id != ChunkIdRegistry::kInvalid) web.pushDelete(id);
+            server.pushDelete(nd, static_cast<int>(layer));
             if (layer == LAYER_OPAQUE) ++nSolidDel;
             else if (layer == LAYER_TRANSPARENT) ++nLiquidDel;
         };
@@ -153,14 +127,11 @@ int main(int argc, char** argv) {
 
     if (!exportMode) {
         try {
-            web.start();
+            server.start();
         } catch (const std::exception& e) {
             std::cerr << "server: web start failed: " << e.what() << std::endl;
             return 1;
         }
-    }
-
-    if (!exportMode) {
         std::cout << "server: viewer at http://localhost:" << port << "/  (ws /ws, health /health)\n"
                   << "server: open the page from the URL above so its WebSocket reaches /ws on the same host:port\n"
                   << "server: (use ?port=<p> or ?ws=ws://host:port/ws to point the page elsewhere)\n";
@@ -183,7 +154,7 @@ int main(int argc, char** argv) {
     }
     auto t1 = std::chrono::steady_clock::now();
     double secs = std::chrono::duration<double>(t1 - t0).count();
-    auto snap = chunksnap::collectAll(chunkIds, mainScene);
+    auto snap = chunksnap::collectAll(server.ids(), mainScene);
     size_t nOpq = 0, nTrn = 0;
     for (auto& r : snap) (r.layer == 0 ? nOpq : nTrn)++;
     std::cout << "server: ready in " << secs << "s"
@@ -220,7 +191,7 @@ int main(int argc, char** argv) {
     while (g_run) std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     std::cout << "\nserver: shutting down\n";
-    web.stop();
+    server.stop();
     mainScene.stopPools();
     return 0;
 }

@@ -109,6 +109,7 @@
 #include "services/OctreeMeshTypes.hpp"
 #include "services/OctreeTopologyCompute.hpp"
 #include "services/ParticlePhysicsSim.hpp"
+#include "server/SceneServer.hpp"
 #include "vulkan/renderer/water/DropletRenderer.hpp"
 #include "services/OctreeTopologyTypes.hpp"
 #include "utils/ShadowParams.hpp"
@@ -396,6 +397,10 @@ public:
     // Spawn centre: (0, terrainHeight + dropletSpawnHeight, 0) — a ball of
     // droplets hovering above the height map that then falls onto it.
     glm::vec3 dropletSpawnCenter_{0.0f};
+    // Serves THIS application's live scene (Settings::serveScene): the bundled
+    // web viewer and --remote engine clients get the chunk ladder plus every
+    // live octree edit, same protocol as bin/server.
+    std::unique_ptr<SceneServer> sceneServer;
     glm::vec3 dropletRegionMin{0.0f};
     glm::vec3 dropletRegionMax{0.0f};
     uint32_t dropletDrawCount = 0;
@@ -636,6 +641,12 @@ public:
         // value spans the visible water surface for depth-order checks).
         if (std::getenv("VULKAN_BRUSH_PREVIEW") != nullptr) {
             brushManager.addEntry();
+        }
+
+        // VULKAN_SERVE=1: start the scene server for this app's live scene
+        // (same as the Settings widget toggle).
+        if (const char* env = std::getenv("VULKAN_SERVE")) {
+            if (env[0] != '0') settings.serveScene = true;
         }
 
         // VULKAN_CAMERA="x,y,z,yaw,pitch,roll": override the start pose
@@ -3875,6 +3886,13 @@ public:
             impostorService->cleanup();
         }
 
+        // Stop serving before the scene is torn down (the providers reference
+        // it, so the transport must be closed first).
+        if (sceneServer) {
+            sceneServer->stop();
+            sceneServer.reset();
+        }
+
         // Droplet sim/renderer own device-local buffers created through the
         // app; destroy them before the scene renderer drains its own resources.
         if (particleSim) {
@@ -4636,7 +4654,26 @@ void MyApp::dispatchLayerEvents(Layer layer) {
         collector->clear();
         return;
     }
-    collector->dispatch(onAdd, onDel);
+    // The scene server is a second consumer of the same deduped changes, so a
+    // client sees every edit the local renderer does.
+    Octree::OctreeNodeDataHandler serverAdd, serverDel;
+    if (sceneServer && sceneServer->running()) {
+        serverAdd = [this, layer](const OctreeNodeData& nd) {
+            sceneServer->pushUpsert(nd, static_cast<int>(layer));
+        };
+        serverDel = [this, layer](const OctreeNodeData& nd) {
+            sceneServer->pushDelete(nd, static_cast<int>(layer));
+        };
+    }
+    collector->dispatch(
+        [&](const OctreeNodeData& nd) {
+            if (onAdd) onAdd(nd);
+            if (serverAdd) serverAdd(nd);
+        },
+        [&](const OctreeNodeData& nd) {
+            if (onDel) onDel(nd);
+            if (serverDel) serverDel(nd);
+        });
 }
 
 void MyApp::dispatchAllEvents() {
@@ -4901,6 +4938,28 @@ void MyApp::postSubmit() {
     // Lazy bring-up: toggling the master gate on after startup builds the sim.
     if (settings.dropletsEnabled && sceneRenderer && (!particleSim || !particleSim->ready())) {
         ensureDroplets();
+    }
+
+    // Scene server: start/stop with the settings toggle (or VULKAN_SERVE=1).
+    // Only a LocalScene can be served; a remote scene already has a server.
+    if (settings.serveScene && !sceneServer && world) {
+        if (auto* local = dynamic_cast<LocalScene*>(&world->activeScene())) {
+            sceneServer = std::make_unique<SceneServer>(
+                *local, static_cast<uint16_t>(std::clamp(settings.serveScenePort, 1024, 65535)));
+            try {
+                sceneServer->start();
+            } catch (const std::exception& e) {
+                std::cerr << "[MyApp] scene server failed to start: " << e.what() << std::endl;
+                sceneServer.reset();
+                settings.serveScene = false;
+            }
+        } else {
+            std::cerr << "[MyApp] scene server unavailable: the active scene is remote" << std::endl;
+            settings.serveScene = false;
+        }
+    } else if (!settings.serveScene && sceneServer) {
+        sceneServer->stop();
+        sceneServer.reset();
     }
     // VULKAN_STREAM_DIAG=1: periodic chunk-streaming counters (loaded/tracked
     // per layer + the cull's visible counts) so a headless run can be checked
