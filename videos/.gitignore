@@ -1,5 +1,5 @@
-# Converted clips keep the source-folder structure: base/converted/ (generated,
-# ignored) and extra/converted/ (inside the ignored extra/ library).
-base/converted/
+# The converted clips are written by `make videos` into bin/videos/<base|extra>/
+# (never into the source tree). This folder only holds the sources: base/ is
+# committed and the optional extra/ library is ignored.
 extra/*
 !extra/.gitkeep

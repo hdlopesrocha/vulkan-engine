@@ -26,10 +26,9 @@ app
 /bin/
 /dist/
 /scenes/
-# Video assets: sources in videos/base (committed) and videos/extra (local,
-# can be very large); the converted clips produced by `make videos` keep the
-# folder structure in videos/<base|extra>/converted/ and are ignored (see
-# videos/.gitignore and docs/videos.md).
+# Video sources: videos/base (committed) and videos/extra (local, can be very
+# large). Converted clips are written by `make videos` into bin/videos/
+# (already ignored with bin/); see videos/README.md and docs/videos.md.
 /videos/extra/*
 !/videos/extra/.gitkeep
 

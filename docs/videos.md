@@ -11,7 +11,7 @@ the playback clock asks for, converted to RGBA8 on the GPU and written into the
 clip's video-array slot.
 
 ```
-videos/base/*.mp4 ──(make videos)──> videos/base/converted/*.mp4   (square, short GOP)
+videos/base/*.mp4 ──(make videos)──> bin/videos/base/*.mp4   (square, short GOP)
                                           │
   material: kind=Video, textureIndex=N ───┤
                                           ▼
@@ -33,11 +33,10 @@ videos/base/*.mp4 ──(make videos)──> videos/base/converted/*.mp4   (squa
 `MyApp` at setup. `videos/extra/` is the optional local library (ignored by git
 because it can be very large); drop your own clips there.
 
-`make videos` converts only `videos/base/*` into `videos/base/converted/*.mp4`;
-`make videos-extra` converts `videos/extra/*` into `videos/extra/converted/*.mp4`.
-The converted clips keep the source-folder structure, are gitignored, and are
-copied by the build into the matching `bin/videos/<base|extra>/converted/`
-path.
+`make videos` converts only `videos/base/*` into `bin/videos/base/*.mp4`;
+`make videos-extra` converts `videos/extra/*` into `bin/videos/extra/*.mp4`.
+Converted clips are written next to the executable only (never into the source
+tree); `make clean` removes `bin/`, so rerun `make videos` afterwards.
 
 | Setting | Value | Why |
 |---|---|---|
@@ -48,11 +47,12 @@ path.
 | audio | dropped (`-an`) | not sampled |
 
 At runtime `VideoTextureService::listAvailableVideos()` discovers clips from
-`videos/base` and `videos/extra` (next to the executable or in the repository
-root) and prefers the converted `videos/<category>/converted/<name>.mp4` when
-present. Converted-only clips (running from `bin/`, where the build copies the
-mirror) are listed as well. `VideoTextureService::listVideoFiles` and
-`findAssetDirectory` remain available for simple directory scans.
+the folders `videos/base` and `videos/extra` relative to the working directory.
+With the app started from `bin/` those are the converted clips, and the same
+folders in `../videos/...` hold the sources (scanned second, deduplicated by
+name). Running from the repository root finds the sources directly.
+`VideoTextureService::listVideoFiles` and `findAssetDirectory` remain available
+for simple directory scans.
 
 Environment switches:
 

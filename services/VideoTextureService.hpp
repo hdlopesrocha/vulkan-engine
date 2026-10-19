@@ -120,14 +120,14 @@ public:
     // Sorted list of video files in `directory` (empty when missing).
     static std::vector<std::string> listVideoFiles(const std::string& directory);
 
-    // Locate a video asset directory: the converted clips mirror the source
-    // folders in videos/<base|extra>/converted/; sources are checked as a
-    // fallback. Returns "" when nothing is found.
+    // Locate a video asset directory: bin/videos/<base|extra>/ holds the
+    // converted clips, ../videos/<base|extra>/ the sources. Returns "" when
+    // nothing is found.
     static std::string findAssetDirectory();
 
-    // Discover loadable clips from videos/base and videos/extra (preferring the
-    // converted videos/<category>/converted/<name> when present). Also lists
-    // converted-only clips (e.g. a bin/ copy without sources).
+    // Discover loadable clips from videos/base and videos/extra; with the app
+    // started from bin/ the same relative paths resolve to the converted clips
+    // (preferred), and ../videos/... to the sources.
     static std::vector<AvailableVideo> listAvailableVideos();
 
     // Create the compute pipeline, the video texture array (slotCount layers,
