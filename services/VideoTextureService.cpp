@@ -1298,10 +1298,11 @@ std::vector<std::string> VideoTextureService::listVideoFiles(const std::string& 
 }
 
 std::string VideoTextureService::findAssetDirectory() {
-    // Converted assets first (make videos), then the raw sources; both are
-    // checked next to the executable (bin/) and in the repository root, so the
-    // app finds them under `make run` and when started from the repo.
-    static const char* candidates[] = {"video_textures", "../video_textures", "videos", "../videos"};
+    // Converted assets (make videos) live flat in videos/, next to the source
+    // folders; both are checked next to the executable (bin/) and in the
+    // repository root, so the app finds them under `make run` and when started
+    // from the repo.
+    static const char* candidates[] = {"videos", "../videos"};
     std::error_code ec;
     for (const char* candidate : candidates) {
         if (std::filesystem::is_directory(candidate, ec)) {
@@ -1315,10 +1316,10 @@ std::vector<VideoTextureService::AvailableVideo> VideoTextureService::listAvaila
     std::vector<AvailableVideo> result;
     std::error_code ec;
 
-    // Converted assets (make videos / make videos-extra) are addressed by file
-    // stem and preferred over the source clip when present.
+    // Converted assets (make videos / make videos-extra) live flat in videos/
+    // and are addressed by file stem; prefer them over the source clip.
     auto convertedFor = [&](const std::string& stem) {
-        for (const char* dir : {"video_textures", "../video_textures"}) {
+        for (const char* dir : {"videos", "../videos"}) {
             const std::string candidate = std::string(dir) + "/" + stem + ".mp4";
             if (std::filesystem::is_regular_file(candidate, ec)) return candidate;
         }

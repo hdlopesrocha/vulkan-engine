@@ -26,16 +26,11 @@ app
 /bin/
 /dist/
 /scenes/
-# Generated video assets (make videos / make videos-extra outputs)
-/video_textures/
-# Video assets: base/ (3 shortest clips) is committed, extra/ is a local
-# library that can be very large (see videos/README.md).
+# Video assets: sources in videos/base (committed) and videos/extra (local,
+# can be very large); the converted clips produced by `make videos` live flat
+# in videos/ and are ignored (see videos/.gitignore and docs/videos.md).
 /videos/extra/*
 !/videos/extra/.gitkeep
-
-# Converted video textures (make videos) are a regenerable build artifact;
-# the sources live in videos/base and videos/extra (see docs/video_textures.md).
-/video_textures/
 
 # Logs and runtime files
 *.log

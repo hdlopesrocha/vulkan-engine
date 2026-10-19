@@ -11,7 +11,7 @@ the playback clock asks for, converted to RGBA8 on the GPU and written into the
 clip's video-array slot.
 
 ```
-videos/base/*.mp4 ──(make videos)──> video_textures/*.mp4   (square, short GOP)
+videos/base/*.mp4 ──(make videos)──> videos/*.mp4   (square, short GOP)
                                           │
   material: kind=Video, textureIndex=N ───┤
                                           ▼
@@ -33,9 +33,10 @@ videos/base/*.mp4 ──(make videos)──> video_textures/*.mp4   (square, sho
 `MyApp` at setup. `videos/extra/` is the optional local library (ignored by git
 because it can be very large); drop your own clips there.
 
-`make videos` converts `videos/base/*` into `video_textures/<name>.mp4`, and
-`make videos-extra` converts `videos/extra/*` the same way. The converted
-directory is copied next to the binary by the build.
+`make videos` converts `videos/base/*` into `videos/<name>.mp4` (flat, next to
+the source folders), and `make videos-extra` converts `videos/extra/*` the same
+way. The converted files are gitignored; the normal build copies them into
+`bin/videos/` next to the executable.
 
 | Setting | Value | Why |
 |---|---|---|
@@ -47,10 +48,10 @@ directory is copied next to the binary by the build.
 
 At runtime `VideoTextureService::listAvailableVideos()` discovers clips from
 `videos/base` and `videos/extra` (next to the executable or in the repository
-root) and prefers the converted `video_textures/<name>.mp4` when present. When
-only the converted directory is reachable (running from `bin/`), every
-converted clip is exposed as a base clip. `VideoTextureService::listVideoFiles`
-and `findAssetDirectory` remain available for simple directory scans.
+root) and prefers the converted `videos/<name>.mp4` when present. When only the
+converted clips are reachable (running from `bin/`), every converted clip is
+exposed as a base clip. `VideoTextureService::listVideoFiles` and
+`findAssetDirectory` remain available for simple directory scans.
 
 Environment switches:
 

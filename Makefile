@@ -470,7 +470,8 @@ $(OUT): $(BUILD_MODE_STAMP) $(OBJS)
 	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
 	@if [ -d fonts ]; then cp -a fonts $(OUT_DIR)/ || true; fi
 	@if [ -d scenes ]; then cp -a scenes $(OUT_DIR)/ || true; fi
-	@if [ -d video_textures ]; then cp -a video_textures $(OUT_DIR)/ || true; fi
+	@mkdir -p $(OUT_DIR)/videos
+	@if ls videos/*.mp4 >/dev/null 2>&1; then cp -a videos/*.mp4 $(OUT_DIR)/videos/ || true; fi
 	@if [ -d scripts ]; then mkdir -p $(OUT_DIR)/scripts && cp -a scripts/. $(OUT_DIR)/scripts/ || true; fi
 	@if [ -d svg ]; then cp -a svg $(OUT_DIR)/ || true; fi
 	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi
@@ -574,19 +575,20 @@ valgrind: debug
 
 # ── Video texture assets ──────────────────────────────────────────────────
 # Convert the committed clips in videos/base/ (and, on demand, the optional
-# clips in videos/extra/) into texture-ready assets in video_textures/: square
-# center crop at VIDEO_SIZE (default 1024 = the default texture array size),
-# H.264 with a ~1 s keyframe interval so the decoder can reach any timestamp by
-# seeking to the preceding keyframe and decoding less than a second of frames,
-# no audio (a texture is silent), faststart for immediate playback, yuv420p for
-# universal decoder support. Originals are left untouched; an asset is
-# re-encoded only when its source is newer.
-# The service picks up video_textures/*.mp4 (see VideoTextureService), and
-# falls back to videos/ when no converted asset exists.
+# clips in videos/extra/) into texture-ready assets. The converted clips live
+# flat in videos/ next to the source folders: square center crop at VIDEO_SIZE
+# (default 1024 = the default texture array size), H.264 with a ~1 s keyframe
+# interval so the decoder can reach any timestamp by seeking to the preceding
+# keyframe and decoding less than a second of frames, no audio (a texture is
+# silent), faststart for immediate playback, yuv420p for universal decoder
+# support. Sources are left untouched; an asset is re-encoded only when its
+# source is newer.
+# The service picks up videos/*.mp4 (converted) and falls back to
+# videos/base|extra/<clip> when no converted asset exists.
 VIDEO_SIZE ?= 1024
 VIDEO_CRF ?= 26
 VIDEO_PRESET ?= veryfast
-VIDEO_DIR := video_textures
+VIDEO_DIR := videos
 VIDEO_SRC_DIR := videos/base
 VIDEO_EXTRA_SRC_DIR := videos/extra
 VIDEO_EXTS := mp4 mov mkv webm
@@ -617,10 +619,10 @@ endef
 $(foreach e,$(VIDEO_EXTS),$(eval $(call VIDEO_CONVERT_RULE,$(VIDEO_SRC_DIR),$(e))))
 $(foreach e,$(VIDEO_EXTS),$(eval $(call VIDEO_CONVERT_RULE,$(VIDEO_EXTRA_SRC_DIR),$(e))))
 
-# Remove converted assets (originals in videos/ are never touched)
+# Remove converted assets (the source folders base/ and extra/ are never touched)
 .PHONY: videos-clean
 videos-clean:
-	rm -rf $(VIDEO_DIR)
+	rm -f $(VIDEO_DIR)/*.mp4
 
 .PHONY: commit
 # Commit the staged changes, store the full commit message in
