@@ -608,6 +608,17 @@ public:
             brushManager.addEntry();
         }
 
+        // VULKAN_CAMERA="x,y,z,yaw,pitch,roll": override the start pose
+        // (headless diagnostics, e.g. a top-down view that makes plane-shaped
+        // mesh gaps visible). Angles in degrees, same convention as
+        // Math::eulerToQuat.
+        if (const char* cam = std::getenv("VULKAN_CAMERA")) {
+            float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
+            if (std::sscanf(cam, "%f,%f,%f,%f,%f,%f", &x, &y, &z, &yaw, &pitch, &roll) == 6) {
+                camera = Camera(glm::vec3(x, y, z), Math::eulerToQuat(yaw, pitch, roll));
+            }
+        }
+
         // VULKAN_DROPLET_DT forces a fixed per-frame simulation delta (headless
         // validation on slow software rasterizers, where the real frame delta
         // is clamped to 0.1 s and the fall would take minutes of wall time).

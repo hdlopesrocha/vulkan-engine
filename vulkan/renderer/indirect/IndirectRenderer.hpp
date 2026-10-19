@@ -172,6 +172,12 @@ public:
     // (LocalScene::maxChunkLod) — hardcoding it (e.g. 4) permanently culls every
     // chunk whose level exceeds it, leaving holes across the terrain.
     void setMaxLodLevel(int l) { maxLodLevel_ = l; }
+    // Effective max level written into the per-entry lodMeta: the tree ladder
+    // depth when coarse rungs exist, otherwise 0 (the frontier rung is the
+    // coarsest drawn one, so it must draw whenever it does not recurse).
+    float metaMaxLevel() const {
+        return (coarsestPublishedLevel_ > 0) ? static_cast<float>(maxLodLevel_) : 0.0f;
+    }
 
     // World-space min corner of the octree root. The hierarchical LoD gate
     // (IndirectRenderer.comp lodRungIsSelected) derives each entry's parent cell from
@@ -543,6 +549,15 @@ private:
     // Real ladder depth of the tree (set via setMaxLodLevel from
     // LocalScene::maxChunkLod). Used as lodMeta.z in the GPU band test.
     int maxLodLevel_ = 16;
+    // Coarsest rung level ever published into this renderer. The GPU LoD gate
+    // assumes a complete rung ladder (it selects exactly one rung per region
+    // and needs the chain to terminate at a published level). Scenes loaded
+    // from file emit only frontier chunks (level 0) - the ancestor ladder is
+    // only produced by scene generation - so for those the gate's coarsest
+    // rung must be the frontier itself; otherwise every column whose frontier
+    // rung fails the parent-distance test is culled entirely (holes in rings
+    // around the camera).
+    int coarsestPublishedLevel_ = 0;
     // Min corner of the octree root (set via setLodRootMin); dyadic lattice
     // origin for the hierarchical LoD gate's parent-cell derivation.
     glm::vec3 lodRootMin_ = glm::vec3(0.0f);

@@ -126,7 +126,8 @@ void IndirectRenderer::syncHostBuffersToGPU() {
         void* bdst = boundsBuffer.map(bOff);
         if (bdst) {
             float cellSize = mi.boundsMax.x - mi.boundsMin.x;
-            glm::vec4 lodMeta(cellSize, static_cast<float>(ld.level), static_cast<float>(maxLodLevel_), 0.0f);
+            coarsestPublishedLevel_ = std::max(coarsestPublishedLevel_, static_cast<int>(ld.level));
+            glm::vec4 lodMeta(cellSize, static_cast<float>(ld.level), metaMaxLevel(), 0.0f);
             glm::vec4 bnds[4] = { mi.boundsMin, mi.boundsMax, lodMeta, mi.boundsBase };
             std::memcpy(bdst, bnds, sizeof(bnds));
             boundsBuffer.unmap();
@@ -705,6 +706,15 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
                                     glm::vec3 camPos, float lodBias, int maxTargetLod,
                                     const glm::mat4* cascadeMatrices, bool doCascade, bool doMain,
                                     bool doVegCascade, uint32_t vegChunkCount, uint32_t targetLayer) {
+    if (std::getenv("VULKAN_GATE_DIAG") != nullptr) {
+        static std::atomic<int> headerLogged{0};
+        if (headerLogged.fetch_add(1) < 3) {
+            std::cerr << "[gate-diag] header camPos=" << camPos.x << "," << camPos.y << ","
+                      << camPos.z << " lodBias=" << lodBias << " maxTargetLod=" << maxTargetLod
+                      << " maxLodLevel=" << maxLodLevel_ << " rootMin=" << lodRootMin_.x << ","
+                      << lodRootMin_.y << "," << lodRootMin_.z << "\n";
+        }
+    }
     // NOTE: No mutex lock here - this is only called from the main render thread
     // and all buffer modifications happen under mutex in the slot APIs.
 
@@ -2584,13 +2594,34 @@ bool IndirectRenderer::publishGpuMeshSpan(uint32_t slotIndex, uint32_t vertexCou
     cmd.firstInstance = slotIndex;
     if (slotIndex < indirectCommands.size()) indirectCommands[slotIndex] = cmd;
 
+    coarsestPublishedLevel_ = std::max(coarsestPublishedLevel_, static_cast<int>(ld.level));
+
+    // VULKAN_GATE_DIAG: dump the LoD gate inputs for the first few entries so
+    // the rung selection can be reproduced on the host (see the cull shader's
+    // lodRungIsSelected).
+    if (std::getenv("VULKAN_GATE_DIAG") != nullptr) {
+        // Only the entries around the origin (where the reported holes are) and
+        // a bounded count, so the dump stays small enough to analyse offline.
+        const glm::vec3 c = 0.5f * (info->boundsMin + info->boundsMax);
+        if (std::fabs(c.x) < 2600.0f && std::fabs(c.z) < 2600.0f) {
+            static std::atomic<int> gateLogged{0};
+            if (gateLogged.fetch_add(1) < 400) {
+                std::cerr << "[gate-diag] entry min=" << info->boundsMin.x << "," << info->boundsMin.y
+                          << "," << info->boundsMin.z << " max=" << info->boundsMax.x << ","
+                          << info->boundsMax.y << "," << info->boundsMax.z
+                          << " cellSize=" << (info->boundsMax.x - info->boundsMin.x)
+                          << " level=" << ld.level << "\n";
+            }
+        }
+    }
+
     // Same triple the upload path publishes: AABB min/max plus {cellSize,
     // level, maxLevel} — the cull's distance-band test reads the level.
     glm::vec4 bounds[4] = {
         info->boundsMin,
         info->boundsMax,
         glm::vec4(info->boundsMax.x - info->boundsMin.x, static_cast<float>(ld.level),
-                  static_cast<float>(maxLodLevel_), 0.0f),
+                  metaMaxLevel(), 0.0f),
         info->boundsBase
     };
     stageMeshMetaWrite(slotIndex, cmd, bounds, true);
@@ -2744,6 +2775,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     glm::vec4 capBoundsMax         = ld.boundsMax;
     glm::vec4 capBoundsBase        = info->boundsBase;
     int      capLevel              = ld.level;
+    coarsestPublishedLevel_ = std::max(coarsestPublishedLevel_, capLevel);
     uint32_t capOldVertexBase      = ld.oldVertexBase;
     uint32_t capOldVertexCount     = ld.oldVertexCount;
     uint32_t capOldIndexBase       = ld.oldIndexBase;
@@ -2835,7 +2867,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
                 const float cellSize = capBoundsMax.x - capBoundsMin.x;
                 const glm::vec4 lodMeta = glm::vec4(cellSize,
                                                     static_cast<float>(capLevel),
-                                                    static_cast<float>(maxLodLevel_), 0.0f);
+                                                    metaMaxLevel(), 0.0f);
                 glm::vec4 bounds[4] = { capBoundsMin, capBoundsMax, lodMeta, capBoundsBase };
                 std::memcpy(bndData, bounds, sizeof(bounds));
                 boundsBuffer.unmap();
@@ -2868,7 +2900,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
                 void* bndData = boundsBuffer.map(boundsOffset);
                 if (bndData) {
                     const float cellSize = capBoundsMax.x - capBoundsMin.x;
-                    const glm::vec4 lodMeta = glm::vec4(cellSize, static_cast<float>(capLevel), static_cast<float>(maxLodLevel_), 0.0f);
+                    const glm::vec4 lodMeta = glm::vec4(cellSize, static_cast<float>(capLevel), metaMaxLevel(), 0.0f);
                     glm::vec4 bounds[4] = { capBoundsMin, capBoundsMax, lodMeta, capBoundsBase };
                     std::memcpy(bndData, bounds, sizeof(bounds));
                     boundsBuffer.unmap();
