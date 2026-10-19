@@ -108,7 +108,7 @@
 #include "services/OctreeMeshCompute.hpp"
 #include "services/OctreeMeshTypes.hpp"
 #include "services/OctreeTopologyCompute.hpp"
-#include "services/DropletSim.hpp"
+#include "services/ParticlePhysicsSim.hpp"
 #include "vulkan/renderer/water/DropletRenderer.hpp"
 #include "services/OctreeTopologyTypes.hpp"
 #include "utils/ShadowParams.hpp"
@@ -386,7 +386,7 @@ public:
     // The simulation owns device-local state buffers and collides against the
     // cropped octree SDF table (same node layout as the topology pass), so the
     // physics never needs a triangle mesh and never depends on the render mode.
-    std::shared_ptr<DropletSim> dropletSim;
+    std::shared_ptr<ParticlePhysicsSim> particleSim;
     std::unique_ptr<DropletRenderer> dropletRenderer;
     std::shared_ptr<class DropletsWidget> dropletsWidget;
     double dropletSeconds = 0.0;    // time since the last re-seed (s)
@@ -2138,26 +2138,26 @@ public:
                 // the freshly integrated state (the sim ends with a
                 // compute -> vertex/fragment barrier).
                 dropletDrawCount = 0;
-                if (settings.dropletsEnabled && dropletSim && dropletSim->ready()) {
+                if (settings.dropletsEnabled && particleSim && particleSim->ready()) {
                     if (settings.dropletResetSeconds > 0.0f) {
                         dropletSeconds += std::max(lastFrameDelta, 0.0f);
                         if (dropletSeconds >= settings.dropletResetSeconds) {
-                            dropletSim->requestReset();
+                            particleSim->requestReset();
                             dropletSeconds = 0.0;
                         }
                     }
                     if (dropletsWidget && dropletsWidget->resetRequested) {
                         dropletsWidget->resetRequested = false;
-                        dropletSim->requestReset();
+                        particleSim->requestReset();
                         dropletSeconds = 0.0;
                     }
                     if (dropletShapeRadius != settings.dropletRadius) {
-                        dropletSim->setParticleShape(settings.dropletRadius, 1.0f);
+                        particleSim->setParticleShape(settings.dropletRadius, 1.0f);
                         dropletShapeRadius = settings.dropletRadius;
                     }
-                    DropletSim::Config simCfg;
+                    ParticlePhysicsSim::Config simCfg;
                     simCfg.particleCount = static_cast<uint32_t>(std::clamp(
-                        settings.dropletCount, 1, static_cast<int>(DropletSim::kMaxParticles)));
+                        settings.dropletCount, 1, static_cast<int>(ParticlePhysicsSim::kMaxParticles)));
                     simCfg.spawnRadius = settings.dropletSpawnRadius;
                     simCfg.spawnCenter = dropletSpawnCenter_;
                     simCfg.gravity = settings.dropletGravity;
@@ -2177,7 +2177,7 @@ public:
                         ? dropletForcedDt
                         : std::clamp(lastFrameDelta, 0.0f, 0.1f);
                     const float substep = frameDt / static_cast<float>(std::max(1, simCfg.substeps));
-                    dropletSim->dispatch(solidCmd, substep, simCfg);
+                    particleSim->dispatch(solidCmd, substep, simCfg);
                     dropletDrawCount = simCfg.particleCount;
                 }
 
@@ -2254,13 +2254,13 @@ public:
                         // after the opaque geometry (depth test against the
                         // solid depth, no depth write, premultiplied coverage
                         // blend). Reads the state the dispatches above wrote.
-                        if (settings.dropletsEnabled && dropletRenderer && dropletSim &&
-                            dropletSim->ready() && dropletDrawCount > 0u) {
+                        if (settings.dropletsEnabled && dropletRenderer && particleSim &&
+                            particleSim->ready() && dropletDrawCount > 0u) {
                             VkImageView skyView = this->sceneRenderer->skyRenderer
                                 ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx)
                                 : VK_NULL_HANDLE;
                             dropletRenderer->draw(solidCmd, this, frameIdx, getMainDescriptorSet(),
-                                                  dropletSim->stateBuffer(), dropletDrawCount,
+                                                  particleSim->stateBuffer(), dropletDrawCount,
                                                   1.0f, settings.dropletIor, 0.0f, skyView);
                         }
                     }
@@ -3850,9 +3850,9 @@ public:
 
         // Droplet sim/renderer own device-local buffers created through the
         // app; destroy them before the scene renderer drains its own resources.
-        if (dropletSim) {
-            dropletSim->destroy(this);
-            dropletSim.reset();
+        if (particleSim) {
+            particleSim->destroy(this);
+            particleSim.reset();
         }
         if (dropletRenderer) {
             dropletRenderer->destroy(this);
@@ -4724,8 +4724,8 @@ void MyApp::ensureDroplets() {
     if (useRemote || sceneRenderer == nullptr || !world) return;
     if (!dropletRenderer) dropletRenderer = std::make_unique<DropletRenderer>();
     if (!dropletRenderer->ready()) dropletRenderer->init(this);
-    if (!dropletSim) dropletSim = std::make_shared<DropletSim>();
-    if (dropletSim->ready()) return;
+    if (!particleSim) particleSim = std::make_shared<ParticlePhysicsSim>();
+    if (particleSim->ready()) return;
 
     // Region: a vertical column around the spawn XZ wide enough for the spawn
     // ball plus its spread, spanning the whole octree height so the terrain
@@ -4739,19 +4739,19 @@ void MyApp::ensureDroplets() {
 
     std::vector<OctreeGpuNode> nodes;
     if (!world->scene().buildSdfRegionTable(0, dropletRegionMin, dropletRegionMax, nodes,
-                                            DropletSim::kMaxRegionNodes) ||
+                                            ParticlePhysicsSim::kMaxRegionNodes) ||
         nodes.empty()) {
         std::cerr << "[MyApp] droplet simulation disabled: no SDF region table for layer 0\n";
         return;
     }
-    dropletSim->init(this);
-    dropletSim->uploadRegion(nodes);
-    dropletSim->setParticleShape(settings.dropletRadius, 1.0f);
+    particleSim->init(this);
+    particleSim->uploadRegion(nodes);
+    particleSim->setParticleShape(settings.dropletRadius, 1.0f);
     // Spawn on top of the height map: the table is uploaded, so the terrain
     // height at the spawn XZ can be queried on the host.
-    const float terrainY = dropletSim->terrainHeightAt(0.0f, 0.0f);
+    const float terrainY = particleSim->terrainHeightAt(0.0f, 0.0f);
     dropletSpawnCenter_ = glm::vec3(0.0f, terrainY + std::max(5.0f, settings.dropletSpawnHeight), 0.0f);
-    dropletSim->requestReset();
+    particleSim->requestReset();
     dropletShapeRadius = settings.dropletRadius;
     std::cout << "[MyApp] droplet simulation ready: " << nodes.size() << " SDF nodes, "
               << settings.dropletCount << " particles, terrain Y=" << terrainY
@@ -4840,21 +4840,21 @@ void MyApp::loadSceneFromFile(const std::string& path) {
 
     // New scene: the old droplet region table belongs to the previous octree.
     // Drop it so the lazy bring-up rebuilds the region from the loaded scene.
-    if (dropletSim) {
-        dropletSim->destroy(this);
-        dropletSim.reset();
+    if (particleSim) {
+        particleSim->destroy(this);
+        particleSim.reset();
     }
     ensureDroplets();
 }
 void MyApp::postSubmit() {
     pollBlenderExport();
     // Droplet diagnostics: throttled counter readback (never in the hot path).
-    if (settings.dropletsEnabled && settings.dropletStats && dropletSim && dropletSim->ready()) {
+    if (settings.dropletsEnabled && settings.dropletStats && particleSim && particleSim->ready()) {
         dropletStatsClock += std::max(lastFrameDelta, 0.0f);
         if (dropletStatsClock >= 1.0) {
             dropletStatsClock = 0.0;
-            const DropletSim::Stats ds = dropletSim->readStats();
-            const DropletSim::Probe probe = dropletSim->probeParticles();
+            const ParticlePhysicsSim::Stats ds = particleSim->readStats();
+            const ParticlePhysicsSim::Probe probe = particleSim->probeParticles();
             std::cout << "[droplets] pairContacts=" << ds.pairContacts
                       << " terrain+escaped=" << ds.terrainAndEscaped
                       << " gridOverflow=" << ds.gridOverflow
@@ -4872,7 +4872,7 @@ void MyApp::postSubmit() {
         }
     }
     // Lazy bring-up: toggling the master gate on after startup builds the sim.
-    if (settings.dropletsEnabled && sceneRenderer && (!dropletSim || !dropletSim->ready())) {
+    if (settings.dropletsEnabled && sceneRenderer && (!particleSim || !particleSim->ready())) {
         ensureDroplets();
     }
     // VULKAN_STREAM_DIAG=1: periodic chunk-streaming counters (loaded/tracked

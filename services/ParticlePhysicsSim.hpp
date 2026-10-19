@@ -10,7 +10,7 @@ class VulkanApp;
 
 // GPU water-droplet particle simulation.
 //
-// Dispatches shaders/computation/water/DropletSim.comp once per substep with
+// Dispatches shaders/computation/water/ParticlePhysicsSim.comp once per substep with
 // several passes (spawn / integrate / spatial-hash build / contacts+solve /
 // finalize). All state lives in device-local storage buffers; the host never
 // touches particle data during simulation — it only uploads the cropped octree
@@ -26,7 +26,7 @@ class VulkanApp;
 // The simulation is a Jacobi-style solver: every invocation reads its
 // neighbours but writes only its own record, so the result is independent of
 // workgroup scheduling (see the shader header for the momentum argument).
-class DropletSim {
+class ParticlePhysicsSim {
 public:
     // Particle capacity of the fixed state pool. `Settings::dropletCount` is
     // clamped to this; the buffer is allocated once.
@@ -50,6 +50,7 @@ public:
         float damping = 0.02f;
         float waterLevel = 0.0f;
         float particleRadius = 1.5f;
+        float spawnSpeed = 2.0f;   // random launch speed bound (m/s)
         int solverIterations = 3;
         int substeps = 4;
         glm::vec3 regionMin{0.0f};

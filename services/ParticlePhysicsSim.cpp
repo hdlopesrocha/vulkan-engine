@@ -1,4 +1,4 @@
-#include "DropletSim.hpp"
+#include "ParticlePhysicsSim.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -10,15 +10,16 @@
 namespace {
 
 // Push-constant block: field-for-field mirror of `layout(push_constant) PC` in
-// shaders/computation/water/DropletSim.comp (5 * vec4 = 80 bytes).
-struct DropletSimPC {
+// shaders/computation/water/ParticlePhysicsSim.comp (5 * vec4 = 80 bytes).
+struct ParticlePhysicsPC {
     glm::vec4 spawnCenterRadius; // xyz = spawn center, w = spawn radius
     glm::vec4 regionMin;         // xyz = region min, w = water level
     glm::vec4 regionMax;         // xyz = region max, w = grid cell size
     glm::vec4 physics;           // gravity, restitution, friction, damping
     glm::vec4 misc;              // dt, particleCount, resetSeed bits, pass
+    glm::vec4 spawnParams;       // x = spawn mode (0 ball, 1 box), y = spawn speed, zw reserved
 };
-static_assert(sizeof(DropletSimPC) == 80, "DropletSimPC must match the shader push block");
+static_assert(sizeof(ParticlePhysicsPC) == 96, "ParticlePhysicsPC must match the shader push block");
 
 // Shader pass ids (pc.misc.w).
 enum SimPass : uint32_t {
@@ -39,7 +40,7 @@ uint32_t groupsFor(uint32_t items, uint32_t local) {
 
 } // namespace
 
-void DropletSim::init(VulkanApp* vkApp) {
+void ParticlePhysicsSim::init(VulkanApp* vkApp) {
     if (initialized_) return;
     app_ = vkApp;
     createPipeline();
@@ -47,7 +48,7 @@ void DropletSim::init(VulkanApp* vkApp) {
     initialized_ = true;
 }
 
-void DropletSim::destroy(VulkanApp* vkApp) {
+void ParticlePhysicsSim::destroy(VulkanApp* vkApp) {
     if (vkApp == nullptr) return;
     vkApp->destroyBuffer(state_);
     vkApp->destroyBuffer(shapeStage_);
@@ -74,7 +75,7 @@ void DropletSim::destroy(VulkanApp* vkApp) {
     initialized_ = false;
 }
 
-void DropletSim::createPipeline() {
+void ParticlePhysicsSim::createPipeline() {
     VkDevice device = app_->getDevice();
 
     VkDescriptorSetLayoutBinding bindings[10] = {};
@@ -89,13 +90,13 @@ void DropletSim::createPipeline() {
     dli.bindingCount = 10;
     dli.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(device, &dli, nullptr, &descLayout_) != VK_SUCCESS)
-        throw std::runtime_error("DropletSim: descriptor set layout");
-    app_->resources.addDescriptorSetLayout(descLayout_, "DropletSim: descLayout");
+        throw std::runtime_error("ParticlePhysicsSim: descriptor set layout");
+    app_->resources.addDescriptorSetLayout(descLayout_, "ParticlePhysicsSim: descLayout");
 
     VkPushConstantRange pcr{};
     pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pcr.offset = 0;
-    pcr.size = sizeof(DropletSimPC);
+    pcr.size = sizeof(ParticlePhysicsPC);
 
     VkPipelineLayoutCreateInfo pli{};
     pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -104,10 +105,10 @@ void DropletSim::createPipeline() {
     pli.pushConstantRangeCount = 1;
     pli.pPushConstantRanges = &pcr;
     if (vkCreatePipelineLayout(device, &pli, nullptr, &layout_) != VK_SUCCESS)
-        throw std::runtime_error("DropletSim: pipeline layout");
-    app_->resources.addPipelineLayout(layout_, "DropletSim: layout");
+        throw std::runtime_error("ParticlePhysicsSim: pipeline layout");
+    app_->resources.addPipelineLayout(layout_, "ParticlePhysicsSim: layout");
 
-    VkShaderModule sm = app_->getOrCreateShaderModule("shaders/computation/water/DropletSim.comp.spv");
+    VkShaderModule sm = app_->getOrCreateShaderModule("shaders/computation/physics/ParticlePhysics.comp.spv");
     VkPipelineShaderStageCreateInfo ssi{};
     ssi.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     ssi.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -119,8 +120,8 @@ void DropletSim::createPipeline() {
     cpi.stage = ssi;
     cpi.layout = layout_;
     if (vkCreateComputePipelines(device, app_->getPipelineCache(), 1, &cpi, nullptr, &pipeline_) != VK_SUCCESS)
-        throw std::runtime_error("DropletSim: compute pipeline");
-    app_->resources.addPipeline(pipeline_, "DropletSim: pipeline");
+        throw std::runtime_error("ParticlePhysicsSim: compute pipeline");
+    app_->resources.addPipeline(pipeline_, "ParticlePhysicsSim: pipeline");
 
     VkDescriptorPoolSize ps{};
     ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -131,8 +132,8 @@ void DropletSim::createPipeline() {
     dpi.pPoolSizes = &ps;
     dpi.maxSets = 1;
     if (vkCreateDescriptorPool(device, &dpi, nullptr, &descPool_) != VK_SUCCESS)
-        throw std::runtime_error("DropletSim: descriptor pool");
-    app_->resources.addDescriptorPool(descPool_, "DropletSim: descPool");
+        throw std::runtime_error("ParticlePhysicsSim: descriptor pool");
+    app_->resources.addDescriptorPool(descPool_, "ParticlePhysicsSim: descPool");
 
     VkDescriptorSetAllocateInfo ai{};
     ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -140,11 +141,11 @@ void DropletSim::createPipeline() {
     ai.descriptorSetCount = 1;
     ai.pSetLayouts = &descLayout_;
     if (vkAllocateDescriptorSets(device, &ai, &descSet_) != VK_SUCCESS)
-        throw std::runtime_error("DropletSim: descriptor set");
-    app_->resources.addDescriptorSet(descSet_, "DropletSim: descSet");
+        throw std::runtime_error("ParticlePhysicsSim: descriptor set");
+    app_->resources.addDescriptorSet(descSet_, "ParticlePhysicsSim: descSet");
 }
 
-void DropletSim::createBuffers() {
+void ParticlePhysicsSim::createBuffers() {
     const VkMemoryPropertyFlags deviceLocal = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     const VkMemoryPropertyFlags host =
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -176,7 +177,7 @@ void DropletSim::createBuffers() {
     writeDescriptors();
 }
 
-void DropletSim::ensureNodeTables(size_t nodeCount) {
+void ParticlePhysicsSim::ensureNodeTables(size_t nodeCount) {
     if (nodeCount <= nodeCap_ && bSdf0_.buffer != VK_NULL_HANDLE) return;
     const VkMemoryPropertyFlags host =
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -200,7 +201,7 @@ void DropletSim::ensureNodeTables(size_t nodeCount) {
     writeDescriptors();
 }
 
-void DropletSim::uploadRegion(const std::vector<OctreeGpuNode>& nodes) {
+void ParticlePhysicsSim::uploadRegion(const std::vector<OctreeGpuNode>& nodes) {
     if (!initialized_ || nodes.empty()) return;
     const size_t count = std::min(nodes.size(), kMaxRegionNodes);
     ensureNodeTables(count);
@@ -217,7 +218,7 @@ void DropletSim::uploadRegion(const std::vector<OctreeGpuNode>& nodes) {
     auto* c47 = static_cast<glm::ivec4*>(bChild47_.mappedData);
     if (sdf0 == nullptr || sdf1 == nullptr || cube == nullptr || meta == nullptr ||
         c03 == nullptr || c47 == nullptr) {
-        std::cerr << "[DropletSim] node table upload failed: buffers not mapped\n";
+        std::cerr << "[ParticlePhysicsSim] node table upload failed: buffers not mapped\n";
         return;
     }
     for (size_t i = 0; i < count; ++i) {
@@ -241,18 +242,18 @@ void DropletSim::uploadRegion(const std::vector<OctreeGpuNode>& nodes) {
     nodesDirty_ = true;
 }
 
-void DropletSim::setParticleShape(float radius, float mass) {
+void ParticlePhysicsSim::setParticleShape(float radius, float mass) {
     shapeRadius_ = radius;
     shapeMass_ = mass;
     shapeDirty_ = true;
 }
 
-void DropletSim::requestReset() {
+void ParticlePhysicsSim::requestReset() {
     resetPending_ = true;
     ++resetSeed_; // deterministic per reset: same seed -> same initial layout
 }
 
-void DropletSim::writeDescriptors() {
+void ParticlePhysicsSim::writeDescriptors() {
     VkBuffer bufs[10] = {state_.buffer,      gridCounts_.buffer, gridEntries_.buffer,
                          gridExtra_.buffer,  bSdf0_.buffer,      bSdf1_.buffer,
                          bCube_.buffer,      bMeta_.buffer,      bChild03_.buffer,
@@ -276,7 +277,7 @@ void DropletSim::writeDescriptors() {
     vkUpdateDescriptorSets(app_->getDevice(), 10, writes, 0, nullptr);
 }
 
-void DropletSim::computeBarrier(VkCommandBuffer cmd) {
+void ParticlePhysicsSim::computeBarrier(VkCommandBuffer cmd) {
     // Compute writes (particle state, hash buckets, counters) feed the next
     // dispatch's reads. One memory barrier per pass boundary keeps the
     // dependency explicit; the passes never overlap on purpose.
@@ -293,7 +294,7 @@ void DropletSim::computeBarrier(VkCommandBuffer cmd) {
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
-void DropletSim::dispatch(VkCommandBuffer cmd, float substepSeconds, const Config& cfg) {
+void ParticlePhysicsSim::dispatch(VkCommandBuffer cmd, float substepSeconds, const Config& cfg) {
     if (!initialized_ || nodes_.empty() || state_.buffer == VK_NULL_HANDLE) return;
 
     const uint32_t count = std::clamp<uint32_t>(cfg.particleCount, 1u, kMaxParticles);
@@ -354,13 +355,14 @@ void DropletSim::dispatch(VkCommandBuffer cmd, float substepSeconds, const Confi
 
     auto pushAndDispatch = [&](uint32_t pass, uint32_t groups, float dt, const glm::vec4& spawnCenterRadius,
                                const glm::vec4& regionMin, const glm::vec4& regionMax) {
-        DropletSimPC pc{};
+        ParticlePhysicsPC pc{};
         pc.spawnCenterRadius = spawnCenterRadius;
         pc.regionMin = regionMin;
         pc.regionMax = regionMax;
         pc.physics = glm::vec4(cfg.gravity, cfg.restitution, cfg.friction, cfg.damping);
         pc.misc = glm::vec4(dt, static_cast<float>(count),
                             glm::uintBitsToFloat(resetSeed_), static_cast<float>(pass));
+        pc.spawnParams = glm::vec4(0.0f, cfg.spawnSpeed, 0.0f, 0.0f); // ball emitter
         vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
         vkCmdDispatch(cmd, groups, 1, 1);
     };
@@ -429,7 +431,7 @@ void DropletSim::dispatch(VkCommandBuffer cmd, float substepSeconds, const Confi
 // the shader (finest node containing the point, trilinear corners, INFINITY
 // corners skipped). Returns a large positive value when the point is outside
 // the table (no collision there).
-float DropletSim::terrainHeightAt(float x, float z) const {
+float ParticlePhysicsSim::terrainHeightAt(float x, float z) const {
     if (nodes_.empty()) return 0.0f;
 
     auto sample = [&](const glm::vec3& p, float& cellSize) -> float {
@@ -493,7 +495,7 @@ float DropletSim::terrainHeightAt(float x, float z) const {
     return yBottom;
 }
 
-DropletSim::Probe DropletSim::probeParticles() {
+ParticlePhysicsSim::Probe ParticlePhysicsSim::probeParticles() {
     Probe out{};
     if (!initialized_ || app_ == nullptr || state_.buffer == VK_NULL_HANDLE) return out;
     VkBufferCopy region{};
@@ -538,7 +540,7 @@ DropletSim::Probe DropletSim::probeParticles() {
     return out;
 }
 
-DropletSim::Stats DropletSim::readStats() {
+ParticlePhysicsSim::Stats ParticlePhysicsSim::readStats() {
     Stats out{};
     if (!initialized_ || app_ == nullptr || gridExtra_.buffer == VK_NULL_HANDLE) return out;
     VkBufferCopy region{};

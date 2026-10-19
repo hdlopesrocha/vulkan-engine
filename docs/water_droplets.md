@@ -12,14 +12,26 @@ terrain SDF, with the water plane and with each other, and are re-seeded every
 |---|---|---|
 | Collision geometry | Octree SDF corner samples | `LocalScene::buildSdfRegionTable` flattens the subtree(s) intersecting the simulation region into `OctreeGpuNode` — the exact node layout the GPU topology pass consumes (`services/OctreeTopologyTypes.hpp`) |
 | Node semantics | entry 0 = world root, `type` 1 = surface / 2 = solid / 0 = empty, `flags` bit0 = leaf, corner bit order `bit2=x, bit1=y, bit0=z`, `INFINITY` = no data | identical to `shaders/computation/octree/OctreeTriangles.comp` |
-| SDF evaluation | root descent + trilinear corner interpolation | `sdfNodeAt` / `sdfAt` / `sdfGradient` in `shaders/computation/water/DropletSim.comp` mirror the walker's arithmetic (documented duplicate: the topology tables are per-chunk and transient, so a world-space query needs its own persistent table) |
+| SDF evaluation | root descent + trilinear corner interpolation | `sdfNodeAt` / `sdfAt` / `sdfGradient` in `shaders/includes/physics/WorldSdf.glsl` mirror the walker's arithmetic (documented duplicate: the topology tables are per-chunk and transient, so a world-space query needs its own persistent table) |
 | Particle radius | `Settings::dropletRadius` | the *same* value drives the SDF contact query and the rendered sphere: switching render settings can never change the collision shape |
 
 The region table is built once per scene (never per frame): a rigid-body
 transform is just a particle position, so nothing has to be rebuilt when a
 droplet moves.
 
-## Simulation (`services/DropletSim.{hpp,cpp}` + `shaders/computation/water/DropletSim.comp`)
+## Simulation (`services/ParticlePhysicsSim.{hpp,cpp}` + generic `shaders/computation/physics/ParticlePhysics.comp`)
+
+The physics is generic and shared, not droplet-specific:
+
+| Layer | File | Contents |
+|---|---|---|
+| SDF query | `shaders/includes/physics/WorldSdf.glsl` | node-table bindings (set 0, 4..9), descent, trilinear sample, gradient — reusable by any compute shader that binds a flattened octree region |
+| Particle physics | `shaders/includes/physics/ParticlePhysics.glsl` | canonical particle record (set 0 binding 0), push-constant block, spatial hash (bindings 1..3), integration, SDF/plane contacts, Jacobi impulse solver, finalize |
+| Generic pass | `shaders/computation/physics/ParticlePhysics.comp` | pass dispatch (spawn/integrate/grid/contacts/finalize) + pluggable spawn modes (`pc.spawnParams.x`: 0 = ball above the terrain, 1 = box in the region) |
+| Droplet driver | `services/ParticlePhysicsSim.{hpp,cpp}` | configures the pass for the water droplets (spawn centre above the height map, water level, tuning), uploads the octree region table, records the dispatches |
+
+Rendering stays completely separate (`DropletRenderer` ray-marches the spheres);
+the collision geometry is the SDF and never depends on how particles are drawn.
 
 One compute pipeline, six passes selected by a push-constant id:
 

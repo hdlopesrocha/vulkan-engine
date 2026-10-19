@@ -1,0 +1,119 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : enable
+
+// Generic GPU particle-physics pass.
+//
+// One pipeline, six dispatches per substep (the host selects the pass through
+// pc.misc.w): spawn, integrate, spatial-hash clear/scatter, contacts+solve and
+// finalize. The physics lives in includes/physics/ParticlePhysics.glsl
+// (spatial hash, SDF/plane contacts, impulse solver) and
+// includes/physics/WorldSdf.glsl (octree SDF query), so any emitter or
+// consumer can reuse it — the water droplets are one configuration of this
+// pass (spawn mode 0: a ball above the height map).
+//
+// Spawn modes (pc.spawnParams.x):
+//   0 = uniform ball at pc.spawnCenterRadius (radius = .w), random velocity
+//       with magnitude <= pc.spawnParams.y biased upward
+//   1 = uniform box inside pc.regionMin..regionMax, same velocity rule
+#include "../../includes/physics/ParticlePhysics.glsl"
+
+layout(local_size_x = 64) in; // == LOCAL_SIZE
+
+
+const uint PASS_SPAWN = 0u;
+const uint PASS_INTEGRATE = 1u;
+const uint PASS_GRID_CLEAR = 2u;
+const uint PASS_GRID_SCATTER = 3u;
+const uint PASS_CONTACTS = 4u;
+const uint PASS_FINALIZE = 5u;
+
+
+// Deterministic per-particle spawn stream: the particle index mixed with the
+// host's reset seed, so a respawn with the same seed reproduces the same layout
+// exactly (no dependence on execution order).
+uint spawnSeed(uint i, uint seed) {
+    uint h = i * 2654435761u + seed * 2246822519u;
+    h ^= h >> 15;
+    h *= 0x2c1b3c6du;
+    h ^= h >> 12;
+    h *= 0x297a2d39u;
+    h ^= h >> 15;
+    return (h != 0u) ? h : 0x9E3779B9u; // xorshift32 must not start at 0
+}
+
+
+// ------------------------------------------------------------------ pass 0
+
+// SPAWN: deterministic uniform point inside the spawn ball plus a small,
+// upward-biased random velocity. radius and mass are host-owned: they are
+// pre-filled in the state buffer before this dispatch and are deliberately not
+// touched here (a respawn must keep the host's per-particle radius/mass).
+void spawnParticle(uint i) {
+    uint rng = spawnSeed(i, floatBitsToUint(pc.misc.z));
+
+    // Uniform in the ball: radial CDF r = R * u^(1/3) and a uniform direction
+    // on the sphere (Archimedes: z uniform, azimuth uniform).
+    float ur = randFloat(rng);
+    float uz = randFloat(rng);
+    float up = randFloat(rng);
+    float rad = pc.spawnCenterRadius.w * pow(ur, 1.0 / 3.0);
+    float z = 2.0 * uz - 1.0;
+    float s = sqrt(max(0.0, 1.0 - z * z));
+    float phi = 6.28318530717958647692 * up;
+    vec3 dir = vec3(s * cos(phi), z, s * sin(phi));
+    vec3 pos = pc.spawnCenterRadius.xyz + dir * rad;
+    if (uint(pc.spawnParams.x + 0.5) == 1u) {
+        // Box emitter: uniform inside the simulation region.
+        pos = mix(pc.regionMin.xyz, pc.regionMax.xyz,
+                  vec3(randFloat(rng), randFloat(rng), randFloat(rng)));
+    }
+
+    // Small random velocity: uniform direction, magnitude <= 2 m/s. Folding the
+    // vertical component onto its absolute value biases the launch upward and
+    // can only shrink the magnitude, so the 2 m/s bound holds.
+    vec3 vdir = vec3(randFloat(rng), randFloat(rng), randFloat(rng)) * 2.0 - vec3(1.0);
+    float vl = length(vdir);
+    vdir = (vl > 1e-6) ? (vdir / vl) : vec3(0.0, 1.0, 0.0);
+    vec3 vel = vdir * (max(pc.spawnParams.y, 0.0) * randFloat(rng));
+    vel.y = 0.5 * (vel.y + abs(vel.y));
+
+    particles[i].position = pos;
+    particles[i].velocity = vel;
+    particles[i].prevPosition = pos;
+    particles[i].flags = FLAG_ACTIVE;
+}
+
+
+// ------------------------------------------------------------------- main
+
+void main() {
+    uint gi = gl_GlobalInvocationID.x;
+    uint pass = uint(pc.misc.w);
+
+    // The grid-clear dispatch covers the whole bucket table, independent of the
+    // particle count (GRID_BUCKETS / LOCAL_SIZE workgroups).
+    if (pass == PASS_GRID_CLEAR) {
+        if (gi >= GRID_BUCKETS) {
+            return;
+        }
+        gridClear(gi);
+        return;
+    }
+
+    // All other passes dispatch one invocation per particle; the host guarantees
+    // particleCount <= the state array length.
+    if (gi >= simParticleCount()) {
+        return;
+    }
+    if (pass == PASS_SPAWN) {
+        spawnParticle(gi);
+    } else if (pass == PASS_INTEGRATE) {
+        integrateParticle(gi);
+    } else if (pass == PASS_GRID_SCATTER) {
+        scatterParticle(gi);
+    } else if (pass == PASS_CONTACTS) {
+        contactSolve(gi);
+    } else if (pass == PASS_FINALIZE) {
+        finalizeParticle(gi);
+    }
+}
