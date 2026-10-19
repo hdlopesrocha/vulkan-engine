@@ -50,7 +50,7 @@ Two entry points: `MyApp.cpp` (class `MyApp` extends `VulkanApp`) and `server.cp
 - `vulkan/` — Vulkan setup, resource management, renderers (`vulkan/renderer/`)
 - `vulkan/renderer/` — renderers grouped by subsystem (`water/`, `solid/`, `sdf/`, `rt/`, `sky/`, `vegetation/`, `shadow/`, `debug/`, `post/`, `indirect/`, `brush/`); scene infrastructure (SceneRenderer, SceneDescriptorLayout, descriptors/allocators/queues) stays at the root
 - `vulkan/ubo/` — GPU uniform buffer structs; `vulkan/ssbo/` — GPU storage-buffer element structs; `vulkan/includes/` — shared shader-interface headers (`shader/` locations + vertex layouts, `debug/` DebugModes)
-- `shaders/` — GLSL sources; per-renderer shaders live under `shaders/renderer/<subsystem>/` mirroring `vulkan/renderer/`, shared code in `shaders/{includes,ubo,ssbo,types}/`
+- `shaders/` — GLSL sources; per-renderer shaders live under `shaders/renderer/<subsystem>/` mirroring `vulkan/renderer/`, compute shaders under `shaders/computation/<subsystem>/` (mirroring the service/renderer that dispatches them; top-level ones like `TextureMixer.comp` sit at `shaders/computation/`), shared code in `shaders/{includes,ubo,ssbo,types}/`
 - `space/` — Octree, Tesselator (Surface Nets meshing), ThreadPool, ConcurrentQueue, Processor, Simplifier, OctreeVisibilityChecker
 - `sdf/` — SDF primitives (Box, Sphere, Capsule, Cylinder, Cone, Torus, HeightMap via GDAL, RoadDistanceFunction, TriangleStrip, OctreeDifferenceFunction, Wrapped* variants for composition)
 - `events/` — Input system (keyboard, gamepad, nunchuk), EventManager, IEventHandler

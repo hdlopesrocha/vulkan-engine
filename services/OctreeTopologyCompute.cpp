@@ -81,7 +81,7 @@ void OctreeTopologyCompute::init(VulkanApp* vkApp) {
         throw std::runtime_error("OctreeTopologyCompute: pipeline layout");
     vkApp->resources.addPipelineLayout(layout, "OctreeTopologyCompute: layout");
 
-    VkShaderModule sm = vkApp->getOrCreateShaderModule("shaders/renderer/octree/OctreeTriangles.comp.spv");
+    VkShaderModule sm = vkApp->getOrCreateShaderModule("shaders/computation/octree/OctreeTriangles.comp.spv");
 
     VkPipelineShaderStageCreateInfo ssi{};
     ssi.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

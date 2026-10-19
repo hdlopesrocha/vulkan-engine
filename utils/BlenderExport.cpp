@@ -138,7 +138,7 @@ inline uint8_t linear8ToSrgb8(uint8_t value) {
     return static_cast<uint8_t>(std::clamp(v, 0, 255));
 }
 
-// ── CPU twin of shaders/TextureMixer.comp ──────────────────────────────────
+// ── CPU twin of shaders/computation/TextureMixer.comp ──────────────────────────────────
 struct MixerNoise {
     int scale = 8;
     int octaves = 4;

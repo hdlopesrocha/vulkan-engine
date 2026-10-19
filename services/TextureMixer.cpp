@@ -252,7 +252,7 @@ void TextureMixer::createComputePipeline(VulkanApp* app) {
 	}
 	app->resources.addPipelineLayout(computePipelineLayout, "TextureMixer: computePipelineLayout");
 
-	VkShaderModule computeShaderModule = app->getOrCreateShaderModule("shaders/TextureMixer.comp.spv");
+	VkShaderModule computeShaderModule = app->getOrCreateShaderModule("shaders/computation/TextureMixer.comp.spv");
 
 	VkPipelineShaderStageCreateInfo computeShaderStageInfo{};
 	computeShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

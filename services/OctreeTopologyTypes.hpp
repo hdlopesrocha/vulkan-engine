@@ -5,7 +5,7 @@
 #include <glm/glm.hpp>
 
 // Flattened octree node uploaded to the GPU triangle-topology pass
-// (shaders/renderer/octree/OctreeTriangles.comp). Field-for-field mirror of
+// (shaders/computation/octree/OctreeTriangles.comp). Field-for-field mirror of
 // the shader's storage buffers, see services/OctreeTopologyCompute.cpp for the
 // binding assignment. The tree is flattened by LocalScene, which knows the
 // octree and its allocator.

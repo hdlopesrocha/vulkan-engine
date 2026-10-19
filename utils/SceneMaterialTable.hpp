@@ -27,7 +27,7 @@ struct SceneTextureTriple {
 };
 
 // One generated layer: a Perlin-noise blend of the primary and secondary
-// source layers (shaders/TextureMixer.comp). Target index is the layer it
+// source layers (shaders/computation/TextureMixer.comp). Target index is the layer it
 // fills; sources are source-layer indices.
 struct SceneMixerDesc {
     uint32_t target = 0;

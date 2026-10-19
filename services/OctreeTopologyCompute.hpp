@@ -68,7 +68,7 @@ struct OctreeTopologyResidentResult {
 };
 
 // GPU triangle-topology service: dispatches
-// shaders/renderer/octree/OctreeTriangles.comp (the exact port of
+// shaders/computation/octree/OctreeTriangles.comp (the exact port of
 // Octree::iterateTriangles) over a flattened octree neighborhood. Two output
 // modes share one pipeline:
 //   compute()         — arena readback only (CPU consumers that still need

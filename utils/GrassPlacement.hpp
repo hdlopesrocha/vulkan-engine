@@ -13,7 +13,7 @@
 //
 // The algorithms (slot selection, hashes, PRNG, biome gate, dominant-vertex
 // brush test) are the CPU twins of
-// shaders/renderer/vegetation/VegetationPlacement.comp; keep them in sync with
+// shaders/computation/vegetation/VegetationPlacement.comp; keep them in sync with
 // the shader and with each other.
 
 namespace grass {

@@ -23,7 +23,7 @@ class Scene;
 //      (utils/GrassPlacement) on the same chunk geometry and export the tufts
 //      as a point cloud carrying variant/rotation/height attributes.
 //   3. Bake the generated mixer layers (Perlin blends of two source layers)
-//      on the CPU with the same equations as shaders/TextureMixer.comp.
+//      on the CPU with the same equations as shaders/computation/TextureMixer.comp.
 //   4. Serialize the merged meshes, embedded textures, app-generated SDF
 //      effect instances and a JSON sidecar, and copy the Blender setup script
 //      next to the .glb.

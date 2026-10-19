@@ -12,7 +12,7 @@ class ThreadContext;
 // CPU triangle topology for the octree ("the adaptive walker").
 //
 // The runtime path in the app is the GPU port of this walk in
-// shaders/renderer/octree/OctreeTriangles.comp (dispatched by
+// shaders/computation/octree/OctreeTriangles.comp (dispatched by
 // services/OctreeTopologyCompute). This translation unit is the reference and
 // headless implementation and is still required by:
 //   - bin/server (no Vulkan linkage) for the chunk meshes it serves to the web

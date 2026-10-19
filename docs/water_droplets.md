@@ -11,15 +11,15 @@ terrain SDF, with the water plane and with each other, and are re-seeded every
 | Piece | Reused component | Notes |
 |---|---|---|
 | Collision geometry | Octree SDF corner samples | `LocalScene::buildSdfRegionTable` flattens the subtree(s) intersecting the simulation region into `OctreeGpuNode` — the exact node layout the GPU topology pass consumes (`services/OctreeTopologyTypes.hpp`) |
-| Node semantics | entry 0 = world root, `type` 1 = surface / 2 = solid / 0 = empty, `flags` bit0 = leaf, corner bit order `bit2=x, bit1=y, bit0=z`, `INFINITY` = no data | identical to `shaders/renderer/octree/OctreeTriangles.comp` |
-| SDF evaluation | root descent + trilinear corner interpolation | `sdfNodeAt` / `sdfAt` / `sdfGradient` in `shaders/renderer/water/DropletSim.comp` mirror the walker's arithmetic (documented duplicate: the topology tables are per-chunk and transient, so a world-space query needs its own persistent table) |
+| Node semantics | entry 0 = world root, `type` 1 = surface / 2 = solid / 0 = empty, `flags` bit0 = leaf, corner bit order `bit2=x, bit1=y, bit0=z`, `INFINITY` = no data | identical to `shaders/computation/octree/OctreeTriangles.comp` |
+| SDF evaluation | root descent + trilinear corner interpolation | `sdfNodeAt` / `sdfAt` / `sdfGradient` in `shaders/computation/water/DropletSim.comp` mirror the walker's arithmetic (documented duplicate: the topology tables are per-chunk and transient, so a world-space query needs its own persistent table) |
 | Particle radius | `Settings::dropletRadius` | the *same* value drives the SDF contact query and the rendered sphere: switching render settings can never change the collision shape |
 
 The region table is built once per scene (never per frame): a rigid-body
 transform is just a particle position, so nothing has to be rebuilt when a
 droplet moves.
 
-## Simulation (`services/DropletSim.{hpp,cpp}` + `shaders/renderer/water/DropletSim.comp`)
+## Simulation (`services/DropletSim.{hpp,cpp}` + `shaders/computation/water/DropletSim.comp`)
 
 One compute pipeline, six passes selected by a push-constant id:
 

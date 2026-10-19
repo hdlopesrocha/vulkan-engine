@@ -49,7 +49,7 @@ void OctreeMeshCompute::init(VulkanApp* appInstance) {
         throw std::runtime_error("OctreeMeshCompute: pipeline layout");
     app->resources.addPipelineLayout(layout, "OctreeMeshCompute: layout");
 
-    VkShaderModule sm = app->getOrCreateShaderModule("shaders/renderer/octree/OctreeMesh.comp.spv");
+    VkShaderModule sm = app->getOrCreateShaderModule("shaders/computation/octree/OctreeMesh.comp.spv");
 
     VkPipelineShaderStageCreateInfo ssi{};
     ssi.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

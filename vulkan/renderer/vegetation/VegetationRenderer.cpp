@@ -214,7 +214,7 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
     // buffer handles are fixed for the session, so the sets never need
     // refresh; the consolidation binds the set matching its copy targets).
     {
-        VkShaderModule bakeModule = app->getOrCreateShaderModule("shaders/renderer/vegetation/VegetationRendererBake.comp.spv");
+        VkShaderModule bakeModule = app->getOrCreateShaderModule("shaders/computation/vegetation/VegetationRendererBake.comp.spv");
         VkDescriptorSetLayoutBinding bindings[2] = {};
         bindings[0].binding = 0;
         bindings[0].descriptorCount = 1;
@@ -2266,7 +2266,7 @@ void VegetationRenderer::ensurePlacementPipeline(VulkanApp* app) {
         throw std::runtime_error("VegetationRenderer: placement pipeline layout");
     app->resources.addPipelineLayout(vegPlacementPipelineLayout, "VegetationRenderer: vegPlacementPipelineLayout");
 
-    VkShaderModule module = app->getOrCreateShaderModule("shaders/renderer/vegetation/VegetationPlacement.comp.spv");
+    VkShaderModule module = app->getOrCreateShaderModule("shaders/computation/vegetation/VegetationPlacement.comp.spv");
     VkComputePipelineCreateInfo cpi{};
     cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

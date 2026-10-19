@@ -10,7 +10,7 @@
 namespace {
 
 // Push-constant block: field-for-field mirror of `layout(push_constant) PC` in
-// shaders/renderer/water/DropletSim.comp (5 * vec4 = 80 bytes).
+// shaders/computation/water/DropletSim.comp (5 * vec4 = 80 bytes).
 struct DropletSimPC {
     glm::vec4 spawnCenterRadius; // xyz = spawn center, w = spawn radius
     glm::vec4 regionMin;         // xyz = region min, w = water level
@@ -107,7 +107,7 @@ void DropletSim::createPipeline() {
         throw std::runtime_error("DropletSim: pipeline layout");
     app_->resources.addPipelineLayout(layout_, "DropletSim: layout");
 
-    VkShaderModule sm = app_->getOrCreateShaderModule("shaders/renderer/water/DropletSim.comp.spv");
+    VkShaderModule sm = app_->getOrCreateShaderModule("shaders/computation/water/DropletSim.comp.spv");
     VkPipelineShaderStageCreateInfo ssi{};
     ssi.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     ssi.stage = VK_SHADER_STAGE_COMPUTE_BIT;

@@ -2080,7 +2080,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
         }
         app->resources.addPipelineLayout(computePipelineLayout, "IndirectRenderer: computePipelineLayout");
 
-        VkShaderModule compModule = app->getOrCreateShaderModule("shaders/renderer/indirect/IndirectRenderer.comp.spv");
+        VkShaderModule compModule = app->getOrCreateShaderModule("shaders/computation/indirect/IndirectRenderer.comp.spv");
 
         VkPipelineShaderStageCreateInfo stage{};
         stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

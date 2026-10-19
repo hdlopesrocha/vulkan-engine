@@ -10,7 +10,7 @@ class VulkanApp;
 
 // GPU water-droplet particle simulation.
 //
-// Dispatches shaders/renderer/water/DropletSim.comp once per substep with
+// Dispatches shaders/computation/water/DropletSim.comp once per substep with
 // several passes (spawn / integrate / spatial-hash build / contacts+solve /
 // finalize). All state lives in device-local storage buffers; the host never
 // touches particle data during simulation — it only uploads the cropped octree
