@@ -32,7 +32,7 @@ agent verification.
 | `make run-debug` | Debug build + run (same logging as `make run`) | (Never close the app or use timeouts, the program is always closed by the user)
 | `MSG="scope: subject" make commit` | Commit staged changes (`git add` first), archive the full message to `logs/<commit_hash>.log` and speak the commit subject aloud; **all agents must commit through this target, never bare `git commit`**. MSG must be an environment prefix, not a make variable |
 | `make shaders` | Compile `shaders/**/*.{vert,frag,geom,comp,tesc,tese}` → `bin/shaders/**/*.spv` via `glslc` (fallback `glslangValidator`) |
-| `make videos` | Convert the committed `videos/base/*` → square, short-GOP `videos/*.mp4` (1024², `-crf 26`) used as animated materials; the converted clips are copied into `bin/videos/` |
+| `make videos` | Convert the committed `videos/base/*` → square, short-GOP `videos/base/converted/*.mp4` (1024², `-crf 26`) used as animated materials; the converted mirror is copied into `bin/videos/base/converted/`. `make videos-extra` does the same for `videos/extra/` |
 | `make server` | Build headless `bin/server` (no Vulkan/UI linkage, no widgets) |
 | `make clean` | Remove `bin/` and generated SPIR-V |
 | `make valgrind` | Debug build + valgrind with `valgrind.supp` |

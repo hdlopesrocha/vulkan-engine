@@ -1,5 +1,5 @@
-# Converted clips live flat in this directory (the committed sources stay in
-# base/ and the optional local library in extra/).
-/*.mp4
+# Converted clips keep the source-folder structure: base/converted/ (generated,
+# ignored) and extra/converted/ (inside the ignored extra/ library).
+base/converted/
 extra/*
 !extra/.gitkeep

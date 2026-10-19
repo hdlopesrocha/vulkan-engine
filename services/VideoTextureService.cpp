@@ -1298,11 +1298,14 @@ std::vector<std::string> VideoTextureService::listVideoFiles(const std::string& 
 }
 
 std::string VideoTextureService::findAssetDirectory() {
-    // Converted assets (make videos) live flat in videos/, next to the source
-    // folders; both are checked next to the executable (bin/) and in the
-    // repository root, so the app finds them under `make run` and when started
-    // from the repo.
-    static const char* candidates[] = {"videos", "../videos"};
+    // Converted clips keep the source-folder structure in <folder>/converted/.
+    // Check those first (next to the executable and in the repository root),
+    // then the raw source folders; the first one with clips wins.
+    static const char* candidates[] = {
+        "videos/base/converted", "videos/extra/converted",
+        "../videos/base/converted", "../videos/extra/converted",
+        "videos/base", "videos/extra", "../videos/base", "../videos/extra",
+    };
     std::error_code ec;
     for (const char* candidate : candidates) {
         if (std::filesystem::is_directory(candidate, ec)) {
@@ -1316,42 +1319,48 @@ std::vector<VideoTextureService::AvailableVideo> VideoTextureService::listAvaila
     std::vector<AvailableVideo> result;
     std::error_code ec;
 
-    // Converted assets (make videos / make videos-extra) live flat in videos/
-    // and are addressed by file stem; prefer them over the source clip.
-    auto convertedFor = [&](const std::string& stem) {
-        for (const char* dir : {"videos", "../videos"}) {
-            const std::string candidate = std::string(dir) + "/" + stem + ".mp4";
+    // Converted clips mirror the source folder in <category>/converted/ and are
+    // preferred over the raw source when present.
+    auto convertedFor = [&](const std::string& stem, const char* category) {
+        for (const char* root : {"videos", "../videos"}) {
+            const std::string candidate =
+                std::string(root) + "/" + category + "/converted/" + stem + ".mp4";
             if (std::filesystem::is_regular_file(candidate, ec)) return candidate;
         }
         return std::string();
     };
 
-    auto scan = [&](const char* dir, const char* category) {
+    auto scanSources = [&](const char* dir, const char* category) {
         for (const std::string& file : listVideoFiles(dir)) {
             AvailableVideo clip;
             clip.name = std::filesystem::path(file).stem().string();
             clip.category = category;
-            const std::string converted = convertedFor(clip.name);
+            const std::string converted = convertedFor(clip.name, category);
             clip.path = converted.empty() ? file : converted;
             result.push_back(std::move(clip));
         }
     };
-    scan("videos/base", "base");
-    scan("../videos/base", "base");
-    scan("videos/extra", "extra");
-    scan("../videos/extra", "extra");
+    scanSources("videos/base", "base");
+    scanSources("../videos/base", "base");
+    scanSources("videos/extra", "extra");
+    scanSources("../videos/extra", "extra");
 
-    if (result.empty()) {
-        // bin/ only ships the converted directory: expose every converted clip
-        // as a base clip so the Videos widget can still load them.
-        for (const std::string& file : listVideoFiles(findAssetDirectory())) {
+    // Converted-only clips: bin/ ships the converted mirror without the source
+    // folders, so expose those too.
+    auto scanConverted = [&](const char* root, const char* category) {
+        const std::string dir = std::string(root) + "/" + category + "/converted";
+        for (const std::string& file : listVideoFiles(dir)) {
             AvailableVideo clip;
-            clip.path = file;
             clip.name = std::filesystem::path(file).stem().string();
-            clip.category = "base";
+            clip.category = category;
+            clip.path = file;
             result.push_back(std::move(clip));
         }
-    }
+    };
+    scanConverted("videos", "base");
+    scanConverted("../videos", "base");
+    scanConverted("videos", "extra");
+    scanConverted("../videos", "extra");
 
     // base first, then name; drop duplicates found in multiple searched roots
     std::sort(result.begin(), result.end(), [](const AvailableVideo& a, const AvailableVideo& b) {

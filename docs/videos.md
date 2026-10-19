@@ -11,7 +11,7 @@ the playback clock asks for, converted to RGBA8 on the GPU and written into the
 clip's video-array slot.
 
 ```
-videos/base/*.mp4 ──(make videos)──> videos/*.mp4   (square, short GOP)
+videos/base/*.mp4 ──(make videos)──> videos/base/converted/*.mp4   (square, short GOP)
                                           │
   material: kind=Video, textureIndex=N ───┤
                                           ▼
@@ -33,10 +33,11 @@ videos/base/*.mp4 ──(make videos)──> videos/*.mp4   (square, short GOP)
 `MyApp` at setup. `videos/extra/` is the optional local library (ignored by git
 because it can be very large); drop your own clips there.
 
-`make videos` converts `videos/base/*` into `videos/<name>.mp4` (flat, next to
-the source folders), and `make videos-extra` converts `videos/extra/*` the same
-way. The converted files are gitignored; the normal build copies them into
-`bin/videos/` next to the executable.
+`make videos` converts only `videos/base/*` into `videos/base/converted/*.mp4`;
+`make videos-extra` converts `videos/extra/*` into `videos/extra/converted/*.mp4`.
+The converted clips keep the source-folder structure, are gitignored, and are
+copied by the build into the matching `bin/videos/<base|extra>/converted/`
+path.
 
 | Setting | Value | Why |
 |---|---|---|
@@ -48,9 +49,9 @@ way. The converted files are gitignored; the normal build copies them into
 
 At runtime `VideoTextureService::listAvailableVideos()` discovers clips from
 `videos/base` and `videos/extra` (next to the executable or in the repository
-root) and prefers the converted `videos/<name>.mp4` when present. When only the
-converted clips are reachable (running from `bin/`), every converted clip is
-exposed as a base clip. `VideoTextureService::listVideoFiles` and
+root) and prefers the converted `videos/<category>/converted/<name>.mp4` when
+present. Converted-only clips (running from `bin/`, where the build copies the
+mirror) are listed as well. `VideoTextureService::listVideoFiles` and
 `findAssetDirectory` remain available for simple directory scans.
 
 Environment switches:

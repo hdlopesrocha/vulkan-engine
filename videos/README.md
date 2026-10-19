@@ -10,16 +10,18 @@ the dedicated video texture array, i.e. an animated material selected through
 |---|---|---|
 | `base/` | yes | The three shortest source clips. `MyApp` loads them by default at setup; they become animated video materials. |
 | `extra/` | no (only `.gitkeep`) | Optional/local source clips. They can be very large, so they are not committed; users drop their own clips here. |
-| `*.mp4` (flat) | no | Converted clips produced by `make videos` / `make videos-extra`. They live next to the source folders and are ignored by `videos/.gitignore`. |
+| `base/converted/` | no (generated) | Converted base clips (`make videos`). Ignored; the build copies them to `bin/videos/base/converted/`. |
+| `extra/converted/` | no (generated) | Converted local clips (`make videos-extra`). Ignored together with the `extra/` library. |
+| `*.mp4` (flat) | no | Not used; converted clips always keep the `base/`/`extra/` structure. |
 
-`videos/.gitignore` ignores the flat converted `*.mp4` and `extra/*` while
-keeping `extra/.gitkeep`; the committed sources in `base/` are **not** ignored.
+`videos/.gitignore` ignores `base/converted/` and `extra/*` (apart from
+`extra/.gitkeep`); the committed sources in `base/` are **not** ignored.
 
 ## Converting
 
 ```sh
-make videos        # videos/base/*  -> videos/*.mp4
-make videos-extra  # videos/extra/* -> videos/*.mp4
+make videos        # videos/base/*  -> videos/base/converted/*.mp4
+make videos-extra  # videos/extra/* -> videos/extra/converted/*.mp4
 ```
 
 Both targets use the same settings:
@@ -30,27 +32,28 @@ Both targets use the same settings:
 * `+faststart` for immediate playback.
 
 An asset is re-encoded only when its source is newer, so `make videos` is a
-no-op once `videos/*.mp4` is up to date. The normal build copies the converted
-clips into `bin/videos/` next to the executable.
+no-op once `videos/base/converted/` is up to date. The normal build copies the
+converted mirrors into `bin/videos/base/converted/` and
+`bin/videos/extra/converted/`.
 
-`make videos-clean` deletes the converted `videos/*.mp4` files only; it never
-touches the `base/` and `extra/` sources.
+`make videos-clean` deletes the generated `base/converted/` and
+`extra/converted/` directories only; it never touches the `base/` and `extra/`
+sources.
 
 ## Runtime lookup and loading more clips
 
-Converted clips live flat in `videos/`, so the runtime checks `videos/` and
-`../videos/` (next to the executable and in the repository root); the loader
-then scans `videos/base` and `videos/extra` for the source clips and prefers
-the converted `videos/<name>.mp4` when present. The lookup is **not
-recursive**: keep basenames unique across `base/` and `extra/`.
+The loader scans `videos/base` and `videos/extra` (and `../videos/...` in the
+repository root) for the source clips and prefers the converted
+`videos/<category>/converted/<name>.mp4` when present. Converted-only clips
+(the `bin/` copy) are listed as well. The lookup is **not recursive** beyond
+those folders: keep basenames unique across `base/` and `extra/`.
 
 `MyApp` loads the three `base/` clips into video slots at setup. The Video
 Textures widget lists every discovered clip and can load/unload clips at runtime
 without a restart, up to the video-array capacity (`VULKAN_VIDEO_SLOTS`, default
 8):
 
-1. Put the source clip(s) in `videos/extra/` (or drop an already-converted
-   `.mp4` directly into `videos/`).
+1. Put the source clip(s) in `videos/extra/`.
 2. Run `make videos-extra` (or `make videos` for a base clip).
 3. Open the Video Textures widget and press **Load** next to the clip.
 

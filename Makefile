@@ -470,8 +470,10 @@ $(OUT): $(BUILD_MODE_STAMP) $(OBJS)
 	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
 	@if [ -d fonts ]; then cp -a fonts $(OUT_DIR)/ || true; fi
 	@if [ -d scenes ]; then cp -a scenes $(OUT_DIR)/ || true; fi
-	@mkdir -p $(OUT_DIR)/videos
-	@if ls videos/*.mp4 >/dev/null 2>&1; then cp -a videos/*.mp4 $(OUT_DIR)/videos/ || true; fi
+	@mkdir -p $(OUT_DIR)/videos/base/converted
+	@if ls videos/base/converted/*.mp4 >/dev/null 2>&1; then cp -a videos/base/converted/*.mp4 $(OUT_DIR)/videos/base/converted/ || true; fi
+	@mkdir -p $(OUT_DIR)/videos/extra/converted
+	@if ls videos/extra/converted/*.mp4 >/dev/null 2>&1; then cp -a videos/extra/converted/*.mp4 $(OUT_DIR)/videos/extra/converted/ || true; fi
 	@if [ -d scripts ]; then mkdir -p $(OUT_DIR)/scripts && cp -a scripts/. $(OUT_DIR)/scripts/ || true; fi
 	@if [ -d svg ]; then cp -a svg $(OUT_DIR)/ || true; fi
 	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi
@@ -575,40 +577,44 @@ valgrind: debug
 
 # ── Video texture assets ──────────────────────────────────────────────────
 # Convert the committed clips in videos/base/ (and, on demand, the optional
-# clips in videos/extra/) into texture-ready assets. The converted clips live
-# flat in videos/ next to the source folders: square center crop at VIDEO_SIZE
-# (default 1024 = the default texture array size), H.264 with a ~1 s keyframe
-# interval so the decoder can reach any timestamp by seeking to the preceding
-# keyframe and decoding less than a second of frames, no audio (a texture is
-# silent), faststart for immediate playback, yuv420p for universal decoder
-# support. Sources are left untouched; an asset is re-encoded only when its
-# source is newer.
-# The service picks up videos/*.mp4 (converted) and falls back to
-# videos/base|extra/<clip> when no converted asset exists.
+# clips in videos/extra/) into texture-ready assets. The converted clips keep
+# the source folder structure, in <source>/converted/: videos/base/* ->
+# videos/base/converted/* and videos/extra/* -> videos/extra/converted/*.
+# `make videos` converts only the base folder; `make videos-extra` only extra.
+# Settings: square center crop at VIDEO_SIZE (default 1024 = the default
+# texture array size), H.264 with a ~1 s keyframe interval so the decoder can
+# reach any timestamp by seeking to the preceding keyframe and decoding less
+# than a second of frames, no audio (a texture is silent), faststart for
+# immediate playback, yuv420p for universal decoder support. Sources are left
+# untouched; an asset is re-encoded only when its source is newer.
+# The service prefers videos/<category>/converted/<clip> and falls back to the
+# source clip when no converted asset exists.
 VIDEO_SIZE ?= 1024
 VIDEO_CRF ?= 26
 VIDEO_PRESET ?= veryfast
 VIDEO_DIR := videos
-VIDEO_SRC_DIR := videos/base
-VIDEO_EXTRA_SRC_DIR := videos/extra
+VIDEO_SRC_DIR := $(VIDEO_DIR)/base
+VIDEO_EXTRA_SRC_DIR := $(VIDEO_DIR)/extra
+VIDEO_BASE_OUT_DIR := $(VIDEO_SRC_DIR)/converted
+VIDEO_EXTRA_OUT_DIR := $(VIDEO_EXTRA_SRC_DIR)/converted
 VIDEO_EXTS := mp4 mov mkv webm
 VIDEO_SRCS := $(foreach e,$(VIDEO_EXTS),$(wildcard $(VIDEO_SRC_DIR)/*.$(e)))
-VIDEO_ASSETS := $(patsubst $(VIDEO_SRC_DIR)/%,$(VIDEO_DIR)/%.mp4,$(basename $(VIDEO_SRCS)))
+VIDEO_ASSETS := $(patsubst $(VIDEO_SRC_DIR)/%,$(VIDEO_BASE_OUT_DIR)/%.mp4,$(basename $(VIDEO_SRCS)))
 VIDEO_EXTRA_SRCS := $(foreach e,$(VIDEO_EXTS),$(wildcard $(VIDEO_EXTRA_SRC_DIR)/*.$(e)))
-VIDEO_EXTRA_ASSETS := $(patsubst $(VIDEO_EXTRA_SRC_DIR)/%,$(VIDEO_DIR)/%.mp4,$(basename $(VIDEO_EXTRA_SRCS)))
+VIDEO_EXTRA_ASSETS := $(patsubst $(VIDEO_EXTRA_SRC_DIR)/%,$(VIDEO_EXTRA_OUT_DIR)/%.mp4,$(basename $(VIDEO_EXTRA_SRCS)))
 
 .PHONY: videos
 videos: $(VIDEO_ASSETS)
 
-# Optional local clips: same conversion, same output directory.
+# Optional local clips: same conversion, mirrored under extra/converted.
 .PHONY: videos-extra
 videos-extra: $(VIDEO_EXTRA_ASSETS)
 
-# One pattern rule per supported source extension and source directory (same
-# target pattern, so make picks the variant whose prerequisite exists).
+# One pattern rule per supported source extension and source folder; the target
+# keeps the folder (base/ or extra/) and adds converted/.
 define VIDEO_CONVERT_RULE
-$(VIDEO_DIR)/%.mp4: $(1)/%.$(2)
-	@mkdir -p $(VIDEO_DIR)
+$(2)/%.mp4: $(1)/%.$(3)
+	@mkdir -p $(2)
 	@echo "Converting video texture: $$< -> $$@"
 	@ffmpeg -hide_banner -loglevel error -y -i "$$<" \
 		-vf "crop=min(iw\,ih):min(iw\,ih),scale=$(VIDEO_SIZE):$(VIDEO_SIZE):flags=lanczos" \
@@ -616,13 +622,13 @@ $(VIDEO_DIR)/%.mp4: $(1)/%.$(2)
 		-g 30 -keyint_min 15 -sc_threshold 0 -pix_fmt yuv420p \
 		-movflags +faststart "$$@"
 endef
-$(foreach e,$(VIDEO_EXTS),$(eval $(call VIDEO_CONVERT_RULE,$(VIDEO_SRC_DIR),$(e))))
-$(foreach e,$(VIDEO_EXTS),$(eval $(call VIDEO_CONVERT_RULE,$(VIDEO_EXTRA_SRC_DIR),$(e))))
+$(foreach e,$(VIDEO_EXTS),$(eval $(call VIDEO_CONVERT_RULE,$(VIDEO_SRC_DIR),$(VIDEO_BASE_OUT_DIR),$(e))))
+$(foreach e,$(VIDEO_EXTS),$(eval $(call VIDEO_CONVERT_RULE,$(VIDEO_EXTRA_SRC_DIR),$(VIDEO_EXTRA_OUT_DIR),$(e))))
 
-# Remove converted assets (the source folders base/ and extra/ are never touched)
+# Remove converted assets only (the source folders base/ and extra/ are never touched)
 .PHONY: videos-clean
 videos-clean:
-	rm -f $(VIDEO_DIR)/*.mp4
+	rm -rf $(VIDEO_BASE_OUT_DIR) $(VIDEO_EXTRA_OUT_DIR)
 
 .PHONY: commit
 # Commit the staged changes, store the full commit message in
