@@ -172,7 +172,25 @@ void main() {
             baseColor = mix(baseColor, vegColor.rgb / max(vegCoverage, 1e-3), vegCoverage);
         }
     }
-    // 3. Water on top
+    // 3. Brush geometry overlay, composited BEFORE water: the water blend
+    // below then covers whatever the brush wrote when the water surface is in
+    // front of it, and leaves it visible when the brush is in front (its depth
+    // joins the water's occluder test). Depth-tested against the scene
+    // geometry here (solid + vegetation) — the water surface is deliberately
+    // not an occluder at this point, that decision belongs to the water block.
+    vec4 brushColor = texture(brushColorTex, uv);
+    float brushDepth = 1.0;
+    bool brushPresent = false;
+    if (brushColor.a > 0.0) {
+        // M9: explicit LOD (divergent flow, same argument as the other taps).
+        brushDepth = textureLod(brushDepthTex, uv, 0.0).r;
+        brushPresent = brushDepth < obstacleDepth;
+        if (brushPresent) {
+            baseColor = mix(baseColor, brushColor.rgb, ubo.brushAlpha);
+        }
+    }
+
+    // 4. Water on top (of solid + vegetation + brush)
     vec4 waterColor = texture(waterColorTex, uv);
     float waterAlpha = waterColor.a;
     // Depth-guided water blur, performed here in the final pass. Only the
@@ -248,7 +266,14 @@ void main() {
         float wd01 = textureLod(waterGeomDepthTex, clamp(uv + vec2(-wtexel.x,  wtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
         float wd11 = textureLod(waterGeomDepthTex, clamp(uv + vec2( wtexel.x,  wtexel.y), vec2(0.0), vec2(1.0)), 0.0).r;
         float waterGeomDepth = min(min(wd00, wd10), min(wd01, wd11));
-        if (waterGeomDepth < 1.0 && obstacleDepth < waterGeomDepth) {
+        // Occluders in front of the water surface: solid + vegetation depth and
+        // the brush overlay (composited before this block). A brush fragment in
+        // front of the water keeps the water off that pixel, so the brush stays
+        // visible; where the water surface is in front, the water blends over
+        // the brush instead (underwater brush seen through the surface).
+        float waterOccluder = obstacleDepth;
+        if (brushPresent) waterOccluder = min(waterOccluder, brushDepth);
+        if (waterGeomDepth < 1.0 && waterOccluder < waterGeomDepth) {
             waterAlpha = 0.0;
         } else if (waterGeomDepth < 1.0) {
             // Water remains visible: its surface is a valid occluder for the
@@ -260,27 +285,19 @@ void main() {
 
     vec3 finalColor = afterWater;
 
-    // 4. Brush compositing
-    vec4 brushColor = texture(brushColorTex, uv);
-    if (brushColor.a > 0.0) {
-        // M9: explicit LOD (divergent flow, same argument as above).
-        float brushDepth = textureLod(brushDepthTex, uv, 0.0).r;
-
-        // Brush geometry overlay: depth-test brush against scene + water + veg, same for all modes
-        {
-            if (brushDepth < obstacleDepth) {
-                finalColor = mix(finalColor, brushColor.rgb, ubo.brushAlpha);
-            }
-        }
-    }
+    // (The brush overlay was composited in step 3, before water: see the
+    // depth-ordered composite note there.)
 
     // 5. Generic SDF volume (fire): emissive accumulation composited by depth.
     // The volume target stores front-to-back accumulation whose rgb is
     // already transmittance-weighted, so the correct OVER is
     // dst*(1-a) + src (a plain mix() would dim the fire twice).
     // Occluder depth includes the visible water surface: SDF grass (and every
-    // generic SDF) behind water must not composite over it.
+    // generic SDF) behind water must not composite over it. The brush overlay
+    // is a depth participant too (composited in step 3), so an SDF volume
+    // behind the brush stays behind it.
     float sdfObstacleDepth = min(obstacleDepth, waterSurfaceDepth);
+    if (brushPresent) sdfObstacleDepth = min(sdfObstacleDepth, brushDepth);
     float fireDepth = texture(fireDepthTex, uv).r;
     if (fireDepth < 1.0 && !(sdfObstacleDepth < fireDepth)) {
         vec4 fireColor = textureLod(fireColorTex, uv, 0.0);
