@@ -83,9 +83,9 @@ void DebugCubeRenderer::createCubeVBO(VulkanApp* app) {
 }
 
 void DebugCubeRenderer::loadGridTexture(VulkanApp* app) {
-    // Load grid.png texture
+    // Load the grid texture (textures/grid/COLOR.png)
     int texWidth, texHeight, texChannels;
-    stbi_uc* pixels = stbi_load("textures/grid.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+    stbi_uc* pixels = stbi_load("textures/grid/COLOR.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
     
     if (!pixels) {
         std::cerr << "[DEBUG CUBE RENDERER ERROR] Failed to load grid texture!" << std::endl;

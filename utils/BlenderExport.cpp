@@ -474,8 +474,13 @@ void appendGeometry(MeshBuffers& out, const Geometry& geometry,
 std::string materialLabel(const std::vector<SceneTextureTriple>& triples,
                           const std::vector<SceneMixerDesc>& mixers, int index) {
     if (index >= 0 && static_cast<size_t>(index) < triples.size()) {
-        const std::string& file = triples[index].albedo;
-        std::string name = fs::path(file).stem().string();
+        // Folder-per-texture layout: textures/<name>/COLOR.jpg, so the material
+        // name is the parent directory. Fall back to the flat layout (strip the
+        // "_COLOR" suffix from the stem) if the file is not inside a folder.
+        const fs::path file = triples[index].albedo;
+        const std::string folder = file.parent_path().filename().string();
+        if (!folder.empty() && folder != "textures") return folder;
+        std::string name = file.stem().string();
         const std::string suffix = "_COLOR";
         if (name.size() > suffix.size() &&
             name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
