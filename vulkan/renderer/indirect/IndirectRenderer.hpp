@@ -176,8 +176,18 @@ public:
     // depth when coarse rungs exist, otherwise 0 (the frontier rung is the
     // coarsest drawn one, so it must draw whenever it does not recurse).
     float metaMaxLevel() const {
+        // VULKAN_NO_LADDER=1: pretend no coarse rung exists, so the gate keeps
+        // only the frontier rung. Diagnostic for separating ladder (rung) LoD
+        // bands from topology problems in a capture.
+        if (noLadderEnv_) return 0.0f;
         return (coarsestPublishedLevel_ > 0) ? static_cast<float>(maxLodLevel_) : 0.0f;
     }
+    // Set once from the environment (see metaMaxLevel).
+    static bool noLadderEnv() {
+        static const bool v = std::getenv("VULKAN_NO_LADDER") != nullptr;
+        return v;
+    }
+    bool noLadderEnv_ = noLadderEnv();
 
     // World-space min corner of the octree root. The hierarchical LoD gate
     // (IndirectRenderer.comp lodRungIsSelected) derives each entry's parent cell from
