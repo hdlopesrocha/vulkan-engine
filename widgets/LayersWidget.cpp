@@ -31,7 +31,7 @@ void LayersWidget::render() {
     ImGui::TextDisabled("Chunks"); ImGui::NextColumn();
     ImGui::Separator();
 
-    static const char* kRendererNames[] = { "Solid", "Water" };
+    static const char* kRendererNames[] = { "Solid", "Water", "Video" };
     for (size_t i = 0; i < n; ++i) {
         const Layer layer = static_cast<Layer>(i);
         ImGui::PushID(static_cast<int>(i));
@@ -60,9 +60,10 @@ void LayersWidget::render() {
         }
         ImGui::NextColumn();
 
-        int cur = (scene_->layerRenderer(layer) == LayerRendererType::Water) ? 1 : 0;
-        if (ImGui::Combo("##renderer", &cur, kRendererNames, 2)) {
-            const auto next = (cur == 1) ? LayerRendererType::Water : LayerRendererType::Solid;
+        int cur = static_cast<int>(scene_->layerRenderer(layer));
+        if (cur < 0 || cur > 2) cur = 0;
+        if (ImGui::Combo("##renderer", &cur, kRendererNames, 3)) {
+            const auto next = static_cast<LayerRendererType>(cur);
             // Free the layer's slots from the OLD pool before remapping so
             // nothing renders twice, then re-queue into the new pool.
             if (renderer_) renderer_->removeAllLayerMeshes(layer);
