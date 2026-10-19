@@ -606,17 +606,6 @@ public:
         // value spans the visible water surface for depth-order checks).
         if (std::getenv("VULKAN_BRUSH_PREVIEW") != nullptr) {
             brushManager.addEntry();
-            if (BrushEntry* entry = brushManager.getSelectedEntry()) {
-                if (const char* sc = std::getenv("VULKAN_BRUSH_SCALE")) {
-                    entry->scale = glm::vec3(std::max(1.0f, static_cast<float>(std::atof(sc))));
-                }
-                if (const char* tr = std::getenv("VULKAN_BRUSH_TRANSLATE")) {
-                    float x = 0.0f, y = 0.0f, z = 0.0f;
-                    if (std::sscanf(tr, "%f,%f,%f", &x, &y, &z) == 3) {
-                        entry->translate = glm::vec3(x, y, z);
-                    }
-                }
-            }
         }
 
         // VULKAN_DROPLET_DT forces a fixed per-frame simulation delta (headless
@@ -4367,6 +4356,23 @@ void MyApp::updateBrushPreview(uint32_t frameIndex) {
 
     // Sweep start = the position captured on the previous frame (the same pair
     // applyBrushToScene consumes via cachedSweepStart).
+    // Diagnostic transform override (headless composite validation): forced
+    // every frame because loading a scene replaces the manager's entries.
+    // VULKAN_BRUSH_SCALE (uniform) / VULKAN_BRUSH_TRANSLATE=x,y,z.
+    {
+        static const char* scaleEnv = std::getenv("VULKAN_BRUSH_SCALE");
+        static const char* translateEnv = std::getenv("VULKAN_BRUSH_TRANSLATE");
+        if (scaleEnv != nullptr) {
+            entry->scale = glm::vec3(std::max(1.0f, static_cast<float>(std::atof(scaleEnv))));
+        }
+        if (translateEnv != nullptr) {
+            float x = 0.0f, y = 0.0f, z = 0.0f;
+            if (std::sscanf(translateEnv, "%f,%f,%f", &x, &y, &z) == 3) {
+                entry->translate = glm::vec3(x, y, z);
+            }
+        }
+    }
+
     cachedSweepStart = entry->sweepMode ? entry->previousTranslate : entry->translate;
 
     // Bounding sphere: union of the current and (for sweep mode) start
