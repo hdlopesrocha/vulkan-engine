@@ -1242,7 +1242,10 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
 
             const int64_t desired = secondsToPts(v, v.st.clock);
             const int64_t halfFrame = std::max<int64_t>(1, frameTicks(v) / 2);
-            const bool stale = (v.materializedPts == INT64_MIN) ||
+            // forceSeek marks a loop wrap/seek: request it even when the
+            // materialized timestamp happens to be close to the new clock, so
+            // playback restarts immediately at the loop point.
+            const bool stale = v.forceSeek || (v.materializedPts == INT64_MIN) ||
                                std::llabs(desired - v.materializedPts) > halfFrame;
             if (stale && !v.hasPublished && !v.uploadInFlight) {
                 v.requestPts = desired;
