@@ -724,54 +724,59 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         }
     }
     
-    solidRenderer->init();
-    solidRenderer->destroyRenderTargets(app);
-    solidRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    solidRenderer->createPipelines(app);
+    const uint32_t initW = app->getWidth();
+    const uint32_t initH = app->getHeight();
+    if (!sdfRenderer) sdfRenderer = std::make_unique<SdfRenderer>();
 
-    if (videoRenderer) {
+    // Renderer setup is independent per subsystem once the device, the scene
+    // descriptor layout and the upload managers exist: target images, samplers
+    // and vkCreateGraphicsPipelines are thread-safe, and the shared resource /
+    // shader-module / single-time-submit paths are locked. Run the heavy
+    // pipeline creation concurrently; the renderers that consume these results
+    // (shadow, vegetation, water, brush, post) stay sequential.
+    auto futureSolid = std::async(std::launch::async, [&]() {
+        solidRenderer->init();
+        solidRenderer->destroyRenderTargets(app);
+        solidRenderer->createRenderTargets(app, initW, initH);
+        solidRenderer->createPipelines(app);
+    });
+    auto futureVideo = std::async(std::launch::async, [&]() {
+        if (!videoRenderer) return;
         videoRenderer->init(app);
         videoRenderer->destroyRenderTargets(app);
-        videoRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
+        videoRenderer->createRenderTargets(app, initW, initH);
         videoRenderer->createPipelines(app);
-    }
+    });
+    auto futureSky = std::async(std::launch::async, [&]() {
+        skyRenderer->init(app);
+        skyRenderer->destroyOffscreenTargets(app);
+        skyRenderer->createOffscreenTargets(app, initW, initH);
+    });
+    auto futureDebug = std::async(std::launch::async, [&]() {
+        if (debugCubeRenderer) debugCubeRenderer->init(app);
+        if (boundingBoxRenderer) boundingBoxRenderer->init(app);
+        if (debugSDFRenderer) debugSDFRenderer->init(app);
+        if (sdfRenderer) sdfRenderer->init(app);
+        // Own offscreen framebuffers for the debug SDF cubes and mesh bounding
+        // boxes so they run on their own async command buffers (composited by
+        // PostProcessRenderer.frag against the solid scene depth).
+        if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, initW, initH);
+        if (sdfRenderer) sdfRenderer->createRenderTargets(app, initW, initH);
+        if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, initW, initH);
+    });
+    futureSolid.get();
+    futureVideo.get();
+    futureSky.get();
+    futureDebug.get();
 
-    // Create pipelines for all renderers (solid renderer now has its render pass ready)
-    skyRenderer->init(app);
-    // Create offscreen sky targets (destroy old first to prevent handle leak)
-    skyRenderer->destroyOffscreenTargets(app);
-    skyRenderer->createOffscreenTargets(app, app->getWidth(), app->getHeight());
     shadowMapper->init(app);
     vegetationRenderer->init(app);
     // Own offscreen framebuffer for vegetation (decoupled from the solid pass so
     // it can be rendered on a parallel async command buffer).
     if (vegetationRenderer) {
         vegetationRenderer->destroyRenderTargets(app);
-        recreateVegetationTargets(app, app->getWidth(), app->getHeight());
+        recreateVegetationTargets(app, initW, initH);
     }
-
-    // Initialize debug cube renderer
-    if (debugCubeRenderer) {
-        debugCubeRenderer->init(app);
-    }
-    // Initialize bounding box renderer (reuses cube wireframe pipeline)
-    if (boundingBoxRenderer) {
-        boundingBoxRenderer->init(app);
-    }
-    if (debugSDFRenderer) {
-        debugSDFRenderer->init(app);
-    }
-    if (!sdfRenderer) sdfRenderer = std::make_unique<SdfRenderer>();
-    if (sdfRenderer) {
-        sdfRenderer->init(app);
-    }
-
-    // Own offscreen framebuffers for the debug SDF cubes and mesh bounding boxes so
-    // they can be rendered on their own parallel async command buffers (composited
-    // by PostProcessRenderer.frag against the solid scene depth).
-    if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    if (sdfRenderer) sdfRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
 
     // Create per-frame main uniform buffers (TRANSFER_DST for vkCmdCopyBuffer from staging)
     size_t dsCount = app->getMainDescriptorSetCount();

@@ -40,10 +40,19 @@ void ImpostorService::captureAll(float scale) {
     if (!vulkanApp)
         return;
 
-    capture.captureAll(vulkanApp,
-                       VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
-                       scale);
-    rewire();
+    // Async whole-array capture: one submit for all 60 views, completion
+    // published through the deferred-fence queue (completeCaptureType). Setup
+    // must not block on it — the vegetation renderer is rewired from the same
+    // fence callback once the arrays are actually sampleable.
+    VkFence fence = capture.captureAllAsync(vulkanApp,
+                                            VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                            VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                            scale);
+    if (fence != VK_NULL_HANDLE) {
+        // Deferred callbacks for one fence run in registration order, so this
+        // is after completeCaptureType() marked the types captured.
+        vulkanApp->deferDestroyUntilFence(fence, [this]() { rewire(); });
+    }
 }
 
 void ImpostorService::rewire() {

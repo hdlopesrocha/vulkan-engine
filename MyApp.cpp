@@ -795,6 +795,19 @@ public:
             settings.dropletRadius = std::max(0.05f, static_cast<float>(std::atof(env)));
         }
 
+        // VULKAN_SETUP_DIAG=1: print the wall time of each top-level setup step
+        // so the parallelisation work can be measured.
+        const bool setupDiag = std::getenv("VULKAN_SETUP_DIAG") != nullptr;
+        auto setupDiagLast = std::chrono::steady_clock::now();
+        auto setupStep = [&](const char* name) {
+            if (!setupDiag) return;
+            const auto now = std::chrono::steady_clock::now();
+            std::cout << "[setup-diag] " << name << ": "
+                      << std::chrono::duration<double, std::milli>(now - setupDiagLast).count()
+                      << " ms" << std::endl;
+            setupDiagLast = now;
+        };
+
         // Build the scene descriptor layouts/sets. Owned by the application (not by
         // the generic VulkanApp framework) so the engine core stays agnostic about
         // scene bindings. Must exist before SceneRenderer::init() writes the static
@@ -802,6 +815,7 @@ public:
         sceneDescriptorLayout = std::make_unique<SceneDescriptorLayout>();
         sceneDescriptorLayout->create(*this);
         playSetupAlert("setup-layout");
+        setupStep("scene descriptor layout");
 
         // Build the scene render queues from the parallel graphics-family queue
         // pool built by VulkanApp::createLogicalDevice. They alias graphicsQueue
@@ -938,10 +952,13 @@ public:
         // texture/material setup is complete.
         if (sceneRenderer && sceneRenderer->vegetationRenderer)
             sceneRenderer->vegetationRenderer->init(this);
+        setupStep("vegetation renderer init");
 
         setupVegetationTextures();
+        setupStep("vegetation textures");
         setupTextures();
         playSetupAlert("setup-textures");
+        setupStep("scene textures + materials");
 
         // H9: the water offscreen targets render at Settings::waterRenderScale.
         sceneRenderer->setWaterRenderScale(settings.waterRenderScale);
@@ -949,6 +966,7 @@ public:
         // Settings::vegetationRenderScale.
         sceneRenderer->setVegetationRenderScale(settings.vegetationRenderScale);
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
+        setupStep("scene renderer init (renderers, pipelines, descriptors)");
 
         // Bind the video texture array now that both the service (setupTextures)
         // and the video layer renderer exist.
@@ -961,6 +979,7 @@ public:
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
         playSetupAlert("setup-renderers");
+        setupStep("renderer post-init (video bind, impostor rewire)");
 
         textureViewer = std::make_shared<TextureViewer>();
         textureViewer->init(&textureArrayManager, &materials);

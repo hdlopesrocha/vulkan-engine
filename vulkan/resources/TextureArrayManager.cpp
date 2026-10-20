@@ -3,7 +3,11 @@
 
 #include "../core/VulkanApp.hpp"
 #include <algorithm>
+#include <array>
 #include <cstdio>
+#include <cstring>
+#include <future>
+#include <vector>
 #include <stdexcept>
 #include <backends/imgui_impl_vulkan.h>
 #include <cmath>
@@ -554,18 +558,140 @@ uint TextureArrayManager::load(VulkanApp* a, const char* albedoFile, const char*
 size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureTriple> &triples) {
 	if (!a) throw std::runtime_error("TextureArrayManager::loadTriples: app is null");
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::loadTriples: layerAmount == 0");
+
+	// Bring-up used to decode every triple's five maps on the main thread and
+	// submit one blocking command buffer per layer (26 submits for the scene
+	// palette). Decode a batch of layers in parallel into a staging slab, then
+	// upload the whole batch with ONE submit: setup wall time scales with the
+	// number of batches instead of layers, and stbi/resize/sRGB run on all
+	// cores. Layer indices/layout bookkeeping stay sequential (they are cheap).
+	constexpr size_t kBatchLayers = 4;
+	const size_t layerBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+	struct ImgDef { const char* path; bool srgb; unsigned char defaultVal[4]; };
+	auto imgDefs = [](const TextureTriple& t, ImgDef out[5]) {
+		out[0] = {t.albedo, true, {0, 0, 0, 255}};
+		out[1] = {t.normal, false, {128, 128, 255, 255}};
+		out[2] = {t.bump, false, {128, 128, 128, 255}};
+		out[3] = {t.roughness, false, {128, 128, 128, 255}};
+		out[4] = {t.ao, false, {255, 255, 255, 255}};
+	};
+	auto decodeMap = [&](const ImgDef& img, unsigned char* dst) {
+		if (!img.path) {
+			const size_t pixels = static_cast<size_t>(width) * height;
+			for (size_t p = 0; p < pixels; ++p) std::memcpy(dst + p * 4, img.defaultVal, 4);
+			return;
+		}
+		int texW = 0, texH = 0, texC = 0;
+		unsigned char* pixels = stbi_load(img.path, &texW, &texH, &texC, 4);
+		if (!pixels) throw std::runtime_error(std::string("failed to load texture: ") + img.path);
+		if (texW != static_cast<int>(width) || texH != static_cast<int>(height)) {
+			unsigned char* resized = resizeAreaAverage(pixels, texW, texH, static_cast<int>(width), static_cast<int>(height));
+			std::memcpy(dst, resized, layerBytes);
+			delete[] resized;
+		} else {
+			std::memcpy(dst, pixels, layerBytes);
+		}
+		stbi_image_free(pixels);
+		if (img.srgb) convertSRGB8ToLinearInPlace(dst, static_cast<size_t>(width) * height);
+	};
+
 	size_t loaded = 0;
-	for (const auto &t : triples) {
-		if (currentLayer >= layerAmount) {
-			std::cerr << "[TextureArrayManager] Reached texture array capacity (" << layerAmount << " layers)" << std::endl;
-			break;
+	size_t next = 0;
+	while (next < triples.size() && currentLayer < layerAmount) {
+		const size_t batch = std::min(kBatchLayers, triples.size() - next);
+		Buffer& staging = ensureStagingBuffer(a, layerBytes * 5 * batch);
+
+		struct Decoded { size_t index; size_t slot; bool ok; std::array<float, 3> albedoAvg; };
+		std::vector<std::future<Decoded>> futures;
+		futures.reserve(batch);
+		for (size_t i = 0; i < batch; ++i) {
+			const size_t slot = i;
+			futures.push_back(std::async(std::launch::async, [&, slot]() -> Decoded {
+				Decoded d;
+				d.index = next + slot;
+				d.slot = slot;
+				d.ok = false;
+				const TextureTriple& t = triples[d.index];
+				ImgDef defs[5];
+				imgDefs(t, defs);
+				unsigned char* base = static_cast<unsigned char*>(staging.mappedData) +
+					layerBytes * 5 * slot;
+				try {
+					for (int m = 0; m < 5; ++m) decodeMap(defs[m], base + layerBytes * static_cast<size_t>(m));
+					d.albedoAvg = meanLinearRGB(base, static_cast<size_t>(width) * height);
+					d.ok = true;
+				} catch (const std::exception& e) {
+					std::cerr << "[TextureArrayManager] Failed to load "
+					          << (t.albedo ? t.albedo : "(null)") << ": " << e.what() << std::endl;
+				}
+				return d;
+			}));
 		}
-		try {
-			load(a, t.albedo, t.normal, t.bump, t.roughness, t.ao);
+		std::vector<Decoded> decoded;
+		decoded.reserve(batch);
+		for (auto& f : futures) decoded.push_back(f.get());
+
+		// Assign layer indices in submission order and drop failed decodes.
+		std::vector<const Decoded*> ready;
+		ready.reserve(batch);
+		for (const Decoded& d : decoded) {
+			if (!d.ok) continue;
+			if (currentLayer >= layerAmount) break;
+			ready.push_back(&d);
+		}
+		if (ready.empty()) {
+			next += batch;
+			continue;
+		}
+
+		// One submit for the whole batch: five copies + mip chains per layer.
+		a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+			for (size_t n = 0; n < ready.size(); ++n) {
+				const uint32_t layer = currentLayer + static_cast<uint32_t>(n);
+				const size_t slot = ready[n]->slot;
+				TextureImage* images[5] = {&albedoArray, &normalArray, &bumpArray, &roughnessArray, &aoArray};
+				for (int m = 0; m < 5; ++m) {
+					a->recordTransitionImageLayoutLayer(cmd, images[m]->image, VK_FORMAT_R8G8B8A8_UNORM,
+						VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						images[m]->mipLevels, layer, 1);
+				}
+				for (int m = 0; m < 5; ++m) {
+					VkBufferImageCopy region{};
+					region.bufferOffset = static_cast<VkDeviceSize>(layerBytes) *
+						(static_cast<VkDeviceSize>(slot) * 5 + static_cast<VkDeviceSize>(m));
+					region.bufferRowLength = 0;
+					region.bufferImageHeight = 0;
+					region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+					region.imageSubresource.mipLevel = 0;
+					region.imageSubresource.baseArrayLayer = layer;
+					region.imageSubresource.layerCount = 1;
+					region.imageOffset = {0, 0, 0};
+					region.imageExtent = {width, height, 1};
+					vkCmdCopyBufferToImage(cmd, staging.buffer, images[m]->image,
+						VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+				}
+				for (int m = 0; m < 5; ++m) {
+					if (images[m]->mipLevels > 1) {
+						a->recordGenerateMipmaps(cmd, images[m]->image, VK_FORMAT_R8G8B8A8_UNORM,
+							static_cast<int32_t>(width), static_cast<int32_t>(height),
+							images[m]->mipLevels, 1, layer);
+					} else {
+						a->recordTransitionImageLayoutLayer(cmd, images[m]->image, VK_FORMAT_R8G8B8A8_UNORM,
+							VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+							VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layer, 1);
+					}
+				}
+			}
+		});
+
+		for (size_t n = 0; n < ready.size(); ++n) {
+			const uint32_t layer = currentLayer++;
+			for (int m = 0; m < 5; ++m) setLayerLayout(m, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			if (layer < albedoAvg.size()) albedoAvg[layer] = ready[n]->albedoAvg;
+			setLayerInitialized(layer, true);
 			++loaded;
-		} catch (const std::exception &e) {
-			std::cerr << "[TextureArrayManager] Failed to load " << (t.albedo ? t.albedo : "(null)") << ": " << e.what() << std::endl;
 		}
+		next += batch;
 	}
 	return loaded;
 }
