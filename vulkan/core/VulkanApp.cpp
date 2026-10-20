@@ -1021,6 +1021,10 @@ void VulkanApp::createSingleTimeCmdRing() {
 }
 
 void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn) {
+    // Ring slots are shared; serialize the whole record+submit so parallel
+    // setup threads can never pick the same slot and reset a command buffer
+    // that another thread is still recording.
+    std::lock_guard<std::mutex> singleTimeLock(m_singleTimeMutex);
     uint32_t idx = singleTimeCmdNext.fetch_add(1) % SINGLE_TIME_CMD_RING_SIZE;
     VkCommandBuffer cmd = singleTimeCmdBuffers[idx];
     VkFence fence = singleTimeCmdFences[idx];
@@ -1930,17 +1934,11 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
         SubmissionTracker::record("async-q");
-        VkResult submitRes = VK_SUCCESS;
-        {
-            // Serialize with every other submission/present on this queue. The
-            // main frame submit, runSingleTimeCommands and the ring-fence signal
-            // all take this mutex; this path previously did not, so a worker
-            // upload could race the frame submit (VVL THREADING ERROR).
-            std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(targetQueue));
-            submitRes = vkQueueSubmit2(targetQueue, 1, &submitInfo, fence);
-        }
+        // The per-queue submit mutex is already held by the enclosing block
+        // (opened before the pending-entry bookkeeping), so no second lock here.
+        VkResult submitRes = vkQueueSubmit2(targetQueue, 1, &submitInfo, fence);
         if (submitRes == VK_SUCCESS) {
-            // Takes the queue mutex itself; must run after the lock is released.
+            // Also under the same queue lock; signalRingSlotFence must not lock.
             signalRingSlotFence(commandBuffer, targetQueue);
         }
         if (submitRes != VK_SUCCESS) {
@@ -2366,11 +2364,9 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         VkFence slotFence = asyncCmdFenceRing[ringSlot];
         VkSubmitInfo2 emptySubmit{};
         emptySubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-        VkResult sr = VK_SUCCESS;
-        {
-            std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(queue));
-            sr = vkQueueSubmit2(queue, 1, &emptySubmit, slotFence);
-        }
+        // Callers (submitCommandBufferAsyncToQueue / submitCommandBufferAndWait)
+        // already hold this queue's submit mutex; do not lock again.
+        VkResult sr = vkQueueSubmit2(queue, 1, &emptySubmit, slotFence);
         if (sr != VK_SUCCESS && sr != VK_ERROR_DEVICE_LOST) {
             std::cerr << "[VulkanApp] WARNING: signalRingSlotFence failed for slot "
                       << ringSlot << " (VkResult=" << sr << ")\n";
@@ -3563,12 +3559,25 @@ VkShaderModule VulkanApp::createShaderModule(const std::vector<char>& code) {
 }
 
 VkShaderModule VulkanApp::getOrCreateShaderModule(const std::string& path) {
-    auto it = m_shaderModuleCache.find(path);
-    if (it != m_shaderModuleCache.end())
-        return it->second;
+    {
+        std::lock_guard<std::mutex> lk(m_shaderModuleMutex);
+        auto it = m_shaderModuleCache.find(path);
+        if (it != m_shaderModuleCache.end())
+            return it->second;
+    }
     auto code = FileReader::readFile(path);
     VkShaderModule module = createShaderModule(code);
-    m_shaderModuleCache[path] = module;
+    {
+        std::lock_guard<std::mutex> lk(m_shaderModuleMutex);
+        auto it = m_shaderModuleCache.find(path);
+        if (it != m_shaderModuleCache.end()) {
+            // Lost the race: another setup thread cached this module. Keep the
+            // cached one and destroy our duplicate.
+            if (module != VK_NULL_HANDLE) vkDestroyShaderModule(device, module, nullptr);
+            return it->second;
+        }
+        m_shaderModuleCache[path] = module;
+    }
     return module;
 }
 

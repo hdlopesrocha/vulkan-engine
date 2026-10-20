@@ -847,12 +847,19 @@ public:
         VkCommandBuffer singleTimeCmdBuffers[SINGLE_TIME_CMD_RING_SIZE]{};
         VkFence singleTimeCmdFences[SINGLE_TIME_CMD_RING_SIZE]{};
         std::atomic<uint32_t> singleTimeCmdNext{0};
+        // Serializes whole runSingleTimeCommands calls: the ring slot selection
+        // is atomic, but begin/record/end on one slot must not overlap another
+        // thread that wrapped onto the same slot (parallel renderer setup).
+        std::mutex m_singleTimeMutex;
         void createSingleTimeCmdRing();
 
         // Cache: shader file path → VkShaderModule, created on first use and kept for app lifetime.
         // Destruction is handled by VulkanResourceManager at shutdown (createShaderModule registers
         // each module with resources).
         std::unordered_map<std::string, VkShaderModule> m_shaderModuleCache;
+        // Renderers pre-create pipelines from parallel setup threads, so the
+        // module cache needs its own lock (the map itself is not thread-safe).
+        std::mutex m_shaderModuleMutex;
 
         // Single mutex guarding all submission/tracking state below.
         // Replaces per-object mutexes to eliminate lock-ordering deadlocks.
