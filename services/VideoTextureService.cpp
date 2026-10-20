@@ -456,9 +456,11 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        // Wrap: video materials project UVs from world position (triplanar /
+        // SDF-spherical), so coordinates outside [0,1] must tile the clip.
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.maxLod = static_cast<float>(videoMips);
         if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &videoSampler) != VK_SUCCESS) {
             warn("failed to create the video array sampler");
