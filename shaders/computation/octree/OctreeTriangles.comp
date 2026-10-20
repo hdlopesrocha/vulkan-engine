@@ -686,38 +686,59 @@ void emitSegment(EdgeSpan edge, float start, float end, bool sign0, bool sign1) 
     bool s0 = (d0 == INF) ? sign0 : (d0 < 0.0);
     bool s1 = (d1 == INF) ? sign1 : (d1 < 0.0);
     if (s0 == s1) {
+        // The owner's interpolation can land exactly on a cell corner/face
+        // where the field is zero. Zero is classified as positive, so both
+        // endpoint signs collapse and the whole segment would be dropped — the
+        // missing surface along the x/y/z axis planes (and any boundary where
+        // a contour vertex sits exactly on a cell corner). The producing cell
+        // only emits edges whose own corners differ in sign, so those signs
+        // are authoritative for existence; keep the owner's ordering/winding
+        // whenever it does resolve the crossing.
+        s0 = sign0;
+        s1 = sign1;
+    }
+    if (s0 == s1) {
         return;
     }
 
+    // Collect the distinct surface quadrants. A coarse ancestor can appear in
+    // two OPPOSITE quadrants of the ring (common on the world-axis cell
+    // boundaries, where the sample offsets stay inside one large cell). The old
+    // code only removed adjacent duplicates, then aborted the whole segment
+    // when it found any remaining pair — exactly the missing triangles along
+    // x/y/z = 0. Dedup against every already-collected quadrant instead; the
+    // remaining 3/4 corners still form the surface polygon, and the order is
+    // preserved for triangulation.
     Cell plist[4];
+    vec3 ppos[4];
     int pcount = 0;
     for (int q = 0; q < 4; ++q) {
         if (!isSurfaceCell(cells[q])) {
             continue;
         }
-        bool duplicate = (pcount > 0)
-            && (plist[pcount - 1].id == cells[q].id
-                || samePosition(cellPosCached(plist[pcount - 1]), cellPosCached(cells[q]), edge.eps));
+        vec3 pq = cellPosCached(cells[q]);
+        bool duplicate = false;
+        for (int k = 0; k < pcount; ++k) {
+            if (plist[k].id == cells[q].id || samePosition(ppos[k], pq, edge.eps)) {
+                duplicate = true;
+                break;
+            }
+        }
         if (!duplicate && pcount < 4) {
-            plist[pcount++] = cells[q];
+            plist[pcount] = cells[q];
+            ppos[pcount] = pq;
+            ++pcount;
         }
     }
 
     if (pcount > 1) {
-        const Cell first = plist[0];
-        const Cell last = plist[pcount - 1];
-        if (first.id == last.id || samePosition(cellPosCached(first), cellPosCached(last), edge.eps)) {
+        if (plist[0].id == plist[pcount - 1].id
+            || samePosition(ppos[0], ppos[pcount - 1], edge.eps)) {
             --pcount;
         }
     }
-
-    for (int i = 0; i < pcount; ++i) {
-        for (int j = i + 1; j < pcount; ++j) {
-            if (plist[i].id == plist[j].id
-                || samePosition(cellPosCached(plist[i]), cellPosCached(plist[j]), edge.eps)) {
-                return;
-            }
-        }
+    if (pcount < 3) {
+        return;
     }
 
     // Rotate the polygon so the shared OWNER leads. Both chunks on either side

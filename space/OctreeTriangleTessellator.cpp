@@ -355,6 +355,18 @@ struct OctreeTriangleTessellator::Walk {
         bool s0 = (d0 == INFINITY) ? sign0 : (d0 < 0.0f);
         bool s1 = (d1 == INFINITY) ? sign1 : (d1 < 0.0f);
         if(s0 == s1) {
+            // The owner's interpolation can land exactly on a cell corner/face
+            // where the field is zero. Zero is classified as positive, so both
+            // endpoint signs collapse and the whole segment was dropped — the
+            // missing surface along the x/y/z axis planes (and any boundary
+            // where a contour vertex sits exactly on a cell corner). The
+            // producing cell only emits edges whose own corners differ in sign,
+            // so those signs are authoritative for existence; keep the owner's
+            // ordering/winding whenever it does resolve the crossing.
+            s0 = sign0;
+            s1 = sign1;
+        }
+        if(s0 == s1) {
             return;
         }
 
@@ -362,35 +374,46 @@ struct OctreeTriangleTessellator::Walk {
         // (deduped), so it never exceeds 4 elements — avoids a per-segment
         // heap allocation. Non-surface quadrants are skipped: their nodes
         // have no usable vertex and their cells never tessellate.
+        // Collect the distinct surface quadrants. A coarse ancestor can appear
+        // in two OPPOSITE quadrants of the ring (common on the world-axis cell
+        // boundaries, where the sample offsets stay inside one large cell). The
+        // old code only removed adjacent duplicates, then aborted the whole
+        // segment when it found any remaining pair — exactly the missing
+        // triangles along x/y/z = 0. Dedup against every already-collected
+        // quadrant instead; the remaining 3/4 corners still form the surface
+        // polygon, and the order is preserved for triangulation.
         EdgeCell plist[4];
+        Vertex pverts[4];
         int pcount = 0;
         for(int q = 0; q < 4; ++q) {
             if(!cells[q].isSurface()) {
                 continue;
             }
-            bool duplicate = (pcount > 0)
-                && (plist[pcount - 1].node == cells[q].node
-                    || samePosition(nodeVertex(plist[pcount - 1].node, plist[pcount - 1].cube).position, nodeVertex(cells[q].node, cells[q].cube).position, edge.eps));
+            Vertex vq = nodeVertex(cells[q].node, cells[q].cube);
+            bool duplicate = false;
+            for(int k = 0; k < pcount; ++k) {
+                if(plist[k].node == cells[q].node
+                    || samePosition(pverts[k].position, vq.position, edge.eps)) {
+                    duplicate = true;
+                    break;
+                }
+            }
             if(!duplicate && pcount < 4) {
-                plist[pcount++] = cells[q];
+                plist[pcount] = cells[q];
+                pverts[pcount] = vq;
+                ++pcount;
             }
         }
 
         if(pcount > 1) {
             const EdgeCell &first = plist[0];
             const EdgeCell &last = plist[pcount - 1];
-            if(first.node == last.node || samePosition(nodeVertex(first.node, first.cube).position, nodeVertex(last.node, last.cube).position, edge.eps)) {
+            if(first.node == last.node || samePosition(pverts[0].position, pverts[pcount - 1].position, edge.eps)) {
                 --pcount;
             }
         }
-
-        for(int i = 0; i < pcount; ++i) {
-            for(int j = i + 1; j < pcount; ++j) {
-                if(plist[i].node == plist[j].node
-                    || samePosition(nodeVertex(plist[i].node, plist[i].cube).position, nodeVertex(plist[j].node, plist[j].cube).position, edge.eps)) {
-                    return;
-                }
-            }
+        if(pcount < 3) {
+            return;
         }
 
         // Rotate the polygon so the OWNER (the finest shared quadrant cell) is
