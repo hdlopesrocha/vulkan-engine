@@ -73,9 +73,9 @@ void VideoTextureWidget::render() {
                     if (slot >= 0) {
                         // A clip loaded interactively starts playing (and loops)
                         // immediately; the row is selected so the preview shows it.
-                        const auto loaded = videos->states();
-                        for (size_t i = 0; i < loaded.size(); ++i) {
-                            if (loaded[i].slot == static_cast<uint32_t>(slot)) {
+                        const auto loadedStates = videos->states();
+                        for (size_t i = 0; i < loadedStates.size(); ++i) {
+                            if (loadedStates[i].slot == static_cast<uint32_t>(slot)) {
                                 videos->setLooping(i, true);
                                 videos->setPlaying(i, true);
                                 selected = static_cast<int>(i);
