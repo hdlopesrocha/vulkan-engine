@@ -310,14 +310,20 @@ static PoolSpanBinding makePoolSpanBinding(const OctreeTopologyTarget& target,
     const VkDeviceSize vBytes = VkDeviceSize(target.vertexCapacity) * sizeof(Vertex);
     const VkDeviceSize vAbsolute = VkDeviceSize(target.baseVertex) * sizeof(Vertex);
     b.vertexOffset = vAbsolute & ~(align - 1);
-    b.vertexRange = vBytes;
     b.relVertexBase = static_cast<uint32_t>((vAbsolute - b.vertexOffset) / sizeof(Vertex));
+    // The descriptor range must cover the alignment padding as well as the span:
+    // the shader addresses it through relVertexBase/relIndexBase, so the last
+    // rel elements live just past `capacity * stride`. Without the padding the
+    // tail of the span falls outside the bound range and is never written
+    // (stale pool entries -> stretched triangles), while the host-side bridge
+    // mirror stays correct — invisible to a bridge-only self-check.
+    b.vertexRange = VkDeviceSize(b.relVertexBase) * sizeof(Vertex) + vBytes;
 
     const VkDeviceSize iBytes = VkDeviceSize(target.indexCapacity) * sizeof(uint32_t);
     const VkDeviceSize iAbsolute = VkDeviceSize(target.firstIndex) * sizeof(uint32_t);
     b.indexOffset = iAbsolute & ~(align - 1);
-    b.indexRange = iBytes;
     b.relIndexBase = static_cast<uint32_t>((iAbsolute - b.indexOffset) / sizeof(uint32_t));
+    b.indexRange = VkDeviceSize(b.relIndexBase) * sizeof(uint32_t) + iBytes;
     return b;
 }
 
@@ -729,6 +735,62 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
     if (rawCount > 0)
         std::memcpy(res.bridge.indices.data(), bBridgeIdx.mappedData,
                     size_t(rawCount) * sizeof(uint32_t));
+
+    // Optional verification (VULKAN_POOL_SELFCHECK=1): read the packed pool span
+    // back and compare it with the bridge. The topology self-check compares the
+    // bridge (what the shader intended) with the CPU walker; this check proves
+    // the device pool the renderer actually draws contains the same bytes.
+    {
+        static const bool poolCheck = std::getenv("VULKAN_POOL_SELFCHECK") != nullptr;
+        static std::atomic<int> poolChecks{0};
+        if (poolCheck && unique > 0 && rawCount > 0 && poolChecks.fetch_add(1) < 16) {
+            const VkDeviceSize vBytes = VkDeviceSize(unique) * sizeof(Vertex);
+            const VkDeviceSize iBytes = VkDeviceSize(rawCount) * sizeof(uint32_t);
+            Buffer stage = app->createBuffer(vBytes + iBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            if (stage.buffer != VK_NULL_HANDLE) {
+                app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+                    VkBufferCopy vc{};
+                    vc.srcOffset = VkDeviceSize(target.baseVertex) * sizeof(Vertex);
+                    vc.dstOffset = 0;
+                    vc.size = vBytes;
+                    vkCmdCopyBuffer(cmd, target.vertexBuffer, stage.buffer, 1, &vc);
+                    VkBufferCopy ic{};
+                    ic.srcOffset = VkDeviceSize(target.firstIndex) * sizeof(uint32_t);
+                    ic.dstOffset = vBytes;
+                    ic.size = iBytes;
+                    vkCmdCopyBuffer(cmd, target.indexBuffer, stage.buffer, 1, &ic);
+                });
+                const uint8_t* host = static_cast<const uint8_t*>(stage.mappedData);
+                size_t vBad = 0;
+                size_t iBad = 0;
+                for (size_t v = 0; v < unique; ++v) {
+                    if (std::memcmp(host + v * sizeof(Vertex), &res.bridge.vertices[v], sizeof(Vertex)) != 0) ++vBad;
+                }
+                const uint32_t* hostIdx = reinterpret_cast<const uint32_t*>(host + vBytes);
+                for (size_t i = 0; i < rawCount; ++i) {
+                    if (hostIdx[i] != res.bridge.indices[i]) {
+                        if (iBad < 4) {
+                            std::cerr << "[pool-check]   idx[" << i << "] pool=" << hostIdx[i]
+                                      << " bridge=" << res.bridge.indices[i] << "\n";
+                        }
+                        ++iBad;
+                    }
+                }
+                if (vBad || iBad) {
+                    std::cerr << "[pool-check] MISMATCH verts=" << unique << " bad=" << vBad
+                              << " idx=" << rawCount << " bad=" << iBad
+                              << " baseVertex=" << target.baseVertex
+                              << " vertexBase=" << poolSpan.relVertexBase
+                              << " firstIndex=" << target.firstIndex
+                              << " indexBase=" << poolSpan.relIndexBase << "\n";
+                } else {
+                    std::cerr << "[pool-check] ok verts=" << unique << " idx=" << rawCount << "\n";
+                }
+                app->destroyBuffer(stage);
+            }
+        }
+    }
 
     countStats(statCalls, statMs, statMsLast, statCells, statNodes, statTriangles,
                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
