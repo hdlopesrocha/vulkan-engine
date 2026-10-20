@@ -236,7 +236,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
     std::string backendPreference = "auto";
     bool debugLog = false;
     bool benchPending = false;
-    int autoplayCount = 4;  // clips that start playing; -1 = all, 0 = none
+    int autoplayCount = -1;  // clips that start playing; -1 = all, 0 = none
     double diagTimer = 0.0;
 
     ~Impl() {
@@ -1376,11 +1376,10 @@ bool VideoTextureService::initialize(VulkanApp* app, TextureArrayManager* arrays
     impl.debugLog = envFlag("VULKAN_VIDEO_DEBUG");
     impl.benchPending = envFlag("VULKAN_VIDEO_BENCH");
     {
-        // VULKAN_VIDEO_AUTOPLAY: number of clips that start playing (default 4
-        // keeps the decode load bounded with a large library), "all" or a
-        // negative number plays everything, 0 starts them paused. Paused clips
-        // still materialize the frame at their current clock (the first frame),
-        // so every layer shows its material immediately.
+        // VULKAN_VIDEO_AUTOPLAY: number of clips that start playing (default:
+        // all clips). "all" or a negative number plays everything, 0 starts
+        // them paused. Paused clips still materialize the frame at their current
+        // clock (the first frame), so every layer shows its material.
         const std::string autoplay = envString("VULKAN_VIDEO_AUTOPLAY");
         if (!autoplay.empty()) {
             if (autoplay == "all" || autoplay == "ALL") {

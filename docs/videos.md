@@ -60,7 +60,7 @@ Environment switches:
 |---|---|
 | `VULKAN_NO_VIDEO=1` | do not create the video service/array |
 | `VULKAN_VIDEO_SLOTS=<n>` | video array capacity (default 8, max 32) |
-| `VULKAN_VIDEO_AUTOPLAY=<n\|all>` | clips that start playing (default 4); paused clips still materialize the frame at their clock |
+| `VULKAN_VIDEO_AUTOPLAY=<n\|all>` | clips that start playing (default all); paused clips still materialize the frame at their clock |
 | `VULKAN_VIDEO_DEBUG=1` | diagnostics every 5 s |
 | `VULKAN_VIDEO_BENCH=1` | decode/seek benchmark at startup |
 | `VULKAN_VIDEO_BACKEND=auto\|vulkan\|vaapi\|software` | force a decode backend |

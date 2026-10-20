@@ -70,7 +70,20 @@ void VideoTextureWidget::render() {
                 ImGui::BeginDisabled(loaded || count >= capacity);
                 if (ImGui::SmallButton("Load")) {
                     const int slot = videos->loadVideo(clip.path, clip.name);
-                    if (slot >= 0) std::printf("[VideoTextureWidget] loaded %s into slot %d\n", clip.name.c_str(), slot);
+                    if (slot >= 0) {
+                        // A clip loaded interactively starts playing (and loops)
+                        // immediately; the row is selected so the preview shows it.
+                        const auto loaded = videos->states();
+                        for (size_t i = 0; i < loaded.size(); ++i) {
+                            if (loaded[i].slot == static_cast<uint32_t>(slot)) {
+                                videos->setLooping(i, true);
+                                videos->setPlaying(i, true);
+                                selected = static_cast<int>(i);
+                                break;
+                            }
+                        }
+                        std::printf("[VideoTextureWidget] loaded %s into slot %d\n", clip.name.c_str(), slot);
+                    }
                 }
                 ImGui::EndDisabled();
                 ImGui::PopID();
