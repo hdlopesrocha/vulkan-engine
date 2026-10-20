@@ -507,11 +507,20 @@ void VulkanApp::cleanup() {
                 si.sType                   = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
                 si.waitSemaphoreInfoCount  = (uint32_t)drainWaits.size();
                 si.pWaitSemaphoreInfos     = drainWaits.data();
-                if (vkQueueSubmit2(graphicsQueue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
+                VkResult drainRes = VK_SUCCESS;
+                {
+                    std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(graphicsQueue));
+                    drainRes = vkQueueSubmit2(graphicsQueue, 1, &si, VK_NULL_HANDLE);
+                }
+                if (drainRes != VK_SUCCESS) {
                     std::cerr << "[VulkanApp] cleanup: drain submit on leftover extra semaphores failed; skipping destroys (degraded shutdown)" << std::endl;
                     drainOk = false;
                 } else {
-                    VkResult drainIdleRes = vkQueueWaitIdle(graphicsQueue);
+                    VkResult drainIdleRes = VK_SUCCESS;
+                    {
+                        std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(graphicsQueue));
+                        drainIdleRes = vkQueueWaitIdle(graphicsQueue);
+                    }
                     if (drainIdleRes != VK_SUCCESS) {
                         std::cerr << "[VulkanApp] cleanup: vkQueueWaitIdle (drain) failed: " << drainIdleRes << std::endl;
                     }
@@ -1199,6 +1208,7 @@ VkResult VulkanApp::waitFence(VkDevice device, VkFence fence, uint64_t timeoutNs
 // `runSingleTimeCommands` behavior and is usually sufficient for
 // synchronization, avoiding the cost of `vkDeviceWaitIdle`.
 VkResult VulkanApp::queueWaitIdle() {
+    std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(graphicsQueue));
     return vkQueueWaitIdle(graphicsQueue);
 }
 
@@ -1920,8 +1930,17 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
         SubmissionTracker::record("async-q");
-        VkResult submitRes = vkQueueSubmit2(targetQueue, 1, &submitInfo, fence);
+        VkResult submitRes = VK_SUCCESS;
+        {
+            // Serialize with every other submission/present on this queue. The
+            // main frame submit, runSingleTimeCommands and the ring-fence signal
+            // all take this mutex; this path previously did not, so a worker
+            // upload could race the frame submit (VVL THREADING ERROR).
+            std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(targetQueue));
+            submitRes = vkQueueSubmit2(targetQueue, 1, &submitInfo, fence);
+        }
         if (submitRes == VK_SUCCESS) {
+            // Takes the queue mutex itself; must run after the lock is released.
             signalRingSlotFence(commandBuffer, targetQueue);
         }
         if (submitRes != VK_SUCCESS) {
@@ -2034,7 +2053,11 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
         SubmissionTracker::record("sync-2");
-        VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
+        VkResult submitRes = VK_SUCCESS;
+        {
+            std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(graphicsQueue));
+            submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
+        }
         if (submitRes == VK_SUCCESS) {
             // If this command buffer belongs to the async ring (it was
             // obtained via allocatePrimaryCommandBuffer), also signal the
@@ -2043,6 +2066,8 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
             // this slot deadlocks in vkWaitForFences(UINT64_MAX).
             // The async submit paths (submitCommandBufferAsync/ToQueue)
             // already do this; this synchronous submit path did not.
+            // signalRingSlotFence takes the queue mutex itself, so this runs
+            // after the submit's lock is released.
             signalRingSlotFence(commandBuffer, graphicsQueue);
         }
         if (submitRes != VK_SUCCESS) {
@@ -2341,7 +2366,11 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         VkFence slotFence = asyncCmdFenceRing[ringSlot];
         VkSubmitInfo2 emptySubmit{};
         emptySubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-        VkResult sr = vkQueueSubmit2(queue, 1, &emptySubmit, slotFence);
+        VkResult sr = VK_SUCCESS;
+        {
+            std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(queue));
+            sr = vkQueueSubmit2(queue, 1, &emptySubmit, slotFence);
+        }
         if (sr != VK_SUCCESS && sr != VK_ERROR_DEVICE_LOST) {
             std::cerr << "[VulkanApp] WARNING: signalRingSlotFence failed for slot "
                       << ringSlot << " (VkResult=" << sr << ")\n";
@@ -4619,7 +4648,7 @@ void VulkanApp::drawFrame() {
     presentInfo.pImageIndices = &imageIndex;
 
     {
-        std::lock_guard<std::mutex> lock(getQueueSubmitMutex(graphicsQueue));
+        std::lock_guard<std::mutex> lock(getQueueSubmitMutex(presentQueue));
         r = vkQueuePresentKHR(presentQueue, &presentInfo);
     }
     // Record a (zero-duration) timeline segment for the present queue so the
