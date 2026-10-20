@@ -4886,11 +4886,15 @@ void MyApp::undoBrushLayer(Layer layer, bool group) {
 
     size_t undoCount = 1;
     if (group) {
-        const double newest = history.events.back().timestamp;
+        // Chain consecutive events whose gap is below 1 s, so an entire rapid
+        // stroke is undone (not just the last second of it). A pause of 1 s or
+        // more starts a new group.
+        double newer = history.events.back().timestamp;
         while (undoCount < history.events.size()) {
-            const double previous = history.events[history.events.size() - 1 - undoCount].timestamp;
-            if (newest - previous >= 1.0) break;
+            const double older = history.events[history.events.size() - 1 - undoCount].timestamp;
+            if (newer - older >= 1.0) break;
             ++undoCount;
+            newer = older;
         }
     }
 
