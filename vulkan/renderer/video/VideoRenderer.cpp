@@ -107,16 +107,20 @@ void VideoRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
 bool VideoRenderer::createVideoDescriptorSet(VulkanApp* app) {
     if (!app || videoSet != VK_NULL_HANDLE) return videoSet != VK_NULL_HANDLE;
 
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
     // set (1) is written while the layer is idle (init / array reload), not
     // every frame, so no update-after-bind feature is required.
     if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr,
@@ -128,7 +132,7 @@ bool VideoRenderer::createVideoDescriptorSet(VulkanApp* app) {
 
     VkDescriptorPoolSize size{};
     size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    size.descriptorCount = 1;
+    size.descriptorCount = 2;
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.maxSets = 1;
@@ -185,7 +189,6 @@ bool VideoRenderer::createVideoDescriptorSet(VulkanApp* app) {
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        VkSampler dummySampler = VK_NULL_HANDLE;
         if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &dummySampler) != VK_SUCCESS) return false;
         app->resources.addSampler(dummySampler, "VideoRenderer: dummy sampler");
         app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
@@ -200,27 +203,69 @@ bool VideoRenderer::createVideoDescriptorSet(VulkanApp* app) {
                                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
         });
         dummyLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        writeVideoDescriptor(app, dummyVideo.view, dummySampler);
+
+        // Neutral derived dummy: flat normal, mid bump/roughness.
+        VkImageCreateInfo derivedInfo = imageInfo;
+        derivedInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        app->createImageWithVma(derivedInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, dummyDerived.image,
+                                dummyDerived.allocation, memory, "VideoRenderer: dummy derived layer");
+        if (dummyDerived.image == VK_NULL_HANDLE) return false;
+        VkImageViewCreateInfo derivedViewInfo = viewInfo;
+        derivedViewInfo.image = dummyDerived.image;
+        if (vkCreateImageView(app->getDevice(), &derivedViewInfo, nullptr, &dummyDerived.view) != VK_SUCCESS) return false;
+        app->resources.addImageView(dummyDerived.view, "VideoRenderer: dummy derived view");
+        app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+            app->recordTransitionImageLayoutLayer(cmd, dummyDerived.image, VK_FORMAT_R8G8B8A8_UNORM,
+                                                  VK_IMAGE_LAYOUT_UNDEFINED,
+                                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 0, 1);
+            VkClearColorValue neutral{};
+            neutral.float32[0] = 0.5f;
+            neutral.float32[1] = 0.5f;
+            neutral.float32[2] = 0.5f;
+            neutral.float32[3] = 0.5f;
+            VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(cmd, dummyDerived.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &neutral, 1, &range);
+            app->recordTransitionImageLayoutLayer(cmd, dummyDerived.image, VK_FORMAT_R8G8B8A8_UNORM,
+                                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+        });
+        writeVideoDescriptor(app, dummyVideo.view, dummySampler, dummyDerived.view, dummySampler);
     }
     return true;
 }
 
-void VideoRenderer::writeVideoDescriptor(VulkanApp* app, VkImageView view, VkSampler sampler) {
-    if (!app || videoSet == VK_NULL_HANDLE || view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-    VkDescriptorImageInfo info{};
-    info.sampler = sampler;
-    info.imageView = view;
-    info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = videoSet;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &info;
-    vkUpdateDescriptorSets(app->getDevice(), 1, &write, 0, nullptr);
-    boundVideoView = view;
-    boundVideoSampler = sampler;
+void VideoRenderer::writeVideoDescriptor(VulkanApp* app, VkImageView albedoView, VkSampler albedoSampler,
+                                        VkImageView derivedView, VkSampler derivedSampler) {
+    if (!app || videoSet == VK_NULL_HANDLE || albedoView == VK_NULL_HANDLE || albedoSampler == VK_NULL_HANDLE ||
+        derivedView == VK_NULL_HANDLE || derivedSampler == VK_NULL_HANDLE) {
+        return;
+    }
+    VkDescriptorImageInfo albedoInfo{};
+    albedoInfo.sampler = albedoSampler;
+    albedoInfo.imageView = albedoView;
+    albedoInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo derivedInfo{};
+    derivedInfo.sampler = derivedSampler;
+    derivedInfo.imageView = derivedView;
+    derivedInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = videoSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &albedoInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = videoSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &derivedInfo;
+    vkUpdateDescriptorSets(app->getDevice(), 2, writes, 0, nullptr);
+    boundVideoView = albedoView;
+    boundVideoSampler = albedoSampler;
+    boundDerivedView = derivedView;
+    boundDerivedSampler = derivedSampler;
 }
 
 void VideoRenderer::setVideoTexture(VulkanApp* app, VideoTextureService* service) {
@@ -228,9 +273,17 @@ void VideoRenderer::setVideoTexture(VulkanApp* app, VideoTextureService* service
     if (!service) return;
     const VkImageView view = service->videoArrayView();
     const VkSampler sampler = service->videoArraySampler();
-    if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-    if (view == boundVideoView && sampler == boundVideoSampler) return;
-    writeVideoDescriptor(app, view, sampler);
+    const VkImageView derivedView = service->videoDerivedArrayView();
+    const VkSampler derivedSampler = service->videoDerivedArraySampler();
+    if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE ||
+        derivedView == VK_NULL_HANDLE || derivedSampler == VK_NULL_HANDLE) {
+        return;
+    }
+    if (view == boundVideoView && sampler == boundVideoSampler &&
+        derivedView == boundDerivedView && derivedSampler == boundDerivedSampler) {
+        return;
+    }
+    writeVideoDescriptor(app, view, sampler, derivedView, derivedSampler);
     std::cout << "[VideoRenderer] video array bound (" << service->slotCapacity() << " slots, "
               << service->videoArrayWidth() << "^2)" << std::endl;
 }

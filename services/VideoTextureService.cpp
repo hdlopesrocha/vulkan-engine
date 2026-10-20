@@ -210,10 +210,18 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
     // chain, sampled by the video layer renderer. Each clip owns one layer and
     // materials reference it through textureIndex; the material texture arrays
     // are never touched by the video path.
-    TextureImage videoArray;
-    VkSampler videoSampler = VK_NULL_HANDLE;
     uint32_t slotCount = 0;
     static constexpr uint32_t kMaxSlots = 32;
+    TextureImage videoArray;
+    VkSampler videoSampler = VK_NULL_HANDLE;
+    // Derived material maps for the same slots: RG = tangent-space normal XY,
+    // B = bump/height, A = roughness. One mip level (normal/height data must
+    // not be averaged; the video shader samples LOD 0 explicitly).
+    TextureImage derivedArray;
+    std::array<VkImageView, kMaxSlots> derivedStorageViews{};
+    std::array<std::array<VkImageView, 3>, kMaxSlots> derivedPreviewViews{};
+    std::array<std::array<ImTextureID, 3>, kMaxSlots> derivedPreviews{};
+    std::array<VkImageLayout, kMaxSlots> derivedLayouts{};
     std::array<VkImageView, kMaxSlots> slotStorageViews{};
     std::array<VkImageView, kMaxSlots> slotPreviewViews{};
     std::array<ImTextureID, kMaxSlots> slotPreviews{};
@@ -438,6 +446,22 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         if (vkCreateImageView(app->getDevice(), &arrayView, nullptr, &videoArray.view) != VK_SUCCESS) return false;
         app->resources.addImageView(videoArray.view, "VideoTextureService: video array view");
 
+        // Derived normal/bump/roughness array (same slots, base level only).
+        VkImageCreateInfo derivedInfo = imageInfo;
+        derivedInfo.mipLevels = 1;
+        derivedInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        app->createImageWithVma(derivedInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, derivedArray.image,
+                                derivedArray.allocation, memory, "VideoTextureService: derived map array");
+        if (derivedArray.image == VK_NULL_HANDLE) return false;
+        derivedArray.mipLevels = 1;
+
+        VkImageViewCreateInfo derivedView = arrayView;
+        derivedView.image = derivedArray.image;
+        derivedView.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, slotCount};
+        if (vkCreateImageView(app->getDevice(), &derivedView, nullptr, &derivedArray.view) != VK_SUCCESS) return false;
+        app->resources.addImageView(derivedArray.view, "VideoTextureService: derived map array view");
+
         for (uint32_t i = 0; i < slotCount; ++i) {
             VkImageViewCreateInfo slotView{};
             slotView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -447,7 +471,15 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
             slotView.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, i, 1};
             if (vkCreateImageView(app->getDevice(), &slotView, nullptr, &slotStorageViews[i]) != VK_SUCCESS) return false;
             app->resources.addImageView(slotStorageViews[i], "VideoTextureService: slot storage view");
+
+            VkImageViewCreateInfo derivedSlotView = slotView;
+            derivedSlotView.image = derivedArray.image;
+            if (vkCreateImageView(app->getDevice(), &derivedSlotView, nullptr, &derivedStorageViews[i]) != VK_SUCCESS)
+                return false;
+            app->resources.addImageView(derivedStorageViews[i], "VideoTextureService: derived slot storage view");
+
             slotLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+            derivedLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
             primeSlot(i);
         }
 
@@ -494,8 +526,31 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
             app->recordTransitionImageLayoutLayer(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM,
                                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, videoMips, slot, 1);
+
+            // Neutral derived maps: flat normal (0.5, 0.5), mid bump and
+            // roughness, so an unloaded slot contributes no fake relief.
+            app->recordTransitionImageLayoutLayer(cmd, derivedArray.image, VK_FORMAT_R8G8B8A8_UNORM,
+                                                  derivedLayouts[slot], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                  1, slot, 1);
+            VkImageSubresourceRange derivedRange{};
+            derivedRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            derivedRange.baseMipLevel = 0;
+            derivedRange.levelCount = 1;
+            derivedRange.baseArrayLayer = slot;
+            derivedRange.layerCount = 1;
+            VkClearColorValue derivedValue{};
+            derivedValue.float32[0] = 0.5f;
+            derivedValue.float32[1] = 0.5f;
+            derivedValue.float32[2] = 0.5f;
+            derivedValue.float32[3] = 0.5f;
+            vkCmdClearColorImage(cmd, derivedArray.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &derivedValue,
+                                 1, &derivedRange);
+            app->recordTransitionImageLayoutLayer(cmd, derivedArray.image, VK_FORMAT_R8G8B8A8_UNORM,
+                                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, slot, 1);
         });
         slotLayouts[slot] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        derivedLayouts[slot] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
     // ── open / decode (worker thread, plus startup benchmark while idle) ──
@@ -914,7 +969,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
 
     // ── GPU resources ─────────────────────────────────────────────────────
     bool createPipeline() {
-        VkDescriptorSetLayoutBinding bindings[2] = {};
+        VkDescriptorSetLayoutBinding bindings[3] = {};
         bindings[0].binding = 0;
         bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[0].descriptorCount = 1;
@@ -923,10 +978,14 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         bindings[1].descriptorCount = 1;
         bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[2].binding = 2;
+        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 2;
+        layoutInfo.bindingCount = 3;
         layoutInfo.pBindings = bindings;
         if (vkCreateDescriptorSetLayout(app->getDevice(), &layoutInfo, nullptr, &descLayout) != VK_SUCCESS) {
             warn("failed to create compute descriptor set layout");
@@ -989,7 +1048,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         poolSizes[0].descriptorCount = 64;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        poolSizes[1].descriptorCount = 64;
+        poolSizes[1].descriptorCount = 128;
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         // The per-video descriptor sets are only (re)written while the device is
@@ -1020,8 +1079,11 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         VkDescriptorImageInfo targetInfo{};
         targetInfo.imageView = target;
         targetInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkDescriptorImageInfo derivedInfo{};
+        derivedInfo.imageView = derivedStorageViews[v.slot];
+        derivedInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-        VkWriteDescriptorSet writes[2] = {};
+        VkWriteDescriptorSet writes[3] = {};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = v.descSet;
         writes[0].dstBinding = 0;
@@ -1034,7 +1096,13 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         writes[1].descriptorCount = 1;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[1].pImageInfo = &targetInfo;
-        vkUpdateDescriptorSets(app->getDevice(), 2, writes, 0, nullptr);
+        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet = v.descSet;
+        writes[2].dstBinding = 2;
+        writes[2].descriptorCount = 1;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[2].pImageInfo = &derivedInfo;
+        vkUpdateDescriptorSets(app->getDevice(), 3, writes, 0, nullptr);
         return true;
     }
 
@@ -1152,10 +1220,15 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         // back (the same sequence TextureMixer uses for generated layers).
         app->recordTransitionImageLayoutLayer(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM,
                                               slotLayouts[slotIndex], VK_IMAGE_LAYOUT_GENERAL, mips, slotIndex, 1);
+        app->recordTransitionImageLayoutLayer(cmd, derivedArray.image, VK_FORMAT_R8G8B8A8_UNORM,
+                                              derivedLayouts[slotIndex], VK_IMAGE_LAYOUT_GENERAL, 1, slotIndex, 1);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &v.descSet, 0, nullptr);
         vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
         vkCmdDispatch(cmd, (static_cast<uint32_t>(dstW) + 15) / 16, (static_cast<uint32_t>(dstH) + 15) / 16, 1);
+        app->recordTransitionImageLayoutLayer(cmd, derivedArray.image, VK_FORMAT_R8G8B8A8_UNORM,
+                                              VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                              1, slotIndex, 1);
         app->recordTransitionImageLayoutLayer(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM,
                                               VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mips, slotIndex, 1);
         if (mips > 1) {
@@ -1166,6 +1239,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
                                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mips, slotIndex, 1);
         }
         slotLayouts[slotIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        derivedLayouts[slotIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         std::vector<VkSemaphore> waits;
         std::vector<uint64_t> waitValues;
@@ -1500,10 +1574,14 @@ void VideoTextureService::shutdown() {
     impl.videos.clear();
     impl.retired.clear();
     impl.videoArray = TextureImage{};
+    impl.derivedArray = TextureImage{};
     impl.videoSampler = VK_NULL_HANDLE;
     impl.slotStorageViews.fill(VK_NULL_HANDLE);
     impl.slotPreviewViews.fill(VK_NULL_HANDLE);
     impl.slotPreviews.fill(0);
+    impl.derivedStorageViews.fill(VK_NULL_HANDLE);
+    for (auto& views : impl.derivedPreviewViews) views.fill(VK_NULL_HANDLE);
+    for (auto& previews : impl.derivedPreviews) previews.fill(0);
     impl.initialized = false;
 }
 
@@ -1523,6 +1601,8 @@ bool VideoTextureService::isSlotLoaded(uint32_t slot) const {
 VkImage VideoTextureService::videoArrayImage() const { return impl_->videoArray.image; }
 VkImageView VideoTextureService::videoArrayView() const { return impl_->videoArray.view; }
 VkSampler VideoTextureService::videoArraySampler() const { return impl_->videoSampler; }
+VkImageView VideoTextureService::videoDerivedArrayView() const { return impl_->derivedArray.view; }
+VkSampler VideoTextureService::videoDerivedArraySampler() const { return impl_->videoSampler; }
 uint32_t VideoTextureService::videoArrayMips() const { return impl_->videoMips; }
 uint32_t VideoTextureService::videoArrayWidth() const { return impl_->videoWidth; }
 uint32_t VideoTextureService::videoArrayHeight() const { return impl_->videoHeight; }
@@ -1554,10 +1634,50 @@ ImTextureID VideoTextureService::previewTexture(uint32_t slot) {
     return impl.slotPreviews[slot];
 }
 
+ImTextureID VideoTextureService::derivedPreviewTexture(uint32_t slot, uint32_t map) {
+    Impl& impl = *impl_;
+    if (!impl.initialized || slot >= impl.slotCount || map > 2) return 0;
+    if (impl.derivedPreviews[slot][map]) return impl.derivedPreviews[slot][map];
+    if (impl.derivedArray.image == VK_NULL_HANDLE || impl.videoSampler == VK_NULL_HANDLE) return 0;
+
+    VkImageView& view = impl.derivedPreviewViews[slot][map];
+    if (view == VK_NULL_HANDLE) {
+        // Swizzle the packed derived map into the channel the preview tab
+        // shows: normal = RG + constant blue, bump = B, roughness = A.
+        VkComponentMapping components{};
+        if (map == 0) {
+            components = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,
+                          VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE};
+        } else if (map == 1) {
+            components = {VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_B,
+                          VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_ONE};
+        } else {
+            components = {VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_A,
+                          VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_ONE};
+        }
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = impl.derivedArray.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.components = components;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, slot, 1};
+        if (vkCreateImageView(impl.app->getDevice(), &viewInfo, nullptr, &view) != VK_SUCCESS) {
+            return 0;
+        }
+        impl.app->resources.addImageView(view, "VideoTextureService: derived preview view");
+    }
+    impl.derivedPreviews[slot][map] = (ImTextureID)ImGui_ImplVulkan_AddTexture(
+        impl.videoSampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return impl.derivedPreviews[slot][map];
+}
+
 void VideoTextureService::invalidatePreviews() {
     // Only drop the cached handles: the ImGui descriptor pool they came from has
     // already been (or is about to be) recreated, so RemoveTexture is not valid.
     impl_->slotPreviews.fill(0);
+    for (auto& previews : impl_->derivedPreviews) previews.fill(0);
 }
 
 VideoTextureService::VideoState VideoTextureService::state(size_t index) const {
@@ -1795,10 +1915,13 @@ uint32_t VideoTextureService::slotCapacity() const { return 0; }
 VkImage VideoTextureService::videoArrayImage() const { return VK_NULL_HANDLE; }
 VkImageView VideoTextureService::videoArrayView() const { return VK_NULL_HANDLE; }
 VkSampler VideoTextureService::videoArraySampler() const { return VK_NULL_HANDLE; }
+VkImageView VideoTextureService::videoDerivedArrayView() const { return VK_NULL_HANDLE; }
+VkSampler VideoTextureService::videoDerivedArraySampler() const { return VK_NULL_HANDLE; }
 uint32_t VideoTextureService::videoArrayMips() const { return 1; }
 uint32_t VideoTextureService::videoArrayWidth() const { return 0; }
 uint32_t VideoTextureService::videoArrayHeight() const { return 0; }
 ImTextureID VideoTextureService::previewTexture(uint32_t) { return 0; }
+ImTextureID VideoTextureService::derivedPreviewTexture(uint32_t, uint32_t) { return 0; }
 void VideoTextureService::invalidatePreviews() {}
 void VideoTextureService::shutdown() {}
 size_t VideoTextureService::count() const { return 0; }

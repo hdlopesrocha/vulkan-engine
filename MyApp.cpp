@@ -999,6 +999,16 @@ public:
             }
             return names;
         });
+        textureViewer->setVideoPreviewProvider([this](uint32_t slot, int map) -> ImTextureID {
+            if (!videoTextureService) return 0;
+            switch (map) {
+                case 0: return videoTextureService->previewTexture(slot);
+                case 1: return videoTextureService->derivedPreviewTexture(slot, 0); // normal
+                case 2: return videoTextureService->derivedPreviewTexture(slot, 1); // height/bump
+                case 3: return videoTextureService->derivedPreviewTexture(slot, 2); // roughness/spec
+                default: return 0;
+            }
+        });
         textureViewer->setOnMaterialChanged([this](size_t idx) {
             materialManager.update(idx, materials[idx], this);
         });

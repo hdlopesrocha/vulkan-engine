@@ -8,7 +8,7 @@ touching the material texture arrays.
 
 The source file stays compressed; frames are decoded on demand for the timestamp
 the playback clock asks for, converted to RGBA8 on the GPU and written into the
-clip's video-array slot.
+clip's video-array slot together with a derived normal/bump/roughness map.
 
 ```
   raw masters (videos/raw/…)
@@ -99,6 +99,31 @@ on the cube and `Screen` blending.
 
 The Materials widget (Textures panel) edits the material kind, the video slot,
 the coordinate technique (with the SDF center/radius) and the blend mode.
+
+### Per-frame material maps
+
+A video material's albedo is the current video frame; normal, bump/height and
+roughness/specular are derived from that frame once per uploaded frame by
+`VideoYuvToRgba.comp` (image analysis of the luma channel, no per-pixel decode
+cost). They live in a second array with the same slots:
+
+| Channel | Map | Use |
+|---|---|---|
+| `RG` | tangent-space normal XY (0.5 = flat) | reconstructed normal `sqrt(1 - x² - y²)` in the video shader |
+| `B` | bump/height (frame luma) | ambient height modulation |
+| `A` | roughness (high-contrast detail becomes glossier) | specular exponent/strength multiplier |
+
+Everything else keeps the material defaults (`ambientFactor` 0.4,
+`specularStrength` 0.5, `shininess` 32, `roughnessFactor` 1, AO on), so the
+video surface is lit like a normal solid material. The video fragment shader
+builds a tangent frame from the UV mapping derivatives, so the derived normal
+works for triplanar, projection and SDF-spherical coordinates.
+
+In the Textures panel a Video material shows the **live** video frame in the
+Albedo tab, the derived Normal/Height/Roughness maps in the other tabs, and a
+row of live clip thumbnails that assign a slot to the material. This is also
+why the preview is no longer a frozen material-array layer: it samples the same
+video array the scene does.
 
 ### Blend modes
 

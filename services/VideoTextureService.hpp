@@ -15,10 +15,12 @@ class TextureArrayManager;
 // A video texture is an animated material: a compressed source file is decoded
 // on demand for the timestamp its playback clock asks for, converted to RGBA8
 // on the GPU (shaders/computation/video/VideoYuvToRgba.comp) and written into
-// one layer of the engine's dedicated **video texture array**. Materials of
-// kind MaterialKind::Video sample that array through textureIndex (the video
-// slot), so several materials can reference the same clip and clips can be
-// loaded/unloaded at runtime without touching the material texture arrays.
+// one layer of the engine's dedicated **video texture array**, next to a packed
+// per-frame normal/bump/roughness map (RG normal XY, B height, A roughness).
+// Materials of kind MaterialKind::Video sample those arrays through
+// textureIndex (the video slot), so several materials can reference the same
+// clip and clips can be loaded/unloaded at runtime without touching the
+// material texture arrays.
 //
 // Video clips are loaded from the Videos widget (or programmatically with
 // loadVideo) into a fixed-capacity array of slots; `videos/base/` holds the 3
@@ -38,7 +40,8 @@ class TextureArrayManager;
 //   * compressed: the source file on disk, never fully loaded.
 //   * per clip  : one packed YUV R8 image (~1.5 bytes/pixel) + two host-visible
 //                 staging buffers of the same size.
-//   * shared    : the video array (slotCount × RGBA8 + mips), sampled by the
+//   * shared    : the video array (slotCount × RGBA8 + mips) and the derived
+//                 map array (slotCount × RGBA8, base level), sampled by the
 //                 video layer renderer.
 // A "decode everything" implementation would hold width*height*4 bytes for
 // every frame of every clip; logDiagnostics prints that comparison.
@@ -162,11 +165,20 @@ public:
     uint32_t videoArrayWidth() const;
     uint32_t videoArrayHeight() const;
 
+    // Derived per-frame material maps (same slots): RG = tangent-space normal
+    // XY, B = bump/height, A = roughness. Used by the video layer shading and
+    // by the Textures panel previews.
+    VkImageView videoDerivedArrayView() const;
+    VkSampler videoDerivedArraySampler() const;
+
     // ImGui preview of one video slot: samples the slot's current frame live.
     // The descriptor is created on first use and cached. Returns 0 when the
     // slot or the video array is unavailable. Call invalidatePreviews() when
     // the ImGui descriptor pool is recreated (swapchain rebuild/shutdown).
     ImTextureID previewTexture(uint32_t slot);
+    // Live preview of one derived channel for a slot:
+    //   0 = normal (RG + blue Z), 1 = bump/height, 2 = roughness/specular.
+    ImTextureID derivedPreviewTexture(uint32_t slot, uint32_t map);
     void invalidatePreviews();
 
     size_t count() const;

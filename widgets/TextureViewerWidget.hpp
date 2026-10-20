@@ -17,6 +17,10 @@ public:
     void render() override;
     void setOnMaterialChanged(std::function<void(size_t)> cb) { onMaterialChanged = cb; }
     void setVideoSlotNamesProvider(std::function<std::vector<std::string>()> fn) { videoSlotNamesProvider = std::move(fn); }
+    // Live preview for Video materials: (slot, map index) -> ImGui texture.
+    // map index matches the PreviewTab order (0 albedo, 1 normal, 2 height,
+    // 3 roughness, 4 AO); derived maps are produced from the current frame.
+    void setVideoPreviewProvider(std::function<ImTextureID(uint32_t, int)> fn) { videoPreviewProvider = std::move(fn); }
 
 private:
     TextureArrayManager* arrayManager = nullptr;
@@ -24,4 +28,5 @@ private:
     size_t currentIndex = 0;
     std::function<void(size_t)> onMaterialChanged;
     std::function<std::vector<std::string>()> videoSlotNamesProvider;
+    std::function<ImTextureID(uint32_t, int)> videoPreviewProvider;
 };

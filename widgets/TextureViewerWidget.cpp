@@ -209,12 +209,22 @@ void TextureViewer::render() {
             for (const PreviewTab &tab : kPreviewTabs) {
                 if (ImGui::BeginTabItem(tab.label)) {
                     const int map = tab.mapIndex;
-                    ImTextureID tex = arrayManager->getImTexture(currentIndex, map);
+                    MaterialProperties& previewMat = (*materials)[currentIndex];
+                    const bool videoMat = previewMat.kind == MaterialKind::Video && videoPreviewProvider;
+                    ImTextureID tex = 0;
+                    if (videoMat) {
+                        if (map <= 3) {
+                            const uint32_t slot = static_cast<uint32_t>(std::max(0, previewMat.textureIndex));
+                            tex = videoPreviewProvider(slot, map);
+                        }
+                    } else {
+                        tex = arrayManager->getImTexture(currentIndex, map);
+                    }
                     if (tex) {
                         ImGui::Image(tex, ImVec2(kPreviewSize, kPreviewSize));
                     } else {
                         ImGui::Text("Texture preview not available");
-                        if (ImGui::Button("Recreate descriptor")) {
+                        if (!videoMat && ImGui::Button("Recreate descriptor")) {
                             arrayManager->getImTexture(currentIndex, map);
                         }
                         if (tab.logMapName) {
@@ -234,12 +244,43 @@ void TextureViewer::render() {
                     ImGui::Spacing();
                     ColSeparator();
                     ImGui::Spacing();
-                    FieldLabel(tab.chooseLabel, "Click a thumbnail to select this texture layer.");
-                    size_t idx = currentIndex;
-                    if (ScrollableTexturePicker(tab.pickerId, arrayManager->layerAmount, idx,
-                            [this, map](size_t l) { return arrayManager->getImTexture(l, map); },
-                            48.0f, 2, true, true, kColumnWidth)) {
-                        currentIndex = idx;
+                    if (videoMat) {
+                        ImGui::TextDisabled(
+                            "Video material: albedo is the live video slot; Normal/Height/"
+                            "Roughness are derived from the current frame.");
+                        if (map > 3) {
+                            ImGui::TextDisabled("AO keeps the material default for video.");
+                        }
+                        if (map == 0 && videoSlotNamesProvider) {
+                            const std::vector<std::string> slots = videoSlotNamesProvider();
+                            if (!slots.empty()) {
+                                ImGui::Spacing();
+                                ImGui::TextDisabled("Video slots (click a clip to assign it):");
+                                for (uint32_t s = 0; s < slots.size(); ++s) {
+                                    ImTextureID clipTex = videoPreviewProvider(s, 0);
+                                    ImGui::PushID(static_cast<int>(s));
+                                    if (clipTex) {
+                                        if (ImGui::ImageButton("clip", clipTex, ImVec2(48.0f, 48.0f))) {
+                                            previewMat.textureIndex = static_cast<int>(s);
+                                            materialDirty = true;
+                                        }
+                                    } else {
+                                        ImGui::Button("empty");
+                                    }
+                                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", slots[s].c_str());
+                                    ImGui::PopID();
+                                    if ((s + 1) % 6 != 0) ImGui::SameLine();
+                                }
+                            }
+                        }
+                    } else {
+                        FieldLabel(tab.chooseLabel, "Click a thumbnail to select this texture layer.");
+                        size_t idx = currentIndex;
+                        if (ScrollableTexturePicker(tab.pickerId, arrayManager->layerAmount, idx,
+                                [this, map](size_t l) { return arrayManager->getImTexture(l, map); },
+                                48.0f, 2, true, true, kColumnWidth)) {
+                            currentIndex = idx;
+                        }
                     }
                     ImGui::EndTabItem();
                 }

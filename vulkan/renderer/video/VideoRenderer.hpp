@@ -28,7 +28,9 @@ class VideoTextureService;
 //
 // Geometry uses the engine's standard octree mesh format (IndirectRenderer),
 // the non-tessellated solid vertex shader and a dedicated fragment shader that
-// samples the video texture array through the material's textureIndex.
+// samples the video texture array through the material's textureIndex. The
+// second set binding carries the per-frame derived normal/bump/roughness array,
+// so the layer is shaded with the material's default lighting values.
 class VideoRenderer : public Renderer {
 public:
     static constexpr uint32_t VIDEO_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
@@ -80,7 +82,8 @@ private:
     bool beginPass(VkCommandBuffer cmd, VulkanApp* app, uint32_t frameIndex);
     void endPass(VkCommandBuffer cmd, VulkanApp* app, uint32_t frameIndex);
     bool createVideoDescriptorSet(VulkanApp* app);
-    void writeVideoDescriptor(VulkanApp* app, VkImageView view, VkSampler sampler);
+    void writeVideoDescriptor(VulkanApp* app, VkImageView albedoView, VkSampler albedoSampler,
+                              VkImageView derivedView, VkSampler derivedSampler);
 
     IndirectRenderer indirectRenderer;
     TrackedHandle<VkPipeline> pipeline;
@@ -90,9 +93,13 @@ private:
     VkDescriptorSet videoSet = VK_NULL_HANDLE;
     VkImageView boundVideoView = VK_NULL_HANDLE;
     VkSampler boundVideoSampler = VK_NULL_HANDLE;
+    VkImageView boundDerivedView = VK_NULL_HANDLE;
+    VkSampler boundDerivedSampler = VK_NULL_HANDLE;
 
-    // Dummy 1x1 black layer used until a real video array is bound.
+    // Dummy 1x1 layers used until a real video array is bound.
     TextureImage dummyVideo;
+    TextureImage dummyDerived;
+    VkSampler dummySampler = VK_NULL_HANDLE;
     VkImageLayout dummyLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     std::array<VkImage, VIDEO_FRAMES> colorImages{};

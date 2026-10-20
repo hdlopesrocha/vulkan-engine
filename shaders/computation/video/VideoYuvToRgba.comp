@@ -24,12 +24,24 @@
 // them from the decoded frame's metadata. The result is converted sRGB ->
 // linear exactly like every other albedo upload in TextureArrayManager (the
 // arrays store linear values, and the material shaders sample them raw).
+//
+// Besides albedo, the same dispatch derives a packed material map from the
+// current frame's luma (image analysis, no extra CPU work):
+//   R,G = tangent-space normal XY (RGBA8, 0.5 = flat), reconstructed Z in the
+//         video shader as sqrt(1 - x^2 - y^2);
+//   B   = bump/height (the frame luma);
+//   A   = roughness: smooth/high-contrast edges become glossier while flat
+//         areas keep the material's default roughness.
+// The video layer fragment shader uses these maps with the material's normal
+// lighting parameters (albedo stays the video; every other value defaults).
 layout(local_size_x = 16, local_size_y = 16) in;
 
 // R8 packed YUV plane (Y rows, then interleaved UV rows).
 layout(set = 0, binding = 0) uniform sampler2D yuvPlane;
 // Albedo array layer this frame belongs to (single-layer 2D view).
 layout(set = 0, binding = 1, rgba8) uniform image2D targetLayer;
+// Derived normal/bump/roughness array layer (single-layer 2D view, no mips).
+layout(set = 0, binding = 2, rgba8) uniform image2D derivedLayer;
 
 layout(push_constant) uniform VideoConvert {
     ivec4 lumaSize;    // .xy = luma w/h, .zw = chroma w/h (in chroma samples)
@@ -40,10 +52,24 @@ layout(push_constant) uniform VideoConvert {
     vec4 matrixRow2;
 } pc;
 
-float luma(const ivec2 p) {
+float lumaTexel(const ivec2 p) {
     return texelFetch(yuvPlane,
                       ivec2(clamp(p.x, 0, pc.lumaSize.x - 1),
                             clamp(p.y, 0, pc.lumaSize.y - 1)), 0).r;
+}
+
+// Bilinear luma at a normalized UV (output-pixel centre space).
+float sampleLuma(const vec2 uv) {
+    const float lx = uv.x * float(pc.lumaSize.x) - 0.5;
+    const float ly = uv.y * float(pc.lumaSize.y) - 0.5;
+    const float bx = floor(lx);
+    const float by = floor(ly);
+    const float fx = lx - bx;
+    const float fy = ly - by;
+    const int x0 = int(bx);
+    const int y0 = int(by);
+    return mix(mix(lumaTexel(ivec2(x0, y0)), lumaTexel(ivec2(x0 + 1, y0)), fx),
+               mix(lumaTexel(ivec2(x0, y0 + 1)), lumaTexel(ivec2(x0 + 1, y0 + 1)), fx), fy);
 }
 
 // Chroma sample (cx, cy); oddX = 0 selects U, 1 selects V.
@@ -53,6 +79,20 @@ float chroma(const int cx, const int cy, const int oddX) {
     return texelFetch(yuvPlane,
                       ivec2(2 * clamp(cx, 0, cw - 1) + oddX,
                             pc.lumaSize.y + clamp(cy, 0, ch - 1)), 0).r;
+}
+
+// Bilinear chroma at a normalized UV, per channel (U = even texels, V = odd).
+float sampleChroma(const vec2 uv, const int oddX) {
+    const float cx = uv.x * float(pc.lumaSize.z) - 0.5;
+    const float cy = uv.y * float(pc.lumaSize.w) - 0.5;
+    const float cbx = floor(cx);
+    const float cby = floor(cy);
+    const float cfx = cx - cbx;
+    const float cfy = cy - cby;
+    const int kx = int(cbx);
+    const int ky = int(cby);
+    return mix(mix(chroma(kx, ky, oddX), chroma(kx + 1, ky, oddX), cfx),
+               mix(chroma(kx, ky + 1, oddX), chroma(kx + 1, ky + 1, oddX), cfx), cfy);
 }
 
 vec3 srgbToLinear(const vec3 c) {
@@ -66,34 +106,11 @@ void main() {
     const ivec2 dst = ivec2(gl_GlobalInvocationID.xy);
     if (dst.x >= pc.dstSize.x || dst.y >= pc.dstSize.y) return;
 
-    // Output pixel centre -> source texel space of both planes.
     const vec2 uv = (vec2(dst) + 0.5) / vec2(pc.dstSize.xy);
 
-    // Luma, manual bilinear.
-    const float lx = uv.x * float(pc.lumaSize.x) - 0.5;
-    const float ly = uv.y * float(pc.lumaSize.y) - 0.5;
-    const float bx = floor(lx);
-    const float by = floor(ly);
-    const float fx = lx - bx;
-    const float fy = ly - by;
-    const int x0 = int(bx);
-    const int y0 = int(by);
-    const float Y = mix(mix(luma(ivec2(x0, y0)), luma(ivec2(x0 + 1, y0)), fx),
-                        mix(luma(ivec2(x0, y0 + 1)), luma(ivec2(x0 + 1, y0 + 1)), fx), fy);
-
-    // Chroma, 4:2:0, per channel (U = even texels, V = odd texels).
-    const float cx = uv.x * float(pc.lumaSize.z) - 0.5;
-    const float cy = uv.y * float(pc.lumaSize.w) - 0.5;
-    const float cbx = floor(cx);
-    const float cby = floor(cy);
-    const float cfx = cx - cbx;
-    const float cfy = cy - cby;
-    const int kx = int(cbx);
-    const int ky = int(cby);
-    const float u = mix(mix(chroma(kx, ky, 0), chroma(kx + 1, ky, 0), cfx),
-                        mix(chroma(kx, ky + 1, 0), chroma(kx + 1, ky + 1, 0), cfx), cfy);
-    const float v = mix(mix(chroma(kx, ky, 1), chroma(kx + 1, ky, 1), cfx),
-                        mix(chroma(kx, ky + 1, 1), chroma(kx + 1, ky + 1, 1), cfx), cfy);
+    const float Y = sampleLuma(uv);
+    const float u = sampleChroma(uv, 0);
+    const float v = sampleChroma(uv, 1);
 
     const vec3 yuv = vec3(Y, u, v);
     const vec3 rgb = vec3(dot(pc.matrixRow0.xyz, yuv),
@@ -101,4 +118,25 @@ void main() {
                           dot(pc.matrixRow2.xyz, yuv)) + pc.yuvOffset.xyz;
 
     imageStore(targetLayer, dst, vec4(srgbToLinear(clamp(rgb, 0.0, 1.0)), 1.0));
+
+    // ── Derived material maps from the current frame ───────────────────────
+    // Central differences of luma in output-texel space. The frame is one
+    // image, so this is image analysis at video resolution, once per decoded
+    // frame (not per rendered pixel).
+    const vec2 texel = 1.0 / vec2(pc.dstSize.xy);
+    const float l = sampleLuma(uv - vec2(texel.x, 0.0));
+    const float r = sampleLuma(uv + vec2(texel.x, 0.0));
+    const float t = sampleLuma(uv - vec2(0.0, texel.y));
+    const float b = sampleLuma(uv + vec2(0.0, texel.y));
+    const float gx = (r - l) * 0.5;
+    const float gy = (b - t) * 0.5;
+
+    // Tangent-space normal (0.5 = flat); strength tuned for 1024^2 frames.
+    const vec2 nxy = clamp(vec2(-gx, -gy) * 8.0, vec2(-1.0), vec2(1.0));
+    // Bump = height (luma). Roughness = flat/complex contrast: strong edges
+    // read as glossy detail, smooth regions keep a matte default.
+    const float contrast = sqrt(gx * gx + gy * gy);
+    const float roughness = clamp(1.0 - contrast * 16.0, 0.15, 1.0);
+
+    imageStore(derivedLayer, dst, vec4(nxy * 0.5 + 0.5, clamp(Y, 0.0, 1.0), roughness));
 }
