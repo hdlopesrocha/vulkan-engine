@@ -3808,6 +3808,7 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
     buffer.allocation = allocation;
     buffer.mappedData = allocInfo.pMappedData;
     buffer.memory = allocInfo.deviceMemory;
+    noteBufferSize(buffer.buffer, size);
 
     // No garbage may ever be renderable: zero the full range now.
     // Host-visible: memset the persistent mapping. Device-local: synchronous
@@ -3833,6 +3834,7 @@ Buffer VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
 
 
 void VulkanApp::destroyBuffer(Buffer& buf) {
+    forgetBufferSize(buf.buffer);
     if (buf.allocation && vma.allocator) {
         resources.removeBuffer(buf.buffer);
         vmaDestroyBuffer(vma.allocator, buf.buffer, buf.allocation);

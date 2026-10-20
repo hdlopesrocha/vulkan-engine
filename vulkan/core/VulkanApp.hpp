@@ -626,12 +626,39 @@ public:
         // be bound with VK_WHOLE_SIZE. Callers use the returned value where
         // they previously passed VK_WHOLE_SIZE; on devices whose limit covers
         // the buffer this returns the full size, so nothing changes there.
+        //
+        // The range must also never exceed the VkBufferCreateInfo size
+        // (VUID-VkDescriptorBufferInfo-range-00342). vkGetBufferMemoryRequirements
+        // may report an aligned size slightly larger than the buffer (e.g. 104 ->
+        // 112 on some drivers), so the actual creation size is tracked instead.
         VkDeviceSize getClampedWholeSizeRange(VkBuffer buffer) const {
             if (buffer == VK_NULL_HANDLE) return 0;
-            VkMemoryRequirements reqs{};
-            vkGetBufferMemoryRequirements(getDevice(), buffer, &reqs);
+            VkDeviceSize size = 0;
+            {
+                std::lock_guard<std::mutex> lock(bufferSizeMutex_);
+                const auto it = bufferSizes_.find(buffer);
+                if (it != bufferSizes_.end()) size = it->second;
+            }
+            if (size == 0) {
+                // Untracked buffer (created outside createBuffer): best effort.
+                VkMemoryRequirements reqs{};
+                vkGetBufferMemoryRequirements(getDevice(), buffer, &reqs);
+                size = reqs.size;
+            }
             const VkDeviceSize maxRange = getMaxStorageBufferRange();
-            return (reqs.size < maxRange) ? reqs.size : maxRange;
+            return (size < maxRange) ? size : maxRange;
+        }
+        // Track every buffer created through createBuffer so descriptor ranges
+        // can use the exact size (see getClampedWholeSizeRange).
+        void noteBufferSize(VkBuffer buffer, VkDeviceSize size) {
+            if (buffer == VK_NULL_HANDLE) return;
+            std::lock_guard<std::mutex> lock(bufferSizeMutex_);
+            bufferSizes_[buffer] = size;
+        }
+        void forgetBufferSize(VkBuffer buffer) {
+            if (buffer == VK_NULL_HANDLE) return;
+            std::lock_guard<std::mutex> lock(bufferSizeMutex_);
+            bufferSizes_.erase(buffer);
         }
         VmaAllocator getVmaAllocator() const { return vma.allocator; }
         VkQueue getGraphicsQueue() const { return graphicsQueue; }
@@ -894,6 +921,10 @@ public:
         // different size than the buffer was allocated for.
         VkExtent2D screenshotExtent{};
         VkFormat screenshotFormat = VK_FORMAT_UNDEFINED;
+
+        // Exact VkBufferCreateInfo sizes (see getClampedWholeSizeRange).
+        mutable std::mutex bufferSizeMutex_;
+        std::unordered_map<VkBuffer, VkDeviceSize> bufferSizes_;
 
 };
 
