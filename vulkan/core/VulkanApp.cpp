@@ -757,7 +757,6 @@ void VulkanApp::initImGui() {
     // recorded command buffer carries no draws (no windows yet) and is never
     // submitted.
     {
-        ImGuiIO& io = ImGui::GetIO();
         if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f)
             io.DisplaySize = ImVec2(static_cast<float>(WIDTH), static_cast<float>(HEIGHT));
         ImGui_ImplVulkan_NewFrame();

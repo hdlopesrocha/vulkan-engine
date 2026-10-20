@@ -437,7 +437,7 @@ all:
 	@$(call SPEAK_DIAGNOSTIC)
 
 .PHONY: _all
-_all: imgui shaders $(OUT) server
+_all: imgui shaders videos-stage $(OUT) server
 	$(call make-obj-dirs)
 	@mkdir -p $(OBJ_DIR)/imgui
 
@@ -572,61 +572,34 @@ valgrind: debug
 	@cd $(OUT_DIR) && valgrind --suppressions=../valgrind.supp --leak-check=full --show-leak-kinds=all ./app > ../logs/valgrind.log 2>&1; echo "Exit code: $$?"
 
 # ── Video texture assets ──────────────────────────────────────────────────
-# Convert the committed clips in videos/base/ (and, on demand, the optional
-# clips in videos/extra/) into texture-ready assets in $(OUT_DIR)/videos/:
-# videos/base/* -> $(OUT_DIR)/videos/base/* and videos/extra/* ->
-# $(OUT_DIR)/videos/extra/*. Converted clips are never written into the
-# source tree. `make videos` converts only the base folder; `make
-# videos-extra` only extra.
-# Settings: square center crop at VIDEO_SIZE (default 1024 = the default
-# texture array size), H.264 with a ~1 s keyframe interval so the decoder can
-# reach any timestamp by seeking to the preceding keyframe and decoding less
-# than a second of frames, no audio (a texture is silent), faststart for
-# immediate playback, yuv420p for universal decoder support. Sources are left
-# untouched; an asset is re-encoded only when its source is newer. `make
-# clean` removes bin/, so rerun `make videos` after a clean.
-# The service prefers $(OUT_DIR)/videos/<category>/<clip> (the working
-# directory is bin/) and falls back to the source clip in videos/<category>/.
+# scripts/convert_videos.sh owns every video operation:
+#   - conversion: square 1024^2 center crop, H.264 with a short keyframe
+#     interval, yuv420p, no audio, +faststart, tagged "engine-video-texture";
+#   - staging: copy the converted clips into $(OUT_DIR)/videos/<base|extra>/.
+# Raw masters live in videos/raw/<base|extra>/ (local, ignored); the runtime
+# folders videos/<base|extra>/ only ever hold converted clips (base/ is
+# committed, extra/ is the optional ignored library). Every build runs
+# `videos-stage`, which copies converted clips only and never invokes ffmpeg,
+# so the app always sees texture-ready assets. `make videos` converts
+# videos/base (plus any raw master in videos/raw/base), `make videos-extra`
+# also converts the optional local library.
 VIDEO_SIZE ?= 1024
 VIDEO_CRF ?= 26
 VIDEO_PRESET ?= veryfast
-VIDEO_DIR := videos
-VIDEO_SRC_DIR := $(VIDEO_DIR)/base
-VIDEO_EXTRA_SRC_DIR := $(VIDEO_DIR)/extra
-VIDEO_BASE_OUT_DIR := $(OUT_DIR)/$(VIDEO_DIR)/base
-VIDEO_EXTRA_OUT_DIR := $(OUT_DIR)/$(VIDEO_DIR)/extra
-VIDEO_EXTS := mp4 mov mkv webm
-VIDEO_SRCS := $(foreach e,$(VIDEO_EXTS),$(wildcard $(VIDEO_SRC_DIR)/*.$(e)))
-VIDEO_ASSETS := $(patsubst $(VIDEO_SRC_DIR)/%,$(VIDEO_BASE_OUT_DIR)/%.mp4,$(basename $(VIDEO_SRCS)))
-VIDEO_EXTRA_SRCS := $(foreach e,$(VIDEO_EXTS),$(wildcard $(VIDEO_EXTRA_SRC_DIR)/*.$(e)))
-VIDEO_EXTRA_ASSETS := $(patsubst $(VIDEO_EXTRA_SRC_DIR)/%,$(VIDEO_EXTRA_OUT_DIR)/%.mp4,$(basename $(VIDEO_EXTRA_SRCS)))
+export VIDEO_SIZE VIDEO_CRF VIDEO_PRESET
 
-.PHONY: videos
-videos: $(VIDEO_ASSETS)
+.PHONY: videos videos-stage videos-extra videos-clean
+videos:
+	@scripts/convert_videos.sh
 
-# Optional local clips: same conversion, into bin/videos/extra.
-.PHONY: videos-extra
-videos-extra: $(VIDEO_EXTRA_ASSETS)
+videos-stage:
+	@scripts/convert_videos.sh --stage
 
-# One pattern rule per supported source extension and source folder; the output
-# keeps the base/ or extra/ folder under bin/videos/.
-define VIDEO_CONVERT_RULE
-$(2)/%.mp4: $(1)/%.$(3)
-	@mkdir -p $(2)
-	@echo "Converting video texture: $$< -> $$@"
-	@ffmpeg -hide_banner -loglevel error -y -i "$$<" \
-		-vf "crop=min(iw\,ih):min(iw\,ih),scale=$(VIDEO_SIZE):$(VIDEO_SIZE):flags=lanczos" \
-		-an -c:v libx264 -preset $(VIDEO_PRESET) -crf $(VIDEO_CRF) \
-		-g 30 -keyint_min 15 -sc_threshold 0 -pix_fmt yuv420p \
-		-movflags +faststart "$$@"
-endef
-$(foreach e,$(VIDEO_EXTS),$(eval $(call VIDEO_CONVERT_RULE,$(VIDEO_SRC_DIR),$(VIDEO_BASE_OUT_DIR),$(e))))
-$(foreach e,$(VIDEO_EXTS),$(eval $(call VIDEO_CONVERT_RULE,$(VIDEO_EXTRA_SRC_DIR),$(VIDEO_EXTRA_OUT_DIR),$(e))))
+videos-extra:
+	@scripts/convert_videos.sh --extra
 
-# Remove converted assets only (the source folders base/ and extra/ are never touched)
-.PHONY: videos-clean
 videos-clean:
-	rm -rf $(VIDEO_BASE_OUT_DIR) $(VIDEO_EXTRA_OUT_DIR)
+	@scripts/convert_videos.sh --clean
 
 .PHONY: commit
 # Commit the staged changes, store the full commit message in

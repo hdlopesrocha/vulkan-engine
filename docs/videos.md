@@ -11,10 +11,13 @@ the playback clock asks for, converted to RGBA8 on the GPU and written into the
 clip's video-array slot.
 
 ```
-videos/base/*.mp4 ──(make videos)──> bin/videos/base/*.mp4   (square, short GOP)
-                                          │
-  material: kind=Video, textureIndex=N ───┤
-                                          ▼
+  raw masters (videos/raw/…)
+        │  scripts/convert_videos.sh (square, short GOP, tagged)
+        ▼
+  videos/base|extra/*.mp4  ── make (staging, copy only) ──>  bin/videos/base|extra/*.mp4
+                                                                     │
+  material: kind=Video, textureIndex=N ──────────────────────────────┤
+                                                                     ▼
   worker thread (per clip)          main thread (per frame)              GPU
   ┌─────────────────────┐           ┌──────────────────────┐      ┌──────────────────┐
   │ demux + decode      │  publish  │ clocks, request the  │ copy │ packed YUV image │
@@ -29,14 +32,16 @@ videos/base/*.mp4 ──(make videos)──> bin/videos/base/*.mp4   (square, sh
 
 ## Assets
 
-`videos/base/` holds the 3 shortest clips, is committed, and is loaded by
-`MyApp` at setup. `videos/extra/` is the optional local library (ignored by git
-because it can be very large); drop your own clips there.
+`videos/base/` holds the 3 committed **converted** clips loaded by `MyApp` at
+setup. `videos/extra/` is the optional local **converted** library (ignored by
+git because it can be large). Raw masters live in `videos/raw/base/` and
+`videos/raw/extra/` (ignored) and are never read by the engine.
 
-`make videos` converts only `videos/base/*` into `bin/videos/base/*.mp4`;
-`make videos-extra` converts `videos/extra/*` into `bin/videos/extra/*.mp4`.
-Converted clips are written next to the executable only (never into the source
-tree); `make clean` removes `bin/`, so rerun `make videos` afterwards.
+`scripts/convert_videos.sh` does all conversion. `make videos` converts the
+default set and `make videos-extra` adds the local library. Every normal build
+then stages the converted clips into `bin/videos/` (a copy, no ffmpeg), so the
+app always sees texture-ready assets and never a raw master. `make clean`
+removes `bin/`; the next build restores `bin/videos/` automatically.
 
 | Setting | Value | Why |
 |---|---|---|
@@ -48,11 +53,11 @@ tree); `make clean` removes `bin/`, so rerun `make videos` afterwards.
 
 At runtime `VideoTextureService::listAvailableVideos()` discovers clips from
 the folders `videos/base` and `videos/extra` relative to the working directory.
-With the app started from `bin/` those are the converted clips, and the same
-folders in `../videos/...` hold the sources (scanned second, deduplicated by
-name). Running from the repository root finds the sources directly.
-`VideoTextureService::listVideoFiles` and `findAssetDirectory` remain available
-for simple directory scans.
+With the app started from `bin/` those are the staged converted clips; the same
+folders in `../videos/...` are scanned second (deduplicated by name) and hold
+the converted clips committed in the repository. `videos/raw/` is never
+scanned. `VideoTextureService::listVideoFiles` and `findAssetDirectory` remain
+available for simple directory scans.
 
 Environment switches:
 

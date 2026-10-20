@@ -1,5 +1,9 @@
-# The converted clips are written by `make videos` into bin/videos/<base|extra>/
-# (never into the source tree). This folder only holds the sources: base/ is
-# committed and the optional extra/ library is ignored.
+# Raw masters are local conversion inputs for scripts/convert_videos.sh.
+# They are never committed and never read by the engine at runtime.
+raw/
+
+# The converted extra library is optional and can be large: only the folder
+# placeholder is tracked. Run `scripts/convert_videos.sh --extra` to fill it
+# from videos/raw/extra/.
 extra/*
 !extra/.gitkeep

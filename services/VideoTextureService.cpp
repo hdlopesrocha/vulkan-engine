@@ -1308,10 +1308,11 @@ std::vector<std::string> VideoTextureService::listVideoFiles(const std::string& 
 }
 
 std::string VideoTextureService::findAssetDirectory() {
-    // The working directory is bin/: videos/<category> holds the converted
-    // clips there, while ../videos/<category> holds the source clips in the
-    // repository. Converted folders are checked first so a bin/ run prefers
-    // them; the source folders are the fallback.
+    // The working directory is bin/: videos/<category> holds the clips staged
+    // by the build (converted by scripts/convert_videos.sh), while
+    // ../videos/<category> holds the converted clips committed in the
+    // repository. Both contain converted clips only; raw masters live in
+    // videos/raw/ and are never scanned. Staged folders are checked first.
     static const char* candidates[] = {
         "videos/base", "videos/extra", "../videos/base", "../videos/extra",
     };
@@ -1327,12 +1328,13 @@ std::string VideoTextureService::findAssetDirectory() {
 std::vector<VideoTextureService::AvailableVideo> VideoTextureService::listAvailableVideos() {
     std::vector<AvailableVideo> result;
 
-    // The working directory is bin/: videos/<category> there holds the
-    // converted clips, while ../videos/<category> holds the source clips in
-    // the repository. Scanning the converted folder first (and deduplicating by
-    // name) prefers the converted copy, which also carry the base/extra
-    // category directly from their folder. Running from the repository root
-    // instead finds the sources in videos/<category>.
+    // The working directory is bin/: videos/<category> there holds the clips
+    // staged by the build (converted by scripts/convert_videos.sh), while
+    // ../videos/<category> holds the converted clips committed in the
+    // repository. Scanning the staged folder first (and deduplicating by name)
+    // prefers the copy next to the executable; both folders carry the
+    // base/extra category directly from their name. Raw masters in
+    // videos/raw/ are intentionally never scanned.
     std::unordered_set<std::string> seen;
     auto scan = [&](const char* dir, const char* category) {
         for (const std::string& file : listVideoFiles(dir)) {

@@ -32,7 +32,7 @@ agent verification.
 | `make run-debug` | Debug build + run (same logging as `make run`) | (Never close the app or use timeouts, the program is always closed by the user)
 | `MSG="scope: subject" make commit` | Commit staged changes (`git add` first), archive the full message to `logs/<commit_hash>.log` and speak the commit subject aloud; **all agents must commit through this target, never bare `git commit`**. MSG must be an environment prefix, not a make variable |
 | `make shaders` | Compile `shaders/**/*.{vert,frag,geom,comp,tesc,tese}` → `bin/shaders/**/*.spv` via `glslc` (fallback `glslangValidator`) |
-| `make videos` | Convert the committed `videos/base/*` → square, short-GOP `bin/videos/base/*.mp4` (1024², `-crf 26`) used as animated materials. `make videos-extra` does the same for `videos/extra/` → `bin/videos/extra/` |
+| `make videos` | Convert raw masters in `videos/raw/base/` (and any unconverted clip in `videos/base/`) → square, short-GOP `videos/base/*.mp4` (1024², `-crf 26`) via `scripts/convert_videos.sh`, then stage to `bin/videos/`. `make videos-extra` also handles the optional `videos/raw/extra/`. Every normal build runs `videos-stage` automatically (copy only, no ffmpeg) |
 | `make server` | Build headless `bin/server` (no Vulkan/UI linkage, no widgets) |
 | `make clean` | Remove `bin/` and generated SPIR-V |
 | `make valgrind` | Debug build + valgrind with `valgrind.supp` |
@@ -57,6 +57,7 @@ Two entry points: `MyApp.cpp` (class `MyApp` extends `VulkanApp`) and `server.cp
 - `events/` — Input system (keyboard, gamepad, nunchuk), EventManager, IEventHandler
 - `math/` — Camera, Light, BoundingBox, Frustum, Plane, Ray, HeightMap, HeightMapTif, PerlinSurface, Transformation
 - `services/` — TextureMixer (compute texture blending), VideoTextureService (on-demand video decode → dedicated video texture array + video layer materials, see `docs/videos.md`), BillboardService, ImpostorService
+- `scripts/` — helper scripts, including `convert_videos.sh` (the only video conversion/staging path; the engine loads converted clips only)
 - `widgets/` — ImGui debug/editor UI (compiled only with `-DUSE_IMGUI`, i.e. release builds)
 - `tree/` — AttractorField, TreeGenerator, TreeHandler
 - `utils/` — LocalScene, MainSceneLoader, FileReader, SettingsFile, brush system (LandBrush, WaterBrush, Brush3dManager)
