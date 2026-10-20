@@ -9,6 +9,7 @@
 #include <array>
 #include <cassert>
 #include <cstring>
+#include <thread>
 
 namespace {
 
@@ -23,7 +24,7 @@ namespace {
 // destroying it would violate VUID-vkDestroySemaphore-semaphore-05149, so the
 // caller must NOT destroy it (a leak at teardown is acceptable — the OS
 // reclaims everything when the process exits).
-static bool consumeBinarySignal(VkDevice dev, VkQueue queue, VkSemaphore sem) {
+static bool consumeBinarySignal(VkDevice dev, VkQueue queue, VkSemaphore sem, std::mutex& submitMutex) {
     if (sem == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) return false;
     VkSemaphoreSubmitInfo wait{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
     wait.semaphore = sem;
@@ -31,6 +32,11 @@ static bool consumeBinarySignal(VkDevice dev, VkQueue queue, VkSemaphore sem) {
     VkSubmitInfo2 si{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
     si.waitSemaphoreInfoCount = 1;
     si.pWaitSemaphoreInfos = &wait;
+    // Serialize with every other submission on this queue (the app's frame
+    // submit, runSingleTimeCommands and the upload batches all use this mutex):
+    // a worker recycle must never call vkQueueSubmit2/vkQueueWaitIdle
+    // concurrently with another submit.
+    std::lock_guard<std::mutex> lk(submitMutex);
     if (vkQueueSubmit2(queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
         std::cerr << "[UploadManager] consumeBinarySignal: drain submit failed; skipping semaphore destroy (degraded shutdown)" << std::endl;
         return false;
@@ -294,7 +300,7 @@ void UploadManager::prepareFrameWaits(VulkanApp* app) {
             if (s.signalSem != VK_NULL_HANDLE && !s.waitRegistered) {
                 VkSemaphore ss = s.signalSem;
                 app_->deferDestroyUntilAllPending(
-                    [ss, dev = device_, uploadQueue = queue_]() {
+                    [ss, app = app_, dev = device_, uploadQueue = queue_]() {
                         // The upload fence has signaled (isComplete() above), so
                         // this binary semaphore's signal operation has completed
                         // on the GPU. A binary semaphore's signaled state can
@@ -309,7 +315,8 @@ void UploadManager::prepareFrameWaits(VulkanApp* app) {
                         // drain submit fails (device lost), the semaphore may still
                         // be referenced by a cancelled batch — skip the destroy
                         // (leak at teardown; the OS reclaims it).
-                        if (consumeBinarySignal(dev, uploadQueue, ss))
+                        if (consumeBinarySignal(dev, uploadQueue, ss,
+                                                app->getQueueSubmitMutex(uploadQueue)))
                             vkDestroySemaphore(dev, ss, nullptr);
                     });
                 s.signalSem = VK_NULL_HANDLE;
@@ -410,7 +417,7 @@ void UploadManager::destroy() {
                 // submit fails (device lost), the semaphore may still be
                 // referenced by a cancelled batch — skip the destroy (leak at
                 // teardown; the OS reclaims it).
-                if (consumeBinarySignal(device_, queue_, s.signalSem))
+                if (consumeBinarySignal(device_, queue_, s.signalSem, pickMutex()))
                     vkDestroySemaphore(device_, s.signalSem, nullptr);
             }
             s.signalSem = VK_NULL_HANDLE;

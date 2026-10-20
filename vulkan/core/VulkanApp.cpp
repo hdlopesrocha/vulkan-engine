@@ -746,6 +746,40 @@ void VulkanApp::initImGui() {
     // Fonts are uploaded automatically by the backend on first NewFrame()
     if (!imguiInitOk) {
         printf("[ImGui] ERROR: ImGui_ImplVulkan_Init failed!\n");
+        return;
+    }
+
+    // Upload the dynamic font atlas now, before setup starts any worker
+    // submissions. The backend creates/uploads textures inside
+    // RenderDrawData with its own vkQueueSubmit/vkQueueWaitIdle; doing it
+    // during init keeps that internal submit from racing the frame/upload
+    // submissions (VVL THREADING ERROR on the first frame otherwise). The
+    // recorded command buffer carries no draws (no windows yet) and is never
+    // submitted.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f)
+            io.DisplaySize = ImVec2(static_cast<float>(WIDTH), static_cast<float>(HEIGHT));
+        ImGui_ImplVulkan_NewFrame();
+        ImGui::NewFrame();
+        ImGui::EndFrame();
+        if (ImDrawData* drawData = ImGui::GetDrawData()) {
+            VkCommandBuffer cmd = VK_NULL_HANDLE;
+            VkCommandBufferAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            allocInfo.commandPool = transientCommandPool;
+            allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocInfo.commandBufferCount = 1;
+            if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) == VK_SUCCESS) {
+                VkCommandBufferBeginInfo beginInfo{};
+                beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                vkBeginCommandBuffer(cmd, &beginInfo);
+                ImGui_ImplVulkan_RenderDrawData(drawData, cmd);
+                vkEndCommandBuffer(cmd);
+                vkFreeCommandBuffers(device, transientCommandPool, 1, &cmd);
+            }
+        }
     }
 }
 
@@ -1213,7 +1247,8 @@ VkResult VulkanApp::waitFence(VkDevice device, VkFence fence, uint64_t timeoutNs
 // synchronization, avoiding the cost of `vkDeviceWaitIdle`.
 VkResult VulkanApp::queueWaitIdle() {
     std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(graphicsQueue));
-    return vkQueueWaitIdle(graphicsQueue);
+    VkResult r = vkQueueWaitIdle(graphicsQueue);
+    return r;
 }
 
 VkResult VulkanApp::deviceWaitIdle() {
@@ -2051,21 +2086,11 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
         SubmissionTracker::record("sync-2");
-        VkResult submitRes = VK_SUCCESS;
-        {
-            std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(graphicsQueue));
-            submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
-        }
+        // The enclosing block already holds this queue's submit mutex; locking
+        // it again here self-deadlocks (std::mutex is not recursive).
+        VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes == VK_SUCCESS) {
-            // If this command buffer belongs to the async ring (it was
-            // obtained via allocatePrimaryCommandBuffer), also signal the
-            // slot's ring fence. Without this the ring fence is never
-            // submitted and the next allocatePrimaryCommandBuffer() for
-            // this slot deadlocks in vkWaitForFences(UINT64_MAX).
-            // The async submit paths (submitCommandBufferAsync/ToQueue)
-            // already do this; this synchronous submit path did not.
-            // signalRingSlotFence takes the queue mutex itself, so this runs
-            // after the submit's lock is released.
+            // Also under the same queue lock; signalRingSlotFence must not lock.
             signalRingSlotFence(commandBuffer, graphicsQueue);
         }
         if (submitRes != VK_SUCCESS) {
@@ -4499,7 +4524,11 @@ void VulkanApp::drawFrame() {
         draw(commandBuffer);
     } else {
         ImDrawData* drawData = ImGui::GetDrawData();
-        if (drawData) ImGui_ImplVulkan_RenderDrawData(drawData, commandBuffer);
+        if (drawData) {
+            // Same dynamic-texture submit as the app path: serialize it.
+            std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(graphicsQueue));
+            ImGui_ImplVulkan_RenderDrawData(drawData, commandBuffer);
+        }
     }
 
     vkCmdEndRendering(commandBuffer);
@@ -5976,15 +6005,13 @@ void VulkanApp::markQueueSegmentDone(VkFence fence, uint64_t endNs) {
 }
 
 std::mutex& VulkanApp::getQueueSubmitMutex(VkQueue q) {
-    // One stable mutex per distinct VkQueue handle. Aliased queues share a handle
-    // (and therefore a mutex), so submissions to one physical queue still serialize
-    // while distinct queues run concurrently.
-    static std::unordered_map<VkQueue, std::unique_ptr<std::mutex>> mutexes;
-    static std::mutex guard;
-    std::lock_guard<std::mutex> lk(guard);
-    auto it = mutexes.find(q);
-    if (it == mutexes.end()) it = mutexes.emplace(q, std::make_unique<std::mutex>()).first;
-    return *(it->second);
+    // One app-wide submission mutex. The engine exposes several queue objects
+    // that can alias the same physical queue, and a submission race with the
+    // main frame/present is never worth the microseconds saved by per-queue
+    // locking (all submissions are cheap; GPU work stays asynchronous).
+    (void)q;
+    static std::mutex submissionMutex;
+    return submissionMutex;
 }
 
 // ---------------------------------------------------------------------------

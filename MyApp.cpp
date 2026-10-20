@@ -4034,7 +4034,14 @@ public:
             VkQueryPool qp = queryPools[getCurrentFrame()];
             if (profilingEnabled && qp != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, qp, 18);
-            ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
+            {
+                // ImGui's dynamic texture uploads (font atlas created on the
+                // first frame, widget textures) issue their own vkQueueSubmit /
+                // vkQueueWaitIdle on this queue. Serialize with the engine's
+                // frame and async upload submissions.
+                std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(getGraphicsQueue()));
+                ImGui_ImplVulkan_RenderDrawData(draw_data, commandBuffer);
+            }
             if (profilingEnabled && qp != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 19);
         }
