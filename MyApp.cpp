@@ -999,6 +999,8 @@ public:
             }
             return names;
         });
+        textureViewer->setVideoService(videoTextureService.get());
+        textureViewer->setVideoMaterialIndex(videoCubeMaterialIndex);
         textureViewer->setVideoPreviewProvider([this](uint32_t slot, int map) -> ImTextureID {
             if (!videoTextureService) return 0;
             switch (map) {

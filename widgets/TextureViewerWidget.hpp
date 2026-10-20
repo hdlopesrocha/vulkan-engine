@@ -10,6 +10,8 @@
 #include "types/MaterialProperties.hpp"
 #include "Widget.hpp"
 
+class VideoTextureService;
+
 class TextureViewer : public Widget {
 public:
     TextureViewer();
@@ -21,6 +23,13 @@ public:
     // map index matches the PreviewTab order (0 albedo, 1 normal, 2 height,
     // 3 roughness, 4 AO); derived maps are produced from the current frame.
     void setVideoPreviewProvider(std::function<ImTextureID(uint32_t, int)> fn) { videoPreviewProvider = std::move(fn); }
+    // Full video service: lets this panel list clips, assign one to the
+    // current material, and expose play/pause/loop so playback is verifiable
+    // from the same place the blend mode is edited.
+    void setVideoService(VideoTextureService* service) { videoService = service; }
+    // Material painted on the video-layer demo cube (blend modes composite
+    // there); lets the panel jump straight to it.
+    void setVideoMaterialIndex(int index) { videoMaterialIndex = index; }
 
 private:
     TextureArrayManager* arrayManager = nullptr;
@@ -29,4 +38,6 @@ private:
     std::function<void(size_t)> onMaterialChanged;
     std::function<std::vector<std::string>()> videoSlotNamesProvider;
     std::function<ImTextureID(uint32_t, int)> videoPreviewProvider;
+    VideoTextureService* videoService = nullptr;
+    int videoMaterialIndex = -1;
 };

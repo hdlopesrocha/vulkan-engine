@@ -6,6 +6,7 @@
 #include "components/ColumnLayout.hpp"
 #include "components/ScrollablePicker.hpp"
 #include "components/ImGuiHelpers.hpp"
+#include "../services/VideoTextureService.hpp"
 
 namespace {
 constexpr float kPreviewSize = 256.0f;
@@ -193,6 +194,86 @@ void TextureViewer::render() {
         }
         ImGui::PopID();
         ImGui::TextWrapped("Use the Preview tabs to pick Albedo / Normal / Height / Roughness / AO thumbnails.");
+
+        // ── Video clips ────────────────────────────────────────────────────
+        // Videos are first-class texture sources here: their live thumbnails
+        // can be assigned to the current material, which turns it into a Video
+        // material so the blend mode and lighting controls above apply. Play
+        // and loop are exposed next to the assignment so a paused clip is one
+        // click away from playing.
+        if (videoService && videoService->count() > 0) {
+            ImGui::Spacing();
+            ColSeparator();
+            ImGui::Text("Video clips");
+            MaterialProperties& videoMat = (*materials)[currentIndex];
+            const std::vector<VideoTextureService::VideoState> videoStates = videoService->states();
+            int selectedVideo = -1;
+            for (size_t i = 0; i < videoStates.size(); ++i) {
+                const auto& vs = videoStates[i];
+                if (videoMat.kind == MaterialKind::Video &&
+                    videoMat.textureIndex == static_cast<int>(vs.slot)) {
+                    selectedVideo = static_cast<int>(i);
+                }
+                ImGui::PushID(static_cast<int>(i));
+                const ImTextureID thumb = videoService->previewTexture(vs.slot);
+                bool assigned = false;
+                if (thumb) {
+                    assigned = ImGui::ImageButton("clip", thumb, ImVec2(44.0f, 44.0f));
+                } else {
+                    assigned = ImGui::Button("empty", ImVec2(44.0f, 44.0f));
+                }
+                if (assigned) {
+                    videoMat.kind = MaterialKind::Video;
+                    videoMat.textureIndex = static_cast<int>(vs.slot);
+                    videoService->setPlaying(i, true);
+                    videoService->setLooping(i, true);
+                    materialDirty = true;
+                    selectedVideo = static_cast<int>(i);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s (slot %u)\nClick to assign it to material %zu.",
+                                      vs.name.c_str(), vs.slot, currentIndex);
+                }
+                ImGui::PopID();
+                if ((i + 1) % 6 != 0) ImGui::SameLine();
+            }
+            ImGui::NewLine();
+            if (selectedVideo >= 0) {
+                const auto& vs = videoStates[static_cast<size_t>(selectedVideo)];
+                ImGui::Text("%s  %.2f / %.2f s", vs.name.c_str(), vs.clock, vs.duration);
+                bool playing = vs.playing;
+                if (ImGui::Checkbox("play", &playing))
+                    videoService->setPlaying(static_cast<size_t>(selectedVideo), playing);
+                ImGui::SameLine();
+                bool looping = vs.looping;
+                if (ImGui::Checkbox("loop", &looping))
+                    videoService->setLooping(static_cast<size_t>(selectedVideo), looping);
+            } else if (videoMat.kind == MaterialKind::Video) {
+                ImGui::TextDisabled("textureIndex %d does not name a loaded clip", videoMat.textureIndex);
+            }
+            if (videoMaterialIndex >= 0 && static_cast<size_t>(videoMaterialIndex) < tc) {
+                if (ImGui::Button("Select video cube material")) {
+                    currentIndex = static_cast<size_t>(videoMaterialIndex);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Jump to material %d (kind Video on the video-layer demo cube).",
+                                      videoMaterialIndex);
+                }
+            }
+            if (ImGui::SmallButton("Play all")) {
+                for (size_t i = 0; i < videoStates.size(); ++i) videoService->setPlaying(i, true);
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Pause all")) {
+                for (size_t i = 0; i < videoStates.size(); ++i) videoService->setPlaying(i, false);
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Loop all")) {
+                for (size_t i = 0; i < videoStates.size(); ++i) videoService->setLooping(i, true);
+            }
+            ImGui::TextDisabled("Video shading/blending is applied by the video layer "
+                                "(demo cube material %d).", videoMaterialIndex);
+        }
     }});
 
     sections.push_back({[&]() {
@@ -347,7 +428,7 @@ void TextureViewer::render() {
     static std::vector<float> cachedH;
     const std::vector<float> estimates = {
         EstimateSectionHeight(7),
-        EstimateSectionHeight(4),
+        EstimateSectionHeight(13),
         500.0f,
         EstimateSectionHeight(4),
         EstimateSectionHeight(7),

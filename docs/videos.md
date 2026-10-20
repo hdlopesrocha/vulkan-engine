@@ -120,10 +120,14 @@ builds a tangent frame from the UV mapping derivatives, so the derived normal
 works for triplanar, projection and SDF-spherical coordinates.
 
 In the Textures panel a Video material shows the **live** video frame in the
-Albedo tab, the derived Normal/Height/Roughness maps in the other tabs, and a
-row of live clip thumbnails that assign a slot to the material. This is also
-why the preview is no longer a frozen material-array layer: it samples the same
-video array the scene does.
+Albedo tab, the derived Normal/Height/Roughness maps in the other tabs, and the
+Texture column lists the loaded clips as live thumbnails. Clicking a thumbnail
+assigns that clip to the current material (kind becomes Video) and starts it
+with looping enabled; Play/Pause/Loop controls sit next to the list, and
+**Select video cube material** jumps to the demo cube whose video-layer
+compositing applies the material's blend mode. This is also why the preview is
+no longer a frozen material-array layer: it samples the same video array the
+scene does.
 
 ### Blend modes
 
