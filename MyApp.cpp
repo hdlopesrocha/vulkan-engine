@@ -14,6 +14,10 @@
 #include <cstdlib>
 #include <atomic>
 #include <array>
+#include <shared_mutex>
+#include <sstream>
+#include <cstdint>
+#include <zlib.h>
 #include <sys/resource.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -76,6 +80,7 @@
 #include "sdf/SweepSignedDistanceFunction.hpp"
 #include "utils/MainSceneLoader.hpp"
 #include "space/UniqueChangeCollector.hpp"
+#include "space/OctreeFile.hpp"
 #include "types/Settings.hpp"
 #include "types/WaterSettings.hpp"
 #include "utils/GraphicsSettingsCommand.hpp"
@@ -274,6 +279,30 @@ public:
     Brush3dManager brushManager;
     // Cached sweep start position so applyBrushToScene uses the same pair as the preview
     glm::vec3 cachedSweepStart = glm::vec3(0.0f);
+
+    // ── Brush undo history (per layer) ─────────────────────────────────────
+    // The layer's octree is a pure result of its base scene plus the brushes
+    // applied to it. We keep one compressed snapshot of that base (taken
+    // before the first brush on the layer) and the ordered brush events. Undo
+    // restores the base and replays the remaining events, so overlapping
+    // add/remove/paint strokes are reproduced exactly instead of trying to
+    // invert a non-invertible SDF edit.
+    struct BrushHistoryEvent {
+        BrushEntry entry;
+        glm::vec3 sweepStart = glm::vec3(0.0f);
+        double timestamp = 0.0;
+        glm::vec3 boundsCenter = glm::vec3(0.0f);
+        float boundsRadius = 0.0f;
+    };
+    struct LayerBrushHistory {
+        bool hasBase = false;
+        std::vector<uint8_t> baseSnapshot;  // zlib-compressed OctreeFile stream
+        uint64_t baseRawBytes = 0;
+        std::vector<BrushHistoryEvent> events;
+    };
+    std::vector<LayerBrushHistory> brushHistories;
+    bool undoReplaying = false;
+    bool undoKeyWasDown = false;
     // Timestamp slots (12 intervals x 2). Owner CB in brackets; each CB
     // resets only its own slots so cross-queue reset/write races stay
     // impossible:
@@ -1206,6 +1235,15 @@ public:
     void updateBrushPreview(uint32_t frameIndex);
     // Apply the selected brush SDF to the main scene's octree on the selected layer
     void applyBrushToScene();
+    // Apply one brush event to a layer's octree (shared by live apply and undo
+    // replay); does not record history or advance previousTranslate.
+    void applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& sweepStart, Layer layer);
+    // Serialize/restore the layer base and manage the per-layer brush stack.
+    void ensureBrushBase(Layer layer, Octree& tree);
+    void recordBrushEvent(Layer layer, const BrushHistoryEvent& event);
+    void undoBrushLayer(Layer layer, bool group);
+    void clearBrushHistory();
+    void pollBrushUndo();
     // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
     void generateMap();
     // Builds the GPU droplet sim + renderer for the active scene (once).
@@ -1430,6 +1468,9 @@ public:
             sceneRenderer->skyRenderer->setRaycastPixelSize(settings.raycastPixelSize);
             sceneRenderer->skyRenderer->update(this);
         }
+
+        // ── Brush undo (Ctrl+Z, Shift+Ctrl+Z for the <1 s group) ────────────
+        pollBrushUndo();
 
         // ── Brush apply mode (Click vs Drag) ────────────────────────────────
         // In Drag mode, SPACE (keyboard) or B (Wiimote) applies continuously
@@ -4637,6 +4678,51 @@ static void applyBrushWithEffect(const BrushEntry& entry, SignedDistanceFunction
     }
 }
 
+// Bounds of one brush application (union of the current and, in sweep mode,
+// the previous placement), padded for the optional effect displacement. Shared
+// by the GPU preview and the undo history intersection tests.
+static void computeBrushBounds(const BrushEntry& entry, const glm::vec3& sweepStart,
+                               glm::vec3& boundsCenter, float& boundsRadius) {
+    BoundingSphere bounds = [&]() {
+        // Fallback for a brush whose primitive reports no sphere.
+        BoundingSphere s;
+        s.center = entry.translate;
+        s.radius = glm::length(entry.scale);
+        BrushEntry noSweep = entry;
+        noSweep.sweepMode = false;
+        auto sphereFor = [&](const glm::vec3& where) {
+            Transformation m(entry.scale, where, entry.rot);
+            forEachBrushSDF(noSweep, m, where, entry.minSize, "[computeBrushBounds]",
+                [&](SignedDistanceFunction& func) {
+                    BoundingSphere bs = func.getSphere(m, entry.minSize);
+                    if (bs.radius > 0.0f) s = bs;
+                    else { s.center = func.getCenter(); s.radius = glm::length(entry.scale); }
+                });
+        };
+        sphereFor(entry.translate);
+        if (entry.sweepMode) {
+            const BoundingSphere current = s;
+            sphereFor(sweepStart);
+            const BoundingSphere prev = s;
+            const glm::vec3 delta = current.center - prev.center;
+            const float dist = glm::length(delta);
+            const float radius = (dist + current.radius + prev.radius) * 0.5f;
+            s.center = (dist < 1e-6f) ? current.center
+                : prev.center + delta * ((radius - prev.radius) / dist);
+            s.radius = radius;
+        }
+        return s;
+    }();
+    if (entry.useEffect) {
+        float pad = entry.effectAmplitude * 1.97f;
+        if (entry.effectType == 2) pad = entry.effectAmplitude * 0.5f;
+        else if (entry.effectType == 3) pad = entry.effectAmplitude;
+        bounds.radius += pad;
+    }
+    boundsRadius = std::max(bounds.radius, 0.1f) * 1.05f;
+    boundsCenter = bounds.center;
+}
+
 // Per-frame brush preview update: stream the selected entry's SDF
 // description into the BrushSdfRenderer's UBO (consumed by the preview
 // raymarcher and by the solid shader's PAINT/REMOVE intersection test). No
@@ -4684,44 +4770,7 @@ void MyApp::updateBrushPreview(uint32_t frameIndex) {
     // constructors (bias += amplitude * factor).
     glm::vec3 boundsCenter(entry->translate);
     float boundsRadius = glm::length(entry->scale);
-    {
-        BrushEntry noSweep = *entry;
-        noSweep.sweepMode = false;
-        auto sphereFor = [&](const glm::vec3& where, glm::vec3& c, float& r) {
-            Transformation m(entry->scale, where, entry->rot);
-            forEachBrushSDF(noSweep, m, where, entry->minSize, "[updateBrushPreview]",
-                [&](SignedDistanceFunction& func) {
-                    BoundingSphere s = func.getSphere(m, entry->minSize);
-                    if (s.radius > 0.0f) { c = s.center; r = s.radius; }
-                    else { c = func.getCenter(); r = glm::length(entry->scale); }
-                });
-        };
-        glm::vec3 cCur = boundsCenter;
-        float rCur = boundsRadius;
-        sphereFor(entry->translate, cCur, rCur);
-        boundsCenter = cCur;
-        boundsRadius = rCur;
-        if (entry->sweepMode) {
-            glm::vec3 cPrev = cCur;
-            float rPrev = rCur;
-            sphereFor(cachedSweepStart, cPrev, rPrev);
-            glm::vec3 delta = cCur - cPrev;
-            float dist = glm::length(delta);
-            boundsRadius = (dist + rCur + rPrev) * 0.5f;
-            boundsCenter = (dist < 1e-6f) ? cCur
-                : cPrev + delta * ((boundsRadius - rPrev) / dist);
-        }
-    }
-    if (entry->useEffect) {
-        // Match each effect's CPU sphere-bias padding (see the
-        // *DistanceEffect constructors): perlin uses amplitude * 1.97, sine
-        // 0.5, voronoi 1.0.
-        float pad = entry->effectAmplitude * 1.97f;
-        if (entry->effectType == 2) pad = entry->effectAmplitude * 0.5f;
-        else if (entry->effectType == 3) pad = entry->effectAmplitude;
-        boundsRadius += pad;
-    }
-    boundsRadius = std::max(boundsRadius, 0.1f) * 1.05f;
+    computeBrushBounds(*entry, cachedSweepStart, boundsCenter, boundsRadius);
 
     sceneRenderer->brushRenderer->updateParams(frameIndex, *entry, cachedSweepStart,
                                                boundsCenter, boundsRadius,
@@ -4731,22 +4780,9 @@ void MyApp::updateBrushPreview(uint32_t frameIndex) {
     if (entry->sweepMode) entry->previousTranslate = entry->translate;
 }
 
-void MyApp::applyBrushToScene() {
-    if (!world || !sceneRenderer) return;
-    // Brush edits target the LOCAL octrees; in remote mode there is nothing
-    // local to edit (the server owns the SDF), so refuse instead of silently
-    // building invisible local content.
-    if (useRemote) {
-        std::cout << "[MyApp::applyBrushToScene] ignored in remote mode (server owns the scene)\n";
-        return;
-    }
+void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& sweepStart, Layer targetLayer) {
+    if (!world || !sceneRenderer || useRemote) return;
 
-    const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
-    if (!selectedEntry) return;
-
-    const auto& entry = *selectedEntry;
-
-    // Select brush operation based on brushMode
     AddSignedDistanceOperation addOp;
     DeleteSignedDistanceOperation deleteOp;
     PaintSignedDistanceOperation paintOp;
@@ -4758,11 +4794,9 @@ void MyApp::applyBrushToScene() {
         }
     }();
 
-    // Select target octree and handler based on targetLayer (dynamic index).
     ensureLayerHandlers();
-    Layer targetLayer = static_cast<Layer>(entry.targetLayer);
     if (!world->activeScene().validLayer(targetLayer)) {
-        std::cerr << "[MyApp::applyBrushToScene] invalid targetLayer " << entry.targetLayer << std::endl;
+        std::cerr << "[applyBrushEventToLayer] invalid targetLayer " << static_cast<int>(targetLayer) << std::endl;
         return;
     }
     Octree* octreePtr = world->scene().getLayerOctree(targetLayer);
@@ -4777,11 +4811,8 @@ void MyApp::applyBrushToScene() {
         deleteHandler = collectors[targetLayer]->deleteHandler;
     }
 
-    // cachedSweepStart was already set by updateBrushPreview — use the same pair
     Transformation model(entry.scale, entry.translate, entry.rot);
     SimpleBrush simpleBrush(entry.materialIndex, entry.hsv);
-    // The SVG brush colours each vertex with the fill of the contour that
-    // contains it (engine HSV tint); other brushes tint uniformly.
     std::unique_ptr<SvgBrush> svgBrush;
     if (entry.sdfType == 10) {
         if (std::shared_ptr<const SvgShape> shape = loadSvgShapeCached(entry.svgPath, nullptr)) {
@@ -4795,22 +4826,215 @@ void MyApp::applyBrushToScene() {
 
     Simplifier simplifier(0.95f, 0.2f, true);
     auto applyEntry = [&](SignedDistanceFunction& wrappedFunc) {
-        applyBrushWithEffect(entry, wrappedFunc, octree, brushOp, model, brush, simplifier, updateHandler, deleteHandler);
+        applyBrushWithEffect(entry, wrappedFunc, octree, brushOp, model, brush, simplifier,
+                             updateHandler, deleteHandler);
     };
+    forEachBrushSDF(entry, model, sweepStart, entry.minSize, "[applyBrushEventToLayer]", applyEntry);
+}
 
-    // Use cachedSweepStart from rebuild's START (before it advanced previousTranslate)
-    forEachBrushSDF(entry, model, cachedSweepStart, entry.minSize, "[applyBrushToScene]", applyEntry);
+void MyApp::ensureBrushBase(Layer layer, Octree& tree) {
+    if (layer < 0) return;
+    if (brushHistories.size() <= static_cast<size_t>(layer)) brushHistories.resize(static_cast<size_t>(layer) + 1);
+    LayerBrushHistory& history = brushHistories[static_cast<size_t>(layer)];
+    if (history.hasBase) return;
 
-    // Flush queued change events to trigger mesh creation. Chunk uploads are
-    // incremental (addMeshSlotted() + uploadSlot()) — no global rebuild required.
+    std::ostringstream stream(std::ios::binary);
+    {
+        std::shared_lock<std::shared_mutex> lock(tree.treeMutex);
+        OctreeFile file(&tree, "brush-undo-base");
+        file.writeToStream(stream);
+    }
+    const std::string raw = stream.str();
+    if (raw.empty()) return;
+
+    uLongf compressedSize = compressBound(static_cast<uLong>(raw.size()));
+    std::vector<uint8_t> compressed(compressedSize);
+    if (compress2(compressed.data(), &compressedSize,
+                  reinterpret_cast<const Bytef*>(raw.data()), static_cast<uLong>(raw.size()),
+                  Z_BEST_SPEED) != Z_OK) {
+        std::cerr << "[BrushUndo] failed to compress the base snapshot for layer " << layer << "\n";
+        return;
+    }
+    compressed.resize(compressedSize);
+    history.baseSnapshot = std::move(compressed);
+    history.baseRawBytes = raw.size();
+    history.hasBase = true;
+    std::cout << "[BrushUndo] layer " << layer << " base snapshot: " << history.baseSnapshot.size() / 1048576.0
+              << " MiB compressed (" << history.baseRawBytes / 1048576.0 << " MiB raw)\n";
+}
+
+void MyApp::recordBrushEvent(Layer layer, const BrushHistoryEvent& event) {
+    if (layer < 0) return;
+    if (brushHistories.size() <= static_cast<size_t>(layer)) brushHistories.resize(static_cast<size_t>(layer) + 1);
+    brushHistories[static_cast<size_t>(layer)].events.push_back(event);
+}
+
+void MyApp::undoBrushLayer(Layer layer, bool group) {
+    if (useRemote) {
+        std::cout << "[BrushUndo] ignored in remote mode (server owns the scene)\n";
+        return;
+    }
+    if (!world || !sceneRenderer || layer < 0 || static_cast<size_t>(layer) >= brushHistories.size()) return;
+    LayerBrushHistory& history = brushHistories[static_cast<size_t>(layer)];
+    if (!history.hasBase || history.events.empty()) {
+        std::cout << "[BrushUndo] layer " << layer << " has nothing to undo\n";
+        return;
+    }
+    if (!world->activeScene().validLayer(layer)) return;
+    Octree* tree = world->scene().getLayerOctree(layer);
+    if (!tree) return;
+
+    size_t undoCount = 1;
+    if (group) {
+        const double newest = history.events.back().timestamp;
+        while (undoCount < history.events.size()) {
+            const double previous = history.events[history.events.size() - 1 - undoCount].timestamp;
+            if (newest - previous >= 1.0) break;
+            ++undoCount;
+        }
+    }
+
+    // Quiesce the background tessellation, drop pending uploads destined for
+    // this layer (they reference the pre-undo node pointers), upload the other
+    // layers' outstanding work, then free this layer's GPU chunks.
+    if (sceneProcessThread.joinable()) sceneProcessThread.join();
+    {
+        std::deque<SceneRenderer::PendingMeshData> pending;
+        sceneRenderer->drainPendingMeshes(pending, std::numeric_limits<size_t>::max());
+        for (auto it = pending.begin(); it != pending.end();) {
+            if (it->layer == layer) it = pending.erase(it);
+            else ++it;
+        }
+        if (!pending.empty()) {
+            sceneRenderer->processPendingMeshes(this, camera.getPosition(), pending);
+        }
+    }
+    sceneRenderer->removeAllLayerMeshes(layer);
+
+    std::vector<uint8_t> raw(history.baseRawBytes);
+    uLongf rawSize = static_cast<uLongf>(raw.size());
+    const int rc = uncompress(raw.data(), &rawSize, history.baseSnapshot.data(),
+                              static_cast<uLong>(history.baseSnapshot.size()));
+    if (rc != Z_OK || rawSize != history.baseRawBytes) {
+        std::cerr << "[BrushUndo] failed to decompress the base snapshot for layer " << layer
+                  << " (zlib " << rc << ")\n";
+        return;
+    }
+    {
+        std::unique_lock<std::shared_mutex> lock(tree->treeMutex);
+        tree->reset();
+        std::istringstream stream(std::string(reinterpret_cast<const char*>(raw.data()), raw.size()),
+                                  std::ios::binary);
+        OctreeFile file(tree, "brush-undo-base");
+        file.readFromStream(stream);
+        if (!tree->root) {
+            std::cerr << "[BrushUndo] restored base has no root for layer " << layer << "\n";
+            return;
+        }
+    }
+
+    history.events.resize(history.events.size() - undoCount);
+
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        if (layer < static_cast<Layer>(collectors.size()) && collectors[layer]) collectors[layer]->clear();
+    }
+
+    undoReplaying = true;
+    for (const BrushHistoryEvent& event : history.events) {
+        applyBrushEventToLayer(event.entry, event.sweepStart, layer);
+    }
+    undoReplaying = false;
+
+    dispatchAllEvents();
+    // Re-emit synchronously: the restored tree has fresh node pointers, so the
+    // old tessellation dedup must be dropped and every chunk re-requested.
+    {
+        Scene& scene = world->activeScene();
+        scene.invalidateTessellationCache(layer);
+        Octree::OctreeNodeDataHandler updateHandler;
+        {
+            std::lock_guard<std::mutex> lock(layersSyncMutex_);
+            if (layer >= 0 && static_cast<size_t>(layer) < collectors.size() && collectors[layer]) {
+                updateHandler = collectors[layer]->updateHandler;
+            }
+        }
+        if (updateHandler) {
+            scene.reemitLayer(layer, updateHandler);
+            dispatchLayerEvents(layer);
+        }
+    }
+    std::cout << "[BrushUndo] layer " << layer << ": undid " << undoCount << " event(s), replayed "
+              << history.events.size() << " (base " << history.baseSnapshot.size() / 1048576.0
+              << " MiB compressed)\n";
+}
+
+void MyApp::clearBrushHistory() {
+    brushHistories.clear();
+    undoReplaying = false;
+    undoKeyWasDown = false;
+}
+
+void MyApp::pollBrushUndo() {
+    GLFWwindow* glfwWindow = getWindow();
+    if (!glfwWindow) return;
+    const bool ctrl = glfwGetKey(glfwWindow, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                      glfwGetKey(glfwWindow, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+    const bool shift = glfwGetKey(glfwWindow, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                       glfwGetKey(glfwWindow, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+    const bool z = glfwGetKey(glfwWindow, GLFW_KEY_Z) == GLFW_PRESS;
+    const bool combo = ctrl && z;
+    if (combo && !undoKeyWasDown) {
+        const bool uiCapture = ImGui::GetIO().WantCaptureKeyboard;
+        const bool radial = radialMenu && radialMenu->IsVisible();
+        if (!uiCapture && !radial) {
+            const BrushEntry* entry = brushManager.getSelectedEntry();
+            if (entry) undoBrushLayer(static_cast<Layer>(entry->targetLayer), shift);
+        }
+    }
+    undoKeyWasDown = combo;
+}
+
+void MyApp::applyBrushToScene() {
+    if (!world || !sceneRenderer) return;
+    // Brush edits target the LOCAL octrees; in remote mode there is nothing
+    // local to edit (the server owns the SDF), so refuse instead of silently
+    // building invisible local content.
+    if (useRemote) {
+        std::cout << "[MyApp::applyBrushToScene] ignored in remote mode (server owns the scene)\n";
+        return;
+    }
+
+    const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
+    if (!selectedEntry) return;
+    const BrushEntry entry = *selectedEntry;
+    const Layer targetLayer = static_cast<Layer>(entry.targetLayer);
+    if (!world->activeScene().validLayer(targetLayer)) {
+        std::cerr << "[MyApp::applyBrushToScene] invalid targetLayer " << entry.targetLayer << std::endl;
+        return;
+    }
+
+    if (!undoReplaying) {
+        if (Octree* tree = world->scene().getLayerOctree(targetLayer)) {
+            ensureBrushBase(targetLayer, *tree);
+            BrushHistoryEvent event;
+            event.entry = entry;
+            event.sweepStart = cachedSweepStart;
+            event.timestamp = glfwGetTime();
+            computeBrushBounds(entry, cachedSweepStart, event.boundsCenter, event.boundsRadius);
+            // Record only after the apply succeeds? The apply has no return
+            // value; recording first preserves ordering even if the SDF is a
+            // no-op, which is what the history-based replay expects.
+            recordBrushEvent(targetLayer, event);
+        }
+    }
+
+    applyBrushEventToLayer(entry, cachedSweepStart, targetLayer);
     dispatchAllEvents();
 
-    // Update previousTranslate for the next sweep apply
     if (entry.sweepMode) {
         BrushEntry* mutableEntry = brushManager.getSelectedEntry();
-        if (mutableEntry) {
-            mutableEntry->previousTranslate = mutableEntry->translate;
-        }
+        if (mutableEntry) mutableEntry->previousTranslate = mutableEntry->translate;
     }
 }
 
@@ -4839,6 +5063,7 @@ void MyApp::action() {
 }
 
 void MyApp::resetSceneState() {
+    clearBrushHistory();
     stopRemoteDispatch();
     if (sceneProcessThread.joinable()) sceneProcessThread.join();
     deviceWaitIdle();
@@ -4979,6 +5204,14 @@ void MyApp::ensureLayerHandlers() {
 void MyApp::syncLayers() {
     if (!world) return;
     Scene* active = &world->activeScene();
+    {
+        static size_t knownLayerCount = 0;
+        const size_t layerCount = active->layerCount();
+        if (layerCount != knownLayerCount) {
+            if (knownLayerCount != 0) clearBrushHistory();
+            knownLayerCount = layerCount;
+        }
+    }
     if (layersWidget) {
         layersWidget->setScene(active);
         layersWidget->setAllowStructureEdit(!useRemote);
