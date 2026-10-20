@@ -393,11 +393,22 @@ struct OctreeTriangleTessellator::Walk {
             }
         }
 
-        // Rotate polygon so `from` (owner/finest cell) is at index 0 for reliable UV.
+        // Rotate the polygon so the OWNER (the finest shared quadrant cell) is
+        // at index 0. Both sides of a chunk boundary resolve the same owner,
+        // so their duplicated boundary quads get the same vertex order and the
+        // same triplanar UV plane. Rotating around `from` instead made each
+        // chunk rotate the same quad to a different cell: the two copies
+        // z-fought with different textures, leaving bright seams along every
+        // chunk border.
         {
             int it = -1;
             for(int k = 0; k < pcount; ++k) {
-                if(plist[k].node == from) { it = k; break; }
+                if(plist[k].node == owner.node
+                    || samePosition(nodeVertex(plist[k].node, plist[k].cube).position,
+                                    nodeVertex(owner.node, owner.cube).position, edge.eps)) {
+                    it = k;
+                    break;
+                }
             }
             if(it > 0 && it < pcount) {
                 EdgeCell tmp[4];

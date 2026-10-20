@@ -720,11 +720,16 @@ void emitSegment(EdgeSpan edge, float start, float end, bool sign0, bool sign1) 
         }
     }
 
-    // Rotate the polygon so `from` (the anchor) leads, for consistent UVs.
+    // Rotate the polygon so the shared OWNER leads. Both chunks on either side
+    // of a boundary resolve the same owner, so their duplicated boundary quads
+    // get identical vertex order and triplanar plane (rotating around each
+    // chunk's own anchor produced different copies that z-fought along the
+    // chunk borders).
     {
         int it = -1;
         for (int k = 0; k < pcount; ++k) {
-            if (plist[k].id == uint(pc.fromId)) {
+            if (plist[k].id == owner.id
+                || samePosition(cellPosCached(plist[k]), cellPosCached(owner), edge.eps)) {
                 it = k;
                 break;
             }
