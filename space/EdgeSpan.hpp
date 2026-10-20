@@ -18,6 +18,11 @@ struct EdgeSpan {
     float start = 0.0f;
     float end = 0.0f;
     float eps = 1e-6f;
+    // Side-selector nudge for samplePoint(). One ulp is a denormal at exactly
+    // 0.0, and GPUs with denormals-flush-to-zero collapse +/- there, merging
+    // the quadrants. This is a small NORMAL offset (< 1% of the cell) so the
+    // sample stays inside the intended quadrant cell on every backend.
+    float sampleOffset = 1e-6f;
 
     // Span of the SDF corner-pair edge `edgeIndex` on `cellCube`; the axis is
     // the edge's dominant direction. `rootLength` is the world root's edge

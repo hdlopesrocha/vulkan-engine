@@ -27,9 +27,18 @@ void quadrantSigns(int axis, int quadrant, int &su, int &sv) {
 // One ulp toward a side. A sample sitting exactly on a face shared with the
 // neighboring cell is ambiguous (the descent may land in either cell), so it is
 // moved into the intended quadrant.
-float sideCoordinate(float value, int side) {
-    return std::nextafter(value, side < 0 ? -std::numeric_limits<float>::infinity()
-                                          :  std::numeric_limits<float>::infinity());
+float sideCoordinate(float value, int side, float offset) {
+    const float nudged = std::nextafter(value, side < 0 ? -std::numeric_limits<float>::infinity()
+                                                        :  std::numeric_limits<float>::infinity());
+    // At 0.0 the next float is a denormal. GPUs with FTZ (and some CPUs with
+    // DAZ) flush it to zero, so -0.0 compares >= 0.0 and the "negative"
+    // quadrant resolves into the positive cell: exactly the missing segments
+    // along the world x/y/z axis planes. Use a small normal offset instead
+    // whenever the ulp nudge is subnormal.
+    if (std::fabs(nudged) < std::numeric_limits<float>::min()) {
+        return value + (side < 0 ? -offset : offset);
+    }
+    return nudged;
 }
 } // namespace
 
@@ -53,6 +62,10 @@ EdgeSpan EdgeSpan::fromCellEdge(int edgeIndex, const BoundingCube &cellCube, flo
     edge.start = glm::min(p0[edge.axis], p1[edge.axis]);
     edge.end = glm::max(p0[edge.axis], p1[edge.axis]);
     edge.eps = glm::max(rootLength, cellCube.getLengthX()) * 1e-6f;
+    // 0.1% of the cell: enough to survive FTZ at coordinate 0, far below the
+    // quadrant cell's size (neighbour cells at the walk resolution are at
+    // least this large), so the sample still lands in the intended cell.
+    edge.sampleOffset = std::max(cellCube.getLengthX() * 1e-3f, 1e-6f);
     return edge;
 }
 
@@ -70,7 +83,7 @@ glm::vec3 EdgeSpan::samplePoint(float t, int quadrant) const {
 
     glm::vec3 p(0.0f);
     p[axis] = t;
-    p[u] = sideCoordinate(fixedU, su);
-    p[v] = sideCoordinate(fixedV, sv);
+    p[u] = sideCoordinate(fixedU, su, sampleOffset);
+    p[v] = sideCoordinate(fixedV, sv, sampleOffset);
     return p;
 }

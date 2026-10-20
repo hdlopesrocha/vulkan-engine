@@ -134,6 +134,9 @@ struct EdgeSpan {
     float start;
     float end;
     float eps;
+    // Side-selector nudge for edgeSamplePoint(): one ulp is a denormal at
+    // exactly 0.0, and FTZ GPUs collapse +/- there, merging the quadrants.
+    float sampleOffset;
 };
 
 // ---------------------------------------------------------------- node data
@@ -380,8 +383,16 @@ float nextafterF(float value, float towards) {
     return uintBitsToFloat(bits);
 }
 
-float sideCoordinate(float value, int side) {
-    return nextafterF(value, side < 0 ? -INF : INF);
+float sideCoordinate(float value, int side, float offset) {
+    const float nudged = nextafterF(value, side < 0 ? -INF : INF);
+    // At 0.0 the next float is a denormal; FTZ flushes it to zero, so -0.0
+    // compares >= 0.0 and the negative quadrant resolves into the positive
+    // cell — the missing segments along the world x/y/z axis planes. Use a
+    // small normal offset whenever the ulp nudge is subnormal.
+    if (abs(nudged) < 1.17549435e-38) { // FLT_MIN
+        return value + (side < 0 ? -offset : offset);
+    }
+    return nudged;
 }
 
 vec3 edgePoint(EdgeSpan edge, float t) {
@@ -397,8 +408,8 @@ vec3 edgeSamplePoint(EdgeSpan edge, float t, int quadrant) {
     quadrantSigns(edge.axis, quadrant, su, sv);
     vec3 p = vec3(0.0);
     p[edge.axis] = t;
-    p[edge.u] = sideCoordinate(edge.fixedU, su);
-    p[edge.v] = sideCoordinate(edge.fixedV, sv);
+    p[edge.u] = sideCoordinate(edge.fixedU, su, edge.sampleOffset);
+    p[edge.v] = sideCoordinate(edge.fixedV, sv, edge.sampleOffset);
     return p;
 }
 
@@ -422,6 +433,7 @@ EdgeSpan makeEdgeSpan(int edgeIndex, Cell c) {
     edge.start = min(p0[edge.axis], p1[edge.axis]);
     edge.end = max(p0[edge.axis], p1[edge.axis]);
     edge.eps = max(pc.worldSize, c.sz) * 1e-6;
+    edge.sampleOffset = max(c.sz * 1e-3, 1e-6);
     return edge;
 }
 
