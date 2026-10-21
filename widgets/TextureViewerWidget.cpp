@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cfloat>
 #include "components/ColumnLayout.hpp"
+#include "components/MaterialEditor.hpp"
 #include "components/ScrollablePicker.hpp"
 #include "components/ImGuiHelpers.hpp"
 #include "../services/VideoTextureService.hpp"
@@ -12,26 +13,6 @@ namespace {
 constexpr float kPreviewSize = 256.0f;
 constexpr float kPreviewColumnWidth = 360.0f;
 
-// Material texture indices map to array layers: -1 means "own layer" and the
-// engine arrays are bounded to 256 layers.
-int clampTextureIndex(int value) {
-    if (value < -1) return -1;
-    if (value > 255) return 255;
-    return value;
-}
-
-// Labelled combo over an enum range. `items` must hold `count` persistent
-// names, mirroring the Slider*Field helpers in ColumnLayout.hpp.
-bool EnumComboField(const char* id, const char* label, const char* desc,
-                    const char* const* items, int count, int* value) {
-    ImGuiComponents::FieldLabel(label, desc);
-    ImGui::SetNextItemWidth(ImGuiComponents::kColumnWidth);
-    ImGui::PushID(id);
-    const bool changed = ImGui::Combo("##v", value, items, count);
-    ImGui::PopID();
-    ImGuiComponents::TooltipOnHover(desc);
-    return changed;
-}
 
 // One preview tab: label/id, picker wiring and (for maps with array debug
 // members) the optional "Log info" diagnostics. The table preserves the
@@ -84,86 +65,9 @@ void TextureViewer::render() {
         ImGui::Text("Material");
         ColSeparator();
         MaterialProperties& mat = (*materials)[currentIndex];
-
-        constexpr int kMaterialKindCount = static_cast<int>(MaterialKind::Water) + 1;
-        const char* kindItems[kMaterialKindCount];
-        for (int i = 0; i < kMaterialKindCount; ++i)
-            kindItems[i] = materialKindName(static_cast<MaterialKind>(i));
-        int kind = static_cast<int>(mat.kind);
-        if (EnumComboField("mat_kind", "Material Type",
-                "What the material samples: a scene texture layer, a video array slot, or the water palette.",
-                kindItems, kMaterialKindCount, &kind)) {
-            mat.kind = static_cast<MaterialKind>(kind);
-            materialDirty = true;
-        }
-
-        if (mat.kind == MaterialKind::Video) {
-            std::vector<std::string> slotNames;
-            if (videoSlotNamesProvider) slotNames = videoSlotNamesProvider();
-            if (!slotNames.empty()) {
-                std::vector<const char*> slotItems;
-                slotItems.reserve(slotNames.size());
-                for (const std::string& name : slotNames) slotItems.push_back(name.c_str());
-                // Keep the raw index: -1/out-of-range shows an empty preview but
-                // still lets the user pick slot 0 (which must report a change).
-                int slot = mat.textureIndex;
-                if (EnumComboField("mat_video_slot", "Video Slot",
-                        "Slot of the video texture array sampled by this material.",
-                        slotItems.data(), static_cast<int>(slotItems.size()), &slot)) {
-                    mat.textureIndex = slot;
-                    materialDirty = true;
-                }
-            } else {
-                FieldLabel("Video Slot (index)", "No video slot names available; enter the video array slot directly.");
-                ImGui::SetNextItemWidth(kColumnWidth);
-                ImGui::PushID("mat_video_slot_idx");
-                int slot = mat.textureIndex;
-                if (ImGui::InputInt("##v", &slot)) {
-                    mat.textureIndex = clampTextureIndex(slot);
-                    materialDirty = true;
-                }
-                ImGui::PopID();
-            }
-        } else {
-            FieldLabel("Texture Index (-1 = own layer)",
-                "Scene texture layer sampled by this material; -1 uses the material's own layer.");
-            ImGui::SetNextItemWidth(kColumnWidth);
-            ImGui::PushID("mat_texture_idx");
-            int index = mat.textureIndex;
-            if (ImGui::InputInt("##v", &index)) {
-                mat.textureIndex = clampTextureIndex(index);
-                materialDirty = true;
-            }
-            ImGui::PopID();
-        }
-        ImGui::Text("Selected %s: %d", mat.kind == MaterialKind::Video ? "slot" : "layer", mat.textureIndex);
-
-        // The coordinate technique is a per-vertex value now (Vertex::textureType,
-        // set by the scene's TexturePainter in MainSceneLoader); the material
-        // only carries the Angular center/radius used when a vertex selects it.
-        FieldLabel("Angular Center", "World-space center of the sphere used by Angular mapping.");
-        ImGui::SetNextItemWidth(kColumnWidth);
-        ImGui::PushID("mat_sdf_center");
-        if (ImGui::DragFloat3("##v", &mat.mappingOrigin.x, 1.0f)) materialDirty = true;
-        ImGui::PopID();
-
-        FieldLabel("Angular Radius", "Sphere radius for Angular mapping; 0 keeps the default world-space sphere.");
-        ImGui::SetNextItemWidth(kColumnWidth);
-        ImGui::PushID("mat_sdf_radius");
-        if (ImGui::DragFloat("##v", &mat.mappingOrigin.w, 0.05f, 0.0f, FLT_MAX, "%.3f")) materialDirty = true;
-        ImGui::PopID();
-
-        constexpr int kBlendModeCount = static_cast<int>(MaterialBlendMode::Luminosity) + 1;
-        const char* blendItems[kBlendModeCount];
-        for (int i = 0; i < kBlendModeCount; ++i)
-            blendItems[i] = materialBlendModeName(static_cast<MaterialBlendMode>(i));
-        int blend = static_cast<int>(mat.blendMode);
-        if (EnumComboField("mat_blend", "Blend Mode",
-                "Photoshop-style blend mode applied when this material is composited over the scene.",
-                blendItems, kBlendModeCount, &blend)) {
-            mat.blendMode = static_cast<MaterialBlendMode>(blend);
-            materialDirty = true;
-        }
+        std::vector<std::string> slotNames;
+        if (videoSlotNamesProvider) slotNames = videoSlotNamesProvider();
+        if (MaterialEditor::render(mat, slotNames, "tex_mat")) materialDirty = true;
     }});
 
     sections.push_back({[&]() {
