@@ -154,6 +154,12 @@ struct Video {
     uint64_t servedSeq = 0;
     int64_t requestPts = 0;
     bool forceSeek = false;
+    // A request was issued and the worker has not finished serving it yet. The
+    // clock-driven path (updateVideo) refuses to issue another request while
+    // this is set: superseding an in-flight *seek* every frame would livelock
+    // the worker (the loop wrap would never complete). Explicit seek() ignores
+    // it so scrubbing stays responsive.
+    bool requestInFlight = false;
     bool hasPublished = false;
     int publishedSlot = -1;
     int64_t publishedPts = 0;
@@ -897,6 +903,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
                     ++v.st.cacheHits;
                     ++v.st.requestsServed;
                     v.st.decodePending = v.hasRequest && v.requestSeq != v.servedSeq;
+                    v.requestInFlight = v.hasRequest && v.requestSeq != v.servedSeq;
                     lk.lock();
                     continue;
                 }
@@ -906,6 +913,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
                 std::lock_guard<std::mutex> g(v.mutex);
                 ++v.st.requestsServed;
                 v.st.decodePending = v.hasRequest && v.requestSeq != v.servedSeq;
+                v.requestInFlight = v.hasRequest && v.requestSeq != v.servedSeq;
                 lk.lock();
                 continue;
             }
@@ -953,6 +961,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
                     }
                 }
                 v.st.decodePending = v.hasRequest && v.requestSeq != v.servedSeq;
+                v.requestInFlight = v.hasRequest && v.requestSeq != v.servedSeq;
             }
             lk.lock();
         }
@@ -968,6 +977,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
             ++v.requestSeq;
             v.hasRequest = true;
             v.forceSeek = true;
+            v.requestInFlight = true;
         }
         v.worker = std::thread([this, &v]() { workerLoop(&v); });
     }
@@ -1326,10 +1336,16 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
             // playback restarts immediately at the loop point.
             const bool stale = v.forceSeek || (v.materializedPts == INT64_MIN) ||
                                std::llabs(desired - v.materializedPts) > halfFrame;
-            if (stale && !v.hasPublished && !v.uploadInFlight) {
+            // Do not issue a clock-driven request while the worker is still
+            // serving the previous one. Without this gate the loop-back seek is
+            // superseded every frame (the clock keeps advancing while the seek
+            // runs) and never completes, freezing the clip on its last frame.
+            // Explicit seek() bypasses the gate, so scrubbing stays responsive.
+            if (stale && !v.hasPublished && !v.uploadInFlight && !v.requestInFlight) {
                 v.requestPts = desired;
                 ++v.requestSeq;
                 v.hasRequest = true;
+                v.requestInFlight = true;
                 v.st.decodePending = true;
                 v.requestCv.notify_one();
             }
@@ -1786,6 +1802,7 @@ void VideoTextureService::seek(size_t index, double seconds) {
     v.requestPts = impl.secondsToPts(v, v.st.clock);
     ++v.requestSeq;
     v.hasRequest = true;
+    v.requestInFlight = true;
     v.hasPublished = false;
     v.requestCv.notify_all();
 }
