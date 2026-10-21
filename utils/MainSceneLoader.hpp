@@ -85,17 +85,15 @@ public:
     }
 
     glm::vec3 getCenter(TestShape shape, const glm::vec3& testObjectOrigin, const glm::vec3& size, const glm::vec3& margin) {
-        int elementsPerRow = 4;
-        int shIndex = shapeIndex(shape);
-        
-        int row = std::floor((float)shIndex / (float)elementsPerRow);
-        int col = std::fmod((float)shIndex, (float)elementsPerRow);
-        int layer = std::floor((float)shIndex / (float)(elementsPerRow * elementsPerRow));
-        glm::vec3 indices = glm::vec3(col, layer, row);
-        glm::vec3 shift = (margin + size) * indices;
-
-
-        return testObjectOrigin + shift;
+        // Arrange the catalogue on a cubic grid: `elementsPerRow` cells per
+        // edge, filling X fastest, then Z, then stacking the layers along Y.
+        const int elementsPerRow = 4;
+        const int shIndex = static_cast<int>(shape);
+        const float x = static_cast<float>(shIndex % elementsPerRow);
+        const float z = static_cast<float>((shIndex / elementsPerRow) % elementsPerRow);
+        const float y = static_cast<float>(shIndex / (elementsPerRow * elementsPerRow));
+        const glm::vec3 step = margin + size;
+        return testObjectOrigin + step * glm::vec3(x, y, z);
     }
 
 
@@ -116,64 +114,52 @@ public:
         (void)transparentDeleteHandler;
 
         const int cellSize = 8;
-        const glm::vec3 testObjectSize(128.0f, 128.0f, 128.0f);
-        const glm::vec3 testObjectMargin(64.0f, 64.0f, 64.0f);
-        const glm::vec3 testObjectOrigin(0.0f, 512.0f, 0.0f);
+        const glm::vec3 objectSize(128.0f, 128.0f, 128.0f);
+        const glm::vec3 objectMargin(64.0f, 64.0f, 64.0f);
+        const glm::vec3 objectOrigin(0.0f, 256.0f, 0.0f);
 
+        glm::vec3 center = getCenter(shape, objectOrigin, objectSize, objectMargin);
+        Transformation model = Transformation(objectSize*0.5f, center, 0,0,0);
 
         switch (shape) {
             case TestShape::Octrahedron: {
                 std::cout << "\topaqueLayer.add(octahedron)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0, 0, 0);
                 OctahedronDistanceFunction function = OctahedronDistanceFunction(model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Pyramid: {
                 std::cout << "\topaqueLayer.add(pyramid)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 PyramidDistanceFunction function = PyramidDistanceFunction(model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Torus: {
                 std::cout << "\topaqueLayer.add(torus)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 TorusDistanceFunction function = TorusDistanceFunction(glm::vec2(0.5, 0.25), model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(3), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Cone: {
                 std::cout << "\topaqueLayer.add(cone)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 ConeDistanceFunction function = ConeDistanceFunction(model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Cylinder: {
                 std::cout << "\topaqueLayer.add(cylinder)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 CylinderDistanceFunction function = CylinderDistanceFunction(model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(4), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::TaperedCylinder: {
                 std::cout << "\topaqueLayer.add(taperedCylinder)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 TaperedCylinderDistanceFunction function(0.25f, 0.5f, model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::TaperedCapsule: {
                 std::cout << "\topaqueLayer.add(taperedCapsule)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 TaperedCapsuleDistanceFunction function(
                     glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f), 0.5f, 0.25f,
                     model, cellSize);
@@ -182,18 +168,14 @@ public:
             }
             case TestShape::Mirror: {
                 std::cout << "\topaqueLayer.add(mirror)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                glm::vec3 len = glm::vec3(testObjectSize.x*0.125f, testObjectSize.y, testObjectSize.z);
-                BoundingBox box = BoundingBox(center - len * 0.5f, center + len * 0.5f);
-                Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
-                BoxDistanceFunction function = BoxDistanceFunction(model, cellSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(6), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                glm::vec3 len = glm::vec3(objectSize.x*0.125f, objectSize.y, objectSize.z);
+                Transformation customModel = Transformation(BoundingBox(center - len * 0.5f, center + len * 0.5f), 0.0f, 0.0f, 0.0f);
+                BoxDistanceFunction function = BoxDistanceFunction(customModel, cellSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, customModel, SimpleBrush(6), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::PerlinDistort: {
                 std::cout << "\topaqueLayer.add(perlinDistort)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 SphereDistanceFunction function = SphereDistanceFunction(model, cellSize);
                 PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, cellSize*2.0f, 0.1f/cellSize, glm::vec3(0), 0.0f, 1.0f, model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
@@ -201,8 +183,6 @@ public:
             }
             case TestShape::PerlinCarve: {
                 std::cout << "\topaqueLayer.add(perlinCarve)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 SphereDistanceFunction function = SphereDistanceFunction(model, cellSize);
                 PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, cellSize*2.0f, 0.1f/cellSize, 0.1f, glm::vec3(0), 0.0f, 1.0f, model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
@@ -210,8 +190,6 @@ public:
             }
             case TestShape::SineDistort: {
                 std::cout << "\topaqueLayer.add(sineDistort)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 SphereDistanceFunction function = SphereDistanceFunction(model, cellSize);
                 SineDistortDistanceEffect carvedFunction = SineDistortDistanceEffect(function, cellSize*2.0f, 0.1f/cellSize, glm::vec3(0), model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
@@ -219,8 +197,6 @@ public:
             }
             case TestShape::VoronoiDistort: {
                 std::cout << "\topaqueLayer.add(voronoiDistort)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 SphereDistanceFunction function = SphereDistanceFunction(model, cellSize);
                 VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, cellSize*2.0f, 0.1f/cellSize, glm::vec3(0), 0.0f, 1.0f, model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
@@ -228,8 +204,6 @@ public:
             }
             case TestShape::VoronoiDistortInverse: {
                 std::cout << "\topaqueLayer.add(voronoiDistort)"<< std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                Transformation model = Transformation(testObjectSize*0.5f, center, 0,0,0);
                 SphereDistanceFunction function = SphereDistanceFunction(model, cellSize);
                 VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, cellSize*2.0f, 0.1f/cellSize, glm::vec3(0), 0.0f, -1.0f, model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
@@ -244,8 +218,6 @@ public:
                     auto svgShapePtr = std::make_shared<const SvgShape>(std::move(svgShape));
                     std::cout << "\t\tsvg '" << svgResolved << "': " << svgShapePtr->contours.size()
                               << " contours" << std::endl;
-                    glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                    Transformation model(glm::vec3(testObjectSize*0.5f), center, 0.0f, 0.0f, 0.0f);
                     SvgPolygonDistanceFunction function(svgShapePtr, model, cellSize);
                     SvgBrush brush(svgShapePtr, model, /*materialIndex=*/15, glm::vec3(0.0f, 0.5f, 0.5f),
                                    /*tintFromFill=*/true);
@@ -260,10 +232,6 @@ public:
             case TestShape::SdfGivenCube: {
             if (sdfGivenBrushIndex >= 0) {
                 std::cout << "\topaqueLayer.add(sdfGiven cube)" << std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                glm::vec3 len = glm::vec3(testObjectSize);
-                BoundingBox box = BoundingBox(center - len * 0.5f, center + len * 0.5f);
-                Transformation model = Transformation(box.getLength() * 0.5f, box.getCenter(), 0, 0, 0);
                 BoxDistanceFunction function = BoxDistanceFunction(model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(sdfGivenBrushIndex), TriplanarMappingPainter(),
                                   cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
@@ -273,10 +241,6 @@ public:
 
             case TestShape::VideoCube: {
                 std::cout << "\tvideoLayer.add(cube)" << std::endl;
-                glm::vec3 center = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                glm::vec3 len = glm::vec3(testObjectSize);
-                BoundingBox box = BoundingBox(center - len * 0.5f, center + len * 0.5f);
-                Transformation model = Transformation(box.getLength() * 0.5f, box.getCenter(), 0, 0, 0);
                 BoxDistanceFunction function = BoxDistanceFunction(model, cellSize);
                 videoLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(videoBrushIndex), TriplanarMappingPainter(),
                                  cellSize, simplifier, videoUpdateHandler, videoDeleteHandler);
@@ -285,15 +249,37 @@ public:
             }
             case TestShape::SweptOctrahedron: {
                 std::cout << "\topaqueLayer.add(swept octahedron)"<< std::endl;
-                glm::vec3 centerA = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                glm::vec3 centerB = centerA + glm::vec3(0.0f, testObjectSize.y, 0.0f);
-                Transformation modelA = Transformation(testObjectSize* 0.5f, centerA, 0, 0, 0);
-                Transformation modelB = Transformation(testObjectSize * 0.125f, centerB, 45, 0, 0);
-                Transformation sweepModel = Transformation(testObjectSize*0.5f, (centerA + centerB) * 0.5f, 0, 0, 0);
-                OctahedronDistanceFunction fn1(modelA, cellSize);
+                glm::vec3 centerB = center + glm::vec3(0.0f, objectSize.y, 0.0f);
+                Transformation modelB = Transformation(objectSize * 0.125f, centerB, 45, 0, 0);
+                Transformation sweepModel = Transformation(objectSize*0.5f, (center + centerB) * 0.5f, 0, 0, 0);
+                OctahedronDistanceFunction fn1(model, cellSize);
                 OctahedronDistanceFunction fn2(modelB, cellSize);
                 SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::CubeProjectonX: {
+                std::cout << "\topaqueLayer.add(cube projection X)"<< std::endl;
+                BoxDistanceFunction function = BoxDistanceFunction(model, cellSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), ProjectionXMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::CubeProjectonY: {
+                std::cout << "\topaqueLayer.add(cube projection Y)"<< std::endl;
+                BoxDistanceFunction function = BoxDistanceFunction(model, cellSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), ProjectionYMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::CubeProjectonZ: {
+                std::cout << "\topaqueLayer.add(cube projection Z)"<< std::endl;
+                BoxDistanceFunction function = BoxDistanceFunction(model, cellSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), ProjectionZMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::CubeAngular: {
+                std::cout << "\topaqueLayer.add(cube angular)"<< std::endl;
+                BoxDistanceFunction function = BoxDistanceFunction(model, cellSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), AngularMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             default:
