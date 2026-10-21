@@ -70,6 +70,7 @@ Environment switches:
 | `VULKAN_VIDEO_BENCH=1` | decode/seek benchmark at startup |
 | `VULKAN_VIDEO_BACKEND=auto\|vulkan\|vaapi\|software` | force a decode backend |
 | `VULKAN_VIDEO_BLEND=<0..18>` | force the demo video cube material's blend mode at startup (A/B diagnosis; indices match `MaterialBlendMode`) |
+| `VULKAN_VIDEO_MIPS=1` | sample the video albedo's filtered mip chain (default: base level only; some drivers leave per-layer mips stale after the upload blit chain, freezing distant/preview samples) |
 
 Memory: the video-specific cost per clip is one packed YUV image (≈1.5 MiB at
 1024²) plus two host-visible staging buffers of the same size. The video array

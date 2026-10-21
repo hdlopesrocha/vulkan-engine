@@ -241,6 +241,10 @@ void TextureViewer::render() {
             if (selectedVideo >= 0) {
                 const auto& vs = videoStates[static_cast<size_t>(selectedVideo)];
                 ImGui::Text("%s  %.2f / %.2f s", vs.name.c_str(), vs.clock, vs.duration);
+                if (!vs.playing) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.15f, 1.0f), "paused");
+                }
                 bool playing = vs.playing;
                 if (ImGui::Checkbox("play", &playing))
                     videoService->setPlaying(static_cast<size_t>(selectedVideo), playing);

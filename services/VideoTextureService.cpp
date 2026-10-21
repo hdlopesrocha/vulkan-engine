@@ -229,6 +229,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
     uint32_t videoWidth = 0;
     uint32_t videoHeight = 0;
     uint32_t videoMips = 1;
+    // VULKAN_VIDEO_HASH=1: read mip 0 and mip 2 of slot 0 back and hash them.
 
     std::vector<std::unique_ptr<Video>> retired;  // unloaded clips freed at shutdown
 
@@ -242,6 +243,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
 
     // configuration (env overrides)
     std::string backendPreference = "auto";
+    bool allowMips = false;   // VULKAN_VIDEO_MIPS=1: sample the albedo mip chain
     bool debugLog = false;
     bool benchPending = false;
     int autoplayCount = -1;  // clips that start playing; -1 = all, 0 = none
@@ -487,13 +489,19 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
-        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        // Video playback defaults to the base level. The generated mip chain is
+        // correct on the software driver, but some drivers leave layer mips
+        // stale after the per-frame blit chain, which freezes the material and
+        // the downscaled previews on the first frame. Mip 0 is always the frame
+        // just uploaded. VULKAN_VIDEO_MIPS=1 opts back into filtered mipmaps.
+        samplerInfo.mipmapMode = allowMips ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+                                                : VK_SAMPLER_MIPMAP_MODE_NEAREST;
         // Wrap: video materials project UVs from world position (triplanar /
         // SDF-spherical), so coordinates outside [0,1] must tile the clip.
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        samplerInfo.maxLod = static_cast<float>(videoMips);
+        samplerInfo.maxLod = allowMips ? static_cast<float>(videoMips) : 0.0f;
         if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &videoSampler) != VK_SUCCESS) {
             warn("failed to create the video array sampler");
             return false;
@@ -1231,7 +1239,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
                                               1, slotIndex, 1);
         app->recordTransitionImageLayoutLayer(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM,
                                               VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mips, slotIndex, 1);
-        if (mips > 1) {
+        if (mips > 1 && allowMips) {
             app->recordGenerateMipmaps(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM, dstW, dstH, mips, 1, slotIndex);
         } else {
             app->recordTransitionImageLayoutLayer(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM,
@@ -1451,6 +1459,7 @@ bool VideoTextureService::initialize(VulkanApp* app, TextureArrayManager* arrays
     impl.slotCount = std::clamp(slotCount, 1u, Impl::kMaxSlots);
     impl.backendPreference = envString("VULKAN_VIDEO_BACKEND");
     if (impl.backendPreference.empty()) impl.backendPreference = "auto";
+    impl.allowMips = envFlag("VULKAN_VIDEO_MIPS");
     impl.debugLog = envFlag("VULKAN_VIDEO_DEBUG");
     impl.benchPending = envFlag("VULKAN_VIDEO_BENCH");
     {
