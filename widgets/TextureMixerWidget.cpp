@@ -4,6 +4,7 @@
 #include <backends/imgui_impl_vulkan.h>
 #include <iostream>
 #include "components/ColumnLayout.hpp"
+#include "components/MaterialEditor.hpp"
 #include "components/ImGuiHelpers.hpp"
 #include "components/ScrollablePicker.hpp"
 #include "components/TexturePreview.hpp"
@@ -46,7 +47,23 @@ void TextureMixerWidget::render() {
     bool sourceChanged = false;
 
     std::vector<ImGuiComponents::ColumnSection> sections;
-    sections.reserve(5);
+    sections.reserve(6);
+
+    // ── Material (shared editor, same as the Textures / Video panels) ─────
+    sections.push_back({[&]() {
+        ImGui::Text("Material");
+        ImGuiComponents::ColSeparator();
+        if (!materials || materials->empty()) {
+            ImGui::TextDisabled("No materials available.");
+            return;
+        }
+        // A mix layer is also a material index.
+        const size_t matIndex = std::min<size_t>(mixerParams[currentMixerIndex].targetLayer,
+                                                 materials->size() - 1);
+        MaterialProperties& mat = (*materials)[matIndex];
+        ImGui::Text("Mix layer %zu", matIndex);
+        if (MaterialEditor::render(mat, {}, "mixer_mat") && onMaterialChanged) onMaterialChanged(matIndex);
+    }});
 
     sections.push_back({[&]() {
         ImGui::Text("Mixer");

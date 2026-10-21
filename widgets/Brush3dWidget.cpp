@@ -6,6 +6,7 @@
 #include "../events/SetBrushPaintModeEvent.hpp"
 #include "../events/SetBrushDragModeEvent.hpp"
 #include <imgui.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -99,6 +100,13 @@ void Brush3dWidget::render() {
             renderEntry(sel);
         }
         ImGui::PopID();
+    }
+
+    ImGui::Separator();
+
+    // ── Brush mapper: per-brush image source (Image / TextureMixer / Video) ──
+    if (ImGui::CollapsingHeader("Brush Mapper")) {
+        renderBrushMapper();
     }
 
     ImGui::Separator();
@@ -402,4 +410,49 @@ void Brush3dWidget::renderMaterialPicker(BrushEntry& entry) {
         }
         ImGui::TreePop();
     }
+}
+
+// Per-brush image source (Image / TextureMixer / Video). The rendered image is
+// resolved by the shaders from this table (shaders/includes/BrushMap.glsl).
+void Brush3dWidget::renderBrushMapper() {
+    if (!brushMap_ || brushMap_->size() == 0) {
+        ImGui::TextDisabled("No brush map available.");
+        return;
+    }
+    ImGui::Text("Assign the image each brush index samples.");
+    const int maxBrush = static_cast<int>(brushMap_->size()) - 1;
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputInt("Brush index", &mapperBrush_);
+    mapperBrush_ = std::max(0, std::min(mapperBrush_, maxBrush));
+
+    BrushImage& img = (*brushMap_)[static_cast<size_t>(mapperBrush_)];
+    static const char* kTypeNames[] = { "Image", "TextureMixer", "Video" };
+    int type = static_cast<int>(img.type);
+    ImGui::SetNextItemWidth(160.0f);
+    if (ImGui::Combo("Source", &type, kTypeNames, 3)) {
+        img.type = static_cast<ImageType>(type);
+        // Reset the index into the new source's range.
+        img.index = (img.type == ImageType::TextureMixer) ? imageCount_ : 0;
+        if (onBrushMapChanged_) onBrushMapChanged_(static_cast<size_t>(mapperBrush_));
+    }
+
+    // TextureMixer indices live at imageCount_ + mixIndex in the shared array.
+    const int baseOffset = (img.type == ImageType::TextureMixer) ? static_cast<int>(imageCount_) : 0;
+    int maxIndex = 0;
+    if (img.type == ImageType::Image) {
+        maxIndex = std::max<int>(0, static_cast<int>(imageCount_) - 1);
+    } else if (img.type == ImageType::TextureMixer) {
+        maxIndex = std::max<int>(0, static_cast<int>(mixerCount_) - 1);
+    } else {
+        maxIndex = 31; // video slots (the service bounds the real capacity)
+    }
+    int localIndex = static_cast<int>(img.index) - baseOffset;
+    localIndex = std::max(0, std::min(localIndex, maxIndex));
+    ImGui::SetNextItemWidth(160.0f);
+    if (ImGui::SliderInt("Image", &localIndex, 0, maxIndex)) {
+        img.index = static_cast<uint32_t>(localIndex + baseOffset);
+        if (onBrushMapChanged_) onBrushMapChanged_(static_cast<size_t>(mapperBrush_));
+    }
+    ImGui::TextDisabled("brush %d -> %s %u (layer %d)", mapperBrush_, imageTypeName(img.type),
+                        img.index, baseOffset + localIndex);
 }

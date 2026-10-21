@@ -667,6 +667,11 @@ public:
         // Generate textures for all configured mixer entries (async submissions tracked by TextureMixer)
         textureMixer->generateInitialTextures(mixerParams);
         textureMixerWidget = std::make_shared<TextureMixerWidget>(textureMixer, mixerParams, "Texture Mixer");
+        // Shared material editor: define the mix layer's material here.
+        textureMixerWidget->setMaterials(&materials);
+        textureMixerWidget->setOnMaterialChanged([this](size_t idx) {
+            if (idx < materials.size()) materialManager.update(idx, materials[idx], this);
+        });
         widgetManager.addWidget(textureMixerWidget);
 
         // ── Video textures ──────────────────────────────────────────────────
@@ -691,6 +696,12 @@ public:
                     videoTextureService.reset();
                 } else {
                     videoTextureWidget = std::make_shared<VideoTextureWidget>(videoTextureService);
+                    // Shared material editor: define the selected material's
+                    // parameters here, same as the Textures / Texture Mixer panels.
+                    videoTextureWidget->setMaterials(&materials);
+                    videoTextureWidget->setOnMaterialChanged([this](size_t idx) {
+                        if (idx < materials.size()) materialManager.update(idx, materials[idx], this);
+                    });
                     widgetManager.addWidget(videoTextureWidget);
                     std::cout << "[MyApp] video textures: " << videoTextureService->count()
                               << " base clip(s) loaded into " << videoTextureService->slotCapacity()
@@ -1072,6 +1083,7 @@ public:
     void createTextureViewerPanel() {
         textureViewer = std::make_shared<TextureViewer>();
         textureViewer->init(&textureArrayManager, &materials);
+        textureViewer->setImageCount(static_cast<uint32_t>(textureTriples_.size()));
         textureViewer->setVideoSlotNamesProvider([this]() {
             std::vector<std::string> names;
             if (!videoTextureService) return names;
@@ -1207,6 +1219,12 @@ public:
         // Create brush3dWidget after setupTextures() so loadedTextureLayers is set.
         brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
         brush3dWidget->setScene(&world->activeScene());
+        // Brush mapper: per-brush image source (Image / TextureMixer / Video).
+        brush3dWidget->setBrushMap(&brushMap, static_cast<uint32_t>(textureTriples_.size()),
+                                   static_cast<uint32_t>(mixerParams.size()));
+        brush3dWidget->setOnBrushMapChanged([this](size_t idx) {
+            if (idx < brushMap.size()) materialManager.updateBrushMap(idx, brushMap[idx], this);
+        });
         widgetManager.addWidget(brush3dWidget);
 
         // Dynamic scene layers + per-layer renderer selection.

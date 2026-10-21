@@ -16,6 +16,9 @@ class TextureViewer : public Widget {
 public:
     TextureViewer();
     void init(TextureArrayManager* arrayManager_, std::vector<MaterialProperties>* materials_);
+    // Base image layer count: the Textures panel lists only base images (the
+    // TextureMixer outputs and videos have their own widgets).
+    void setImageCount(uint32_t count) { imageCount = count; }
     void render() override;
     void setOnMaterialChanged(std::function<void(size_t)> cb) { onMaterialChanged = cb; }
     void setVideoSlotNamesProvider(std::function<std::vector<std::string>()> fn) { videoSlotNamesProvider = std::move(fn); }
@@ -38,6 +41,7 @@ private:
     TextureArrayManager* arrayManager = nullptr;
     std::vector<MaterialProperties>* materials = nullptr;
     size_t currentIndex = 0;
+    uint32_t imageCount = 0;
     std::function<void(size_t)> onMaterialChanged;
     std::function<std::vector<std::string>()> videoSlotNamesProvider;
     std::function<ImTextureID(uint32_t, int)> videoPreviewProvider;

@@ -2,6 +2,7 @@
 
 #include <string>
 #include <iostream>
+#include <algorithm>
 #include <cfloat>
 #include "components/ColumnLayout.hpp"
 #include "components/MaterialEditor.hpp"
@@ -73,17 +74,20 @@ void TextureViewer::render() {
     sections.push_back({[&]() {
         ImGui::Text("Texture");
         ColSeparator();
-        ImGui::Text("Texture %zu of %zu", currentIndex + 1, tc);
+        // Base images only: the TextureMixer and video panels own those sources.
+        const size_t navCount = (imageCount > 0) ? std::min<size_t>(imageCount, tc) : tc;
+        if (currentIndex >= navCount) currentIndex = 0;
+        ImGui::Text("Texture %zu of %zu", currentIndex + 1, navCount);
         if (ImGui::Button("Prev") && currentIndex > 0) --currentIndex;
         ImGui::SameLine();
-        if (ImGui::Button("Next") && currentIndex + 1 < tc) ++currentIndex;
-        FieldLabel("Texture Index", "Texture layer to inspect (0-based).");
+        if (ImGui::Button("Next") && currentIndex + 1 < navCount) ++currentIndex;
+        FieldLabel("Base Image", "Base texture layer to inspect (0-based).");
         ImGui::SetNextItemWidth(kColumnWidth);
         ImGui::PushID("tex_idx");
         int idxInput = static_cast<int>(currentIndex);
         if (ImGui::InputInt("##v", &idxInput)) {
             if (idxInput < 0) idxInput = 0;
-            if (static_cast<size_t>(idxInput) >= tc) idxInput = static_cast<int>(tc - 1);
+            if (static_cast<size_t>(idxInput) >= navCount) idxInput = static_cast<int>(navCount - 1);
             currentIndex = static_cast<size_t>(idxInput);
         }
         ImGui::PopID();
