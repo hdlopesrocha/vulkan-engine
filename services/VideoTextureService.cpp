@@ -243,7 +243,6 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
 
     // configuration (env overrides)
     std::string backendPreference = "auto";
-    bool allowMips = false;   // VULKAN_VIDEO_MIPS=1: sample the albedo mip chain
     bool debugLog = false;
     bool benchPending = false;
     int autoplayCount = -1;  // clips that start playing; -1 = all, 0 = none
@@ -411,14 +410,17 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
     }
 
     // ── video array + slot priming ────────────────────────────────────────
-    // The video array is dedicated to clips: slotCount RGBA8 layers with a full
-    // mip chain, sampled by the video layer renderer. Materials of kind Video
+    // The video array is dedicated to clips: slotCount RGBA8 layers, base level
+    // only, sampled by the video layer renderer. Materials of kind Video
     // reference a slot through textureIndex; the material texture arrays are
     // untouched.
     bool createVideoArray(uint32_t width, uint32_t height) {
         videoWidth = std::max(1u, width);
         videoHeight = std::max(1u, height);
-        videoMips = static_cast<uint32_t>(std::floor(std::log2(static_cast<double>(std::max(videoWidth, videoHeight))))) + 1;
+        // Base level only: the frame is uploaded every tick, and sampling the
+        // level just written avoids both stale-mip driver paths and the
+        // per-frame blit/layout chain across array layers.
+        videoMips = 1;
 
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -489,19 +491,15 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
-        // Video playback defaults to the base level. The generated mip chain is
-        // correct on the software driver, but some drivers leave layer mips
-        // stale after the per-frame blit chain, which freezes the material and
-        // the downscaled previews on the first frame. Mip 0 is always the frame
-        // just uploaded. VULKAN_VIDEO_MIPS=1 opts back into filtered mipmaps.
-        samplerInfo.mipmapMode = allowMips ? VK_SAMPLER_MIPMAP_MODE_LINEAR
-                                                : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        // The array has one level (the frame just uploaded); nearest mip mode
+        // is explicit so no driver can select a stale generated level.
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         // Wrap: video materials project UVs from world position (triplanar /
         // SDF-spherical), so coordinates outside [0,1] must tile the clip.
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        samplerInfo.maxLod = allowMips ? static_cast<float>(videoMips) : 0.0f;
+        samplerInfo.maxLod = 0.0f;
         if (vkCreateSampler(app->getDevice(), &samplerInfo, nullptr, &videoSampler) != VK_SUCCESS) {
             warn("failed to create the video array sampler");
             return false;
@@ -510,7 +508,7 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         return true;
     }
 
-    // Clear one slot to opaque black (all mips) and leave it sampleable. A
+    // Clear one slot to opaque black and leave it sampleable. A
     // material pointing at an empty/loading slot therefore samples a defined
     // color that contributes nothing to the layer blend.
     void primeSlot(uint32_t slot) {
@@ -1239,18 +1237,11 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
                                               1, slotIndex, 1);
         app->recordTransitionImageLayoutLayer(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM,
                                               VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mips, slotIndex, 1);
-        // Always generate the mip chain: it is also the path that leaves the
-        // layer's subresources in SHADER_READ_ONLY with valid mip 0 content.
-        // The sampler still samples mip 0 unless VULKAN_VIDEO_MIPS=1, so the
-        // displayed level is the frame just uploaded even if a driver lags the
-        // generated levels.
-        if (mips > 1) {
-            app->recordGenerateMipmaps(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM, dstW, dstH, mips, 1, slotIndex);
-        } else {
-            app->recordTransitionImageLayoutLayer(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM,
-                                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mips, slotIndex, 1);
-        }
+        // Single base level: finish in SHADER_READ_ONLY. No mip blits, no
+        // per-level layout changes for the video array.
+        app->recordTransitionImageLayoutLayer(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM,
+                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mips, slotIndex, 1);
         slotLayouts[slotIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         derivedLayouts[slotIndex] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -1464,7 +1455,6 @@ bool VideoTextureService::initialize(VulkanApp* app, TextureArrayManager* arrays
     impl.slotCount = std::clamp(slotCount, 1u, Impl::kMaxSlots);
     impl.backendPreference = envString("VULKAN_VIDEO_BACKEND");
     if (impl.backendPreference.empty()) impl.backendPreference = "auto";
-    impl.allowMips = envFlag("VULKAN_VIDEO_MIPS");
     impl.debugLog = envFlag("VULKAN_VIDEO_DEBUG");
     impl.benchPending = envFlag("VULKAN_VIDEO_BENCH");
     {
@@ -1494,9 +1484,9 @@ bool VideoTextureService::initialize(VulkanApp* app, TextureArrayManager* arrays
         return false;
     }
     std::cout << "[VideoTextureService] video array: " << impl.slotCount << " slots at "
-              << impl.videoWidth << "^2 (" << impl.videoMips << " mips, "
+              << impl.videoWidth << "^2 (base level, "
               << (static_cast<uint64_t>(impl.videoWidth) * impl.videoHeight * 4ull * impl.slotCount / (1024 * 1024))
-              << " MiB base level)" << std::endl;
+              << " MiB total)" << std::endl;
     impl.initialized = true;
     return true;
 }

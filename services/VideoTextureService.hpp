@@ -40,9 +40,9 @@ class TextureArrayManager;
 //   * compressed: the source file on disk, never fully loaded.
 //   * per clip  : one packed YUV R8 image (~1.5 bytes/pixel) + two host-visible
 //                 staging buffers of the same size.
-//   * shared    : the video array (slotCount × RGBA8 + mips) and the derived
-//                 map array (slotCount × RGBA8, base level), sampled by the
-//                 video layer renderer.
+//   * shared    : the video array (slotCount × RGBA8, base level) and the
+//                 derived map array (slotCount × RGBA8, base level), sampled
+//                 by the video layer renderer.
 // A "decode everything" implementation would hold width*height*4 bytes for
 // every frame of every clip; logDiagnostics prints that comparison.
 //

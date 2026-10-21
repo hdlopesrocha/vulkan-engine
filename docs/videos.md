@@ -70,12 +70,13 @@ Environment switches:
 | `VULKAN_VIDEO_BENCH=1` | decode/seek benchmark at startup |
 | `VULKAN_VIDEO_BACKEND=auto\|vulkan\|vaapi\|software` | force a decode backend |
 | `VULKAN_VIDEO_BLEND=<0..18>` | force the demo video cube material's blend mode at startup (A/B diagnosis; indices match `MaterialBlendMode`) |
-| `VULKAN_VIDEO_MIPS=1` | sample the video albedo's filtered mip chain (default: base level only; some drivers leave per-layer mips stale after the upload blit chain, freezing distant/preview samples) |
 
 Memory: the video-specific cost per clip is one packed YUV image (≈1.5 MiB at
 1024²) plus two host-visible staging buffers of the same size. The video array
-is `slots × RGBA8 + mips` shared by all clips (≈5.3 MiB per slot at 1024² with
-a full mip chain).
+is `slots × RGBA8` shared by all clips (≈4 MiB per slot at 1024², base level
+only). Every upload writes the frame into the base level and the sampler reads
+that level directly; there is no generated mip chain whose levels could lag the
+current frame.
 
 ## Materials
 
@@ -222,7 +223,7 @@ Uploads are recorded on the main thread and submitted through
   no-op after `shutdown()`).
 * The command buffer transitions the packed image
   `SHADER_READ_ONLY → TRANSFER_DST → SHADER_READ_ONLY` and the video-array slot
-  `SHADER_READ_ONLY → GENERAL → TRANSFER_DST → (mips) → SHADER_READ_ONLY`.
+  `SHADER_READ_ONLY → GENERAL → TRANSFER_DST → SHADER_READ_ONLY`.
 * Unloaded clips keep their GPU objects until shutdown (they are registered with
   the app's resource manager), so no deferred callback can observe a dangling
   slot; the slot itself is cleared to black on unload.
