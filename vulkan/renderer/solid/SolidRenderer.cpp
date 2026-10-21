@@ -357,7 +357,8 @@ void SolidRenderer::createWireframe(VulkanApp* app) {
         solidSetLayouts,
         "shaders/renderer/solid/SolidRenderer.vert.spv", "shaders/renderer/solid/SolidRendererWireframe.frag.spv",
         "shaders/renderer/solid/SolidRenderer.tesc.spv", "shaders/renderer/solid/SolidRenderer.tese.spv",
-        "solid wireframe");
+        "solid wireframe",
+        /*consumesTextureType=*/true);
 }
 
 void SolidRenderer::drawWireframeOverlay(VkCommandBuffer& commandBuffer, VulkanApp* app, VkDescriptorSet perTextureDescriptorSet) {

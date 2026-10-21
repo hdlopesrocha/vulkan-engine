@@ -27,7 +27,13 @@ public:
                         const char* fragPath,
                         const char* tescPath,
                         const char* tesePath,
-                        const char* label);
+                        const char* label,
+                        // Whether the vertex shader consumes ATTR_TEXTURE_TYPE.
+                        // The solid VS does (it forwards the per-vertex texture
+                        // type to the tessellation stages); the water VS does
+                        // not, so declaring it would raise the
+                        // "Vertex attribute not consumed" VVL performance warning.
+                        bool consumesTextureType = false);
 
     // Draw wireframe using the given indirect renderer's prepared buffers.
     // Must be called inside a compatible render pass.

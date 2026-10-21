@@ -13,7 +13,8 @@ void WireframeRenderer::createPipeline(VulkanApp* app,
                                        const char* fragPath,
                                        const char* tescPath,
                                        const char* tesePath,
-                                       const char* label) {
+                                       const char* label,
+                                       bool consumesTextureType) {
     if (!app) return;
     VkDevice device = app->getDevice();
     uint32_t colorAttachmentCount = static_cast<uint32_t>(colorFormats.size());
@@ -65,13 +66,18 @@ void WireframeRenderer::createPipeline(VulkanApp* app,
         shaderStages.push_back(stage);
     }
 
-    // Vertex input (standard Vertex layout)
     VkVertexInputBindingDescription bindingDesc{};
     bindingDesc.binding = 0;
     bindingDesc.stride = sizeof(Vertex);
     bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    auto attrDescs = vk_layouts::defaultAttributes();
+    // Vertex input (standard Vertex layout). ATTR_TEXTURE_TYPE is declared only
+    // when the vertex shader consumes it (the solid VS forwards it; the water
+    // VS does not), so pipelines never declare an unconsumed attribute.
+    auto attrDescs = consumesTextureType
+        ? vk_layouts::defaultAttributes()
+        : vk_layouts::defaultAttributesFiltered(
+              { ATTR_POS, ATTR_COLOR, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV });
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
