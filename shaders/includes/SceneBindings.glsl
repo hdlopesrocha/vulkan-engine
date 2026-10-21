@@ -32,8 +32,6 @@ MaterialNamed materialNamed(Material m) {
     n.tessHeightScale = m.mappingParams.w;
     n.specularStrength = m.specularParams.x;
     n.shininess = m.specularParams.y;
-    n.triplanarScaleU = m.triplanarParams.x;
-    n.triplanarScaleV = m.triplanarParams.y;
     n.flipNormalY = m.normalParams.x > 0.5;
     n.swapNormalXZ = m.normalParams.y > 0.5;
     n.invertWidth = m.normalParams.z > 0.5;

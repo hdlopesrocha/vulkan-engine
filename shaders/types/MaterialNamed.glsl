@@ -15,8 +15,6 @@ struct MaterialNamed {
     float tessHeightScale;
     float specularStrength;
     float shininess;
-    float triplanarScaleU;
-    float triplanarScaleV;
     bool flipNormalY;
     bool swapNormalXZ;
     bool invertWidth;

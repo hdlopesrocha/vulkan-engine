@@ -94,12 +94,6 @@ struct MaterialProperties {
     // scene's mirror box and polished spheres).
     float reflectionStrength = 0.0f;
 
-    // Per-material UV scale for the projection techniques (Triplanar /
-    // ProjectionX/Y/Z). The coordinate technique itself is per vertex
-    // (Vertex::textureType, set by the scene's TexturePainter).
-    float triplanarScaleU = 0.01f;
-    float triplanarScaleV = 0.01f;
-
     // Flip height map U coordinate horizontally
     bool invertWidth = false;
     // Normal map conventions (defaults keep existing behavior)

@@ -32,10 +32,11 @@ bool mappingUsesTriplanar(in int mode) {
 
 // World-space projection UV for one axis. Same conventions as the legacy
 // triplanar path (Triplanar.glsl): the geometric-normal sign selects the
-// mirrored side so both sides of a surface read the texture right-side up,
-// and triplanarScaleU/V scale the result.
-vec2 textureMappingUV(in MaterialNamed m, in int axis, in vec3 pos, in vec3 geomN) {
-    vec2 scale = vec2(m.triplanarScaleU, m.triplanarScaleV);
+// mirrored side so both sides of a surface read the texture right-side up, and
+// `scale` (the per-vertex UV scale stored in Vertex::texCoord) scales the
+// result. The scale is a per-vertex value chosen by the scene's
+// TextureCoordPainter, not a material property.
+vec2 textureMappingUV(in int axis, in vec3 pos, in vec3 geomN, in vec2 scale) {
     vec2 uv = vec2(0.0);
     if (axis == TEXTURE_AXIS_X) {
         uv = (geomN.x >= 0.0) ? vec2(-pos.z, -pos.y) : vec2(pos.z, -pos.y);
@@ -98,14 +99,14 @@ void computeMaterialUVs(in int mode, in int brushIndex, in vec3 pos, in vec3 geo
 
     switch (mode) {
         case TEXTURE_MAPPING_PROJECTION_X:
-            uvX = textureMappingUV(m, TEXTURE_AXIS_X, pos, geomN);
+            uvX = textureMappingUV(TEXTURE_AXIS_X, pos, geomN, fragUV);
             break;
         case TEXTURE_MAPPING_PROJECTION_Y:
-            uvY = textureMappingUV(m, TEXTURE_AXIS_Y, pos, geomN);
+            uvY = textureMappingUV(TEXTURE_AXIS_Y, pos, geomN, fragUV);
             weights = vec3(0.0, 1.0, 0.0);
             break;
         case TEXTURE_MAPPING_PROJECTION_Z:
-            uvZ = textureMappingUV(m, TEXTURE_AXIS_Z, pos, geomN);
+            uvZ = textureMappingUV(TEXTURE_AXIS_Z, pos, geomN, fragUV);
             weights = vec3(0.0, 0.0, 1.0);
             break;
         case TEXTURE_MAPPING_ANGULAR:
@@ -117,9 +118,9 @@ void computeMaterialUVs(in int mode, in int brushIndex, in vec3 pos, in vec3 geo
         case TEXTURE_MAPPING_TRIPLANAR:
         default:
             // Weighted X/Y/Z projections; unknown modes fall back here too.
-            uvX = textureMappingUV(m, TEXTURE_AXIS_X, pos, geomN);
-            uvY = textureMappingUV(m, TEXTURE_AXIS_Y, pos, geomN);
-            uvZ = textureMappingUV(m, TEXTURE_AXIS_Z, pos, geomN);
+            uvX = textureMappingUV(TEXTURE_AXIS_X, pos, geomN, fragUV);
+            uvY = textureMappingUV(TEXTURE_AXIS_Y, pos, geomN, fragUV);
+            uvZ = textureMappingUV(TEXTURE_AXIS_Z, pos, geomN, fragUV);
             weights = computeMappingTriplanarWeights(geomN, threshold, exponent);
             break;
     }

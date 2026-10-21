@@ -61,21 +61,19 @@ std::vector<MaterialProperties> sceneMaterialProperties(size_t materialCount) {
         float tessMinLevel;
         float tessMaxLevel;
         float tessHeightScale;
-        float triplanarScaleU;
-        float triplanarScaleV;
         float reflectionStrength;
     };
     static constexpr MaterialInit kMaterialInits[] = {
-        {  0u, 5.0f, 2.0f, 16.0f,  8.0f, 0.002f, 0.002f, 0.0f },
-        {  5u, 5.0f, 2.0f, 16.0f,  2.0f, 0.002f, 0.002f, 0.8f },
-        {  6u, 1.0f, 1.0f,  1.0f,  0.0f, 0.002f, 0.002f, 1.0f },
-        {  7u, 2.0f, 2.0f, 16.0f,  8.0f, 0.01f,  0.01f,  0.2f },
-        { 12u, 6.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.3f },
-        { 14u, 5.0f, 2.0f, 16.0f,  8.0f, 0.002f, 0.002f, 0.0f },
-        { 15u, 5.0f, 2.0f, 16.0f,  8.0f, 0.002f, 0.002f, 0.0f },
-        { 16u, 5.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.0f },
-        { 18u, 5.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.0f },
-        { 20u, 5.0f, 2.0f, 16.0f, 32.0f, 0.002f, 0.002f, 0.0f },
+        {  0u, 5.0f, 2.0f, 16.0f,  8.0f, 0.0f },
+        {  5u, 5.0f, 2.0f, 16.0f,  2.0f, 0.8f },
+        {  6u, 1.0f, 1.0f,  1.0f,  0.0f, 1.0f },
+        {  7u, 2.0f, 2.0f, 16.0f,  8.0f, 0.2f },
+        { 12u, 6.0f, 2.0f, 16.0f, 32.0f, 0.3f },
+        { 14u, 5.0f, 2.0f, 16.0f,  8.0f, 0.0f },
+        { 15u, 5.0f, 2.0f, 16.0f,  8.0f, 0.0f },
+        { 16u, 5.0f, 2.0f, 16.0f, 32.0f, 0.0f },
+        { 18u, 5.0f, 2.0f, 16.0f, 32.0f, 0.0f },
+        { 20u, 5.0f, 2.0f, 16.0f, 32.0f, 0.0f },
     };
     for (const MaterialInit& mi : kMaterialInits) {
         if (mi.index >= materials.size()) continue;
@@ -85,8 +83,6 @@ std::vector<MaterialProperties> sceneMaterialProperties(size_t materialCount) {
         mat.tessMinLevel = mi.tessMinLevel;
         mat.tessMaxLevel = mi.tessMaxLevel;
         mat.tessHeightScale = mi.tessHeightScale;
-        mat.triplanarScaleU = mi.triplanarScaleU;
-        mat.triplanarScaleV = mi.triplanarScaleV;
         mat.invertHeight = true;
         mat.reflectionStrength = mi.reflectionStrength;
     }

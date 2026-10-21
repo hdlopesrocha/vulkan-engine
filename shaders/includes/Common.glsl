@@ -28,9 +28,9 @@ vec3 computeTriplanarWeights(vec3 normal) {
 }
 
 // Triplanar height sampling with precomputed blend weights (and the world normal
-// used only for projection sign selection)
-float sampleHeightTriplanarW(vec3 worldPos, vec3 normal, vec3 w, int brushIndex) {
-    vec2 scale = vec2(materialNamed(materials[brushIndex]).triplanarScaleU, materialNamed(materials[brushIndex]).triplanarScaleV);
+// used only for projection sign selection). `scale` is the per-vertex UV scale
+// (Vertex::texCoord, painted by the scene's TextureCoordPainter).
+float sampleHeightTriplanarW(vec3 worldPos, vec3 normal, vec3 w, int brushIndex, vec2 scale) {
     if (materialNamed(materials[brushIndex]).invertHeight) {
         scale.y = -scale.y;
     }
@@ -64,6 +64,6 @@ float sampleHeightTriplanarW(vec3 worldPos, vec3 normal, vec3 w, int brushIndex)
 
 // Triplanar height sampling: blend height from world-space projected UVs.
 // Convenience wrapper that computes the blend weights from the world normal.
-float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int brushIndex) {
-    return sampleHeightTriplanarW(worldPos, normal, computeTriplanarWeights(normal), brushIndex);
+float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int brushIndex, vec2 scale) {
+    return sampleHeightTriplanarW(worldPos, normal, computeTriplanarWeights(normal), brushIndex, scale);
 }

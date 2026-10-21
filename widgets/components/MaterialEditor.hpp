@@ -71,11 +71,6 @@ inline bool render(MaterialProperties& mat,
     ImGui::SetNextItemWidth(kColumnWidth);
     if (ImGui::DragFloat("##material_angular_radius", &mat.mappingOrigin.w, 0.05f, 0.0f, FLT_MAX, "%.3f")) changed = true;
 
-    if (SliderFloatField("UV Scale U", &mat.triplanarScaleU, 0.0001f, 10.0f, "%.4f",
-                         "Projection UV scale (Triplanar / ProjectionX/Y/Z).")) changed = true;
-    if (SliderFloatField("UV Scale V", &mat.triplanarScaleV, 0.0001f, 10.0f, "%.4f",
-                         "Projection UV scale (Triplanar / ProjectionX/Y/Z).")) changed = true;
-
     constexpr int kBlendModeCount = static_cast<int>(MaterialBlendMode::Luminosity) + 1;
     const char* blendItems[kBlendModeCount];
     for (int i = 0; i < kBlendModeCount; ++i)

@@ -286,8 +286,6 @@ void TextureViewer::render() {
         MaterialProperties& mat = (*materials)[currentIndex];
         if (CheckboxField("Flip Normal Y (green)", &mat.normalFlipY)) materialDirty = true;
         if (CheckboxField("Swap Normal X/Z (R <-> B)", &mat.normalSwapXZ)) materialDirty = true;
-        if (SliderFloatField("Triplanar Scale U", &mat.triplanarScaleU, 0.01f, 10.0f, "%.3f")) materialDirty = true;
-        if (SliderFloatField("Triplanar Scale V", &mat.triplanarScaleV, 0.01f, 10.0f, "%.3f")) materialDirty = true;
     }});
 
     sections.push_back({[&]() {

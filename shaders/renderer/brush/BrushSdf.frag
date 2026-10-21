@@ -67,7 +67,9 @@ vec3 shadeBrushSurface(vec3 P, vec3 geomN) {
     triW = wt / (wt.x + wt.y + wt.z + 1e-6);
 
     vec2 uvX, uvY, uvZ;
-    computeTriplanarUVs(P, mi, geomN, uvX, uvY, uvZ);
+    // The preview raymarches terrain, whose Triplanar vertices carry the default
+    // UV scale; there is no vertex here to read it from.
+    computeTriplanarUVs(P, geomN, vec2(0.01), uvX, uvY, uvZ);
 
     MaterialNamed mn = materialNamed(materials[mi]);
     // The preview paints terrain, whose vertices are Triplanar (the coordinate

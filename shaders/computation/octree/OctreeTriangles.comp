@@ -855,9 +855,9 @@ void scanCell(uint cellId) {
 // surface, vegetation placement and the proxy boxes — is unaffected.
 
 void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int type, vec2 nodeUvIn, int plane) {
-    // Triplanar (and every GPU-derived mode) ignores the per-vertex UV; only
-    // Custom consumes it, so Triplanar vertices carry (0, 0) like Tesselator::handle.
-    const vec2 uv = (type == 0) ? vec2(0.0) : nodeUvIn;
+    // texCoord carries the vertex's UV scale (the projection scale for
+    // Triplanar/ProjectionX/Y/Z, the authored UV for Custom), read by the shader.
+    const vec2 uv = nodeUvIn;
     const uint o = (pc.vertexBase + slot) * 4u;
     // Vertex layout (math/Vertex.hpp), 4 x vec4 = 64 bytes:
     //   position.xyz | color.x

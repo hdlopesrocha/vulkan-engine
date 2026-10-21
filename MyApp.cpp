@@ -734,8 +734,6 @@ public:
             m.kind = MaterialKind::Video;
             m.textureIndex = static_cast<int>(i - (static_cast<size_t>(loadedTextureLayers) + 1));
             m.blendMode = MaterialBlendMode::Normal;
-            m.triplanarScaleU = 0.0015f;
-            m.triplanarScaleV = 0.0015f;
         }
         // First video material: the demo cube, spherical SDF coordinates around
         // its bounding volume and Screen blending (Solid -> Water -> Video).

@@ -8,7 +8,9 @@ static Material toGPU(const MaterialProperties &m) {
     out.materialFlags = glm::vec4(0.0f, 0.0f, m.ambientFactor, 0.0f);
     out.mappingParams = glm::vec4(m.mappingMode ? 1.0f : 0.0f, m.tessLevel, m.invertHeight ? 1.0f : 0.0f, m.tessHeightScale);
     out.specularParams = glm::vec4(m.specularStrength, m.shininess, 0.0f, 0.0f);
-    out.triplanarParams = glm::vec4(m.triplanarScaleU, m.triplanarScaleV, 0.0f, 0.0f);
+    // UV scale is a per-vertex value now (Vertex::texCoord, painted by the
+    // scene's TextureCoordPainter), so triplanarParams is fully reserved.
+    out.triplanarParams = glm::vec4(0.0f);
     out.normalParams = glm::vec4(m.normalFlipY ? 1.0f : 0.0f, m.normalSwapXZ ? 1.0f : 0.0f, m.invertWidth ? 1.0f : 0.0f, 0.0f);
     out.tessLevelParams = glm::vec4(m.tessMinLevel, m.tessMaxLevel, m.reflectionStrength, 0.0f);
     out.roughnessAOParams = glm::vec4(m.roughnessFactor, m.aoFactor, m.useAO ? 1.0f : 0.0f, 0.0f);

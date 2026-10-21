@@ -658,17 +658,17 @@ void shadeSolidSurface() {
         float h2 = 0.0;
         if (w.x > 0.0) {
             h0 = mappingUsesTriplanar(texTypes.x)
-                ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x)
+                ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x, uv)
                 : texture(heightArray, vec3(dominantMappingUV(mw0, uv0X, uv0Y, uv0Z), float(brushLayer(texIndices.x)))).r;
         }
         if (w.y > 0.0) {
             h1 = mappingUsesTriplanar(texTypes.y)
-                ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y)
+                ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y, uv)
                 : texture(heightArray, vec3(dominantMappingUV(mw1, uv1X, uv1Y, uv1Z), float(brushLayer(texIndices.y)))).r;
         }
         if (w.z > 0.0) {
             h2 = mappingUsesTriplanar(texTypes.z)
-                ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.z)
+                ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.z, uv)
                 : texture(heightArray, vec3(dominantMappingUV(mw2, uv2X, uv2Y, uv2Z), float(brushLayer(texIndices.z)))).r;
         }
         float h = h0 * w.x + h1 * w.y + h2 * w.z;
