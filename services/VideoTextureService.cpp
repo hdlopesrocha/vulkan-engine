@@ -154,12 +154,6 @@ struct Video {
     uint64_t servedSeq = 0;
     int64_t requestPts = 0;
     bool forceSeek = false;
-    // A request was issued and the worker has not finished serving it yet. The
-    // clock-driven path (updateVideo) refuses to issue another request while
-    // this is set: superseding an in-flight *seek* every frame would livelock
-    // the worker (the loop wrap would never complete). Explicit seek() ignores
-    // it so scrubbing stays responsive.
-    bool requestInFlight = false;
     bool hasPublished = false;
     int publishedSlot = -1;
     int64_t publishedPts = 0;
@@ -782,18 +776,47 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
     }
 
     // Decode forward until a frame at or after `target` is available; it lands
-    // in v.swFrame. Returns false on EOF/error/supersession.
-    bool decodeUntil(Video& v, int64_t target, uint64_t seq, bool checkSupersede, bool& superseded, uint64_t* decodedCount = nullptr) {
+    // in v.swFrame. A superseding request does not throw the work away: the
+    // newest target is adopted and decoding continues forward. That lets the
+    // main thread keep the material on the current clock (it may supersede
+    // every frame) without the worker restarting a seek, which is exactly what
+    // stalled the loop wrap before. Returns false on EOF/error, when the newest
+    // target moved backwards (the caller then seeks), or when the target
+    // outruns the decoder.
+    bool decodeUntil(Video& v, int64_t& target, uint64_t& seq, bool checkSupersede, bool& superseded, uint64_t* decodedCount = nullptr) {
         superseded = false;
+        // Bound a single chase to this many seconds of video: a very high
+        // playback rate must not trap the worker in an endless decode.
+        const int64_t maxChase = std::max<int64_t>(1, static_cast<int64_t>(std::llround(2.0 / std::max(1e-9, v.frameDuration))));
+        int64_t chaseFrames = 0;
         while (true) {
             if (checkSupersede && requestSuperseded(v, seq)) {
-                superseded = true;
-                return false;
+                int64_t newest = 0;
+                {
+                    std::lock_guard<std::mutex> g(v.mutex);
+                    if (!alive || v.quit) {
+                        superseded = true;
+                        return false;
+                    }
+                    newest = v.requestPts;
+                    seq = v.requestSeq;
+                    v.servedSeq = seq;
+                }
+                if (newest < target) {
+                    superseded = true;  // backwards: the caller has to seek
+                    return false;
+                }
+                target = newest;
             }
             if (v.flushSent && v.eof) return false;
+            if (chaseFrames > maxChase) {
+                superseded = true;  // target outran the decoder; re-evaluate/seek
+                return false;
+            }
 
             int ret = avcodec_receive_frame(v.dec, v.frame);
             if (ret == 0) {
+                ++chaseFrames;
                 int64_t pts = v.frame->best_effort_timestamp;
                 if (pts == AV_NOPTS_VALUE) {
                     v.fallbackPts += frameTicks(v);
@@ -881,8 +904,8 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
         while (alive && !v.quit) {
             v.requestCv.wait(lk, [&] { return !alive || v.quit || (v.hasRequest && v.requestSeq != v.servedSeq); });
             if (!alive || v.quit) break;
-            const uint64_t seq = v.requestSeq;
-            const int64_t target = v.requestPts;
+            uint64_t seq = v.requestSeq;
+            int64_t target = v.requestPts;
             const bool forced = v.forceSeek;
             v.forceSeek = false;
             v.servedSeq = seq;
@@ -892,7 +915,13 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
 
             bool superseded = false;
             bool published = false;
-            const int64_t jump = std::max<int64_t>(frameTicks(v), static_cast<int64_t>(std::llround(3.0 * v.frameDuration / std::max(1e-9, av_q2d(v.timeBase)))));
+            // A forward target within this time budget is reached by decoding
+            // forward (sequential decode is ~6 ms/frame); a real seek costs
+            // ~90 ms, so seeking for a handful of frames is far more expensive
+            // than decoding them. The clock advances while a request is being
+            // served, so a tight budget made the worker seek on essentially
+            // every request, which is what dragged playback behind real time.
+            const int64_t jump = std::max<int64_t>(frameTicks(v), static_cast<int64_t>(std::llround(0.5 / std::max(1e-9, av_q2d(v.timeBase)))));
             const bool needSeek = forced || positionPts == INT64_MIN || target < positionPts || (target - positionPts) > jump;
 
             if (!needSeek) {
@@ -903,19 +932,24 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
                     ++v.st.cacheHits;
                     ++v.st.requestsServed;
                     v.st.decodePending = v.hasRequest && v.requestSeq != v.servedSeq;
-                    v.requestInFlight = v.hasRequest && v.requestSeq != v.servedSeq;
                     lk.lock();
                     continue;
                 }
             }
 
-            if (needSeek && !seekTo(v, target)) {
-                std::lock_guard<std::mutex> g(v.mutex);
-                ++v.st.requestsServed;
-                v.st.decodePending = v.hasRequest && v.requestSeq != v.servedSeq;
-                v.requestInFlight = v.hasRequest && v.requestSeq != v.servedSeq;
-                lk.lock();
-                continue;
+            if (needSeek) {
+                if (!seekTo(v, target)) {
+                    std::lock_guard<std::mutex> g(v.mutex);
+                    ++v.st.requestsServed;
+                    v.st.decodePending = v.hasRequest && v.requestSeq != v.servedSeq;
+                    lk.lock();
+                    continue;
+                }
+                // The decoder now sits on the keyframe at or before `target`, so
+                // decoding forward reaches it. Recording that position keeps a
+                // superseding request with a forward target from seeking again
+                // (re-seeking on every supersession is what stalled the loop).
+                positionPts = target;
             }
 
             uint64_t decoded = 0;
@@ -961,7 +995,6 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
                     }
                 }
                 v.st.decodePending = v.hasRequest && v.requestSeq != v.servedSeq;
-                v.requestInFlight = v.hasRequest && v.requestSeq != v.servedSeq;
             }
             lk.lock();
         }
@@ -977,7 +1010,6 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
             ++v.requestSeq;
             v.hasRequest = true;
             v.forceSeek = true;
-            v.requestInFlight = true;
         }
         v.worker = std::thread([this, &v]() { workerLoop(&v); });
     }
@@ -1336,16 +1368,18 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
             // playback restarts immediately at the loop point.
             const bool stale = v.forceSeek || (v.materializedPts == INT64_MIN) ||
                                std::llabs(desired - v.materializedPts) > halfFrame;
-            // Do not issue a clock-driven request while the worker is still
-            // serving the previous one. Without this gate the loop-back seek is
-            // superseded every frame (the clock keeps advancing while the seek
-            // runs) and never completes, freezing the clip on its last frame.
-            // Explicit seek() bypasses the gate, so scrubbing stays responsive.
-            if (stale && !v.hasPublished && !v.uploadInFlight && !v.requestInFlight) {
+            // A clock-driven request supersedes whatever the worker is decoding
+            // (the worker adopts the newest target instead of restarting, see
+            // decodeUntil), so the material always tracks the current clock
+            // rather than a stale request target. Issuing it while the previous
+            // frame is still uploading lets the next decode overlap that upload
+            // instead of waiting a whole upload round-trip for it; the worker
+            // has a second staging slot for exactly this. Only one publish may
+            // be queued at a time (!hasPublished) so a slot is never orphaned.
+            if (stale && !v.hasPublished) {
                 v.requestPts = desired;
                 ++v.requestSeq;
                 v.hasRequest = true;
-                v.requestInFlight = true;
                 v.st.decodePending = true;
                 v.requestCv.notify_one();
             }
@@ -1802,7 +1836,6 @@ void VideoTextureService::seek(size_t index, double seconds) {
     v.requestPts = impl.secondsToPts(v, v.st.clock);
     ++v.requestSeq;
     v.hasRequest = true;
-    v.requestInFlight = true;
     v.hasPublished = false;
     v.requestCv.notify_all();
 }
@@ -1865,8 +1898,9 @@ void VideoTextureService::runBenchmark(size_t videosToTest, size_t seeksPerVideo
         const int64_t tick = impl.frameTicks(v);
         const double t0 = nowMs();
         for (uint64_t f = 0; f < frames; ++f) {
-            const int64_t target = static_cast<int64_t>(f + 1) * tick;
-            if (!impl.decodeUntil(v, target, 0, false, superseded, &decoded)) break;
+            int64_t target = static_cast<int64_t>(f + 1) * tick;
+            uint64_t seq = 0;
+            if (!impl.decodeUntil(v, target, seq, false, superseded, &decoded)) break;
             av_frame_unref(v.swFrame);
         }
         const double decodeMs = nowMs() - t0;
@@ -1881,7 +1915,9 @@ void VideoTextureService::runBenchmark(size_t videosToTest, size_t seeksPerVideo
             const int64_t pts = static_cast<int64_t>(seed % static_cast<uint64_t>(span));
             const double start = nowMs();
             if (!impl.seekTo(v, pts)) continue;
-            if (impl.decodeUntil(v, pts, 0, false, superseded)) {
+            int64_t decodeTarget = pts;
+            uint64_t seq = 0;
+            if (impl.decodeUntil(v, decodeTarget, seq, false, superseded)) {
                 seekMsSum += nowMs() - start;
                 ++seekCount;
                 av_frame_unref(v.swFrame);

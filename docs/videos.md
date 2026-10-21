@@ -197,11 +197,11 @@ once per clip.
 
 * A clip is never fully decoded: only the codec's reference frames and the
   packed YUV image of the last published frame exist.
-* The clock advances by `frameDelta × rate`. The clock-driven path issues at
-  most one request at a time: while the worker is still serving a request the
-  next one is withheld, so a seek issued at a loop wrap is never superseded
-  every frame and always completes. An explicit `seek()` (scrubbing) still
-  supersedes the in-flight request immediately.
+* The clock advances by `frameDelta × rate`. A newer timestamp request does not
+  restart the worker: it adopts the newest target and keeps decoding forward, so
+  the material always tracks the current clock. Only a backwards target (or one
+  more than ~0.5 s ahead, where a real seek is cheaper than decoding that run)
+  makes the worker seek.
 * A seek maps to the closest preceding keyframe (`AVSEEK_FLAG_BACKWARD` +
   `avcodec_flush_buffers`) and decodes forward to the requested timestamp;
   forward playback needs no seek.
