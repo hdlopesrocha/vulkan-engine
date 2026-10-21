@@ -48,14 +48,15 @@ vec2 textureMappingUV(in MaterialNamed m, in int axis, in vec3 pos, in vec3 geom
 }
 
 // Angular mode: spherical coordinates around the material's mapping origin. The
-// volume radius (mappingOrigin.w) sets the tiling; a zero radius falls back to
-// a unit sphere so the UV never degenerates.
+// volume radius (mappingOrigin.w) sets the tiling; a zero radius falls back to a
+// single wrap around the sphere so the UV never collapses to a single texel.
 vec2 textureMappingAngularUV(in MaterialNamed m, in vec3 pos) {
     vec3 d = pos - m.mappingOrigin.xyz;
     float r = max(length(d), 1e-5);
     vec2 uv = vec2(0.5 + atan(d.z, d.x) / 6.28318530718,
                    acos(clamp(d.y / r, -1.0, 1.0)) / 3.14159265359);
-    return uv * max(m.mappingOrigin.w, 1.0) * 0.01;
+    float tiling = (m.mappingOrigin.w > 0.0) ? m.mappingOrigin.w * 0.01 : 1.0;
+    return uv * tiling;
 }
 
 // Triplanar blend weights from the geometric normal, using the caller's
@@ -82,7 +83,9 @@ vec2 dominantMappingUV(in vec3 weights, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
 //   mode        - per-vertex TextureType (Vertex::textureType)
 //   uvX/uvY/uvZ - projection UVs; unused slots are zero.
 //   weights     - one-hot for single projections / Angular / Custom, and the
-//                 geometric-normal triplanar weights for mode 0.
+//                 geometric-normal triplanar weights for the Triplanar case.
+// The whole selection lives in this one GPU switch (Triplanar included) so the
+// coordinate technique is decided entirely on the GPU from Vertex::textureType.
 // threshold/exponent are ubo.triplanarThreshold / ubo.triplanarExponent.
 void computeMaterialUVs(in int mode, in int brushIndex, in vec3 pos, in vec3 geomN, in vec2 fragUV,
                         in float threshold, in float exponent,
@@ -93,24 +96,32 @@ void computeMaterialUVs(in int mode, in int brushIndex, in vec3 pos, in vec3 geo
     uvZ = vec2(0.0);
     weights = vec3(1.0, 0.0, 0.0);
 
-    if (mode == TEXTURE_MAPPING_PROJECTION_X) {
-        uvX = textureMappingUV(m, TEXTURE_AXIS_X, pos, geomN);
-    } else if (mode == TEXTURE_MAPPING_PROJECTION_Y) {
-        uvY = textureMappingUV(m, TEXTURE_AXIS_Y, pos, geomN);
-        weights = vec3(0.0, 1.0, 0.0);
-    } else if (mode == TEXTURE_MAPPING_PROJECTION_Z) {
-        uvZ = textureMappingUV(m, TEXTURE_AXIS_Z, pos, geomN);
-        weights = vec3(0.0, 0.0, 1.0);
-    } else if (mode == TEXTURE_MAPPING_ANGULAR) {
-        uvX = textureMappingAngularUV(m, pos);
-    } else if (mode == TEXTURE_MAPPING_CUSTOM) {
-        uvX = fragUV;
-    } else {
-        // Triplanar (mode 0); unknown modes fall back to the same projection.
-        uvX = textureMappingUV(m, TEXTURE_AXIS_X, pos, geomN);
-        uvY = textureMappingUV(m, TEXTURE_AXIS_Y, pos, geomN);
-        uvZ = textureMappingUV(m, TEXTURE_AXIS_Z, pos, geomN);
-        weights = computeMappingTriplanarWeights(geomN, threshold, exponent);
+    switch (mode) {
+        case TEXTURE_MAPPING_PROJECTION_X:
+            uvX = textureMappingUV(m, TEXTURE_AXIS_X, pos, geomN);
+            break;
+        case TEXTURE_MAPPING_PROJECTION_Y:
+            uvY = textureMappingUV(m, TEXTURE_AXIS_Y, pos, geomN);
+            weights = vec3(0.0, 1.0, 0.0);
+            break;
+        case TEXTURE_MAPPING_PROJECTION_Z:
+            uvZ = textureMappingUV(m, TEXTURE_AXIS_Z, pos, geomN);
+            weights = vec3(0.0, 0.0, 1.0);
+            break;
+        case TEXTURE_MAPPING_ANGULAR:
+            uvX = textureMappingAngularUV(m, pos);
+            break;
+        case TEXTURE_MAPPING_CUSTOM:
+            uvX = fragUV;
+            break;
+        case TEXTURE_MAPPING_TRIPLANAR:
+        default:
+            // Weighted X/Y/Z projections; unknown modes fall back here too.
+            uvX = textureMappingUV(m, TEXTURE_AXIS_X, pos, geomN);
+            uvY = textureMappingUV(m, TEXTURE_AXIS_Y, pos, geomN);
+            uvZ = textureMappingUV(m, TEXTURE_AXIS_Z, pos, geomN);
+            weights = computeMappingTriplanarWeights(geomN, threshold, exponent);
+            break;
     }
 }
 

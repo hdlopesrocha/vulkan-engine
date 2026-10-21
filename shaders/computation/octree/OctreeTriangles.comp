@@ -867,7 +867,10 @@ void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int type,
     const vec4 c0 = vec4(p, 1.0);
     const vec4 c1 = vec4(1.0, 1.0, uv);
     const vec4 c2 = vec4(n, uintBitsToFloat(uint(brush)));
-    const vec4 c3 = vec4(float(type), h);
+    // textureType is read as an int (Vertex attribute R32_SINT, and the RT
+    // path's floatBitsToInt), so it must be stored as int BITS — not a float
+    // value, which would decode to garbage and drop every non-Triplanar mode.
+    const vec4 c3 = vec4(uintBitsToFloat(uint(type)), h);
     poolVerts[o + 0u] = c0;
     poolVerts[o + 1u] = c1;
     poolVerts[o + 2u] = c2;
