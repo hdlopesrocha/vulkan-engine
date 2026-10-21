@@ -15,8 +15,7 @@ class TextureArrayManager;
 // through textureIndex, so the same clip can be used by several materials.
 class VideoTextureWidget : public Widget {
 public:
-    VideoTextureWidget(std::shared_ptr<VideoTextureService> videos,
-                       const char* title_ = "Video Textures");
+    explicit VideoTextureWidget(std::shared_ptr<VideoTextureService> videos);
 
     void render() override;
 
@@ -28,4 +27,5 @@ private:
     float seekSeconds = 0.0f;
     float rate = 1.0f;
     bool loopAll = true;
+    bool playbackPrimed = false;
 };
