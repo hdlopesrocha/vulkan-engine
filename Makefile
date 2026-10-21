@@ -550,7 +550,7 @@ release: all
 # be inspected afterwards. When the app exits, the run-success/run-error alert
 # reflects its exit status (bash PIPESTATUS keeps the app's code through the
 # tee pipeline).
-run: all
+run:
 	@echo "Running app from $(OUT_DIR)/"
 	@$(call PLAY_SOUND,run)
 	@mkdir -p logs
@@ -558,7 +558,7 @@ run: all
 		&& $(call PLAY_SOUND,run-success) \
 		|| $(call PLAY_SOUND,run-error);
 
-run-debug: debug
+run-debug:
 	@echo "Running debug build from $(OUT_DIR)/"
 	@$(call PLAY_SOUND,run)
 	@mkdir -p logs
