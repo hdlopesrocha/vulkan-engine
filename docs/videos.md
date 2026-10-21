@@ -65,11 +65,13 @@ Environment switches:
 |---|---|
 | `VULKAN_NO_VIDEO=1` | do not create the video service/array |
 | `VULKAN_VIDEO_SLOTS=<n>` | video array capacity (default 8, max 32) |
-| `VULKAN_VIDEO_AUTOPLAY=<n\|all>` | clips that start playing (default all); paused clips still materialize the frame at their clock |
 | `VULKAN_VIDEO_DEBUG=1` | diagnostics every 5 s |
 | `VULKAN_VIDEO_BENCH=1` | decode/seek benchmark at startup |
 | `VULKAN_VIDEO_BACKEND=auto\|vulkan\|vaapi\|software` | force a decode backend |
 | `VULKAN_VIDEO_BLEND=<0..18>` | force the demo video cube material's blend mode at startup (A/B diagnosis; indices match `MaterialBlendMode`) |
+
+Clips start playing and looping as soon as they load; pausing is an explicit
+action in the Video Textures widget.
 
 Memory: the video-specific cost per clip is one packed YUV image (≈1.5 MiB at
 1024²) plus two host-visible staging buffers of the same size. The video array

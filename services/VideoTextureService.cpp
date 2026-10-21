@@ -245,7 +245,6 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
     std::string backendPreference = "auto";
     bool debugLog = false;
     bool benchPending = false;
-    int autoplayCount = -1;  // clips that start playing; -1 = all, 0 = none
     double diagTimer = 0.0;
 
     ~Impl() {
@@ -1457,22 +1456,6 @@ bool VideoTextureService::initialize(VulkanApp* app, TextureArrayManager* arrays
     if (impl.backendPreference.empty()) impl.backendPreference = "auto";
     impl.debugLog = envFlag("VULKAN_VIDEO_DEBUG");
     impl.benchPending = envFlag("VULKAN_VIDEO_BENCH");
-    {
-        // VULKAN_VIDEO_AUTOPLAY: number of clips that start playing (default:
-        // all clips). "all" or a negative number plays everything, 0 starts
-        // them paused. Paused clips still materialize the frame at their current
-        // clock (the first frame), so every layer shows its material.
-        const std::string autoplay = envString("VULKAN_VIDEO_AUTOPLAY");
-        if (!autoplay.empty()) {
-            if (autoplay == "all" || autoplay == "ALL") {
-                impl.autoplayCount = -1;
-            } else {
-                impl.autoplayCount = std::atoi(autoplay.c_str());
-                if (impl.autoplayCount < 0) impl.autoplayCount = -1;
-            }
-        }
-    }
-
     impl.probeBackend();
     std::cout << "[VideoTextureService] ffmpeg " << av_version_info() << std::endl;
 
@@ -1516,8 +1499,10 @@ int VideoTextureService::loadVideo(const std::string& path, const std::string& n
     video->path = path;
     video->st.name = name.empty() ? std::filesystem::path(path).stem().string() : name;
     video->st.path = path;
-    video->st.playing = (impl.autoplayCount < 0) ||
-                        (static_cast<int>(impl.videos.size()) < impl.autoplayCount);
+    // Clips always start playing and looping. Pausing is an explicit action in
+    // the Video Textures widget (Play/Pause controls); no startup switch can
+    // leave a material on a frozen frame.
+    video->st.playing = true;
     video->st.looping = true;
     video->st.rate = 1.0f;
 
