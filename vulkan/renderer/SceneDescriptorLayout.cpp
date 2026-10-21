@@ -253,9 +253,20 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     windFieldBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
         | VK_SHADER_STAGE_COMPUTE_BIT;
 
+    // binding 28: per-brush image source table (types/ImageType.hpp): one uvec2
+    // {ImageType, index} per brush. Lets the shaders resolve which texture set
+    // and layer a brush samples (base image / TextureMixer / video).
+    VkDescriptorSetLayoutBinding brushMapBinding{};
+    brushMapBinding.binding = 28;
+    brushMapBinding.descriptorCount = 1;
+    brushMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    brushMapBinding.pImmutableSamplers = nullptr;
+    brushMapBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+        | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+
     // Binding numbers are sparse by design: 11 (legacy 360 cubemap) is
     // intentionally absent.
-    std::array<VkDescriptorSetLayoutBinding, 27> bindings = {
+    std::array<VkDescriptorSetLayoutBinding, 28> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
         waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
@@ -263,7 +274,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
         tlasBinding, rtReflectBinding, rtRefractBinding, rtParamsBinding, rtMetaBinding,
         ssrColorBinding, ssrDepthBinding, scenePrimBaseBinding, sceneMetaBinding,
         sceneGeomInfoBinding, sceneVertsBinding, sceneIndicesBinding, rtProfileBinding,
-        windFieldBinding
+        windFieldBinding, brushMapBinding
     };
     // Fill the material binding at position 5
     bindings[5].binding = 5;
@@ -288,7 +299,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     // (the only UPDATE_AFTER_BIND binding, for swapchain-resize view churn)
     // is gone. RT views/TLAS are stable between resizes (rewritten only on
     // resize/recreate events, never while in flight).
-    std::array<VkDescriptorBindingFlags, 27> bindingFlags{};
+    std::array<VkDescriptorBindingFlags, 28> bindingFlags{};
     bindingFlags.fill(0);
 
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};

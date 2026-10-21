@@ -34,9 +34,12 @@ layout(location = 0) out vec4 outColor;
 void main() {
     const int brushIndex = fragTexIndices.x;
     const MaterialNamed mat = materialNamed(materials[brushIndex]);
-    // textureIndex selects the video slot; -1 keeps the one-material-per-layer
-    // behaviour (the material index itself is the slot).
-    const int slot = mat.textureIndex >= 0 ? mat.textureIndex : brushIndex;
+    // The video slot comes from the per-brush image map when the brush is a
+    // Video source; otherwise fall back to the material's textureIndex (-1 keeps
+    // the one-material-per-layer behaviour, material index == slot).
+    const int slot = brushIsVideo(brushIndex)
+        ? brushVideoSlot(brushIndex)
+        : (mat.textureIndex >= 0 ? mat.textureIndex : brushIndex);
 
     // Same coordinate techniques as the solid layer (Triplanar, Projection
     // X/Y/Z, Angular, Custom UV), selected per vertex like the solid path.

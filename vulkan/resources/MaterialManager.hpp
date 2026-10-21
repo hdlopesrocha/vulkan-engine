@@ -3,8 +3,10 @@
 #include "../core/vulkan.hpp"
 #include "Buffer.hpp"
 #include "types/MaterialProperties.hpp"
+#include "types/ImageType.hpp"
 #include "../ssbo/Material.hpp"
 #include <vector>
+#include <glm/glm.hpp>
 
 class VulkanApp;
 
@@ -18,6 +20,14 @@ public:
 
     // Update a single material at `index` from CPU-side MaterialProperties.
     void update(size_t index, const MaterialProperties& mat, VulkanApp* app);
+
+    // ── Brush map ───────────────────────────────────────────────────────────
+    // Per-brush image source table (types/ImageType.hpp). One uvec2 {type,index}
+    // per brush, read by the shaders to resolve which array/layer a brush samples.
+    void allocateBrushMap(size_t count, VulkanApp* app);
+    void updateBrushMap(size_t index, const BrushImage& image, VulkanApp* app);
+    Buffer& getBrushMapBuffer() { return brushMapBuffer; }
+    size_t brushMapEntryCount() const { return brushMapCount; }
 
     // Release GPU resources.
     void destroy(VulkanApp* app);
@@ -40,4 +50,7 @@ private:
     size_t materialCount = 0;
     size_t materialBufferSize = 0;
     std::vector<Material> cpuCache;
+    Buffer brushMapBuffer{};
+    size_t brushMapCount = 0;
+    size_t brushMapByteSize = 0;
 };

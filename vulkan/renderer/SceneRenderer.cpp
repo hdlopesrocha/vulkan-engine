@@ -883,6 +883,22 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     materialsWrite.pBufferInfo = &materialsInfo;
     writes.push_back(materialsWrite);
 
+    // Per-brush image source table (binding 28). May be unallocated at init
+    // (materials/brush map are allocated later in setupTextures); when it is,
+    // updateTextureDescriptorSet writes it once the real buffer appears.
+    brushMapBuffer_ = materialManager->getBrushMapBuffer();
+    if (brushMapBuffer_.buffer != VK_NULL_HANDLE) {
+        VkDescriptorBufferInfo& brushMapInfo = writesBuf.emplace_back(brushMapBuffer_.buffer, 0, VK_WHOLE_SIZE);
+        VkWriteDescriptorSet brushMapWrite{};
+        brushMapWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        brushMapWrite.dstSet = staticDs;
+        brushMapWrite.dstBinding = 28;
+        brushMapWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        brushMapWrite.descriptorCount = 1;
+        brushMapWrite.pBufferInfo = &brushMapInfo;
+        writes.push_back(brushMapWrite);
+    }
+
     // Initialize WaterRenderer early and allocate a params SSBO sized to texture layers.
     // Use the passed vector of WaterSettings as the source of truth for layer count.
     // Do not fall back to texture-array sizes; require explicit water parameters.
@@ -1565,6 +1581,7 @@ SceneRenderer::StaticTextureSignature SceneRenderer::currentStaticSignature(Text
     }
     sig.materials = materialsBuffer.buffer;
     sig.waterParams = waterParamsBuffer_.buffer;
+    sig.brushMap = brushMapBuffer_.buffer;
     sig.valid = true;
     return sig;
 }
@@ -1602,6 +1619,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     // background thread).
     if (materialManagerPtr && materialManagerPtr->getBuffer().buffer != VK_NULL_HANDLE) {
         materialsBuffer = materialManagerPtr->getBuffer();
+        brushMapBuffer_ = materialManagerPtr->getBrushMapBuffer();
     }
 
     // Change guard: skip the entire update when every static resource matches
@@ -1673,6 +1691,11 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             writer.writeBuffer(staticDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
 
+        // Brush map SSBO (binding 28) — per-brush image source table.
+        if (brushMapBuffer_.buffer != VK_NULL_HANDLE)
+            writer.writeBuffer(staticDs, 28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                               brushMapBuffer_.buffer, 0, VK_WHOLE_SIZE);
+
         writer.flush();
     }
 
@@ -1702,8 +1725,8 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
                 c.descriptorCount = 1;
                 copies.push_back(c);
             }
-            // Binding 5, 7 (storage buffers), 6 (Sky UBO), 10 (Water render UBO)
-            for (uint32_t b : {5u, 6u, 7u, 10u}) {
+            // Binding 5, 7, 28 (storage buffers), 6 (Sky UBO), 10 (Water render UBO)
+            for (uint32_t b : {5u, 6u, 7u, 10u, 28u}) {
                 VkCopyDescriptorSet c{};
                 c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
                 c.srcSet = staticDs; c.srcBinding = b; c.srcArrayElement = 0;
@@ -1744,6 +1767,10 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             if (waterParamsBuffer_.buffer != VK_NULL_HANDLE)
                 sw.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
+            // The shadow TES displacement reads the brush map (binding 28).
+            if (brushMapBuffer_.buffer != VK_NULL_HANDLE)
+                sw.writeBuffer(ds, 28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                               brushMapBuffer_.buffer, 0, VK_WHOLE_SIZE);
             sw.flush();
         }
         // The per-cascade shadow sets are built once by copying the shared

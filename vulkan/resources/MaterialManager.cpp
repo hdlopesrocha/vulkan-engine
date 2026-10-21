@@ -64,6 +64,35 @@ void MaterialManager::update(size_t index, const MaterialProperties& mat, Vulkan
     memcpy(materialBuffer.map(offset), &gpu, sizeof(Material));
 }
 
+void MaterialManager::allocateBrushMap(size_t count, VulkanApp* app) {
+    if (!app) throw std::runtime_error("MaterialManager::allocateBrushMap: app is null");
+    if (count == 0) return;
+    const size_t newSize = sizeof(glm::uvec2) * count;
+    if (brushMapBuffer.buffer != VK_NULL_HANDLE && brushMapByteSize != newSize) {
+        brushMapBuffer.buffer = VK_NULL_HANDLE;
+    }
+    if (brushMapBuffer.memory != VK_NULL_HANDLE && brushMapBuffer.buffer == VK_NULL_HANDLE) {
+        brushMapBuffer.memory = VK_NULL_HANDLE;
+    }
+    if (brushMapBuffer.buffer == VK_NULL_HANDLE) {
+        VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (app->useDescriptorBuffer()) usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        brushMapBuffer = app->createBuffer(static_cast<VkDeviceSize>(newSize), usage,
+                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        brushMapByteSize = newSize;
+    }
+    brushMapCount = count;
+    memset(brushMapBuffer.mappedData, 0, brushMapByteSize);
+}
+
+void MaterialManager::updateBrushMap(size_t index, const BrushImage& image, VulkanApp* app) {
+    if (!app) throw std::runtime_error("MaterialManager::updateBrushMap: app is null");
+    if (index >= brushMapCount) throw std::out_of_range("MaterialManager::updateBrushMap: index out of range");
+    glm::uvec2 entry(static_cast<uint32_t>(image.type), image.index);
+    VkDeviceSize offset = static_cast<VkDeviceSize>(index) * sizeof(glm::uvec2);
+    memcpy(brushMapBuffer.map(offset), &entry, sizeof(glm::uvec2));
+}
+
 void MaterialManager::destroy(VulkanApp* app) {
     if (!app) return;
     // Defer destruction/freeing to VulkanResourceManager; clear local handles
@@ -72,4 +101,8 @@ void MaterialManager::destroy(VulkanApp* app) {
     materialCount = 0;
     materialBufferSize = 0;
     cpuCache.clear();
+    brushMapBuffer.buffer = VK_NULL_HANDLE;
+    brushMapBuffer.memory = VK_NULL_HANDLE;
+    brushMapCount = 0;
+    brushMapByteSize = 0;
 }

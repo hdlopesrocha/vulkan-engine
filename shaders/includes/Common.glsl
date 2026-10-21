@@ -9,7 +9,7 @@ float sampleHeight(vec2 texCoords, int brushIndex) {
     if (materialNamed(materials[brushIndex]).invertWidth) {
         tc.x = 1.0 - tc.x;
     }
-    float h = texture(heightArray, vec3(tc, float(brushIndex))).r;
+    float h = texture(heightArray, vec3(tc, float(brushLayer(brushIndex)))).r;
     return clamp(h, 0.0, 1.0);
 }
 
@@ -45,17 +45,17 @@ float sampleHeightTriplanarW(vec3 worldPos, vec3 normal, vec3 w, int brushIndex)
     // UV math must match computeTriplanarUVs() in triplanar.glsl so height and albedo align
     if (w.x > 0.0) {
         vec2 uvX = (normal.x >= 0.0) ? vec2(-worldPos.z, -worldPos.y) : vec2(worldPos.z, -worldPos.y);
-        hX = texture(heightArray, vec3(uvX * scale, float(brushIndex))).r;
+        hX = texture(heightArray, vec3(uvX * scale, float(brushLayer(brushIndex)))).r;
     }
 
     if (w.y > 0.0) {
         vec2 uvY = (normal.y >= 0.0) ? vec2(worldPos.x, worldPos.z) : vec2(worldPos.x, -worldPos.z);
-        hY = texture(heightArray, vec3(uvY * scale, float(brushIndex))).r;
+        hY = texture(heightArray, vec3(uvY * scale, float(brushLayer(brushIndex)))).r;
     }
 
     if (w.z > 0.0) {
         vec2 uvZ = (normal.z >= 0.0) ? vec2(worldPos.x, -worldPos.y) : vec2(-worldPos.x, -worldPos.y);
-        hZ = texture(heightArray, vec3(uvZ * scale, float(brushIndex))).r;
+        hZ = texture(heightArray, vec3(uvZ * scale, float(brushLayer(brushIndex)))).r;
     }
 
     float h = hX * w.x + hY * w.y + hZ * w.z;

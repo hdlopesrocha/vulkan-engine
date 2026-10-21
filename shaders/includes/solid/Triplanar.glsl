@@ -16,9 +16,9 @@ void computeTriplanarUVs(in vec3 fragPosWorld, in int brushIndex, in vec3 geomN,
 // Sample albedo using precomputed triplanar UVs (weights already blended).
 // The zero-weight guards (triW.x > 0.0) skip unused projections.
 vec3 computeTriplanarAlbedoUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
-    vec3 cX = triW.x > 0.0 ? texture(albedoArray, vec3(uvX, float(brushIndex))).rgb : vec3(0.0);
-    vec3 cY = triW.y > 0.0 ? texture(albedoArray, vec3(uvY, float(brushIndex))).rgb : vec3(0.0);
-    vec3 cZ = triW.z > 0.0 ? texture(albedoArray, vec3(uvZ, float(brushIndex))).rgb : vec3(0.0);
+    vec3 cX = triW.x > 0.0 ? texture(albedoArray, vec3(uvX, float(brushLayer(brushIndex)))).rgb : vec3(0.0);
+    vec3 cY = triW.y > 0.0 ? texture(albedoArray, vec3(uvY, float(brushLayer(brushIndex)))).rgb : vec3(0.0);
+    vec3 cZ = triW.z > 0.0 ? texture(albedoArray, vec3(uvZ, float(brushLayer(brushIndex)))).rgb : vec3(0.0);
    
     return cX * triW.x + cY * triW.y + cZ * triW.z;
 }
@@ -30,9 +30,9 @@ vec3 computeTriplanarAlbedoUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in 
 // undefined behavior (garbage albedo + derivative-uniformity validation
 // errors on most drivers).
 vec3 computeTriplanarAlbedoUVsLod(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ, in float lod) {
-    vec3 cX = triW.x > 0.0 ? textureLod(albedoArray, vec3(uvX, float(brushIndex)), lod).rgb : vec3(0.0);
-    vec3 cY = triW.y > 0.0 ? textureLod(albedoArray, vec3(uvY, float(brushIndex)), lod).rgb : vec3(0.0);
-    vec3 cZ = triW.z > 0.0 ? textureLod(albedoArray, vec3(uvZ, float(brushIndex)), lod).rgb : vec3(0.0);
+    vec3 cX = triW.x > 0.0 ? textureLod(albedoArray, vec3(uvX, float(brushLayer(brushIndex))), lod).rgb : vec3(0.0);
+    vec3 cY = triW.y > 0.0 ? textureLod(albedoArray, vec3(uvY, float(brushLayer(brushIndex))), lod).rgb : vec3(0.0);
+    vec3 cZ = triW.z > 0.0 ? textureLod(albedoArray, vec3(uvZ, float(brushLayer(brushIndex))), lod).rgb : vec3(0.0);
 
     return cX * triW.x + cY * triW.y + cZ * triW.z;
 }
@@ -67,7 +67,7 @@ vec3 reorientNormal(in vec3 blendedWorld, in vec3 geomN) {
 // the Y-flip / XZ-swap convention ops are norm-preserving, so
 // normalize-then-convert equals the original convert-then-normalize).
 vec3 sampleNormalTexel(vec2 uv, int brushIndex) {
-    vec3 nSample = texture(normalArray, vec3(uv, float(brushIndex))).rgb * 2.0 - 1.0;
+    vec3 nSample = texture(normalArray, vec3(uv, float(brushLayer(brushIndex)))).rgb * 2.0 - 1.0;
     return applyNormalConvention(normalize(nSample), materials[brushIndex].normalParams);
 }
 
@@ -142,9 +142,9 @@ vec3 computeTriplanarNormal(in vec3 fragPosWorld, in vec3 triW, in int brushInde
 
 // Sample roughness using precomputed triplanar UVs (R channel)
 float computeTriplanarRoughnessUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
-    float rX = triW.x > 0.0 ? texture(roughnessArray, vec3(uvX, float(brushIndex))).r : 0.0;
-    float rY = triW.y > 0.0 ? texture(roughnessArray, vec3(uvY, float(brushIndex))).r : 0.0;
-    float rZ = triW.z > 0.0 ? texture(roughnessArray, vec3(uvZ, float(brushIndex))).r : 0.0;
+    float rX = triW.x > 0.0 ? texture(roughnessArray, vec3(uvX, float(brushLayer(brushIndex)))).r : 0.0;
+    float rY = triW.y > 0.0 ? texture(roughnessArray, vec3(uvY, float(brushLayer(brushIndex)))).r : 0.0;
+    float rZ = triW.z > 0.0 ? texture(roughnessArray, vec3(uvZ, float(brushLayer(brushIndex)))).r : 0.0;
     return rX * triW.x + rY * triW.y + rZ * triW.z;
 }
 
@@ -156,7 +156,7 @@ float computeTriplanarRoughnessDominant(in vec3 triW, in int brushIndex, in vec2
     float dx = step(triW.y, triW.x) * step(triW.z, triW.x);
     float dy = (1.0 - dx) * step(triW.z, triW.y);
     vec2 uv = uvX * dx + uvY * dy + uvZ * (1.0 - dx - dy);
-    return texture(roughnessArray, vec3(uv, float(brushIndex))).r;
+    return texture(roughnessArray, vec3(uv, float(brushLayer(brushIndex)))).r;
 }
 
 // Sample roughness using triplanar projection (R channel), computing UVs internally.
@@ -168,9 +168,9 @@ float computeTriplanarRoughness(in vec3 fragPosWorld, in vec3 triW, in int brush
 
 // Sample ambient occlusion using precomputed triplanar UVs (R channel)
 float computeTriplanarAOUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
-    float aX = triW.x > 0.0 ? texture(aoArray, vec3(uvX, float(brushIndex))).r : 0.0;
-    float aY = triW.y > 0.0 ? texture(aoArray, vec3(uvY, float(brushIndex))).r : 0.0;
-    float aZ = triW.z > 0.0 ? texture(aoArray, vec3(uvZ, float(brushIndex))).r : 0.0;
+    float aX = triW.x > 0.0 ? texture(aoArray, vec3(uvX, float(brushLayer(brushIndex)))).r : 0.0;
+    float aY = triW.y > 0.0 ? texture(aoArray, vec3(uvY, float(brushLayer(brushIndex)))).r : 0.0;
+    float aZ = triW.z > 0.0 ? texture(aoArray, vec3(uvZ, float(brushLayer(brushIndex)))).r : 0.0;
     return aX * triW.x + aY * triW.y + aZ * triW.z;
 }
 
@@ -180,7 +180,7 @@ float computeTriplanarAODominant(in vec3 triW, in int brushIndex, in vec2 uvX, i
     float dx = step(triW.y, triW.x) * step(triW.z, triW.x);
     float dy = (1.0 - dx) * step(triW.z, triW.y);
     vec2 uv = uvX * dx + uvY * dy + uvZ * (1.0 - dx - dy);
-    return texture(aoArray, vec3(uv, float(brushIndex))).r;
+    return texture(aoArray, vec3(uv, float(brushLayer(brushIndex)))).r;
 }
 
 // Sample ambient occlusion using triplanar projection (R channel), computing UVs internally.

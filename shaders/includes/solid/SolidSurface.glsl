@@ -176,9 +176,9 @@ void shadeSolidSurface() {
             vec2 nuv0 = dominantMappingUV(mw0, uv0X, uv0Y, uv0Z);
             vec2 nuv1 = dominantMappingUV(mw1, uv1X, uv1Y, uv1Z);
             vec2 nuv2 = dominantMappingUV(mw2, uv2X, uv2Y, uv2Z);
-            vec3 n0 = w.x > 0.0 ? texture(normalArray, vec3(nuv0, float(texIndices.x))).rgb * 2.0 - 1.0 : vec3(0.0);
-            vec3 n1 = w.y > 0.0 ? texture(normalArray, vec3(nuv1, float(texIndices.y))).rgb * 2.0 - 1.0 : vec3(0.0);
-            vec3 n2 = w.z > 0.0 ? texture(normalArray, vec3(nuv2, float(texIndices.z))).rgb * 2.0 - 1.0 : vec3(0.0);
+            vec3 n0 = w.x > 0.0 ? texture(normalArray, vec3(nuv0, float(brushLayer(texIndices.x)))).rgb * 2.0 - 1.0 : vec3(0.0);
+            vec3 n1 = w.y > 0.0 ? texture(normalArray, vec3(nuv1, float(brushLayer(texIndices.y)))).rgb * 2.0 - 1.0 : vec3(0.0);
+            vec3 n2 = w.z > 0.0 ? texture(normalArray, vec3(nuv2, float(brushLayer(texIndices.z)))).rgb * 2.0 - 1.0 : vec3(0.0);
             vec3 nmap = normalize(n0 * w.x + n1 * w.y + n2 * w.z);
             // Build TBN matrix from geometry for UV-space normal mapping
             vec3 T = normalize(dFdx(fragPosWorld));
@@ -643,9 +643,9 @@ void shadeSolidSurface() {
         vec2 nuv0 = dominantMappingUV(mw0, uv0X, uv0Y, uv0Z);
         vec2 nuv1 = dominantMappingUV(mw1, uv1X, uv1Y, uv1Z);
         vec2 nuv2 = dominantMappingUV(mw2, uv2X, uv2Y, uv2Z);
-        vec3 rn0 = texture(normalArray, vec3(nuv0, float(texIndices.x))).rgb;
-        vec3 rn1 = texture(normalArray, vec3(nuv1, float(texIndices.y))).rgb;
-        vec3 rn2 = texture(normalArray, vec3(nuv2, float(texIndices.z))).rgb;
+        vec3 rn0 = texture(normalArray, vec3(nuv0, float(brushLayer(texIndices.x)))).rgb;
+        vec3 rn1 = texture(normalArray, vec3(nuv1, float(brushLayer(texIndices.y)))).rgb;
+        vec3 rn2 = texture(normalArray, vec3(nuv2, float(brushLayer(texIndices.z)))).rgb;
         outColor = vec4(rn0 * w.x + rn1 * w.y + rn2 * w.z, 1.0);
         return;
     }
@@ -659,17 +659,17 @@ void shadeSolidSurface() {
         if (w.x > 0.0) {
             h0 = mappingUsesTriplanar(texTypes.x)
                 ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x)
-                : texture(heightArray, vec3(dominantMappingUV(mw0, uv0X, uv0Y, uv0Z), float(texIndices.x))).r;
+                : texture(heightArray, vec3(dominantMappingUV(mw0, uv0X, uv0Y, uv0Z), float(brushLayer(texIndices.x)))).r;
         }
         if (w.y > 0.0) {
             h1 = mappingUsesTriplanar(texTypes.y)
                 ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y)
-                : texture(heightArray, vec3(dominantMappingUV(mw1, uv1X, uv1Y, uv1Z), float(texIndices.y))).r;
+                : texture(heightArray, vec3(dominantMappingUV(mw1, uv1X, uv1Y, uv1Z), float(brushLayer(texIndices.y)))).r;
         }
         if (w.z > 0.0) {
             h2 = mappingUsesTriplanar(texTypes.z)
                 ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.z)
-                : texture(heightArray, vec3(dominantMappingUV(mw2, uv2X, uv2Y, uv2Z), float(texIndices.z))).r;
+                : texture(heightArray, vec3(dominantMappingUV(mw2, uv2X, uv2Y, uv2Z), float(brushLayer(texIndices.z)))).r;
         }
         float h = h0 * w.x + h1 * w.y + h2 * w.z;
         outColor = vec4(vec3(h), 1.0);
@@ -711,9 +711,9 @@ void shadeSolidSurface() {
             vec3(0.60, 0.60, 0.60), // gray
             vec3(1.00, 1.00, 1.00)  // white
         );
-        vec3 c0 = palette[int(mod(float(texIndices.x), float(PALETTE_SIZE)) + 0.5)];
-        vec3 c1 = palette[int(mod(float(texIndices.y), float(PALETTE_SIZE)) + 0.5)];
-        vec3 c2 = palette[int(mod(float(texIndices.z), float(PALETTE_SIZE)) + 0.5)];
+        vec3 c0 = palette[int(mod(float(brushLayer(texIndices.x)), float(PALETTE_SIZE)) + 0.5)];
+        vec3 c1 = palette[int(mod(float(brushLayer(texIndices.y)), float(PALETTE_SIZE)) + 0.5)];
+        vec3 c2 = palette[int(mod(float(brushLayer(texIndices.z)), float(PALETTE_SIZE)) + 0.5)];
         outColor = vec4(c0 * w.x + c1 * w.y + c2 * w.z, 1.0);
         return;
     }

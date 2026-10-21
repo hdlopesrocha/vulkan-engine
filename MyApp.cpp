@@ -445,6 +445,9 @@ public:
     uint32_t dropletDrawCount = 0;
     std::vector<MixerParameters> mixerParams;
     std::vector<MaterialProperties> materials;
+    // Per-brush image source table (types/ImageType.hpp): brush i -> source
+    // (base image / TextureMixer / video). Edited by the Brush widget's mapper.
+    BrushMap brushMap;
     // Application-owned per-layer water parameters (initialized in setup)
     std::vector<WaterSettings> waterParams;
     float mainTime = 0.0f;
@@ -761,6 +764,30 @@ public:
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
         for (size_t i = 0; i < materialCount; ++i) materialManager.update(i, materials[i], this);
+
+        // Per-brush image map. Default: brush i samples base image layer i. The
+        // TextureMixer outputs and the video slots get their own entries so the
+        // renderer (and the widgets) can tell the three sources apart. Sized
+        // generously (brush indices may exceed the material count, e.g. via the
+        // controller's material field) so the shader lookup can never run off
+        // the end of the table.
+        const size_t brushMapCount = std::max<size_t>(materialCount, 64);
+        brushMap.resize(brushMapCount);
+        for (size_t i = 0; i < brushMapCount; ++i)
+            brushMap[i] = BrushImage{ImageType::Image, static_cast<uint32_t>(i)};
+        const size_t imageCount = textureTriples_.size();  // base image layers
+        for (size_t k = 0; k < mixerParams.size(); ++k) {
+            const uint32_t layer = static_cast<uint32_t>(imageCount + k);
+            brushMap[layer] = BrushImage{ImageType::TextureMixer, layer};
+        }
+        for (size_t k = 0; k < kVideoMaterialCount; ++k) {
+            const size_t brush = static_cast<size_t>(loadedTextureLayers) + 1 + k;
+            brushMap[brush] = BrushImage{ImageType::Video, static_cast<uint32_t>(k)};
+        }
+        if (sdfGivenMaterialIndex >= 0)
+            brushMap[static_cast<size_t>(sdfGivenMaterialIndex)] = BrushImage{ImageType::Image, 6};
+        materialManager.allocateBrushMap(brushMapCount, this);
+        for (size_t i = 0; i < brushMapCount; ++i) materialManager.updateBrushMap(i, brushMap[i], this);
 
         // The descriptor set was bound to a dummy buffer at SceneRenderer::init() time
         // because materialManager hadn't been allocated yet (runs on a background thread).

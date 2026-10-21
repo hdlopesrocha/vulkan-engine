@@ -54,6 +54,8 @@ public:
 
     // Materials SSBO
     Buffer materialsBuffer;
+    // Per-brush image source table (binding 28, owned by MaterialManager).
+    Buffer brushMapBuffer_;
     MaterialManager* materialManagerPtr = nullptr;
 
     // Water params UBO (binding 7) — stored for descriptor rebinding
@@ -498,6 +500,7 @@ private:
         VkImageView shadowViews[3] = {};
         VkBuffer materials = VK_NULL_HANDLE;
         VkBuffer waterParams = VK_NULL_HANDLE;
+        VkBuffer brushMap = VK_NULL_HANDLE;
         // Bumped by TextureArrayManager::allocate()/destroy(). Included so a
         // (re)allocation always forces the descriptor refresh even if the
         // driver recycles image/sampler handles to the previous values
@@ -511,6 +514,7 @@ private:
             for (int i = 0; i < 3; ++i)
                 if (shadowViews[i] != o.shadowViews[i]) return false;
             return materials == o.materials && waterParams == o.waterParams &&
+                   brushMap == o.brushMap &&
                    textureVersion == o.textureVersion;
         }
     };

@@ -19,6 +19,8 @@ layout(std430, set = 0, binding = 5) readonly buffer Materials {
     Material materials[];
 };
 
+#include "BrushMap.glsl"
+
 
 MaterialNamed materialNamed(Material m) {
     MaterialNamed n;
