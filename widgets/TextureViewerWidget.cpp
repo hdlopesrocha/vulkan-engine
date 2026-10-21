@@ -259,6 +259,13 @@ void TextureViewer::render() {
                     ImGui::SetTooltip("Jump to material %d (kind Video on the video-layer demo cube).",
                                       videoMaterialIndex);
                 }
+                if (onFocusVideoCube) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Focus video cube")) onFocusVideoCube();
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Move the camera in front of the video-layer demo cube.");
+                    }
+                }
             }
             if (ImGui::SmallButton("Play all")) {
                 for (size_t i = 0; i < videoStates.size(); ++i) videoService->setPlaying(i, true);

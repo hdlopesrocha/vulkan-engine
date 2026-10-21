@@ -749,6 +749,19 @@ public:
             sdfGivenMaterialIndex = static_cast<int>(sdfIndex);
         }
 
+        // Headless blend-mode A/B: force the video cube material's blend mode
+        // from the command line (VULKAN_VIDEO_BLEND=<index 0..18>). The normal
+        // upload below picks it up with the rest of the materials.
+        if (videoCubeMaterialIndex >= 0) {
+            if (const char* blendEnv = std::getenv("VULKAN_VIDEO_BLEND")) {
+                const int mode = std::atoi(blendEnv);
+                if (mode >= 0 && mode <= static_cast<int>(MaterialBlendMode::Luminosity)) {
+                    materials[static_cast<size_t>(videoCubeMaterialIndex)].blendMode =
+                        static_cast<MaterialBlendMode>(mode);
+                }
+            }
+        }
+
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
         for (size_t i = 0; i < materialCount; ++i) materialManager.update(i, materials[i], this);
@@ -1030,6 +1043,10 @@ public:
         });
         textureViewer->setVideoService(videoTextureService.get());
         textureViewer->setVideoMaterialIndex(videoCubeMaterialIndex);
+        textureViewer->setOnFocusVideoCube([this]() {
+            // In front of the demo cube at (0,512,4096); yaw 180 faces +Z.
+            camera = Camera(glm::vec3(0.0f, 700.0f, 3300.0f), Math::eulerToQuat(180.0f, 0.0f, 0.0f));
+        });
         textureViewer->setVideoPreviewProvider([this](uint32_t slot, int map) -> ImTextureID {
             if (!videoTextureService) return 0;
             switch (map) {

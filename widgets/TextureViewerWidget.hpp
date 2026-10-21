@@ -30,6 +30,9 @@ public:
     // Material painted on the video-layer demo cube (blend modes composite
     // there); lets the panel jump straight to it.
     void setVideoMaterialIndex(int index) { videoMaterialIndex = index; }
+    // Optional camera jump to the video-layer demo cube, so blend-mode edits
+    // can be checked on geometry that actually composites the video.
+    void setOnFocusVideoCube(std::function<void()> cb) { onFocusVideoCube = std::move(cb); }
 
 private:
     TextureArrayManager* arrayManager = nullptr;
@@ -40,4 +43,5 @@ private:
     std::function<ImTextureID(uint32_t, int)> videoPreviewProvider;
     VideoTextureService* videoService = nullptr;
     int videoMaterialIndex = -1;
+    std::function<void()> onFocusVideoCube;
 };

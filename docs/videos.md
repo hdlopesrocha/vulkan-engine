@@ -69,6 +69,7 @@ Environment switches:
 | `VULKAN_VIDEO_DEBUG=1` | diagnostics every 5 s |
 | `VULKAN_VIDEO_BENCH=1` | decode/seek benchmark at startup |
 | `VULKAN_VIDEO_BACKEND=auto\|vulkan\|vaapi\|software` | force a decode backend |
+| `VULKAN_VIDEO_BLEND=<0..18>` | force the demo video cube material's blend mode at startup (A/B diagnosis; indices match `MaterialBlendMode`) |
 
 Memory: the video-specific cost per clip is one packed YUV image (≈1.5 MiB at
 1024²) plus two host-visible staging buffers of the same size. The video array
@@ -125,7 +126,10 @@ Texture column lists the loaded clips as live thumbnails. Clicking a thumbnail
 assigns that clip to the current material (kind becomes Video) and starts it
 with looping enabled; Play/Pause/Loop controls sit next to the list, and
 **Select video cube material** jumps to the demo cube whose video-layer
-compositing applies the material's blend mode. This is also why the preview is
+compositing applies the material's blend mode, and **Focus video cube** moves
+the camera in front of it. Blend modes are composited by the video layer: a
+material on solid-layer geometry (or the raw video/derived preview) will not
+show the change. This is also why the preview is
 no longer a frozen material-array layer: it samples the same video array the
 scene does.
 
