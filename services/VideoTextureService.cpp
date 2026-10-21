@@ -1239,7 +1239,12 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
                                               1, slotIndex, 1);
         app->recordTransitionImageLayoutLayer(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM,
                                               VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mips, slotIndex, 1);
-        if (mips > 1 && allowMips) {
+        // Always generate the mip chain: it is also the path that leaves the
+        // layer's subresources in SHADER_READ_ONLY with valid mip 0 content.
+        // The sampler still samples mip 0 unless VULKAN_VIDEO_MIPS=1, so the
+        // displayed level is the frame just uploaded even if a driver lags the
+        // generated levels.
+        if (mips > 1) {
             app->recordGenerateMipmaps(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM, dstW, dstH, mips, 1, slotIndex);
         } else {
             app->recordTransitionImageLayoutLayer(cmd, videoArray.image, VK_FORMAT_R8G8B8A8_UNORM,
