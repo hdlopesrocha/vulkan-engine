@@ -7,6 +7,7 @@
 #include <glm/gtc/constants.hpp>
 
 #include "Scene.hpp"
+#include "TestShape.hpp"
 #include "../space/Octree.hpp"
 
 // math types
@@ -75,29 +76,6 @@ public:
     MainSceneLoader() {};
     ~MainSceneLoader() = default;
 
-
-    // Test-object catalogue. applyTestObjects walks every entry so adding a
-    // new shape only needs a new enum value + switch case.
-    enum class TestShape {
-        Octrahedron = 0,
-        Pyramid,
-        Torus,
-        Cone,
-        Cylinder,
-        TaperedCylinder,
-        TaperedCapsule,
-        Mirror,
-        PerlinDistort,
-        PerlinCarve,
-        SineDistort,
-        VoronoiDistort,
-        VoronoiDistortInverse,
-        SvgExtrusion,
-        SdfGivenCube,
-        VideoCube,
-        SweptOctrahedron,
-        Count
-    };
 
     // Grid placement of the catalogue entries: 4 per row along X, rows along
     // Z, and a new Y layer every 16 entries. `size` is the full object extent;
@@ -292,6 +270,19 @@ public:
             }
                 break;
             }
+            case TestShape::SweptOctrahedron: {
+                std::cout << "\topaqueLayer.add(swept octahedron)"<< std::endl;
+                glm::vec3 centerA = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
+                glm::vec3 centerB = centerA + glm::vec3(0.0f, testObjectSize.y, 0.0f);
+                Transformation modelA = Transformation(testObjectSize* 0.5f, centerA, 0, 0, 0);
+                Transformation modelB = Transformation(testObjectSize * 0.125f, centerB, 45, 0, 0);
+                Transformation sweepModel = Transformation(testObjectSize*0.5f, (centerA + centerB) * 0.5f, 0, 0, 0);
+                OctahedronDistanceFunction fn1(modelA, testObjectSizePerTile);
+                OctahedronDistanceFunction fn2(modelB, testObjectSizePerTile);
+                SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, testObjectSizePerTile);
+                opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), testObjectSizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
             case TestShape::VideoCube: {
             if (videoBrushIndex >= 0) {
   
@@ -306,19 +297,7 @@ public:
             }
                 break;
             }
-            case TestShape::SweptOctrahedron: {
-                std::cout << "\topaqueLayer.add(swept octahedron)"<< std::endl;
-                glm::vec3 centerA = getCenter(shape, testObjectOrigin, testObjectSize, testObjectMargin);
-                glm::vec3 centerB = centerA + glm::vec3(0.0f, testObjectSize.y, 0.0f);
-                Transformation modelA = Transformation(testObjectSize* 0.5f, centerA, 0, 0, 0);
-                Transformation modelB = Transformation(testObjectSize * 0.125f, centerB, 45, 0, 0);
-                Transformation sweepModel = Transformation(testObjectSize*0.5f, (centerA + centerB) * 0.5f, 0, 0, 0);
-                OctahedronDistanceFunction fn1(modelA, testObjectSizePerTile);
-                OctahedronDistanceFunction fn2(modelB, testObjectSizePerTile);
-                SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, testObjectSizePerTile);
-                opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), testObjectSizePerTile, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
-                break;
-            }
+
             default:
                 std::cerr << "\tunknown test shape " << static_cast<int>(shape) << std::endl;
                 break;
