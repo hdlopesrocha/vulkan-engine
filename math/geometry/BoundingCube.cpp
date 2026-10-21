@@ -1,6 +1,6 @@
 #include "BoundingCube.hpp"
 #include "AbstractBoundingBox.hpp"
-#include "Math.hpp"
+#include "../Math.hpp"
 #include "Ray.hpp"
 
 BoundingCube::BoundingCube() : AbstractBoundingBox(glm::vec3(0)) {

@@ -1,7 +1,7 @@
 #pragma once
 #include "SignedDistanceFunction.hpp"
-#include "../math/BoundingBox.hpp"
-#include "../math/Transformation.hpp"
+#include "../math/geometry/BoundingBox.hpp"
+#include "../math/geometry/Transformation.hpp"
 #include "../space/Octree.hpp"
 #include "SDF.hpp"
 

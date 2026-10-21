@@ -6,7 +6,7 @@
 #include "../RendererUtils.hpp"
 #include "../../pipeline/ShaderStage.hpp"
 #include "../../includes/shader/locations.hpp"
-#include "../../../math/Geometry.hpp"
+#include "../../../math/geometry/Geometry.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>

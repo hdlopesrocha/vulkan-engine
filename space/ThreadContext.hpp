@@ -11,7 +11,7 @@ namespace tsl {
     using robin_map = std::unordered_map<K, V, H>;
 }
 #endif
-#include "../math/BoundingCube.hpp"
+#include "../math/geometry/BoundingCube.hpp"
 #include "OctreeNodeLevel.hpp"
 
 class ThreadContext {

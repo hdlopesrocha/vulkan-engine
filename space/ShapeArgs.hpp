@@ -1,7 +1,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
-#include "../math/Transformation.hpp"
+#include "../math/geometry/Transformation.hpp"
 #include "../math/TexturePainter.hpp"
 #include "../math/TextureCoordPainter.hpp"
 #include "../sdf/SignedDistanceFunction.hpp"

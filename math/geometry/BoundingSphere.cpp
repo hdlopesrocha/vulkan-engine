@@ -1,6 +1,6 @@
 #include "BoundingSphere.hpp"
 #include "AbstractBoundingBox.hpp"
-#include "Math.hpp"
+#include "../Math.hpp"
 
 BoundingSphere::BoundingSphere(glm::vec3 center_, float radius_) {
 	this->center = center_;

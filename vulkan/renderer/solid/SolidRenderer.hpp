@@ -7,7 +7,7 @@
 #include "../debug/WireframeRenderer.hpp"
 #include "../../../space/Model3DVersion.hpp"
 #include "../../pipeline/ShaderStage.hpp"
-#include "../../../math/Vertex.hpp"
+#include "../../../math/geometry/Vertex.hpp"
 #include "../../../utils/Scene.hpp"
 #include <unordered_map>
 #include <vector>

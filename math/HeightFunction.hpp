@@ -1,6 +1,6 @@
 #pragma once
 #include <glm/glm.hpp>
-#include "BoundingBox.hpp"
+#include "geometry/BoundingBox.hpp"
 
 class HeightFunction {
 public:

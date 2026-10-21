@@ -21,5 +21,9 @@ enum class TestShape {
     SdfGivenCube,
     VideoCube,
     SweptOctrahedron,
+    CubeProjectionX,
+    CubeProjectionY,
+    CubeProjectionZ,
+    CubeAngular,
     Count
 };

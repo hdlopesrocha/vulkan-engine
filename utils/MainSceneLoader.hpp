@@ -11,9 +11,9 @@
 #include "../space/Octree.hpp"
 
 // math types
-#include "../math/BoundingBox.hpp"
-#include "../math/BoundingSphere.hpp"
-#include "../math/Transformation.hpp"
+#include "../math/geometry/BoundingBox.hpp"
+#include "../math/geometry/BoundingSphere.hpp"
+#include "../math/geometry/Transformation.hpp"
 #include "../math/CachedHeightMapSurface.hpp"
 #include "../math/HeightMap.hpp"
 #include "../math/GradientPerlinSurface.hpp"
@@ -116,7 +116,7 @@ public:
         const int cellSize = 8;
         const glm::vec3 objectSize(128.0f, 128.0f, 128.0f);
         const glm::vec3 objectMargin(64.0f, 64.0f, 64.0f);
-        const glm::vec3 objectOrigin(0.0f, 256.0f, 0.0f);
+        const glm::vec3 objectOrigin(0.0f, 128.0f, 0.0f);
 
         glm::vec3 center = getCenter(shape, objectOrigin, objectSize, objectMargin);
         Transformation model = Transformation(objectSize*0.5f, center, 0,0,0);
@@ -258,19 +258,19 @@ public:
                 opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), TriplanarMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
-            case TestShape::CubeProjectonX: {
+            case TestShape::CubeProjectionX: {
                 std::cout << "\topaqueLayer.add(cube projection X)"<< std::endl;
                 BoxDistanceFunction function = BoxDistanceFunction(model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), ProjectionXMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
-            case TestShape::CubeProjectonY: {
+            case TestShape::CubeProjectionY: {
                 std::cout << "\topaqueLayer.add(cube projection Y)"<< std::endl;
                 BoxDistanceFunction function = BoxDistanceFunction(model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), ProjectionYMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
-            case TestShape::CubeProjectonZ: {
+            case TestShape::CubeProjectionZ: {
                 std::cout << "\topaqueLayer.add(cube projection Z)"<< std::endl;
                 BoxDistanceFunction function = BoxDistanceFunction(model, cellSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), ProjectionZMappingPainter(), cellSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);

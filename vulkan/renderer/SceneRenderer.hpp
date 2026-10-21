@@ -13,8 +13,8 @@ class World;
 #include "../resources/MaterialManager.hpp"
 #include "../pipeline/ShaderStage.hpp"
 #include "../../utils/FileReader.hpp"
-#include "../../math/Vertex.hpp"
-#include "../../math/BoundingCubeHasher.hpp"
+#include "../../math/geometry/Vertex.hpp"
+#include "../../math/geometry/BoundingCubeHasher.hpp"
 #include <unordered_map>
 #include <unordered_set>
 #include <array>

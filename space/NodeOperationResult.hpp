@@ -2,7 +2,7 @@
 
 #include "../math/SpaceType.hpp"
 #include "../math/BrushMode.hpp"
-#include "../math/ContainmentType.hpp"
+#include "../math/geometry/ContainmentType.hpp"
 #include "../math/Math.hpp"
 #include "../sdf/SDF.hpp"
 #include <glm/glm.hpp>

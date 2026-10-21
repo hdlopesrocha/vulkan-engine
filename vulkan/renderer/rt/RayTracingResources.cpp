@@ -13,7 +13,7 @@
 #include "RayTracingResources.hpp"
 #include "../RendererUtils.hpp"
 #include "../../core/VulkanApp.hpp"
-#include "../../../math/Vertex.hpp"
+#include "../../../math/geometry/Vertex.hpp"
 
 #include <array>
 #include <chrono>

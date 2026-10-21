@@ -3,7 +3,7 @@
 #include <cmath>
 #include "components/ImGuiHelpers.hpp"
 #include "../math/Camera.hpp"
-#include "../math/Ray.hpp"
+#include "../math/geometry/Ray.hpp"
 #include "../sdf/SDF.hpp"
 #include <glm/glm.hpp>
 #include <limits>

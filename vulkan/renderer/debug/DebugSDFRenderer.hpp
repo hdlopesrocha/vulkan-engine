@@ -4,7 +4,7 @@
 #include "../../resources/Buffer.hpp"
 #include "../../core/VulkanApp.hpp"
 #include "../../core/TrackedHandle.hpp"
-#include "../../../math/BoundingCube.hpp"
+#include "../../../math/geometry/BoundingCube.hpp"
 #include "../../../space/Octree.hpp" // for NodeID, Octree, OctreeNode
 #include "../../../space/OctreeNodeData.hpp"
 #include <array>

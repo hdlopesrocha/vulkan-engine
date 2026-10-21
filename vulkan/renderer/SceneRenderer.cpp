@@ -13,7 +13,7 @@
 #include "../../space/OctreeTriangleTessellator.hpp"
 #include "../includes/shader/locations.hpp"
 #include "../includes/debug/DebugModes.hpp"
-#include "../../math/ContainmentType.hpp"
+#include "../../math/geometry/ContainmentType.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>

@@ -5,7 +5,7 @@
 
 #include "../../core/VulkanApp.hpp"
 #include "../../core/TrackedHandle.hpp"
-#include "../../../math/Geometry.hpp"
+#include "../../../math/geometry/Geometry.hpp"
 #include <glm/glm.hpp>
 #include <vector>
 #include <unordered_map>

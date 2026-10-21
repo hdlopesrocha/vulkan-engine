@@ -2,9 +2,9 @@
 #include "SignedDistanceEffect.hpp"
 #include <glm/glm.hpp>
 #include "../math/Math.hpp"
-#include "../math/BoundingCube.hpp"
-#include "../math/BoundingSphere.hpp"
-#include "../math/Transformation.hpp"
+#include "../math/geometry/BoundingCube.hpp"
+#include "../math/geometry/BoundingSphere.hpp"
+#include "../math/geometry/Transformation.hpp"
 #include "SDF.hpp"
 
 class VoronoiCarveDistanceEffect : public SignedDistanceEffect {

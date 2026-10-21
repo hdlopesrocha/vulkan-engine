@@ -1,7 +1,7 @@
 #pragma once
 #include "SignedDistanceFunction.hpp"
 #include <glm/glm.hpp>
-#include "../math/BoundingSphere.hpp"
+#include "../math/geometry/BoundingSphere.hpp"
 
 class ConeDistanceFunction : public SignedDistanceFunction {
 public:

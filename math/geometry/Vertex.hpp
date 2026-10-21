@@ -5,7 +5,7 @@
 #include <utility>
 #include <array>
 #include <functional>
-#include "TextureType.hpp"
+#include "../TextureType.hpp"
 
 inline uint64_t murmurMix(uint64_t k) {
 	k ^= k >> 33;

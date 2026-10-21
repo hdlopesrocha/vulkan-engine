@@ -7,7 +7,7 @@
 #include <initializer_list>
 
 #include "locations.hpp"
-#include "../../../math/Vertex.hpp"
+#include "../../../math/geometry/Vertex.hpp"
 
 namespace vk_layouts {
 

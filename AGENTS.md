@@ -55,7 +55,7 @@ Two entry points: `MyApp.cpp` (class `MyApp` extends `VulkanApp`) and `server.cp
 - `space/` — Octree, Tesselator (Surface Nets meshing), ThreadPool, ConcurrentQueue, Processor, Simplifier, OctreeVisibilityChecker
 - `sdf/` — SDF primitives (Box, Sphere, Capsule, Cylinder, Cone, Torus, HeightMap via GDAL, RoadDistanceFunction, TriangleStrip, OctreeDifferenceFunction, Wrapped* variants for composition)
 - `events/` — Input system (keyboard, gamepad, nunchuk), EventManager, IEventHandler
-- `math/` — Camera, Light, BoundingBox, Frustum, Plane, Ray, HeightMap, HeightMapTif, PerlinSurface, Transformation
+- `math/` — Camera, Light, HeightMap, HeightMapTif, PerlinSurface, and the math utilities; `math/geometry/` holds the geometry types (BoundingBox/BoundingCube/BoundingSphere/BoundingVolume, AbstractBoundingBox, ContainmentType, Geometry, BoxLineGeometry, Frustum, Ray, Transformation, Vertex, VertexHasher)
 - `services/` — TextureMixer (compute texture blending), VideoTextureService (on-demand video decode → dedicated video texture array + video layer materials, see `docs/videos.md`), BillboardService, ImpostorService
 - `scripts/` — helper scripts, including `convert_videos.sh` (the only video conversion/staging path; the engine loads converted clips only)
 - `widgets/` — ImGui debug/editor UI (compiled only with `-DUSE_IMGUI`, i.e. release builds)

@@ -1,7 +1,7 @@
 #include "Math.hpp"
 #include <glm/glm.hpp>
-#include "BoundingSphere.hpp"
-#include "BoundingBox.hpp"
+#include "geometry/BoundingSphere.hpp"
+#include "geometry/BoundingBox.hpp"
 #include <filesystem>
 #include "BrushMode.hpp"
 #include <sstream>

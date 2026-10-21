@@ -22,7 +22,7 @@
 #include "GltfWriter.hpp"
 #include "GrassPlacement.hpp"
 #include "SceneMaterialTable.hpp"
-#include "../math/BoundingCube.hpp"
+#include "../math/geometry/BoundingCube.hpp"
 #include "../space/Octree.hpp"
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeTriangleTessellator.hpp"

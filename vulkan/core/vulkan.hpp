@@ -55,7 +55,7 @@ class VulkanApp;
 struct MaterialProperties;
 
 // Vertex definition from math
-#include "../../math/Vertex.hpp"
+#include "../../math/geometry/Vertex.hpp"
 
 
 // Small helper to create shader stage infos

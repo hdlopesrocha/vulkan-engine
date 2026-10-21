@@ -1,5 +1,5 @@
 #include "Geometry.hpp"
-#include "Math.hpp"
+#include "../Math.hpp"
 #include "Vertex.hpp"
 #include <glm/glm.hpp>
 #include <cstddef>

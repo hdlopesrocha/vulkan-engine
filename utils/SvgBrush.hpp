@@ -5,7 +5,7 @@
 #include <glm/glm.hpp>
 
 #include "../math/TexturePainter.hpp"
-#include "../math/Transformation.hpp"
+#include "../math/geometry/Transformation.hpp"
 #include "../sdf/SvgShape.hpp"
 
 // Per-vertex painter for the SVG brush: the world position is mapped into the

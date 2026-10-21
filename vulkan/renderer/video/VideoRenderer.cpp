@@ -4,7 +4,7 @@
 #include "../../pipeline/ShaderStage.hpp"
 #include "../../includes/shader/locations.hpp"
 #include "../../includes/shader/vertex_layouts.hpp"
-#include "../../../math/Vertex.hpp"
+#include "../../../math/geometry/Vertex.hpp"
 #include "../../../services/VideoTextureService.hpp"
 
 #include <algorithm>

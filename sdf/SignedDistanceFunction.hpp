@@ -1,10 +1,10 @@
 #pragma once
 #include <glm/glm.hpp>
-#include "../math/Transformation.hpp"
-#include "../math/BoundingVolume.hpp"
-#include "../math/BoundingCube.hpp"
-#include "../math/BoundingSphere.hpp"
-#include "../math/BoundingBox.hpp"
+#include "../math/geometry/Transformation.hpp"
+#include "../math/geometry/BoundingVolume.hpp"
+#include "../math/geometry/BoundingCube.hpp"
+#include "../math/geometry/BoundingSphere.hpp"
+#include "../math/geometry/BoundingBox.hpp"
 
 class SignedDistanceFunction {
 protected:

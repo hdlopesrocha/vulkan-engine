@@ -4,7 +4,7 @@
 #include <functional>
 #include <mutex>
 #include "OctreeTopologyTypes.hpp"
-#include "../math/Geometry.hpp"
+#include "../math/geometry/Geometry.hpp"
 #include "../vulkan/resources/Buffer.hpp"
 
 class VulkanApp;

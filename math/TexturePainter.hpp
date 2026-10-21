@@ -1,5 +1,5 @@
 #pragma once
-#include "Vertex.hpp"
+#include "geometry/Vertex.hpp"
 #include "TextureType.hpp"
 #include <glm/glm.hpp>
 

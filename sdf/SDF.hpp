@@ -24,7 +24,7 @@ static const glm::ivec2 SDF_EDGES[12] = {
     {3, 7}
 }; 
 
-#include "../math/BoundingCube.hpp"
+#include "../math/geometry/BoundingCube.hpp"
 #include "../math/SpaceType.hpp"
 #include "../math/BrushMode.hpp"
 

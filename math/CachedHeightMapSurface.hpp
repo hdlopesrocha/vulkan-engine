@@ -1,7 +1,7 @@
 #pragma once
 #include "HeightFunction.hpp"
-#include "BoundingBox.hpp"
-#include "BoundingCube.hpp"
+#include "geometry/BoundingBox.hpp"
+#include "geometry/BoundingCube.hpp"
 #include <vector>
 
 class CachedHeightMapSurface : public HeightFunction {

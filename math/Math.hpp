@@ -2,8 +2,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/matrix.hpp>
-#include "BoundingBox.hpp"
-#include "BoundingSphere.hpp"
+#include "geometry/BoundingBox.hpp"
+#include "geometry/BoundingSphere.hpp"
 #include <string>
 #include <sstream>
 #include <fstream>

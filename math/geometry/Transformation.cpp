@@ -8,6 +8,12 @@ Transformation::Transformation()
 {
 }
 
+Transformation::Transformation(BoundingBox box, float yaw, float pitch, float roll)
+    : scale(box.getLength() * 0.5f), translate(box.getCenter()), quaternion(getRotation(yaw, pitch, roll))
+{
+}
+
+
 Transformation::Transformation(glm::vec3 scale_, glm::vec3 translate_, float yaw, float pitch, float roll)
     : scale(scale_), translate(translate_), quaternion(getRotation(yaw, pitch, roll))
 {

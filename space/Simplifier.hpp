@@ -1,5 +1,5 @@
 #pragma once
-#include "../math/BoundingCube.hpp"
+#include "../math/geometry/BoundingCube.hpp"
 #include <glm/glm.hpp>
 #include <utility>
 

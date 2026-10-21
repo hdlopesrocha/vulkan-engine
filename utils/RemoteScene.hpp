@@ -38,7 +38,7 @@
 
 #include "Scene.hpp"
 #include "WsClient.hpp"
-#include "../math/BoundingCube.hpp"
+#include "../math/geometry/BoundingCube.hpp"
 #include "../space/OctreeNode.hpp"
 // Wire codec (server/ is compiled into the app too; the protocol is shared).
 #include "../server/ChunkProtocol.hpp"

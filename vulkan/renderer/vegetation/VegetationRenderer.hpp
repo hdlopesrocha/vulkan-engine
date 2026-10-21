@@ -4,8 +4,8 @@
 #include "../../core/TrackedHandle.hpp"
 #include "../../resources/TextureArrayManager.hpp"
 #include "../../resources/EditableTexture.hpp"
-#include "../../../math/Vertex.hpp"
-#include "../../../math/Geometry.hpp"
+#include "../../../math/geometry/Vertex.hpp"
+#include "../../../math/geometry/Geometry.hpp"
 #include "../debug/DebugCubeRenderer.hpp"
 #include "../../resources/VertexBufferObject.hpp"
 #include "../../../utils/Scene.hpp" // for NodeID

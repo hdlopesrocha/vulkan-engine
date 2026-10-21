@@ -4,7 +4,7 @@
 #include "../../core/VulkanApp.hpp"
 #include "../../core/TrackedHandle.hpp"
 #include "../indirect/IndirectRenderer.hpp"
-#include "../../../math/Vertex.hpp"
+#include "../../../math/geometry/Vertex.hpp"
 #include <vulkan/vulkan.h>
 #include "../CommandBufferState.hpp"
 

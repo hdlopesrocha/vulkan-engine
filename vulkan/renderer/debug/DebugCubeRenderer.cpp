@@ -6,7 +6,7 @@
 #include "../../resources/VertexBufferObjectBuilder.hpp"
 #include "../../pipeline/ShaderStage.hpp"
 #include "../../../utils/FileReader.hpp"
-#include "../../../math/BoxLineGeometry.hpp"
+#include "../../../math/geometry/BoxLineGeometry.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <stb/stb_image.h>
 #include "../../includes/shader/locations.hpp"

@@ -6,16 +6,16 @@
 #include "OctreeNodeFrame.hpp"
 #include "OctreeNodeLevel.hpp"
 #include "OctreeAllocator.hpp"
-#include "../math/Vertex.hpp"
+#include "../math/geometry/Vertex.hpp"
 #include <functional>
 #include "ShapeArgs.hpp"
 #include "../sdf/SignedDistanceFunction.hpp"
 #include <functional>
 #include <shared_mutex>
-#include "../math/BoundingCube.hpp"
-#include "../math/Ray.hpp"
+#include "../math/geometry/BoundingCube.hpp"
+#include "../math/geometry/Ray.hpp"
 #include <string>
-#include "../math/Geometry.hpp"
+#include "../math/geometry/Geometry.hpp"
 // Node identifier used by change handlers/collectors to key per-node state
 // (previously defined in the removed OctreeChangeHandler.hpp).
 typedef uintptr_t NodeID;

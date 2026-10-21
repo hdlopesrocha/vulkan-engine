@@ -1,8 +1,8 @@
 #pragma once
 #include "SignedDistanceFunction.hpp"
 #include <glm/glm.hpp>
-#include "../math/Transformation.hpp"
-#include "../math/BoundingSphere.hpp"
+#include "../math/geometry/Transformation.hpp"
+#include "../math/geometry/BoundingSphere.hpp"
 #include "SDF.hpp"
 
 class BoxDistanceFunction : public SignedDistanceFunction {

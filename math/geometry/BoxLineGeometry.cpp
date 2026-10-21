@@ -1,6 +1,6 @@
 #include "BoxLineGeometry.hpp"
 #include "BoundingBox.hpp"
-#include "Math.hpp"
+#include "../Math.hpp"
 
 BoxLineGeometry::BoxLineGeometry(const BoundingBox &box) : Geometry() {
     glm::vec3 corners[8] = {

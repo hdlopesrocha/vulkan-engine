@@ -4,7 +4,7 @@
 #include "../RendererUtils.hpp"
 #include "VegetationRenderer.hpp"
 #include "../../core/VulkanApp.hpp"
-#include "../../../math/Vertex.hpp"
+#include "../../../math/geometry/Vertex.hpp"
 #include "../../../utils/FileReader.hpp"
 #include <backends/imgui_impl_vulkan.h>
 #include <glm/gtc/matrix_transform.hpp>

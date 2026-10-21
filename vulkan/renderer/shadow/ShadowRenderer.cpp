@@ -10,7 +10,7 @@
 #include "../../core/VulkanApp.hpp"
 #include "../../pipeline/ShaderStage.hpp"
 #include "../../../utils/FileReader.hpp"
-#include "../../../math/Vertex.hpp"
+#include "../../../math/geometry/Vertex.hpp"
 #include <backends/imgui_impl_vulkan.h>
 #include <cassert>
 #include <stdexcept>

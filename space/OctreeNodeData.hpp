@@ -2,8 +2,8 @@
 
 #include <cstdint>
 #include <functional>
-#include "../math/BoundingCube.hpp"
-#include "../math/ContainmentType.hpp"
+#include "../math/geometry/BoundingCube.hpp"
+#include "../math/geometry/ContainmentType.hpp"
 
 class OctreeNode;
 

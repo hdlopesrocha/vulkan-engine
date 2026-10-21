@@ -1,5 +1,5 @@
 #pragma once
-#include "../math/BoundingCube.hpp"
+#include "../math/geometry/BoundingCube.hpp"
 
 class OctreeNode;
 

@@ -2,7 +2,7 @@
 #include <glm/glm.hpp>
 #include <vector>
 #include <cstdint>
-#include "Vertex.hpp"
+#include "geometry/Vertex.hpp"
 
 const std::array<glm::ivec3, 8> CUBE_CORNERS = {{
     {0, 0, 0},
@@ -15,7 +15,7 @@ const std::array<glm::ivec3, 8> CUBE_CORNERS = {{
     {1, 1, 1}
 }};
 
-#include "ContainmentType.hpp"
+#include "geometry/ContainmentType.hpp"
 #include "SpaceType.hpp"
 
 

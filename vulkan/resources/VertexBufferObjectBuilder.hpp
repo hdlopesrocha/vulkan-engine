@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../core/vulkan.hpp"
-#include "../../math/Geometry.hpp"
+#include "../../math/geometry/Geometry.hpp"
 
 class VertexBufferObjectBuilder {
 public:

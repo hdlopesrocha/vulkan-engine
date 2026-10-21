@@ -4,7 +4,7 @@
 #include "../../core/VulkanApp.hpp"
 #include "../../core/TrackedHandle.hpp"
 #include "../../resources/VertexBufferObject.hpp"
-#include "../../../math/BoundingBox.hpp"
+#include "../../../math/geometry/BoundingBox.hpp"
 #include "../../../space/Octree.hpp" // for NodeID
 #include <vector>
 #include <unordered_map>

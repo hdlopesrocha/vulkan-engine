@@ -1,5 +1,5 @@
 #pragma once
-#include "BoundingBox.hpp"
+#include "geometry/BoundingBox.hpp"
 #include "HeightFunction.hpp"
 
 class HeightMap: public BoundingBox  {

@@ -1,6 +1,6 @@
 #pragma once
 #include <glm/glm.hpp>
-#include "../math/BoundingCube.hpp"
+#include "../math/geometry/BoundingCube.hpp"
 
 // A sub-span of one cube edge: the edge's axis, the two other axes (u, v),
 // where the edge sits on those axes (fixedU/fixedV) and how far it extends

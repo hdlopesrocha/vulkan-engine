@@ -5,7 +5,7 @@
 
 #include <glm/glm.hpp>
 
-#include "../math/Geometry.hpp"
+#include "../math/geometry/Geometry.hpp"
 
 // Deterministic grass placement shared by VegetationRenderer (CPU placement
 // path) and the offline exporters. Vulkan-free on purpose: the Blender export

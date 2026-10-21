@@ -2,8 +2,8 @@
 
 #include "OctreeNodeTriangleHandler.hpp"
 #include "ThreadContext.hpp"
-#include "../math/Geometry.hpp"
-#include "../math/Vertex.hpp"
+#include "../math/geometry/Geometry.hpp"
+#include "../math/geometry/Vertex.hpp"
 
 // Collects the triangles of ONE tessellated node (one chunk or one ladder
 // ancestor). Each node gets its own Tesselator instance, so the class stays

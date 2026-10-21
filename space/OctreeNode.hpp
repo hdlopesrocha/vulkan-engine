@@ -1,7 +1,7 @@
 #pragma once
 #include "ChildBlock.hpp"
-#include "../math/Vertex.hpp"
-#include "../math/BoundingCube.hpp"
+#include "../math/geometry/Vertex.hpp"
+#include "../math/geometry/BoundingCube.hpp"
 #include "../math/SpaceType.hpp"
 #include <glm/glm.hpp>
 #include <cstdint>

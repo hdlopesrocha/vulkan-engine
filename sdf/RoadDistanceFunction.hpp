@@ -2,7 +2,7 @@
 #include "SignedDistanceFunction.hpp"
 #include "RoadSpline.hpp"
 #include <glm/glm.hpp>
-#include "../math/BoundingSphere.hpp"
+#include "../math/geometry/BoundingSphere.hpp"
 
 class RoadDistanceFunction : public SignedDistanceFunction {
 public:

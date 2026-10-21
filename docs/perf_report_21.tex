@@ -467,7 +467,7 @@ the dominant channel plus \texttt{mod}; \texttt{hsvToRgb}
 (\texttt{hsv.glsl:4--21}) a 6-way branch. Adjacent pixels routinely take
 different paths (channel dominance flips at texture detail), so warps diverge
 on top of the ALU. Yet the default vertex tint is identity
-(\texttt{math/Vertex.hpp:41}: \texttt{hsv(0.0f, 0.5f, 0.5f)}), for which the
+(\texttt{math/geometry/Vertex.hpp:41}: \texttt{hsv(0.0f, 0.5f, 0.5f)}), for which the
 whole round-trip is a no-op (hue $+0$, saturation $\times 1$, value $\times
 1$). Paint mode overrides the tint per pixel, but that is already a
 uniform-gated branch (\texttt{solid\_surface.glsl:75--91}).
@@ -565,7 +565,7 @@ forwarded) convert.
 \textbf{Severity: High (bandwidth) / Low (effort).}
 
 \texttt{sizeof(Vertex)} is 64~bytes: position 12, \textbf{color 12}, uv 8,
-normal 12, brush index 4, pad 4, hsv 12 (\texttt{math/Vertex.hpp:29--39},
+normal 12, brush index 4, pad 4, hsv 12 (\texttt{math/geometry/Vertex.hpp:29--39},
 \texttt{vulkan/includes/vertex\_layouts.hpp}). The color attribute is fetched
 from the merged vertex pool, interpolated by the tessellator, and passed
 VS $\rightarrow$ TCS $\rightarrow$ TES $\rightarrow$ FS --- but nothing reads

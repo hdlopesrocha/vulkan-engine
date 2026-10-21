@@ -18,7 +18,7 @@
 #include "sdf/types/SdfGridCell.hpp"
 #include "sdf/types/SdfInstance.hpp"
 #include "sdf/types/SdfMaterial.hpp"
-#include "math/BoundingBox.hpp"
+#include "math/geometry/BoundingBox.hpp"
 
 namespace sdf_gpu {
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "OctreeNode.hpp"
-#include "../math/BoundingCube.hpp"
+#include "../math/geometry/BoundingCube.hpp"
 #include "../math/BrushMode.hpp"
 #include <glm/glm.hpp>
 

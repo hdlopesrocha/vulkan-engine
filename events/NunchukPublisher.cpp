@@ -5,7 +5,7 @@
 #include "TranslateCameraEvent.hpp"
 #include "RotateCameraEvent.hpp"
 #include "../math/Camera.hpp"
-#include "../math/Ray.hpp"
+#include "../math/geometry/Ray.hpp"
 #include "../space/Octree.hpp"
 #include "../utils/Brush3dManager.hpp"
 #include "types/BrushEntry.hpp"

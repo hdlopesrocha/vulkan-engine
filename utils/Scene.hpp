@@ -7,7 +7,7 @@
 #include <functional>
 #include <string>
 #include <cstdint>
-#include "../math/Geometry.hpp"
+#include "../math/geometry/Geometry.hpp"
 #include "../space/Octree.hpp"
 #include "../space/OctreeNodeData.hpp"
 #include "../services/OctreeTopologyTypes.hpp"

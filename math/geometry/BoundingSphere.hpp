@@ -1,5 +1,5 @@
 #pragma once
-#include "Common.hpp"
+#include "../Common.hpp"
 #include "BoundingVolume.hpp"
 
 class BoundingSphere : public BoundingVolume {

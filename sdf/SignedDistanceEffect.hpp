@@ -1,6 +1,6 @@
 #pragma once
 #include "SignedDistanceFunction.hpp"
-#include "../math/BoundingSphere.hpp"
+#include "../math/geometry/BoundingSphere.hpp"
 #include <glm/glm.hpp>
 
 class SignedDistanceEffect : public SignedDistanceFunction {

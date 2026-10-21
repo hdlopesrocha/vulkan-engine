@@ -1,8 +1,8 @@
 #pragma once
 #include <cstddef>
 #include <functional>
-#include "../math/Vertex.hpp"
-#include "../math/BoundingCube.hpp"
+#include "../math/geometry/Vertex.hpp"
+#include "../math/geometry/BoundingCube.hpp"
 #include "OctreeNodeTriangleHandler.hpp"
 
 class Octree;
