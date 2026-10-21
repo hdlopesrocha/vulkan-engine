@@ -719,7 +719,6 @@ public:
             MaterialProperties& m = materials[i];
             m.kind = MaterialKind::Video;
             m.textureIndex = static_cast<int>(i - (static_cast<size_t>(loadedTextureLayers) + 1));
-            m.textureMapping = TextureMappingMode::Triplanar;
             m.blendMode = MaterialBlendMode::Normal;
             m.triplanarScaleU = 0.0015f;
             m.triplanarScaleV = 0.0015f;
@@ -730,7 +729,6 @@ public:
             MaterialProperties& videoMat = materials[static_cast<size_t>(loadedTextureLayers) + 1];
             videoMat.kind = MaterialKind::Video;
             videoMat.textureIndex = 0;
-            videoMat.textureMapping = TextureMappingMode::Angular;
             videoMat.mappingOrigin = glm::vec4(0.0f, 512.0f, 512.0f * 8.0f, 320.0f);
             videoMat.blendMode = MaterialBlendMode::Screen;
             videoCubeMaterialIndex = static_cast<int>(loadedTextureLayers) + 1;
@@ -742,10 +740,8 @@ public:
             MaterialProperties& m = materials[sdfIndex];
             m.kind = MaterialKind::Texture;
             m.textureIndex = 6;  // existing decorative texture layer
-            m.textureMapping = TextureMappingMode::Angular;
             m.mappingOrigin = glm::vec4(0.0f, 512.0f, 512.0f * 9.0f, 320.0f);
             m.blendMode = MaterialBlendMode::Normal;
-            m.triplanar = false;  // Angular is the selected technique
             sdfGivenMaterialIndex = static_cast<int>(sdfIndex);
         }
 

@@ -8,12 +8,14 @@ static Material toGPU(const MaterialProperties &m) {
     out.materialFlags = glm::vec4(0.0f, 0.0f, m.ambientFactor, 0.0f);
     out.mappingParams = glm::vec4(m.mappingMode ? 1.0f : 0.0f, m.tessLevel, m.invertHeight ? 1.0f : 0.0f, m.tessHeightScale);
     out.specularParams = glm::vec4(m.specularStrength, m.shininess, 0.0f, 0.0f);
-    out.triplanarParams = glm::vec4(m.triplanarScaleU, m.triplanarScaleV, m.triplanar ? 1.0f : 0.0f, 0.0f);
+    out.triplanarParams = glm::vec4(m.triplanarScaleU, m.triplanarScaleV, 0.0f, 0.0f);
     out.normalParams = glm::vec4(m.normalFlipY ? 1.0f : 0.0f, m.normalSwapXZ ? 1.0f : 0.0f, m.invertWidth ? 1.0f : 0.0f, 0.0f);
     out.tessLevelParams = glm::vec4(m.tessMinLevel, m.tessMaxLevel, m.reflectionStrength, 0.0f);
     out.roughnessAOParams = glm::vec4(m.roughnessFactor, m.aoFactor, m.useAO ? 1.0f : 0.0f, 0.0f);
+    // layerParams.z (coordinate technique) is reserved: the technique is a
+    // per-vertex value now (Vertex::textureType).
     out.layerParams = glm::vec4(static_cast<float>(m.kind), static_cast<float>(m.textureIndex),
-                                static_cast<float>(m.textureMapping), static_cast<float>(m.blendMode));
+                                0.0f, static_cast<float>(m.blendMode));
     out.mappingOrigin = m.mappingOrigin;
     return out;
 }

@@ -85,7 +85,6 @@ std::vector<MaterialProperties> sceneMaterialProperties(size_t materialCount) {
         mat.tessMinLevel = mi.tessMinLevel;
         mat.tessMaxLevel = mi.tessMaxLevel;
         mat.tessHeightScale = mi.tessHeightScale;
-        mat.triplanar = true;
         mat.triplanarScaleU = mi.triplanarScaleU;
         mat.triplanarScaleV = mi.triplanarScaleV;
         mat.invertHeight = true;

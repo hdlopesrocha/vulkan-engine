@@ -130,12 +130,11 @@ void shadeSolidSurface() {
     MaterialNamed matC = materialNamed(materials[texIndices.z]);
 
     // Mix the triplanar flag across the three corners using each corner's
-    // per-vertex texture type. Legacy mode-0 materials with triplanarEnabled ==
-    // false count as custom UV mapping.
+    // per-vertex texture type.
     ivec3 texTypes = fragTextureTypes;
-    float triFlag = dot(vec3(float(mappingUsesTriplanar(texTypes.x, matA)),
-                             float(mappingUsesTriplanar(texTypes.y, matB)),
-                             float(mappingUsesTriplanar(texTypes.z, matC))), w);
+    float triFlag = dot(vec3(float(mappingUsesTriplanar(texTypes.x)),
+                             float(mappingUsesTriplanar(texTypes.y)),
+                             float(mappingUsesTriplanar(texTypes.z))), w);
     usedTriplanar = triFlag > 0.5;
 
     // Compute the UVs and blend weights for each corner's own mapping mode
@@ -658,17 +657,17 @@ void shadeSolidSurface() {
         float h1 = 0.0;
         float h2 = 0.0;
         if (w.x > 0.0) {
-            h0 = mappingUsesTriplanar(texTypes.x, matA)
+            h0 = mappingUsesTriplanar(texTypes.x)
                 ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x)
                 : texture(heightArray, vec3(dominantMappingUV(mw0, uv0X, uv0Y, uv0Z), float(texIndices.x))).r;
         }
         if (w.y > 0.0) {
-            h1 = mappingUsesTriplanar(texTypes.y, matB)
+            h1 = mappingUsesTriplanar(texTypes.y)
                 ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y)
                 : texture(heightArray, vec3(dominantMappingUV(mw1, uv1X, uv1Y, uv1Z), float(texIndices.y))).r;
         }
         if (w.z > 0.0) {
-            h2 = mappingUsesTriplanar(texTypes.z, matC)
+            h2 = mappingUsesTriplanar(texTypes.z)
                 ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.z)
                 : texture(heightArray, vec3(dominantMappingUV(mw2, uv2X, uv2Y, uv2Z), float(texIndices.z))).r;
         }

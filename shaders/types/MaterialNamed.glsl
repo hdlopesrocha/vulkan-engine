@@ -17,7 +17,6 @@ struct MaterialNamed {
     float shininess;
     float triplanarScaleU;
     float triplanarScaleV;
-    bool triplanarEnabled;
     bool flipNormalY;
     bool swapNormalXZ;
     bool invertWidth;
@@ -28,12 +27,11 @@ struct MaterialNamed {
     float aoFactor;
     bool useAO;
     // Material kind (0 = texture, 1 = video, 2 = water), texture layer/slot
-    // (-1 = the material's own layer), coordinate technique
-    // (0 = triplanar, 1..3 = projection XYZ, 4 = angular, 5 = custom UV) and
-    // blend mode (0 = normal, 1..19 = shader blend modes).
+    // (-1 = the material's own layer) and blend mode (0 = normal, 1..19 =
+    // shader blend modes). The coordinate technique is per vertex
+    // (Vertex::textureType).
     int kind;
     int textureIndex;
-    int textureMapping;
     int blendMode;
     vec4 mappingOrigin;
 };

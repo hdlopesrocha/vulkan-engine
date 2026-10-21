@@ -138,30 +138,20 @@ void TextureViewer::render() {
         }
         ImGui::Text("Selected %s: %d", mat.kind == MaterialKind::Video ? "slot" : "layer", mat.textureIndex);
 
-        constexpr int kTextureMappingCount = static_cast<int>(TextureMappingMode::Custom) + 1;
-        const char* mappingItems[kTextureMappingCount];
-        for (int i = 0; i < kTextureMappingCount; ++i)
-            mappingItems[i] = textureMappingName(static_cast<TextureMappingMode>(i));
-        int mapping = static_cast<int>(mat.textureMapping);
-        if (EnumComboField("mat_mapping", "Texture Coordinates",
-                "Texture coordinate technique: triplanar, an axis projection, an SDF sphere or mesh UVs.",
-                mappingItems, kTextureMappingCount, &mapping)) {
-            mat.textureMapping = static_cast<TextureMappingMode>(mapping);
-            materialDirty = true;
-        }
-        if (mat.textureMapping == TextureMappingMode::Angular) {
-            FieldLabel("Angular Center", "World-space center of the sphere used by Angular mapping.");
-            ImGui::SetNextItemWidth(kColumnWidth);
-            ImGui::PushID("mat_sdf_center");
-            if (ImGui::DragFloat3("##v", &mat.mappingOrigin.x, 1.0f)) materialDirty = true;
-            ImGui::PopID();
+        // The coordinate technique is a per-vertex value now (Vertex::textureType,
+        // set by the scene's TexturePainter in MainSceneLoader); the material
+        // only carries the Angular center/radius used when a vertex selects it.
+        FieldLabel("Angular Center", "World-space center of the sphere used by Angular mapping.");
+        ImGui::SetNextItemWidth(kColumnWidth);
+        ImGui::PushID("mat_sdf_center");
+        if (ImGui::DragFloat3("##v", &mat.mappingOrigin.x, 1.0f)) materialDirty = true;
+        ImGui::PopID();
 
-            FieldLabel("Angular Radius", "Sphere radius for Angular mapping; 0 keeps the default world-space sphere.");
-            ImGui::SetNextItemWidth(kColumnWidth);
-            ImGui::PushID("mat_sdf_radius");
-            if (ImGui::DragFloat("##v", &mat.mappingOrigin.w, 0.05f, 0.0f, FLT_MAX, "%.3f")) materialDirty = true;
-            ImGui::PopID();
-        }
+        FieldLabel("Angular Radius", "Sphere radius for Angular mapping; 0 keeps the default world-space sphere.");
+        ImGui::SetNextItemWidth(kColumnWidth);
+        ImGui::PushID("mat_sdf_radius");
+        if (ImGui::DragFloat("##v", &mat.mappingOrigin.w, 0.05f, 0.0f, FLT_MAX, "%.3f")) materialDirty = true;
+        ImGui::PopID();
 
         constexpr int kBlendModeCount = static_cast<int>(MaterialBlendMode::Luminosity) + 1;
         const char* blendItems[kBlendModeCount];
@@ -388,11 +378,8 @@ void TextureViewer::render() {
         MaterialProperties& mat = (*materials)[currentIndex];
         if (CheckboxField("Flip Normal Y (green)", &mat.normalFlipY)) materialDirty = true;
         if (CheckboxField("Swap Normal X/Z (R <-> B)", &mat.normalSwapXZ)) materialDirty = true;
-        if (CheckboxField("Enable Triplanar Mapping", &mat.triplanar)) materialDirty = true;
-        if (mat.triplanar) {
-            if (SliderFloatField("Triplanar Scale U", &mat.triplanarScaleU, 0.01f, 10.0f, "%.3f")) materialDirty = true;
-            if (SliderFloatField("Triplanar Scale V", &mat.triplanarScaleV, 0.01f, 10.0f, "%.3f")) materialDirty = true;
-        }
+        if (SliderFloatField("Triplanar Scale U", &mat.triplanarScaleU, 0.01f, 10.0f, "%.3f")) materialDirty = true;
+        if (SliderFloatField("Triplanar Scale V", &mat.triplanarScaleV, 0.01f, 10.0f, "%.3f")) materialDirty = true;
     }});
 
     sections.push_back({[&]() {

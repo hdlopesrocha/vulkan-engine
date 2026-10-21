@@ -32,7 +32,6 @@ MaterialNamed materialNamed(Material m) {
     n.shininess = m.specularParams.y;
     n.triplanarScaleU = m.triplanarParams.x;
     n.triplanarScaleV = m.triplanarParams.y;
-    n.triplanarEnabled = m.triplanarParams.z > 0.5;
     n.flipNormalY = m.normalParams.x > 0.5;
     n.swapNormalXZ = m.normalParams.y > 0.5;
     n.invertWidth = m.normalParams.z > 0.5;
@@ -44,7 +43,6 @@ MaterialNamed materialNamed(Material m) {
     n.useAO = m.roughnessAOParams.z > 0.5;
     n.kind = int(m.layerParams.x + 0.5);
     n.textureIndex = int(m.layerParams.y + (m.layerParams.y >= 0.0 ? 0.5 : -0.5));
-    n.textureMapping = int(m.layerParams.z + 0.5);
     n.blendMode = int(m.layerParams.w + 0.5);
     n.mappingOrigin = m.mappingOrigin;
     return n;

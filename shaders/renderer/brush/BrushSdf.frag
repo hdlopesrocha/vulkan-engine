@@ -70,7 +70,9 @@ vec3 shadeBrushSurface(vec3 P, vec3 geomN) {
     computeTriplanarUVs(P, mi, geomN, uvX, uvY, uvZ);
 
     MaterialNamed mn = materialNamed(materials[mi]);
-    bool triplanar = mn.triplanarEnabled;
+    // The preview paints terrain, whose vertices are Triplanar (the coordinate
+    // technique is per vertex now); no per-material flag exists to branch on.
+    bool triplanar = true;
     float dx = step(triW.y, triW.x) * step(triW.z, triW.x);
     float dy = (1.0 - dx) * step(triW.z, triW.y);
     vec2 planarUV = uvX * dx + uvY * dy + uvZ * (1.0 - dx - dy);

@@ -14,13 +14,6 @@ enum class MaterialKind : uint32_t {
     Water = 2,
 };
 
-// Texture-coordinate technique. Painted per vertex by the TexturePainter
-// (Vertex::textureType); this material field is the fallback used by paths that
-// have no per-vertex value (and remains the editable default in the UI). The
-// enum itself lives in math/TextureType.hpp so the vertex and the shader share
-// one definition (see shaders/includes/TextureMapping.glsl).
-using TextureMappingMode = TextureType;
-
 // Photoshop-style blend modes applied per material by the video layer composite
 // (shaders/includes/BlendModes.glsl). Normal keeps the plain source-over result.
 enum class MaterialBlendMode : uint32_t {
@@ -51,10 +44,6 @@ inline const char* materialKindName(MaterialKind kind) {
         case MaterialKind::Water: return "Water";
         default: return "Textures";
     }
-}
-
-inline const char* textureMappingName(TextureMappingMode mode) {
-    return textureTypeName(mode);
 }
 
 inline const char* materialBlendModeName(MaterialBlendMode mode) {
@@ -105,8 +94,9 @@ struct MaterialProperties {
     // scene's mirror box and polished spheres).
     float reflectionStrength = 0.0f;
 
-    // Triplanar mapping toggle and per-material UV scales (disabled by default)
-    bool triplanar = true;
+    // Per-material UV scale for the projection techniques (Triplanar /
+    // ProjectionX/Y/Z). The coordinate technique itself is per vertex
+    // (Vertex::textureType, set by the scene's TexturePainter).
     float triplanarScaleU = 0.01f;
     float triplanarScaleV = 0.01f;
 
@@ -137,9 +127,11 @@ struct MaterialProperties {
     int textureIndex = -1;
 
     // ── Texture coordinates ─────────────────────────────────────────────
-    TextureMappingMode textureMapping = TextureMappingMode::Triplanar;
-    // Angular: xyz = bounding-volume center, w = radius (0 keeps the default
-    // world-space sphere, useful for objects whose SDF bounds are unknown).
+    // The technique is a per-vertex value (Vertex::textureType, painted by the
+    // scene's TexturePainter). The material only carries the Angular
+    // center/radius: xyz = bounding-volume center, w = radius (0 keeps the
+    // default world-space sphere, useful for objects whose SDF bounds are
+    // unknown).
     glm::vec4 mappingOrigin = glm::vec4(0.0f);
 
     // ── Layer blending ──────────────────────────────────────────────────

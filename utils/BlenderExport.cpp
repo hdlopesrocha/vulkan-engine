@@ -943,8 +943,7 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
         }
         json << ",\"generated\":{\"primary\":" << (mixerIndex >= 0 ? int(mixers[mixerIndex].primary) : -1)
              << ",\"secondary\":" << (mixerIndex >= 0 ? int(mixers[mixerIndex].secondary) : -1) << "}";
-        json << ",\"triplanar\":" << (m.triplanar ? "true" : "false")
-             << ",\"triplanarScaleU\":" << jnum(m.triplanarScaleU)
+        json << ",\"triplanarScaleU\":" << jnum(m.triplanarScaleU)
              << ",\"triplanarScaleV\":" << jnum(m.triplanarScaleV)
              << ",\"mappingMode\":" << (m.mappingMode ? "true" : "false")
              << ",\"normalFlipY\":" << (m.normalFlipY ? "true" : "false")

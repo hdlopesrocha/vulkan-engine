@@ -19,7 +19,7 @@ vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worl
     // Material 0. Triplanar materials keep the world-space triplanar fetch;
     // every other mapping mode samples at the UV of its dominant axis.
     if (matX.mappingEnabled) {
-        if (mappingUsesTriplanar(texTypes.x, matX)) {
+        if (mappingUsesTriplanar(texTypes.x)) {
             h0 = sampleHeightTriplanarW(worldPos, worldNormal, triplanarWeights, texIndices.x);
         } else {
             vec2 uvX, uvY, uvZ;
@@ -30,7 +30,7 @@ vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worl
     }
     // Material 1
     if (matY.mappingEnabled) {
-        if (mappingUsesTriplanar(texTypes.y, matY)) {
+        if (mappingUsesTriplanar(texTypes.y)) {
             h1 = sampleHeightTriplanarW(worldPos, worldNormal, triplanarWeights, texIndices.y);
         } else {
             vec2 uvX, uvY, uvZ;
@@ -41,7 +41,7 @@ vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worl
     }
     // Material 2
     if (matZ.mappingEnabled) {
-        if (mappingUsesTriplanar(texTypes.z, matZ)) {
+        if (mappingUsesTriplanar(texTypes.z)) {
             h2 = sampleHeightTriplanarW(worldPos, worldNormal, triplanarWeights, texIndices.z);
         } else {
             vec2 uvX, uvY, uvZ;

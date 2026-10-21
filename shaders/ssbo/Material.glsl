@@ -9,12 +9,12 @@ struct Material {
     vec4 materialFlags;    // .x = skipEnvMap (set during cubemap capture), .z = ambientFactor
     vec4 mappingParams;    // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale
     vec4 specularParams;   // x = specularStrength, y = shininess
-    vec4 triplanarParams;  // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
+    vec4 triplanarParams;  // x = scaleU, y = scaleV (z reserved)
     vec4 normalParams;     // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z = invertWidth (0/1)
     vec4 tessLevelParams;  // x = minLevel, y = maxLevel, z = reflectionStrength, w = reserved
     vec4 roughnessAOParams; // x = roughnessFactor, y = aoFactor, z = useAO (1.0/0.0)
-    vec4 layerParams;      // x = MaterialKind, y = textureIndex (-1 = own), z = TextureMappingMode, w = MaterialBlendMode
-    vec4 mappingOrigin;    // xyz = SdfGiven sphere center, w = radius
+    vec4 layerParams;      // x = MaterialKind, y = textureIndex (-1 = own), z reserved, w = MaterialBlendMode
+    vec4 mappingOrigin;    // xyz = Angular sphere center, w = radius
 };
 
 #endif // MATERIAL_GLSL

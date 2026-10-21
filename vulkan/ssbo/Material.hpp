@@ -9,15 +9,15 @@ struct Material {
     glm::vec4 materialFlags;   // .z = ambientFactor
     glm::vec4 mappingParams;   // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale
     glm::vec4 specularParams;  // x = specularStrength, y = shininess
-    glm::vec4 triplanarParams; // x = scaleU, y = scaleV, z = triplanarEnabled (0/1)
+    glm::vec4 triplanarParams; // x = scaleU, y = scaleV (z reserved)
     glm::vec4 normalParams;   // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z = invertWidth (0/1)
     glm::vec4 tessLevelParams; // x = minLevel, y = maxLevel, z = reflectionStrength, w = reserved
     glm::vec4 roughnessAOParams; // x = roughnessFactor, y = aoFactor, z = useAO (1.0/0.0)
-    // Material kind / texture selection / coordinate technique / blend mode.
-    // x = MaterialKind, y = textureIndex (-1 = own layer), z = TextureMappingMode,
+    // Material kind / texture selection / blend mode.
+    // x = MaterialKind, y = textureIndex (-1 = own layer), z reserved,
     // w = MaterialBlendMode.
     glm::vec4 layerParams;
-    // SdfGiven coordinate origin: xyz = sphere center, w = radius.
+    // Angular coordinate origin: xyz = sphere center, w = radius.
     glm::vec4 mappingOrigin;
 };
 static_assert(sizeof(Material) == 144, "Material must be 144 bytes");

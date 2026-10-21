@@ -24,15 +24,10 @@ const int TEXTURE_AXIS_X = 0;
 const int TEXTURE_AXIS_Y = 1;
 const int TEXTURE_AXIS_Z = 2;
 
-// True when the material uses the weighted triplanar path. Mode 0 with the
-// legacy triplanar flag cleared is a UV-mapped material and behaves as Custom.
-bool materialUsesTriplanarMapping(in MaterialNamed m) {
-    return m.textureMapping == TEXTURE_MAPPING_TRIPLANAR && m.triplanarEnabled;
-}
-
-// Same test for an explicit per-vertex mode (Vertex::textureType).
-bool mappingUsesTriplanar(in int mode, in MaterialNamed m) {
-    return mode == TEXTURE_MAPPING_TRIPLANAR && m.triplanarEnabled;
+// True when a per-vertex mode (Vertex::textureType) selects the weighted
+// triplanar path.
+bool mappingUsesTriplanar(in int mode) {
+    return mode == TEXTURE_MAPPING_TRIPLANAR;
 }
 
 // World-space projection UV for one axis. Same conventions as the legacy
@@ -110,15 +105,12 @@ void computeMaterialUVs(in int mode, in int brushIndex, in vec3 pos, in vec3 geo
         uvX = textureMappingAngularUV(m, pos);
     } else if (mode == TEXTURE_MAPPING_CUSTOM) {
         uvX = fragUV;
-    } else if (m.triplanarEnabled) {
+    } else {
         // Triplanar (mode 0); unknown modes fall back to the same projection.
         uvX = textureMappingUV(m, TEXTURE_AXIS_X, pos, geomN);
         uvY = textureMappingUV(m, TEXTURE_AXIS_Y, pos, geomN);
         uvZ = textureMappingUV(m, TEXTURE_AXIS_Z, pos, geomN);
         weights = computeMappingTriplanarWeights(geomN, threshold, exponent);
-    } else {
-        // Legacy mode 0 with triplanar disabled: behave as Custom (UV).
-        uvX = fragUV;
     }
 }
 
