@@ -315,7 +315,7 @@ void VideoRenderer::createPipelines(VulkanApp* app) {
         // The non-tessellated solid VS prunes ATTR_COLOR; declaring it here
         // would raise the "vertex attribute not consumed" performance warning.
         vk_layouts::defaultAttributesFiltered(
-            {ATTR_POS, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV}),
+            {ATTR_POS, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_TEXTURE_TYPE, ATTR_HSV}),
         setLayouts,
         nullptr,
         cfg);

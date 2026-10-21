@@ -19,6 +19,8 @@ std::string getChunkName(const BoundingCube &cube) {
 OctreeNodeSerialized packNode(OctreeNode * node) {
     OctreeNodeSerialized n = OctreeNodeSerialized();
     n.brushIndex = node->brushIndex;
+    n.textureType = node->textureType;
+    n.uv = node->uv;
     n.hsv = node->hsv;
     n.bits = node->bits;
     SDF::copySDF(node->sdf, n.sdf);
@@ -28,8 +30,9 @@ OctreeNodeSerialized packNode(OctreeNode * node) {
 }
 
 OctreeNode * allocateNode(Octree * tree, OctreeNodeSerialized &serialized, const BoundingCube &cube) {
-    Vertex vertex(glm::vec3(0), glm::vec3(0), glm::vec2(0), serialized.brushIndex);
+    Vertex vertex(glm::vec3(0), glm::vec3(0), serialized.uv, serialized.brushIndex);
     vertex.hsv = serialized.hsv;
+    vertex.textureType = serialized.textureType;
     OctreeNode * node = tree->allocator->allocate()->init(vertex);
     node->setSDF(serialized.sdf);
     node->bits = serialized.bits;

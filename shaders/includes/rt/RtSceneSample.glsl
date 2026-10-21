@@ -4,9 +4,10 @@
 // ground cover matches what the direct view paints at every triangle.
 //
 // Requires: rtSceneVerts (float pool, Vertex stride 16 floats: pos 0-2,
-// uv 6-7, normal 8-10, brushIndex 11 int bits), albedoArray, materials[],
-// computeTriplanarAlbedoLod. lod is the explicit texture LOD (reflections
-// pass 0.0; refraction passes a distance-based LOD against shimmer).
+// uv 6-7, normal 8-10, brushIndex 11 int bits, textureType 12 int bits),
+// albedoArray, materials[], computeTriplanarAlbedoLod. lod is the explicit
+// texture LOD (reflections pass 0.0; refraction passes a distance-based LOD
+// against shimmer).
 
 vec3 rtSceneSampleReflectionAlbedo(uint i0, uint i1, uint i2, vec2 bary,
                                    vec3 hitPos, vec3 hitN, int maxLayer, float lod) {
@@ -35,31 +36,36 @@ vec3 rtSceneSampleReflectionAlbedo(uint i0, uint i1, uint i2, vec2 bary,
 
     vec3 acc = vec3(0.0);
     float accW = 0.0;
+    // Per-vertex texture types (Vertex float offset 12), compressed to the same
+    // unique slots as the brush indices above.
+    int tm0 = floatBitsToInt(rtSceneVerts[i0 * kVertStride + 12u]);
+    int tm1 = floatBitsToInt(rtSceneVerts[i1 * kVertStride + 12u]);
+    int tm2 = floatBitsToInt(rtSceneVerts[i2 * kVertStride + 12u]);
+    int ut0 = (bm0 >= 0) ? tm0 : 0;
+    int ut1 = (bm1 >= 0 && bm1 != um0) ? tm1 : 0;
+    int ut2 = (bm2 >= 0 && bm2 != um0 && bm2 != um1) ? tm2 : 0;
     // Slot 0
     if (um0 >= 0 && blendW.x > 1e-5) {
         int m = clamp(um0, 0, maxLayer);
-        vec3 c = (materialNamed(materials[m]).triplanarEnabled)
-            ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, lod)
-            : textureLod(albedoArray, vec3(uvInt, float(m)), lod).rgb;
-        acc += c * blendW.x;
+        vec2 uvX, uvY, uvZ; vec3 mw;
+        computeMaterialUVs(ut0, m, hitPos, hitN, uvInt, ubo.triplanarThreshold, ubo.triplanarExponent, uvX, uvY, uvZ, mw);
+        acc += computeTriplanarAlbedoUVsLod(mw, m, uvX, uvY, uvZ, lod) * blendW.x;
         accW += blendW.x;
     }
     // Slot 1
     if (um1 >= 0 && blendW.y > 1e-5) {
         int m = clamp(um1, 0, maxLayer);
-        vec3 c = (materialNamed(materials[m]).triplanarEnabled)
-            ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, lod)
-            : textureLod(albedoArray, vec3(uvInt, float(m)), lod).rgb;
-        acc += c * blendW.y;
+        vec2 uvX, uvY, uvZ; vec3 mw;
+        computeMaterialUVs(ut1, m, hitPos, hitN, uvInt, ubo.triplanarThreshold, ubo.triplanarExponent, uvX, uvY, uvZ, mw);
+        acc += computeTriplanarAlbedoUVsLod(mw, m, uvX, uvY, uvZ, lod) * blendW.y;
         accW += blendW.y;
     }
     // Slot 2
     if (um2 >= 0 && blendW.z > 1e-5) {
         int m = clamp(um2, 0, maxLayer);
-        vec3 c = (materialNamed(materials[m]).triplanarEnabled)
-            ? computeTriplanarAlbedoLod(hitPos, abs(hitN), m, hitN, lod)
-            : textureLod(albedoArray, vec3(uvInt, float(m)), lod).rgb;
-        acc += c * blendW.z;
+        vec2 uvX, uvY, uvZ; vec3 mw;
+        computeMaterialUVs(ut2, m, hitPos, hitN, uvInt, ubo.triplanarThreshold, ubo.triplanarExponent, uvX, uvY, uvZ, mw);
+        acc += computeTriplanarAlbedoUVsLod(mw, m, uvX, uvY, uvZ, lod) * blendW.z;
         accW += blendW.z;
     }
     if (accW <= 1e-5) {

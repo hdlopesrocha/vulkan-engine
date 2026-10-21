@@ -163,7 +163,8 @@ void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount,
         bSdf1 = app->createBuffer(sizeof(float) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bCube = app->createBuffer(sizeof(float) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bMeta = app->createBuffer(sizeof(int32_t) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-        bHsv = app->createBuffer(sizeof(float) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
+        // 8 floats per node: vec4(hsv.xyz, textureType), vec4(uv.xy, 0, 0).
+        bHsv = app->createBuffer(sizeof(float) * 8 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bChild03 = app->createBuffer(sizeof(int32_t) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bChild47 = app->createBuffer(sizeof(int32_t) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         nodeCap = nodeCount;
@@ -268,10 +269,14 @@ void OctreeTopologyCompute::uploadInput(const OctreeTopologyInput& input) {
         meta[i * 4 + 1] = n.type;
         meta[i * 4 + 2] = n.brushIndex;
         meta[i * 4 + 3] = n.flags;
-        hsv[i * 4 + 0] = n.hsv.x;
-        hsv[i * 4 + 1] = n.hsv.y;
-        hsv[i * 4 + 2] = n.hsv.z;
-        hsv[i * 4 + 3] = 0.0f;
+        hsv[i * 8 + 0] = n.hsv.x;
+        hsv[i * 8 + 1] = n.hsv.y;
+        hsv[i * 8 + 2] = n.hsv.z;
+        hsv[i * 8 + 3] = static_cast<float>(n.textureType);
+        hsv[i * 8 + 4] = n.uv.x;
+        hsv[i * 8 + 5] = n.uv.y;
+        hsv[i * 8 + 6] = 0.0f;
+        hsv[i * 8 + 7] = 0.0f;
         for (int k = 0; k < 4; ++k) child03[i * 4 + k] = n.children[k];
         for (int k = 0; k < 4; ++k) child47[i * 4 + k] = n.children[4 + k];
     }
@@ -463,6 +468,10 @@ OctreeTopologyResult OctreeTopologyCompute::compute(const OctreeTopologyInput& i
         v.brushIndex = (int32_t)brushBits;
         v.normal = glm::vec3(pn[i * 4 + 0], pn[i * 4 + 1], pn[i * 4 + 2]);
         v.hsv = glm::vec3(ph[i * 4 + 0], ph[i * 4 + 1], ph[i * 4 + 2]);
+        // Per-vertex mapping technique packed in outHsv.w. The painted Custom UV
+        // is not carried in the non-resident arena (the resident path, used by
+        // the app, rebuilds it from the node metadata), so it stays (0, 0) here.
+        v.textureType = static_cast<int32_t>(ph[i * 4 + 3] + 0.5f);
         appVerts[i] = v;
         appCell[i] = (uint32_t)pn[i * 4 + 3];
     }

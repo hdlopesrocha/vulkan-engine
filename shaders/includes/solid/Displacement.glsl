@@ -2,7 +2,7 @@
 #include "../../types/MaterialNamed.glsl"
 #include "../TextureMapping.glsl"
 // Tessellation displacement function
-vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worldNormal, vec2 uv, ivec3 texIndices, vec3 weights) {
+vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worldNormal, vec2 uv, ivec3 texIndices, ivec3 texTypes, vec3 weights) {
 
     MaterialNamed matX = materialNamed(materials[texIndices.x]);
     MaterialNamed matY = materialNamed(materials[texIndices.y]);
@@ -19,34 +19,34 @@ vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worl
     // Material 0. Triplanar materials keep the world-space triplanar fetch;
     // every other mapping mode samples at the UV of its dominant axis.
     if (matX.mappingEnabled) {
-        if (materialUsesTriplanarMapping(matX)) {
+        if (mappingUsesTriplanar(texTypes.x, matX)) {
             h0 = sampleHeightTriplanarW(worldPos, worldNormal, triplanarWeights, texIndices.x);
         } else {
             vec2 uvX, uvY, uvZ;
             vec3 mappingWeights;
-            computeMaterialUVs(texIndices.x, worldPos, worldNormal, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uvX, uvY, uvZ, mappingWeights);
+            computeMaterialUVs(texTypes.x, texIndices.x, worldPos, worldNormal, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uvX, uvY, uvZ, mappingWeights);
             h0 = sampleHeight(dominantMappingUV(mappingWeights, uvX, uvY, uvZ), texIndices.x);
         }
     }
     // Material 1
     if (matY.mappingEnabled) {
-        if (materialUsesTriplanarMapping(matY)) {
+        if (mappingUsesTriplanar(texTypes.y, matY)) {
             h1 = sampleHeightTriplanarW(worldPos, worldNormal, triplanarWeights, texIndices.y);
         } else {
             vec2 uvX, uvY, uvZ;
             vec3 mappingWeights;
-            computeMaterialUVs(texIndices.y, worldPos, worldNormal, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uvX, uvY, uvZ, mappingWeights);
+            computeMaterialUVs(texTypes.y, texIndices.y, worldPos, worldNormal, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uvX, uvY, uvZ, mappingWeights);
             h1 = sampleHeight(dominantMappingUV(mappingWeights, uvX, uvY, uvZ), texIndices.y);
         }
     }
     // Material 2
     if (matZ.mappingEnabled) {
-        if (materialUsesTriplanarMapping(matZ)) {
+        if (mappingUsesTriplanar(texTypes.z, matZ)) {
             h2 = sampleHeightTriplanarW(worldPos, worldNormal, triplanarWeights, texIndices.z);
         } else {
             vec2 uvX, uvY, uvZ;
             vec3 mappingWeights;
-            computeMaterialUVs(texIndices.z, worldPos, worldNormal, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uvX, uvY, uvZ, mappingWeights);
+            computeMaterialUVs(texTypes.z, texIndices.z, worldPos, worldNormal, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uvX, uvY, uvZ, mappingWeights);
             h2 = sampleHeight(dominantMappingUV(mappingWeights, uvX, uvY, uvZ), texIndices.z);
         }
     }

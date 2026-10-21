@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <glm/glm.hpp>
+#include "../math/TextureType.hpp"
 
 // What a material samples: a layer of the scene texture arrays, one slot of the
 // video texture array, or the water params palette. Materials of kind Video are
@@ -13,15 +14,12 @@ enum class MaterialKind : uint32_t {
     Water = 2,
 };
 
-// Texture coordinate technique for a material (see shaders/includes/TextureMapping.glsl).
-enum class TextureMappingMode : uint32_t {
-    Triplanar = 0,   // weighted X/Y/Z projections from the world position
-    ProjectionX = 1, // single YZ plane projection
-    ProjectionY = 2, // single XZ plane projection
-    ProjectionZ = 3, // single XY plane projection
-    SdfGiven = 4,    // spherical coordinates around mappingOrigin (xyz center, w radius)
-    Custom = 5,      // mesh/painted UVs (fragUV)
-};
+// Texture-coordinate technique. Painted per vertex by the TexturePainter
+// (Vertex::textureType); this material field is the fallback used by paths that
+// have no per-vertex value (and remains the editable default in the UI). The
+// enum itself lives in math/TextureType.hpp so the vertex and the shader share
+// one definition (see shaders/includes/TextureMapping.glsl).
+using TextureMappingMode = TextureType;
 
 // Photoshop-style blend modes applied per material by the video layer composite
 // (shaders/includes/BlendModes.glsl). Normal keeps the plain source-over result.
@@ -56,14 +54,7 @@ inline const char* materialKindName(MaterialKind kind) {
 }
 
 inline const char* textureMappingName(TextureMappingMode mode) {
-    switch (mode) {
-        case TextureMappingMode::ProjectionX: return "Projection X";
-        case TextureMappingMode::ProjectionY: return "Projection Y";
-        case TextureMappingMode::ProjectionZ: return "Projection Z";
-        case TextureMappingMode::SdfGiven: return "SDF Given";
-        case TextureMappingMode::Custom: return "Custom (UV)";
-        default: return "Triplanar";
-    }
+    return textureTypeName(mode);
 }
 
 inline const char* materialBlendModeName(MaterialBlendMode mode) {
@@ -147,7 +138,7 @@ struct MaterialProperties {
 
     // ── Texture coordinates ─────────────────────────────────────────────
     TextureMappingMode textureMapping = TextureMappingMode::Triplanar;
-    // SdfGiven: xyz = bounding-volume center, w = radius (0 keeps the default
+    // Angular: xyz = bounding-volume center, w = radius (0 keeps the default
     // world-space sphere, useful for objects whose SDF bounds are unknown).
     glm::vec4 mappingOrigin = glm::vec4(0.0f);
 

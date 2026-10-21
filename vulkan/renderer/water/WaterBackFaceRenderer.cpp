@@ -209,7 +209,7 @@ void WaterBackFaceRenderer::createBackFacePipeline(VulkanApp* app, VkPipelineLay
     bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
     auto attrDescs = tess
-        ? vk_layouts::defaultAttributes()
+        ? vk_layouts::defaultAttributesFiltered({ ATTR_POS, ATTR_COLOR, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV })
         : vk_layouts::defaultAttributesFiltered({ ATTR_POS, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV });
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};

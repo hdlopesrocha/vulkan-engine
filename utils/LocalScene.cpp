@@ -69,6 +69,8 @@ struct GpuTopologyBuilder {
         rec.lod = static_cast<int32_t>(n->getLod());
         rec.type = static_cast<int32_t>(n->getType());
         rec.brushIndex = n->brushIndex;
+        rec.textureType = n->textureType;
+        rec.uv = n->uv;
         rec.flags = n->isLeaf() ? 1 : 0;
         rec.hsv = n->hsv;
         for (int i = 0; i < 8; ++i) rec.children[i] = -1;
@@ -513,7 +515,8 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                                     OctreeNode* n = cellNodes[i];
                                     glm::vec3 pos(res.positions[i].x, res.positions[i].y, res.positions[i].z);
                                     glm::vec3 nrm(res.normals[i].x, res.normals[i].y, res.normals[i].z);
-                                    Vertex v(pos, nrm, glm::vec2(0.0f), n->brushIndex);
+                                    Vertex v(pos, nrm, n->uv, n->brushIndex);
+                                    v.textureType = n->textureType;
                                     v.hsv = n->hsv;
                                     gpuVerts[n] = v;
                                 }
@@ -522,8 +525,9 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                                     if (it != gpuVerts.end()) return it->second;
                                     glm::vec3 pos = SDF::getPosition(n->sdf, c);
                                     glm::vec3 nrm = SDF::getNormalFromPosition(n->sdf, c, pos);
-                                    Vertex v(pos, nrm, glm::vec2(0.0f), n->brushIndex);
+                                    Vertex v(pos, nrm, n->uv, n->brushIndex);
                                     v.hsv = n->hsv;
+                                    v.textureType = n->textureType;
                                     return v;
                                 };
                             }

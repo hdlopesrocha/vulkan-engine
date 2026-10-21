@@ -5,6 +5,7 @@
 #include <utility>
 #include <array>
 #include <functional>
+#include "TextureType.hpp"
 
 inline uint64_t murmurMix(uint64_t k) {
 	k ^= k >> 33;
@@ -33,11 +34,15 @@ public:
     glm::vec3 normal;
     // per-vertex tangent removed: compute in fragment shader for triplanar mapping
     int brushIndex;
-    int _pad0;
+    // Per-vertex texture-coordinate technique (TextureType), painted by the
+    // TexturePainter. Replaces the former unused _pad0 so the vertex stride
+    // stays 64 bytes. Triplanar (0) is the default; its UVs are computed on the
+    // GPU from the world position, so texCoord is (0, 0) for those vertices.
+    int textureType;
     glm::vec3 hsv;
 
     Vertex(glm::vec3 pos, glm::vec3 norm, glm::vec2 tex, int brushIdx)
-        : position(pos), color(glm::vec3(1.0f)), texCoord(tex), normal(norm), brushIndex(brushIdx), _pad0(0), hsv(0.0f, 0.5f, 0.5f) {
+        : position(pos), color(glm::vec3(1.0f)), texCoord(tex), normal(norm), brushIndex(brushIdx), textureType(static_cast<int>(TextureType::Triplanar)), hsv(0.0f, 0.5f, 0.5f) {
     }
 
     // Compatibility constructor to allow aggregate-style initialization used across the codebase
@@ -46,11 +51,11 @@ public:
           color(colorArr[0], colorArr[1], colorArr[2]),
           texCoord(texArr[0], texArr[1]),
           normal(normalArr[0], normalArr[1], normalArr[2]),
-          brushIndex(static_cast<int>(brushIndexF)), _pad0(0), hsv(0.0f, 0.5f, 0.5f) {}
+          brushIndex(static_cast<int>(brushIndexF)), textureType(static_cast<int>(TextureType::Triplanar)), hsv(0.0f, 0.5f, 0.5f) {}
 
-    Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), _pad0(0), hsv(0.0f, 0.5f, 0.5f) {}
+    Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), textureType(static_cast<int>(TextureType::Triplanar)), hsv(0.0f, 0.5f, 0.5f) {}
 
-    Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), _pad0(0), hsv(0.0f, 0.5f, 0.5f) {}
+    Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), textureType(static_cast<int>(TextureType::Triplanar)), hsv(0.0f, 0.5f, 0.5f) {}
 
     bool operator==(const Vertex& o) const {
         return std::bit_cast<uint64_t>(pack2(position.x, position.y)) == std::bit_cast<uint64_t>(pack2(o.position.x, o.position.y)) &&
@@ -63,7 +68,8 @@ public:
 
                /* tangent removed */
 
-               brushIndex == o.brushIndex;
+               brushIndex == o.brushIndex &&
+               textureType == o.textureType;
     }
 
     bool operator!=(const Vertex& other) const {

@@ -129,11 +129,13 @@ void shadeSolidSurface() {
     MaterialNamed matB = materialNamed(materials[texIndices.y]);
     MaterialNamed matC = materialNamed(materials[texIndices.z]);
 
-    // Mix the triplanar flag across the three materials. Legacy mode-0
-    // materials with triplanarEnabled == false count as custom UV mapping.
-    float triFlag = dot(vec3(float(materialUsesTriplanarMapping(matA)),
-                             float(materialUsesTriplanarMapping(matB)),
-                             float(materialUsesTriplanarMapping(matC))), w);
+    // Mix the triplanar flag across the three corners using each corner's
+    // per-vertex texture type. Legacy mode-0 materials with triplanarEnabled ==
+    // false count as custom UV mapping.
+    ivec3 texTypes = fragTextureTypes;
+    float triFlag = dot(vec3(float(mappingUsesTriplanar(texTypes.x, matA)),
+                             float(mappingUsesTriplanar(texTypes.y, matB)),
+                             float(mappingUsesTriplanar(texTypes.z, matC))), w);
     usedTriplanar = triFlag > 0.5;
 
     // Compute the UVs and blend weights for each corner's own mapping mode
@@ -144,9 +146,9 @@ void shadeSolidSurface() {
     vec3 mw0 = vec3(1.0, 0.0, 0.0);
     vec3 mw1 = vec3(1.0, 0.0, 0.0);
     vec3 mw2 = vec3(1.0, 0.0, 0.0);
-    if (w.x > 0.0) computeMaterialUVs(texIndices.x, fragPosWorldNotDisplaced, geomN, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uv0X, uv0Y, uv0Z, mw0);
-    if (w.y > 0.0) computeMaterialUVs(texIndices.y, fragPosWorldNotDisplaced, geomN, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uv1X, uv1Y, uv1Z, mw1);
-    if (w.z > 0.0) computeMaterialUVs(texIndices.z, fragPosWorldNotDisplaced, geomN, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uv2X, uv2Y, uv2Z, mw2);
+    if (w.x > 0.0) computeMaterialUVs(texTypes.x, texIndices.x, fragPosWorldNotDisplaced, geomN, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uv0X, uv0Y, uv0Z, mw0);
+    if (w.y > 0.0) computeMaterialUVs(texTypes.y, texIndices.y, fragPosWorldNotDisplaced, geomN, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uv1X, uv1Y, uv1Z, mw1);
+    if (w.z > 0.0) computeMaterialUVs(texTypes.z, texIndices.z, fragPosWorldNotDisplaced, geomN, uv, ubo.triplanarThreshold, ubo.triplanarExponent, uv2X, uv2Y, uv2Z, mw2);
 
     // Sample albedo per corner with that corner's own mapping weights. One-hot
     // weights (projection / SdfGiven / custom) collapse to a single fetch.
@@ -656,17 +658,17 @@ void shadeSolidSurface() {
         float h1 = 0.0;
         float h2 = 0.0;
         if (w.x > 0.0) {
-            h0 = materialUsesTriplanarMapping(matA)
+            h0 = mappingUsesTriplanar(texTypes.x, matA)
                 ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.x)
                 : texture(heightArray, vec3(dominantMappingUV(mw0, uv0X, uv0Y, uv0Z), float(texIndices.x))).r;
         }
         if (w.y > 0.0) {
-            h1 = materialUsesTriplanarMapping(matB)
+            h1 = mappingUsesTriplanar(texTypes.y, matB)
                 ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.y)
                 : texture(heightArray, vec3(dominantMappingUV(mw1, uv1X, uv1Y, uv1Z), float(texIndices.y))).r;
         }
         if (w.z > 0.0) {
-            h2 = materialUsesTriplanarMapping(matC)
+            h2 = mappingUsesTriplanar(texTypes.z, matC)
                 ? sampleHeightTriplanar(fragPosWorld, worldNormal, texIndices.z)
                 : texture(heightArray, vec3(dominantMappingUV(mw2, uv2X, uv2Y, uv2Z), float(texIndices.z))).r;
         }

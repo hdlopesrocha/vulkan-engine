@@ -9,6 +9,7 @@ struct VertexHasher {
         h = hashCombine(h, std::hash<glm::vec3>{}(v.normal));
         h = hashCombine(h, std::hash<glm::vec2>{}(v.texCoord));
         h = hashCombine(h, std::hash<int>{}(v.brushIndex));
+        h = hashCombine(h, std::hash<int>{}(v.textureType));
         return h;
     }
 };

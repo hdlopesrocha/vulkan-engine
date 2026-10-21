@@ -246,7 +246,7 @@ void SolidRenderer::createPipelines(VulkanApp* app) {
                 { noTessVertexShader.info, depthFrag.info },
                 std::vector<VkVertexInputBindingDescription>{ VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } },
                 vk_layouts::defaultAttributesFiltered(
-                    { ATTR_POS, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV }),
+                    { ATTR_POS, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_TEXTURE_TYPE, ATTR_HSV }),
                 setLayouts, nullptr,
                 ddCfg,
                 deferredDepthPipelineLayout);

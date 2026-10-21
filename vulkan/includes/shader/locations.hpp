@@ -11,6 +11,9 @@ static constexpr uint32_t ATTR_NORMAL = 3u;
 static constexpr uint32_t ATTR_BRUSH_INDEX = 4u;
 static constexpr uint32_t ATTR_HSV = 6u;
 static constexpr uint32_t ATTR_INSTANCE = 5u;
+// Per-vertex texture-coordinate technique (math/TextureType.hpp), painted by
+// the TexturePainter.
+static constexpr uint32_t ATTR_TEXTURE_TYPE = 9u;
 // Baked per-instance vegetation height scale (perf report 22 C2/H4):
 // float per instance in the concatenated aux buffer (binding 2).
 static constexpr uint32_t ATTR_VEG_AUX = 7u;
@@ -43,3 +46,8 @@ static constexpr uint32_t VARY_LOCALPOS = 20u;
 static constexpr uint32_t VARY_SDF = 21u;
 static constexpr uint32_t VARY_HSV = 23u;
 static constexpr uint32_t VARY_SHARPNORMAL = 6u;
+// Solid terrain: per-vertex texture-coordinate technique, carried as the patch's
+// three unique slots (flat ivec3), parallel to VARY_BRUSHPATCH. Only the solid
+// path reads it; it has no geometry stage, so it sits above the <=15 range used
+// by the geometry-limited varyings.
+static constexpr uint32_t VARY_TEXTURETYPE = 24u;

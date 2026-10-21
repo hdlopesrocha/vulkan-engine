@@ -29,6 +29,7 @@ inline std::vector<VkVertexInputAttributeDescription> defaultAttributes() {
         VkVertexInputAttributeDescription{ ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord) },
         VkVertexInputAttributeDescription{ ATTR_NORMAL, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
         VkVertexInputAttributeDescription{ ATTR_BRUSH_INDEX, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, brushIndex) },
+        VkVertexInputAttributeDescription{ ATTR_TEXTURE_TYPE, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, textureType) },
         VkVertexInputAttributeDescription{ ATTR_HSV, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, hsv) }
     };
 }

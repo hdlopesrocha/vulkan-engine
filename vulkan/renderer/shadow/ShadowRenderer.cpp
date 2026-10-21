@@ -183,7 +183,7 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
             },
             // H7: the SOLID_NO_TESS VS no longer consumes ATTR_COLOR.
             vk_layouts::defaultAttributesFiltered(
-                { ATTR_POS, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV }),
+                { ATTR_POS, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_TEXTURE_TYPE, ATTR_HSV }),
             setLayouts,
             nullptr,
             cfg,

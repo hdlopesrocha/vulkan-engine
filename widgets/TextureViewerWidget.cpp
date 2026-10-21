@@ -149,14 +149,14 @@ void TextureViewer::render() {
             mat.textureMapping = static_cast<TextureMappingMode>(mapping);
             materialDirty = true;
         }
-        if (mat.textureMapping == TextureMappingMode::SdfGiven) {
-            FieldLabel("SDF Center", "World-space center of the sphere used by SDF Given mapping.");
+        if (mat.textureMapping == TextureMappingMode::Angular) {
+            FieldLabel("Angular Center", "World-space center of the sphere used by Angular mapping.");
             ImGui::SetNextItemWidth(kColumnWidth);
             ImGui::PushID("mat_sdf_center");
             if (ImGui::DragFloat3("##v", &mat.mappingOrigin.x, 1.0f)) materialDirty = true;
             ImGui::PopID();
 
-            FieldLabel("SDF Radius", "Sphere radius for SDF Given mapping; 0 keeps the default world-space sphere.");
+            FieldLabel("Angular Radius", "Sphere radius for Angular mapping; 0 keeps the default world-space sphere.");
             ImGui::SetNextItemWidth(kColumnWidth);
             ImGui::PushID("mat_sdf_radius");
             if (ImGui::DragFloat("##v", &mat.mappingOrigin.w, 0.05f, 0.0f, FLT_MAX, "%.3f")) materialDirty = true;

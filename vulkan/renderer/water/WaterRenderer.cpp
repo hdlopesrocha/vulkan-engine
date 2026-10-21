@@ -794,7 +794,10 @@ void WaterRenderer::createWaterPipelines(VulkanApp* app, const std::vector<Water
     bindingDesc.binding = 0;
     bindingDesc.stride = sizeof(Vertex);
     bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    auto attrDescs = vk_layouts::defaultAttributes();
+    // Water does not consume the per-vertex texture type (its materials sample
+    // the water palette), so exclude ATTR_TEXTURE_TYPE from the declaration.
+    auto attrDescs = vk_layouts::defaultAttributesFiltered(
+        { ATTR_POS, ATTR_COLOR, ATTR_UV, ATTR_NORMAL, ATTR_BRUSH_INDEX, ATTR_HSV });
 
     // --- Create pipeline layout manually ---
     VkPipelineLayoutCreateInfo waterLayoutInfo{};

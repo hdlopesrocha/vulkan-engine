@@ -730,22 +730,22 @@ public:
             MaterialProperties& videoMat = materials[static_cast<size_t>(loadedTextureLayers) + 1];
             videoMat.kind = MaterialKind::Video;
             videoMat.textureIndex = 0;
-            videoMat.textureMapping = TextureMappingMode::SdfGiven;
+            videoMat.textureMapping = TextureMappingMode::Angular;
             videoMat.mappingOrigin = glm::vec4(0.0f, 512.0f, 512.0f * 8.0f, 320.0f);
             videoMat.blendMode = MaterialBlendMode::Screen;
             videoCubeMaterialIndex = static_cast<int>(loadedTextureLayers) + 1;
         }
-        // Extra demo material: a Texture-kind material using SdfGiven spherical
+        // Extra demo material: a Texture-kind material using Angular spherical
         // coordinates around the solid demo cube's bounding volume.
         {
             const size_t sdfIndex = static_cast<size_t>(loadedTextureLayers) + 1 + kVideoMaterialCount;
             MaterialProperties& m = materials[sdfIndex];
             m.kind = MaterialKind::Texture;
             m.textureIndex = 6;  // existing decorative texture layer
-            m.textureMapping = TextureMappingMode::SdfGiven;
+            m.textureMapping = TextureMappingMode::Angular;
             m.mappingOrigin = glm::vec4(0.0f, 512.0f, 512.0f * 9.0f, 320.0f);
             m.blendMode = MaterialBlendMode::Normal;
-            m.triplanar = false;  // SdfGiven is the selected technique
+            m.triplanar = false;  // Angular is the selected technique
             sdfGivenMaterialIndex = static_cast<int>(sdfIndex);
         }
 

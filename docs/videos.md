@@ -88,22 +88,33 @@ current frame.
 |---|---|
 | `kind` | `Texture` (scene arrays), `Video` (video array slot), `Water` |
 | `textureIndex` | layer/slot the material samples; `-1` = the material's own layer |
-| `textureMapping` | `Triplanar`, `ProjectionX/Y/Z`, `SdfGiven`, `Custom` |
-| `mappingOrigin` | `SdfGiven` sphere: xyz center, w radius |
+| `textureMapping` | `Triplanar`, `ProjectionX/Y/Z`, `Angular`, `Custom` (fallback default; the per-vertex `TextureType` wins) |
+| `mappingOrigin` | `Angular` sphere: xyz center, w radius |
 | `blendMode` | `Normal` + 19 Photoshop-style modes |
 
-`SdfGiven` maps the world position into spherical coordinates around the
-material's bounding volume (`center`, `radius`), so an SDF object can carry a
-spherical projection. `Custom` uses the mesh/painted UVs. Every technique is
-implemented in `shaders/includes/TextureMapping.glsl` and used by the solid,
-displacement and video-layer shaders.
+The texture-coordinate technique is now a **per-vertex** value
+(`Vertex::textureType`, `TextureType` in `math/TextureType.hpp`) painted by the
+`TexturePainter` (`paintTextureType`), so one mesh can mix mappings; the vertex
+carries the matching UV (`paintUV`, default `(0, 0)`). `Triplanar` derives its
+UVs from the world position on the GPU, so a triplanar vertex is written with
+`texCoord = (0, 0)`; `ProjectionX/Y/Z` and `Angular` are also evaluated in the
+shader, and only `Custom` consumes the painted UV. `Angular` maps the world
+position into spherical coordinates around the material's bounding volume
+(`center`, `radius`), so an SDF object can carry a spherical projection. Every
+technique is implemented in `shaders/includes/TextureMapping.glsl` and used by the
+solid, displacement, RT and video-layer shaders; the per-vertex type is threaded
+through the GPU octree topology packer too.
 
-All shapes in `MainSceneLoader` keep triplanar mapping. The extra demo cube in
-the video layer uses the first video material: `SdfGiven` coordinates centered
-on the cube and `Screen` blending.
+The per-material `textureMapping` remains the editable default/fallback (and is
+what paths without a per-vertex value use).
+
+All shapes in `MainSceneLoader` keep triplanar mapping (the default painter
+type). The extra demo cube in the video layer uses the first video material with
+its `SimpleBrush` painting `Angular` coordinates centered on the cube and
+`Screen` blending.
 
 The Materials widget (Textures panel) edits the material kind, the video slot,
-the coordinate technique (with the SDF center/radius) and the blend mode.
+the coordinate technique (with the Angular center/radius) and the blend mode.
 
 ### Per-frame material maps
 

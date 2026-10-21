@@ -10,6 +10,7 @@ layout(location = VARY_UV) in vec2 pc_inUV[];
 layout(location = VARY_NORMAL) in vec3 pc_inNormal[];
 layout(location = VARY_POSWORLD) in vec3 pc_inPosWorld[];
 layout(location = VARY_BRUSHPATCH) in int pc_inBrushIndex[];
+layout(location = VARY_TEXTURETYPE) in int pc_inTextureType[];
 layout(location = VARY_LOCALPOS) in vec3 pc_inLocalPos[];
 layout(location = VARY_LOCALNORMAL) in vec3 pc_inLocalNormal[];
 layout(location = VARY_HSV) in vec3 pc_inHSV[];
@@ -19,6 +20,7 @@ layout(location = VARY_UV) out vec2 tc_fragUV[];
 layout(location = VARY_NORMAL) out vec3 tc_fragNormal[];
 layout(location = VARY_POSWORLD) out vec3 tc_fragPosWorld[];
 layout(location = VARY_BRUSHPATCH) flat out ivec3 tc_fragBrushIndex[];
+layout(location = VARY_TEXTURETYPE) flat out ivec3 tc_fragTextureTypes[];
 layout(location = VARY_LOCALPOS) out vec3 tc_fragLocalPos[];
 layout(location = VARY_LOCALNORMAL) out vec3 tc_fragLocalNormal[];
 layout(location = VARY_TEXWEIGHTS) out vec3 tc_fragTexWeights[];
@@ -81,6 +83,13 @@ void main() {
 
     // Store the unique indices (use -1 for empty slots)
     tc_fragBrushIndex[gl_InvocationID] = ivec3(u0, u1, u2);
+
+    // Carry the texture-coordinate technique of each unique slot, parallel to
+    // the brush slots above (same patch-uniform value on every invocation).
+    tc_fragTextureTypes[gl_InvocationID] = ivec3(
+        (i0 >= 0) ? pc_inTextureType[0] : 0,
+        (i1 >= 0 && i1 != u0) ? pc_inTextureType[1] : 0,
+        (i2 >= 0 && i2 != u0 && i2 != u1) ? pc_inTextureType[2] : 0);
 
     // Map this corner's barycentric basis into the matching unique-slot.
     // Vertices with brushIndex < 0 (underground) get zero weight so they

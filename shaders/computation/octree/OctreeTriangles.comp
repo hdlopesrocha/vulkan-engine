@@ -53,7 +53,7 @@ layout(set = 0, binding = 11) buffer Counters {
 //   vec4[0] position.xyz | color.x
 //   vec4[1] color.yz | texCoord.xy
 //   vec4[2] normal.xyz | brushIndex bits
-//   vec4[3] pad | hsv
+//   vec4[3] textureType | hsv
 layout(set = 0, binding = 12, scalar) buffer RawKeys     { uint rawKeys[]; };     // per raw vertex: nodeIndex * 6 + plane
 layout(set = 0, binding = 13, scalar) buffer DedupTable  { uint dedupTable[]; };  // nodeIndex * 6 + plane -> slot + 1 (0 = free)
 layout(set = 0, binding = 14, scalar) writeonly buffer OutVerts { vec4 poolVerts[]; };
@@ -152,7 +152,9 @@ int nodeBrush(uint id) { return meta[id].z; }
 bool nodeIsLeaf(uint id) { return (meta[id].w & 1) != 0; }
 vec3 nodeMin(uint id) { return cubeMinSize[id].xyz; }
 float nodeSize(uint id) { return cubeMinSize[id].w; }
-vec3 nodeHsvOf(uint id) { return nodeHsv[id].xyz; }
+vec3 nodeHsvOf(uint id) { return nodeHsv[id * 2u].xyz; }
+int nodeTextureType(uint id) { return int(nodeHsv[id * 2u].w + 0.5); }
+vec2 nodeUv(uint id) { return nodeHsv[id * 2u + 1u].xy; }
 int nodeChild(uint id, int i) {
     ivec4 c = (i < 4) ? child03[id] : child47[id];
     return c[i & 3];
@@ -450,10 +452,10 @@ bool samePosition(vec3 a, vec3 b, float eps) {
     return dot(d, d) <= eps * eps;
 }
 
-void writeVertex(uint idx, vec3 p, vec3 n, int brush, vec3 h) {
+void writeVertex(uint idx, vec3 p, vec3 n, int brush, vec3 h, int type) {
     outPos[idx] = vec4(p, uintBitsToFloat(uint(brush)));
     outNrm[idx] = vec4(n, float(gCellIndex));
-    outHsv[idx] = vec4(h, 0.0);
+    outHsv[idx] = vec4(h, float(type));
 }
 
 // Tesselator::triplanarPlane / triplanarMapping (space/Tesselator.cpp). The
@@ -515,9 +517,9 @@ void emitTriangle(Cell c0, Cell c1, Cell c2, float eps) {
     // output.
     if (pc.maxVertices > 0u) {
         if (base + 3u <= pc.maxVertices) {
-            writeVertex(base + 0u, p0, n0, b0, nodeHsvOf(c0.id));
-            writeVertex(base + 1u, p1, n1, b1, nodeHsvOf(c1.id));
-            writeVertex(base + 2u, p2, n2, b2, nodeHsvOf(c2.id));
+            writeVertex(base + 0u, p0, n0, b0, nodeHsvOf(c0.id), nodeTextureType(c0.id));
+            writeVertex(base + 1u, p1, n1, b1, nodeHsvOf(c1.id), nodeTextureType(c1.id));
+            writeVertex(base + 2u, p2, n2, b2, nodeHsvOf(c2.id), nodeTextureType(c2.id));
         } else {
             atomicAdd(overflowCount, 1u);
             if (pc.resident == 0u) {
@@ -852,18 +854,20 @@ void scanCell(uint cellId) {
 // reproducible run to run. The triangle SET — and therefore the rendered
 // surface, vegetation placement and the proxy boxes — is unaffected.
 
-void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int plane) {
-    const vec2 uv = triplanarMapping(p, plane) * 0.1;
+void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int type, vec2 nodeUvIn, int plane) {
+    // Triplanar (and every GPU-derived mode) ignores the per-vertex UV; only
+    // Custom consumes it, so Triplanar vertices carry (0, 0) like Tesselator::handle.
+    const vec2 uv = (type == 0) ? vec2(0.0) : nodeUvIn;
     const uint o = (pc.vertexBase + slot) * 4u;
     // Vertex layout (math/Vertex.hpp), 4 x vec4 = 64 bytes:
     //   position.xyz | color.x
     //   color.yz    | texCoord.xy
     //   normal.xyz  | brushIndex
-    //   _pad0       | hsv
+    //   textureType | hsv
     const vec4 c0 = vec4(p, 1.0);
     const vec4 c1 = vec4(1.0, 1.0, uv);
     const vec4 c2 = vec4(n, uintBitsToFloat(uint(brush)));
-    const vec4 c3 = vec4(0.0, h);
+    const vec4 c3 = vec4(float(type), h);
     poolVerts[o + 0u] = c0;
     poolVerts[o + 1u] = c1;
     poolVerts[o + 2u] = c2;
@@ -893,8 +897,8 @@ void residentDedup(uint i) {
     }
     dedupTable[key] = slot + 1u;
 
-    // Rebuild the representative from the key. `plane` selects the UV mapping
-    // exactly like Tesselator::handle does for the triangle's first vertex.
+    // Rebuild the representative from the key (its node); the per-vertex UV and
+    // texture type come from the painted node metadata.
     const uint node = key / 6u;
     const int plane = int(key % 6u);
     Cell c;
@@ -906,7 +910,7 @@ void residentDedup(uint i) {
     vec3 n = cellNormal(c, p);
     int brush = nodeBrush(node);
     if (brush <= DISCARD_BRUSH) brush = pc.fromBrush;
-    residentWriteVertex(slot, p, n, brush, nodeHsvOf(node), plane);
+    residentWriteVertex(slot, p, n, brush, nodeHsvOf(node), nodeTextureType(node), nodeUv(node), plane);
 }
 
 void residentIndex(uint i) {

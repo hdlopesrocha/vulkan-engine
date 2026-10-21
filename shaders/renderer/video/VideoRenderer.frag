@@ -23,6 +23,7 @@ layout(location = VARY_UV) in vec2 fragUV;
 layout(location = VARY_NORMAL) in vec3 fragNormal;
 layout(location = VARY_POSWORLD) in vec3 fragPosWorld;
 layout(location = VARY_BRUSHPATCH) flat in ivec3 fragTexIndices;
+layout(location = VARY_TEXTURETYPE) flat in ivec3 fragTextureTypes;
 
 layout(set = 1, binding = 0) uniform sampler2DArray videoArray;
 // Packed per-frame derived maps (RG normal XY, B bump, A roughness).
@@ -38,11 +39,10 @@ void main() {
     const int slot = mat.textureIndex >= 0 ? mat.textureIndex : brushIndex;
 
     // Same coordinate techniques as the solid layer (Triplanar, Projection
-    // X/Y/Z, SDF Given, Custom UV). Video materials normally use one of the
-    // non-triplanar modes, but the weighted path is supported too.
+    // X/Y/Z, Angular, Custom UV), selected per vertex like the solid path.
     vec2 uvX, uvY, uvZ;
     vec3 weights;
-    computeMaterialUVs(brushIndex, fragPosWorld, normalize(fragNormal), fragUV,
+    computeMaterialUVs(fragTextureTypes.x, brushIndex, fragPosWorld, normalize(fragNormal), fragUV,
                        ubo.triplanarThreshold, ubo.triplanarExponent,
                        uvX, uvY, uvZ, weights);
     const vec2 uv = dominantMappingUV(weights, uvX, uvY, uvZ);

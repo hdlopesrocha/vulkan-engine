@@ -270,8 +270,9 @@ struct OctreeTriangleTessellator::Walk {
         if (vertexFn) return vertexFn(n, c);
         glm::vec3 pos = SDF::getPosition(n->sdf, c);
         glm::vec3 norm = SDF::getNormalFromPosition(n->sdf, c, pos);
-        Vertex v(pos, norm, glm::vec2(0.0f), n->brushIndex);
+        Vertex v(pos, norm, n->uv, n->brushIndex);
         v.hsv = n->hsv;
+        v.textureType = n->textureType;
         return v;
     }
 
@@ -292,9 +293,11 @@ struct OctreeTriangleTessellator::Walk {
         // below enforces the same rule).
         Vertex ca = a, cb = b, cc = c;
         const int fallbackBrush = (from != NULL) ? from->brushIndex : DISCARD_BRUSH_INDEX;
-        if(ca.brushIndex <= DISCARD_BRUSH_INDEX) ca.brushIndex = fallbackBrush;
-        if(cb.brushIndex <= DISCARD_BRUSH_INDEX) cb.brushIndex = fallbackBrush;
-        if(cc.brushIndex <= DISCARD_BRUSH_INDEX) cc.brushIndex = fallbackBrush;
+        const int fallbackTextureType = (from != NULL) ? from->textureType : 0;
+        const glm::vec2 fallbackUv = (from != NULL) ? from->uv : glm::vec2(0.0f);
+        if(ca.brushIndex <= DISCARD_BRUSH_INDEX) { ca.brushIndex = fallbackBrush; ca.textureType = fallbackTextureType; ca.texCoord = fallbackUv; }
+        if(cb.brushIndex <= DISCARD_BRUSH_INDEX) { cb.brushIndex = fallbackBrush; cb.textureType = fallbackTextureType; cb.texCoord = fallbackUv; }
+        if(cc.brushIndex <= DISCARD_BRUSH_INDEX) { cc.brushIndex = fallbackBrush; cc.textureType = fallbackTextureType; cc.texCoord = fallbackUv; }
         if(ca.brushIndex <= DISCARD_BRUSH_INDEX || cb.brushIndex <= DISCARD_BRUSH_INDEX
             || cc.brushIndex <= DISCARD_BRUSH_INDEX) return;
 

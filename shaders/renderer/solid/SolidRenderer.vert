@@ -9,6 +9,7 @@ layout(location = ATTR_COLOR) in vec3 inColor;
 layout(location = ATTR_UV) in vec2 inUV;
 layout(location = ATTR_NORMAL) in vec3 inNormal;
 layout(location = ATTR_BRUSH_INDEX) in int inBrushIndex;
+layout(location = ATTR_TEXTURE_TYPE) in int inTextureType;
 layout(location = ATTR_HSV) in vec3 inHSV;
 
 // ── Solid terrain vertex shader ───────────────────────────────────────────
@@ -40,6 +41,7 @@ layout(location = VARY_UV) out vec2 fragUV;
 layout(location = VARY_NORMAL) out vec3 fragNormal;
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
 layout(location = VARY_BRUSHPATCH) flat out ivec3 fragTexIndices;
+layout(location = VARY_TEXTURETYPE) flat out ivec3 fragTextureTypes;
 layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace;
 layout(location = VARY_LOCALPOS) out vec3 fragPosWorldNotDisplaced;
 layout(location = VARY_TEXWEIGHTS) out vec3 fragTexWeights;
@@ -64,6 +66,7 @@ void main() {
         fragTexIndices = ivec3(b, b, b);
         fragTexWeights = vec3(1.0, 0.0, 0.0);
     }
+    fragTextureTypes = ivec3(inTextureType);
     fragHSV = inHSV;
     fragSharpNormal = normal;
     fragTessLevel = vec3(1.0 / 16.0);
@@ -76,6 +79,7 @@ layout(location = VARY_UV) out vec2 fragUV;
 layout(location = VARY_NORMAL) out vec3 fragNormal;
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
 layout(location = VARY_BRUSHPATCH) out int fragBrushIndex;      // per-vertex texture index for TCS
+layout(location = VARY_TEXTURETYPE) out int fragTextureType;    // per-vertex texture type for TCS
 layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace;
 layout(location = VARY_LOCALPOS) out vec3 fragLocalPos;          // provide local/world pos to TCS
 layout(location = VARY_LOCALNORMAL) out vec3 fragLocalNormal;       // provide local/world normal to TCS
@@ -94,6 +98,8 @@ void main() {
 
     // Pass per-vertex texture index as flat int for patch compression in TCS
     fragBrushIndex = inBrushIndex;
+    // Pass the per-vertex texture-coordinate technique for the same compression
+    fragTextureType = inTextureType;
 
     // compute world-space position and pass to fragment
     vec4 worldPos = model * vec4(inPos, 1.0);

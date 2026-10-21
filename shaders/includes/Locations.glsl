@@ -9,6 +9,9 @@
 #define ATTR_BRUSH_INDEX 4
 #define ATTR_HSV 6
 #define ATTR_INSTANCE 5
+// Per-vertex texture-coordinate technique (math/TextureType.hpp), painted by
+// the TexturePainter.
+#define ATTR_TEXTURE_TYPE 9
 // Baked per-instance vegetation height scale (perf report 22 C2/H4): float
 // per instance in the concatenated aux buffer (vertex binding 2).
 #define ATTR_VEG_AUX 7
@@ -52,5 +55,9 @@
 #define VARY_BASEPOS 21   // water: undisplaced base world position + raw bump amplitude (xyz=pos, w=amp)
 #define VARY_COLOR 22
 #define VARY_HSV 23
+// Solid terrain: per-vertex texture-coordinate technique as the patch's three
+// unique slots (flat ivec3), parallel to VARY_BRUSHPATCH. Only the solid path
+// reads it; it has no geometry stage, so it sits above the <=15 range.
+#define VARY_TEXTURETYPE 24
 
 #endif // LOCATIONS_GLSL

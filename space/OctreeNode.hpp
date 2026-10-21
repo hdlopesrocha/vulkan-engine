@@ -12,6 +12,11 @@ class OctreeNode {
 
 public:
     int brushIndex = 0;
+    // Per-vertex texture-coordinate technique + UV painted by the TexturePainter
+    // (TextureType values from math/TextureType.hpp). Copying them onto the node
+    // lets the tessellators emit them as vertex attributes.
+    int textureType = 0;
+    glm::vec2 uv = glm::vec2(0.0f, 0.0f);
     glm::vec3 hsv = glm::vec3(0.0f, 0.5f, 0.5f);
     uint blockId;
     uint8_t bits;

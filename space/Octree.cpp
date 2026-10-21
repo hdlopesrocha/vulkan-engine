@@ -501,8 +501,12 @@ void Octree::shape(
                     _v.hsv = r.node->hsv;
                     r.brushIndex = args.painter.paint(_v);
                     r.brushHsv = args.painter.paintHSV(_v);
+                    r.textureType = static_cast<int>(args.painter.paintTextureType(_v));
+                    r.uv = args.painter.paintUV(_v);
                     r.node->hsv = r.brushHsv;
                     r.node->brushIndex = r.brushIndex;
+                    r.node->textureType = r.textureType;
+                    r.node->uv = r.uv;
                     r.node->setBrush(r.brushIndex);
                 }
             }
@@ -552,8 +556,12 @@ void Octree::shape(
                         _v.hsv = r.node->hsv;
                         r.brushIndex = args.painter.paint(_v);
                         r.brushHsv = args.painter.paintHSV(_v);
+                        r.textureType = static_cast<int>(args.painter.paintTextureType(_v));
+                        r.uv = args.painter.paintUV(_v);
                         r.node->hsv = r.brushHsv;
                         r.node->brushIndex = r.brushIndex;
+                        r.node->textureType = r.textureType;
+                        r.node->uv = r.uv;
                         r.node->setBrush(r.brushIndex);
                     }
                 }
@@ -614,6 +622,10 @@ void Octree::shape(
                         r.brushIndex = args.painter.paint(_v);
                         r.node->hsv = args.painter.paintHSV(_v);
                         r.node->brushIndex = r.brushIndex;
+                        r.node->textureType = static_cast<int>(args.painter.paintTextureType(_v));
+                        r.node->uv = args.painter.paintUV(_v);
+                        r.textureType = r.node->textureType;
+                        r.uv = r.node->uv;
                         r.brushHsv = r.node->hsv;
                     }  
                 } else  {
@@ -641,6 +653,8 @@ void Octree::shape(
                                 childNode->setSDF(child.resultSDF);
                                 childNode->setChunk(false);
                                 childNode->setBrush(r.brushIndex);
+                                childNode->textureType = r.textureType;
+                                childNode->uv = r.uv;
                                 childNode->setLod(child.selectedLod);
                                 childNode->setChunkLod(child.selectedChunkLod);
                                 childNode->hsv = child.brushHsv;
@@ -685,6 +699,8 @@ void Octree::shape(
                         bestCount = count;
                         r.brushIndex = childBrush;
                         r.brushHsv = childNode->hsv;
+                        r.textureType = childNode->textureType;
+                        r.uv = childNode->uv;
                     }
                 }
             }    
