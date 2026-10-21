@@ -48,7 +48,7 @@
 #include "widgets/SkySettings.hpp"
 #include "widgets/CloudSettings.hpp"
 #include "widgets/CloudWidget.hpp"
-#include "widgets/DropletsWidget.hpp"
+#include "widgets/PhysicsWidget.hpp"
 #include "widgets/WaterWidget.hpp"
 #include "widgets/GraphicsQualityWidget.hpp"
 #include "widgets/RenderTargetsWidget.hpp"
@@ -428,7 +428,7 @@ public:
     // physics never needs a triangle mesh and never depends on the render mode.
     std::shared_ptr<ParticlePhysicsSim> particleSim;
     std::unique_ptr<DropletRenderer> dropletRenderer;
-    std::shared_ptr<class DropletsWidget> dropletsWidget;
+    std::shared_ptr<class PhysicsWidget> physicsWidget;
     double dropletSeconds = 0.0;    // time since the last re-seed (s)
     double dropletStatsClock = 0.0; // throttles the diagnostics readback
     float dropletShapeRadius = -1.0f; // last uploaded particle radius
@@ -1063,12 +1063,8 @@ public:
 
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         cloudWidget = std::make_shared<CloudWidget>(sceneRenderer->getCloudSettings());
-        dropletsWidget = std::make_shared<DropletsWidget>(settings);
-        widgetManager.addWidget(dropletsWidget);
-        // Widget::isOpen defaults to false: show it so the droplet physics
-        // parameters and the instance count are reachable without hunting
-        // through the Widget menu.
-        dropletsWidget->show();
+        physicsWidget = std::make_shared<PhysicsWidget>(settings);
+        widgetManager.addWidget(physicsWidget);
         // Create settings widget (was missing previously)
         settingsWidget = std::make_shared<SettingsWidget>(settings, &shadowParams);
         // Water UI uses the application-owned water params vector and updates GPU state explicitly.
@@ -2425,8 +2421,8 @@ public:
                             dropletSeconds = 0.0;
                         }
                     }
-                    if (dropletsWidget && dropletsWidget->resetRequested) {
-                        dropletsWidget->resetRequested = false;
+                    if (physicsWidget && physicsWidget->resetRequested) {
+                        physicsWidget->resetRequested = false;
                         particleSim->requestReset();
                         dropletSeconds = 0.0;
                     }
