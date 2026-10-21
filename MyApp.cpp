@@ -4734,35 +4734,35 @@ static void applyBrushWithEffect(const BrushEntry& entry, SignedDistanceFunction
                 PerlinDistortDistanceEffect effect(func,
                     entry.effectAmplitude, entry.effectFrequency,
                     glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, minSize);
-                octree.apply(op, effect, model, brush, minSize, simplifier, updateHandler, deleteHandler);
+                octree.apply(op, effect, model, brush, TriplanarMappingPainter(), minSize, simplifier, updateHandler, deleteHandler);
                 break;
             }
             case 1: {
                 PerlinCarveDistanceEffect effect(func,
                     entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
                     glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, minSize);
-                octree.apply(op, effect, model, brush, minSize, simplifier, updateHandler, deleteHandler);
+                octree.apply(op, effect, model, brush, TriplanarMappingPainter(), minSize, simplifier, updateHandler, deleteHandler);
                 break;
             }
             case 2: {
                 SineDistortDistanceEffect effect(func,
                     entry.effectAmplitude, entry.effectFrequency, glm::vec3(0), model, minSize);
-                octree.apply(op, effect, model, brush, minSize, simplifier, updateHandler, deleteHandler);
+                octree.apply(op, effect, model, brush, TriplanarMappingPainter(), minSize, simplifier, updateHandler, deleteHandler);
                 break;
             }
             case 3: {
                 VoronoiCarveDistanceEffect effect(func,
                     entry.effectAmplitude, entry.effectCellSize,
                     glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, minSize);
-                octree.apply(op, effect, model, brush, minSize, simplifier, updateHandler, deleteHandler);
+                octree.apply(op, effect, model, brush, TriplanarMappingPainter(), minSize, simplifier, updateHandler, deleteHandler);
                 break;
             }
             default:
-                octree.apply(op, func, model, brush, minSize, simplifier, updateHandler, deleteHandler);
+                octree.apply(op, func, model, brush, TriplanarMappingPainter(), minSize, simplifier, updateHandler, deleteHandler);
                 break;
         }
     } else {
-        octree.apply(op, func, model, brush, minSize, simplifier, updateHandler, deleteHandler);
+        octree.apply(op, func, model, brush, TriplanarMappingPainter(), minSize, simplifier, updateHandler, deleteHandler);
     }
 }
 

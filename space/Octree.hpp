@@ -76,6 +76,7 @@ class Octree: public BoundingCube {
         const SignedDistanceFunction &function, 
         const Transformation &model, 
         const TexturePainter &painter, 
+        const TextureCoordPainter &coordPainter,
         float minSize, 
         const Simplifier &simplifier, 
         OctreeNodeDataHandler &updateHandler,

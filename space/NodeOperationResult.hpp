@@ -17,7 +17,7 @@ struct NodeOperationResult {
     int brushIndex;
     glm::vec3 brushHsv;
     // Per-vertex mapping state painted alongside brushIndex/brushHsv (see
-    // TexturePainter::paintTextureType / paintUV).
+    // TextureCoordPainter::textureType / paintUV).
     int textureType = 0;
     glm::vec2 uv = glm::vec2(0.0f, 0.0f);
 

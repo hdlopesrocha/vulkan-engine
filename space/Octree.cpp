@@ -311,6 +311,7 @@ void Octree::apply(
         const SignedDistanceFunction &function,
         const Transformation &model,
         const TexturePainter &painter,
+        const TextureCoordPainter &coordPainter,
         float minSize,
         const Simplifier &simplifier,
         OctreeNodeDataHandler &updateHandler,
@@ -318,7 +319,7 @@ void Octree::apply(
     ) {
     std::unique_lock<std::shared_mutex> writeLock(treeMutex);
 
-    ShapeArgs args = ShapeArgs(operation, function, painter, model, simplifier, minSize);	
+    ShapeArgs args = ShapeArgs(operation, function, painter, coordPainter, model, simplifier, minSize);	
     expand(args);
     OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, root ? root->getType() : SpaceType::Empty, 0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
     ThreadContext localChunkContext;
@@ -501,8 +502,8 @@ void Octree::shape(
                     _v.hsv = r.node->hsv;
                     r.brushIndex = args.painter.paint(_v);
                     r.brushHsv = args.painter.paintHSV(_v);
-                    r.textureType = static_cast<int>(args.painter.paintTextureType(_v));
-                    r.uv = args.painter.paintUV(_v);
+                    r.textureType = static_cast<int>(args.coordPainter.textureType());
+                    r.uv = args.coordPainter.paintUV(_v);
                     r.node->hsv = r.brushHsv;
                     r.node->brushIndex = r.brushIndex;
                     r.node->textureType = r.textureType;
@@ -556,8 +557,8 @@ void Octree::shape(
                         _v.hsv = r.node->hsv;
                         r.brushIndex = args.painter.paint(_v);
                         r.brushHsv = args.painter.paintHSV(_v);
-                        r.textureType = static_cast<int>(args.painter.paintTextureType(_v));
-                        r.uv = args.painter.paintUV(_v);
+                        r.textureType = static_cast<int>(args.coordPainter.textureType());
+                        r.uv = args.coordPainter.paintUV(_v);
                         r.node->hsv = r.brushHsv;
                         r.node->brushIndex = r.brushIndex;
                         r.node->textureType = r.textureType;
@@ -622,8 +623,8 @@ void Octree::shape(
                         r.brushIndex = args.painter.paint(_v);
                         r.node->hsv = args.painter.paintHSV(_v);
                         r.node->brushIndex = r.brushIndex;
-                        r.node->textureType = static_cast<int>(args.painter.paintTextureType(_v));
-                        r.node->uv = args.painter.paintUV(_v);
+                        r.node->textureType = static_cast<int>(args.coordPainter.textureType());
+                        r.node->uv = args.coordPainter.paintUV(_v);
                         r.textureType = r.node->textureType;
                         r.uv = r.node->uv;
                         r.brushHsv = r.node->hsv;

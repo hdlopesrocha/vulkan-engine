@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 #include "../math/Transformation.hpp"
 #include "../math/TexturePainter.hpp"
+#include "../math/TextureCoordPainter.hpp"
 #include "../sdf/SignedDistanceFunction.hpp"
 #include "../sdf/SignedDistanceOperation.hpp"
 #include "Simplifier.hpp"
@@ -16,6 +17,7 @@ struct ShapeArgs {
     const SignedDistanceOperation * operation;
     const SignedDistanceFunction &function;
     const TexturePainter &painter;
+    const TextureCoordPainter &coordPainter;
     const Transformation &model;
     const Simplifier &simplifier;
     float minSize;
@@ -24,6 +26,7 @@ struct ShapeArgs {
         const SignedDistanceOperation &operation,
         const SignedDistanceFunction &function,
         const TexturePainter &painter,
+        const TextureCoordPainter &coordPainter,
         const Transformation &model,
         const Simplifier &simplifier,
         float minSize
