@@ -781,6 +781,36 @@ public:
     }
 
      void setup() override {
+        applySetupEnvOverrides();
+
+        // VULKAN_SETUP_DIAG=1: print the wall time of each top-level setup step
+        // so the parallelisation work can be measured.
+        const bool setupDiag = std::getenv("VULKAN_SETUP_DIAG") != nullptr;
+        auto setupDiagLast = std::chrono::steady_clock::now();
+        auto setupStep = [&](const char* name) {
+            if (!setupDiag) return;
+            const auto now = std::chrono::steady_clock::now();
+            std::cout << "[setup-diag] " << name << ": "
+                      << std::chrono::duration<double, std::milli>(now - setupDiagLast).count()
+                      << " ms" << std::endl;
+            setupDiagLast = now;
+        };
+
+        createSceneInfrastructure(setupStep);
+        createWorldAndBrushes();
+        initSceneRenderers(setupStep);
+        createTextureViewerPanel();
+        createUiWidgets();
+        registerUiWidgets();
+        setupInputAndCamera();
+        createBrushAndLayerWidgets();
+        createProfilingResources();
+        scheduleInitialSceneLoad();
+        playSetupAlert("setup-ready");
+    }
+
+    // ── setup() sections ─────────────────────────────────────────────────────
+    void applySetupEnvOverrides() {
         // Headless droplet bring-up (validation/diagnostics): VULKAN_DROPLETS=1
         // enables the simulation + rendering and the counter readback — the
         // same state the Droplets widget produces.
@@ -836,20 +866,9 @@ public:
         if (const char* env = std::getenv("VULKAN_DROPLET_RADIUS")) {
             settings.dropletRadius = std::max(0.05f, static_cast<float>(std::atof(env)));
         }
+    }
 
-        // VULKAN_SETUP_DIAG=1: print the wall time of each top-level setup step
-        // so the parallelisation work can be measured.
-        const bool setupDiag = std::getenv("VULKAN_SETUP_DIAG") != nullptr;
-        auto setupDiagLast = std::chrono::steady_clock::now();
-        auto setupStep = [&](const char* name) {
-            if (!setupDiag) return;
-            const auto now = std::chrono::steady_clock::now();
-            std::cout << "[setup-diag] " << name << ": "
-                      << std::chrono::duration<double, std::milli>(now - setupDiagLast).count()
-                      << " ms" << std::endl;
-            setupDiagLast = now;
-        };
-
+    void createSceneInfrastructure(const std::function<void(const char*)>& step) {
         // Build the scene descriptor layouts/sets. Owned by the application (not by
         // the generic VulkanApp framework) so the engine core stays agnostic about
         // scene bindings. Must exist before SceneRenderer::init() writes the static
@@ -857,7 +876,7 @@ public:
         sceneDescriptorLayout = std::make_unique<SceneDescriptorLayout>();
         sceneDescriptorLayout->create(*this);
         playSetupAlert("setup-layout");
-        setupStep("scene descriptor layout");
+        step("scene descriptor layout");
 
         // Build the scene render queues from the parallel graphics-family queue
         // pool built by VulkanApp::createLogicalDevice. They alias graphicsQueue
@@ -916,8 +935,9 @@ public:
             wp.tessMaxLevel = 1.0f;
             waterParams.push_back(wp); // Add a third layer to demonstrate pagination in UI even without texture arrays
         }
+    }
 
-
+    void createWorldAndBrushes() {
         // Create scene objects and build the octree synchronously in setup().
         // Chunk tessellation is deferred and processed on a background thread.
         // Vulkan GPU uploads happen on the main thread via processPendingMeshes().
@@ -987,20 +1007,22 @@ public:
         ensureLayerHandlers();
 
         // Scene starts empty — use File > Generate Map to populate it.
+    }
 
+    void initSceneRenderers(const std::function<void(const char*)>& step) {
         // Init the VegetationRenderer before setupVegetationTextures so that
         // wind params UBO + descriptor set layout exist before captureAll calls
         // setImpostorData().  SceneRenderer::init() is called later after all
         // texture/material setup is complete.
         if (sceneRenderer && sceneRenderer->vegetationRenderer)
             sceneRenderer->vegetationRenderer->init(this);
-        setupStep("vegetation renderer init");
+        step("vegetation renderer init");
 
         setupVegetationTextures();
-        setupStep("vegetation textures");
+        step("vegetation textures");
         setupTextures();
         playSetupAlert("setup-textures");
-        setupStep("scene textures + materials");
+        step("scene textures + materials");
 
         // H9: the water offscreen targets render at Settings::waterRenderScale.
         sceneRenderer->setWaterRenderScale(settings.waterRenderScale);
@@ -1008,7 +1030,7 @@ public:
         // Settings::vegetationRenderScale.
         sceneRenderer->setVegetationRenderScale(settings.vegetationRenderScale);
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
-        setupStep("scene renderer init (renderers, pipelines, descriptors)");
+        step("scene renderer init (renderers, pipelines, descriptors)");
 
         // Bind the video texture array now that both the service (setupTextures)
         // and the video layer renderer exist.
@@ -1021,8 +1043,10 @@ public:
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
         playSetupAlert("setup-renderers");
-        setupStep("renderer post-init (video bind, impostor rewire)");
+        step("renderer post-init (video bind, impostor rewire)");
+    }
 
+    void createTextureViewerPanel() {
         textureViewer = std::make_shared<TextureViewer>();
         textureViewer->init(&textureArrayManager, &materials);
         textureViewer->setVideoSlotNamesProvider([this]() {
@@ -1060,7 +1084,9 @@ public:
         textureViewer->setOnMaterialChanged([this](size_t idx) {
             materialManager.update(idx, materials[idx], this);
         });
+    }
 
+    void createUiWidgets() {
         skyWidget = std::make_shared<SkyWidget>(sceneRenderer->getSkySettings());
         cloudWidget = std::make_shared<CloudWidget>(sceneRenderer->getCloudSettings());
         physicsWidget = std::make_shared<PhysicsWidget>(settings);
@@ -1111,8 +1137,9 @@ public:
             &brushManager, &textureArrayManager, &light);
         radialMenuHandler->setupPages();
   // Create octree explorer widget bound to loaded scene
+    }
 
- 
+    void registerUiWidgets() {
         widgetManager.addWidget(textureViewer);
         widgetManager.addWidget(cameraWidget);
         widgetManager.addWidget(controllerParametersWidget);
@@ -1131,8 +1158,9 @@ public:
         widgetManager.addWidget(grassWidget);
         widgetManager.addWidget(mp3Widget);
         widgetManager.addWidget(impostorWidget);
+    }
 
-      
+    void setupInputAndCamera() {
         // Subscribe event handlers
         eventManager.subscribe(&camera);  // Camera handles translate/rotate events
         eventManager.subscribe(this);     // MyApp handles close/fullscreen events
@@ -1150,7 +1178,9 @@ public:
         // Position camera to view the terrain
         printf("[Camera Setup] Final Position: (%.1f, %.1f, %.1f)\n", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
         printf("[Camera Setup] Forward: (%.3f, %.3f, %.3f)\n", camera.getForward().x, camera.getForward().y, camera.getForward().z);
-   
+    }
+
+    void createBrushAndLayerWidgets() {
         // Create brush3dWidget after setupTextures() so loadedTextureLayers is set.
         brush3dWidget = std::make_shared<Brush3dWidget>(&textureArrayManager, loadedTextureLayers, brushManager, &eventManager);
         brush3dWidget->setScene(&world->activeScene());
@@ -1162,7 +1192,9 @@ public:
             [this](Layer layer) { repopulateLayer(layer); });
         widgetManager.addWidget(layersWidget);
         playSetupAlert("setup-ui");
+    }
 
+    void createProfilingResources() {
         // Create per-frame timestamp query pools for GPU profiling
         {
             VkPhysicalDeviceProperties physProps{};
@@ -1223,6 +1255,9 @@ public:
                 }
             };
         }
+    }
+
+    void scheduleInitialSceneLoad() {
         // Scene content source: remote snapshot when connected, otherwise the
         // local default scene file or procedural generation.
         const std::string defaultScenePath = "scenes/default.scene";
@@ -1237,9 +1272,8 @@ public:
             generateMapPending = true; // Trigger initial map generation on first frame
             std::cout << "[MyApp::setup] No default scene found, generating procedural map\n";
         }
-
-        playSetupAlert("setup-ready");
     }
+
 
     // Move vegetation texture setup into its own method for clarity
     void setupVegetationTextures();
