@@ -27,7 +27,7 @@
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeTriangleTessellator.hpp"
 #include "../space/Tesselator.hpp"
-#include "../space/ThreadContext.hpp"
+#include "../space/OctreeThreadContext.hpp"
 #include "Scene.hpp"
 
 namespace blender_export {
@@ -366,7 +366,7 @@ bool tessellateChunk(const Octree& tree, const ChunkRef& chunk, Geometry& geomet
 
     long triCount = 0;
     Tesselator tess(&triCount);
-    ThreadContext ctx;
+    OctreeThreadContext ctx;
     OctreeTriangleTessellator(tree).iterateTriangles(
         chunk.node, chunk.cube, chunk.level, tess, &ctx, chunkLod);
     if (!tess.geometry.indices.empty()) {
@@ -378,7 +378,7 @@ bool tessellateChunk(const Octree& tree, const ChunkRef& chunk, Geometry& geomet
     if (fine > 0 && fine != chunkLod) {
         long triCount2 = 0;
         Tesselator tess2(&triCount2);
-        ThreadContext ctx2;
+        OctreeThreadContext ctx2;
         OctreeTriangleTessellator(tree).iterateTriangles(
             chunk.node, chunk.cube, chunk.level, tess2, &ctx2, fine);
         if (!tess2.geometry.indices.empty()) {

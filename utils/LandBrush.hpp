@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../math/TexturePainter.hpp"
+#include "../math/TexturePositionPainter.hpp"
 #include "../math/BrushMode.hpp"
 
-class LandBrush : public TexturePainter {
+class LandBrush : public TexturePositionPainter {
 	int underground;
 	int grass;
 	int sand;

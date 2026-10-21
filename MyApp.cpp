@@ -4721,7 +4721,7 @@ static void forEachBrushSDF(const BrushEntry& entry, const Transformation& model
 // Shared effect+apply: wraps func in the selected effect (if any) and applies to octree.
 static void applyBrushWithEffect(const BrushEntry& entry, SignedDistanceFunction& func,
                                  Octree& octree, const SignedDistanceOperation& op,
-                                 const Transformation& model, const TexturePainter& brush,
+                                 const Transformation& model, const TexturePositionPainter& brush,
                                  const Simplifier& simplifier,
                                  Octree::OctreeNodeDataHandler& updateHandler,
                                  Octree::OctreeNodeDataHandler& deleteHandler) {
@@ -4906,9 +4906,9 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
                                                   entry.svgTintFromFill);
         }
     }
-    const TexturePainter& brush =
-        svgBrush ? static_cast<const TexturePainter&>(*svgBrush)
-                 : static_cast<const TexturePainter&>(simpleBrush);
+    const TexturePositionPainter& brush =
+        svgBrush ? static_cast<const TexturePositionPainter&>(*svgBrush)
+                 : static_cast<const TexturePositionPainter&>(simpleBrush);
 
     Simplifier simplifier(0.95f, 0.2f, true);
     auto applyEntry = [&](SignedDistanceFunction& wrappedFunc) {

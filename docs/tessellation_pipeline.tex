@@ -87,7 +87,7 @@ The update phase recursively visits octree cells through \code{Octree::shape}. I
 
 \begin{lstlisting}
 LocalScene::requestModel3D
-  create ThreadContext for chunk
+  create OctreeThreadContext for chunk
   create Tesselator
   create Processor with the Tesselator as handler
   tree->iterateFlat(processor, chunkData)
@@ -288,7 +288,7 @@ The resulting normal is stored in \code{node->vertex.normal}. Later, \code{Tesse
 \begin{itemize}
     \item \code{OctreeNodeFrame frame}: the current node pointer, cube, level, inherited SDF, inherited brush, and owning chunk cube;
     \item \code{ShapeArgs args}: SDF operation, wrapped SDF function, painter, transform, simplifier, change handler, and minimum size;
-    \item \code{ThreadContext}: caches for shape SDF values and fetched nodes;
+    \item \code{OctreeThreadContext}: caches for shape SDF values and fetched nodes;
     \item \code{parentContainment}: containment result inherited from the parent.
 \end{itemize}
 
@@ -316,7 +316,7 @@ Octree::apply(operation, function, model, translate, scale,
   expand(args)
   frame = OctreeNodeFrame(root, rootCube, level=0, root->sdf,
                           DISCARD_BRUSH_INDEX, rootCube)
-  context = ThreadContext(rootCube)
+  context = OctreeThreadContext(rootCube)
   shape(frame, args, context, Intersects)
 \end{lstlisting}
 
@@ -370,7 +370,7 @@ Threading is coarse-grained:
     \texttt{minSize} \cdot 16 < \texttt{length}
 \]
 
-Large child frames may be processed on separate threads, each with its own local \code{ThreadContext}.
+Large child frames may be processed on separate threads, each with its own local \code{OctreeThreadContext}.
 
 \subsection{Recursive Child Processing}
 
@@ -421,7 +421,7 @@ for corner i in 0..7:
     resultSDF[i] = args.operation(frame.sdf[i], shapeSDF[i])
 \end{lstlisting}
 
-\code{evaluateSDF} uses \code{ThreadContext::shapeSdfCache} keyed by world-space position. That avoids repeated shape-distance evaluations at shared corners.
+\code{evaluateSDF} uses \code{OctreeThreadContext::shapeSdfCache} keyed by world-space position. That avoids repeated shape-distance evaluations at shared corners.
 
 \subsection{Parent Classification}
 
@@ -591,7 +591,7 @@ Because simplification can succeed in some places and fail in others, adjacent m
 
 \begin{itemize}
     \item a triangle count;
-    \item a \code{ThreadContext} for caches;
+    \item a \code{OctreeThreadContext} for caches;
     \item a \code{Tesselator};
     \item a vector of \code{OctreeNodeTriangleHandler*};
     \item a \code{Processor}.

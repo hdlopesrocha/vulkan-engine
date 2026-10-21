@@ -70,7 +70,7 @@ struct GpuTopologyBuilder {
         rec.type = static_cast<int32_t>(n->getType());
         rec.brushIndex = n->brushIndex;
         rec.textureType = n->textureType;
-        rec.uv = n->uv;
+        rec.data = n->data;
         rec.flags = n->isLeaf() ? 1 : 0;
         rec.hsv = n->hsv;
         for (int i = 0; i < 8; ++i) rec.children[i] = -1;
@@ -449,7 +449,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
             tree = layers_[static_cast<size_t>(layer)].octree;
     }
     if (!tree) return;
-    ThreadContext context;
+    OctreeThreadContext context;
 
 
     // Walk starts AT the chunk node (not the whole tree): processNodeLayer already
@@ -515,7 +515,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                                     OctreeNode* n = cellNodes[i];
                                     glm::vec3 pos(res.positions[i].x, res.positions[i].y, res.positions[i].z);
                                     glm::vec3 nrm(res.normals[i].x, res.normals[i].y, res.normals[i].z);
-                                    Vertex v(pos, nrm, n->uv, n->brushIndex);
+                                    Vertex v(pos, nrm, n->data, n->brushIndex);
                                     v.textureType = n->textureType;
                                     v.hsv = n->hsv;
                                     gpuVerts[n] = v;
@@ -525,7 +525,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                                     if (it != gpuVerts.end()) return it->second;
                                     glm::vec3 pos = SDF::getPosition(n->sdf, c);
                                     glm::vec3 nrm = SDF::getNormalFromPosition(n->sdf, c, pos);
-                                    Vertex v(pos, nrm, n->uv, n->brushIndex);
+                                    Vertex v(pos, nrm, n->data, n->brushIndex);
                                     v.hsv = n->hsv;
                                     v.textureType = n->textureType;
                                     return v;
@@ -569,7 +569,7 @@ void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCub
             tree = layers_[static_cast<size_t>(layer)].octree;
     }
     if (!tree) return;
-    ThreadContext context;
+    OctreeThreadContext context;
 
     // Walk starts AT the chunk node (not the whole tree): only this chunk's
     // subtree is visited, so the whole-tree inSubtree filter is no longer needed.
@@ -615,7 +615,7 @@ void LocalScene::requestBoundingBoxes(Layer layer, OctreeNodeData &data, const B
             tree = layers_[static_cast<size_t>(layer)].octree;
     }
     if (!tree) return;
-    ThreadContext context;
+    OctreeThreadContext context;
 
     // Walk starts AT the chunk node (not the whole tree): only this chunk's
     // subtree is visited, so the whole-tree inSubtree filter is no longer needed.

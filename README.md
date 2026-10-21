@@ -239,7 +239,7 @@ Every primitive and effect has a `Wrapped*` variant, allowing arbitrary SDF tree
 
 **SVG extrusion brush** — `sdf/SvgShape` parses an uploaded SVG (paths with lines/cubics/quads/arcs, rect/circle/ellipse/polygon/polyline/line, element and group transforms, `fill`/`style` colours) into normalized contours; `sdf/SvgPolygonDistanceFunction` extrudes the profile along the model's local Y axis and intersects it with the brush box (`BrushEntry.scale` = half extents), and `utils/SvgBrush` gives every vertex the fill colour of the contour containing it as an HSV tint. The 3D brush UI (`Brush 3D` widget, SDF type "SVG Extrusion") uploads the file with a file dialog; `MainSceneLoader` stamps `svg/test_logo.svg` as a reference scene element. Run the headless procedural scene with `bin/server --generate`.
 
-**Surface Nets meshing** — the `Tesselator` evaluates each octree node's SDF at its eight corners, detects iso-surface crossings and computes vertex positions and normals by interpolation, with triplanar UVs and material assignment through a `TexturePainter` that maps surface positions to texture array indices.
+**Surface Nets meshing** — the `Tesselator` evaluates each octree node's SDF at its eight corners, detects iso-surface crossings and computes vertex positions and normals by interpolation, with triplanar UVs and material assignment through a `TexturePositionPainter` that maps surface positions to texture array indices.
 
 ---
 

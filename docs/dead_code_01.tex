@@ -632,10 +632,10 @@ not be removed.
     referenced; \code{shapeCounter}, \code{threadsCreated},
     \code{prunedEmptyNodes}, and \code{prunedSolidNodes} are incremented or
     reset in roughly fifteen places and never read, not even in logs.
-    \item \code{ThreadContext::cube} is stored by the constructor and never
+    \item \code{OctreeThreadContext::cube} is stored by the constructor and never
     read; \code{invokedCubeCalls} and \code{mutex} are never referenced.
     \code{LocalScene::requestSDFCubes/requestBoundingBoxes} construct a
-    \code{ThreadContext} and capture it in lambdas that ignore it.
+    \code{OctreeThreadContext} and capture it in lambdas that ignore it.
     \item \code{ShapeArgs::DeferredChunkEvent} and \code{deferredEventsMutex}
     describe a deferred-event vector that no longer exists.
     \item \code{Frustum::m\_points} is written eight times in the constructor

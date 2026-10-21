@@ -17,9 +17,9 @@ struct OctreeGpuNode {
     int32_t type;        // 0 = Empty, 1 = Surface, 2 = Solid (SpaceType)
     int32_t brushIndex;
     int32_t flags;       // bit0 = leaf (no children block)
-    // Per-vertex mapping painted by the TexturePainter (TextureType + Custom UV).
+    // Per-vertex mapping painted by the TexturePositionPainter (TextureType + Custom UV).
     int32_t textureType;
-    glm::vec2 uv;
+    glm::vec2 data;
     glm::vec3 hsv;
     int32_t children[8]; // indices into the node array, -1 = absent
 };
@@ -29,7 +29,7 @@ struct OctreeTopologyVertex {
     glm::vec3 normal;
     int32_t brushIndex;
     int32_t textureType = 0;
-    glm::vec2 uv = glm::vec2(0.0f);
+    glm::vec2 data = glm::vec2(0.0f);
     glm::vec3 hsv;
 };
 

@@ -7,10 +7,10 @@
 // Paints a vertex's texture-coordinate technique, its UV scale and (for Custom)
 // its UV.
 //
-// This is deliberately separate from TexturePainter (which chooses the
+// This is deliberately separate from TexturePositionPainter (which chooses the
 // brush/material index and HSV): the coordinate technique and its scale are a
 // property of the shape being tessellated, so every Octree::apply() takes a
-// TextureCoordPainter alongside its TexturePainter.
+// TextureCoordPainter alongside its TexturePositionPainter.
 //
 // The scale is written into the vertex's texCoord: for the GPU-derived
 // techniques (Triplanar / ProjectionX/Y/Z) texCoord is the (scaleU, scaleV)

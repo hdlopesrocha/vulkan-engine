@@ -1,8 +1,8 @@
 #pragma once
-#include "../math/TexturePainter.hpp"
+#include "../math/TexturePositionPainter.hpp"
 #include "../math/BrushMode.hpp"
 
-class NormalBrush : public TexturePainter {
+class NormalBrush : public TexturePositionPainter {
 	int brush;
 	glm::vec3 hsv;
 	glm::vec3 normal;

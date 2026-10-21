@@ -14,7 +14,7 @@ namespace tsl {
 #include "../math/geometry/BoundingCube.hpp"
 #include "OctreeNodeLevel.hpp"
 
-class ThreadContext {
+class OctreeThreadContext {
 public:
     tsl::robin_map<glm::vec3, float> shapeSdfCache;
     tsl::robin_map<glm::vec4, OctreeNodeLevel> nodeCache;
@@ -25,5 +25,5 @@ public:
     // space/OctreeTriangleTessellator.hpp). The parent link is
     // NOT stored inside the octree nodes.
     tsl::robin_map<OctreeNode*, std::pair<OctreeNode*, int>> parentOf;
-    ThreadContext();
+    OctreeThreadContext();
 };

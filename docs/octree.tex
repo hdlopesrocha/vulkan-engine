@@ -541,7 +541,7 @@ The octree hierarchy has two special levels:
   \item[Thread nodes] Nodes whose cube is large enough
     ($\ell > \ell_{\min} \cdot 16$) spawn subtree evaluations on a
     shared thread pool.  Each thread works within its own
-    \lstinline{ThreadContext} (per-thread caches for SDF values and
+    \lstinline{OctreeThreadContext} (per-thread caches for SDF values and
     visited nodes) to avoid contention.
 \end{description}
 
@@ -696,7 +696,7 @@ nodes are never simplified to preserve consistent GPU upload granularity.
 When \lstinline{shapeChildren} encounters a child whose cube side length
 exceeds $16 \cdot \ell_{\min}$, the child's subtree is enqueued on a
 \lstinline{ThreadPool} backed by \lstinline{std::thread::hardware_concurrency}
-threads.  Each worker receives its own \lstinline{ThreadContext} which
+threads.  Each worker receives its own \lstinline{OctreeThreadContext} which
 holds:
 \begin{itemize}
   \item A per-subtree \lstinline{robin_map} cache for SDF evaluations

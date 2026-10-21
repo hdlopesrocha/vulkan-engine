@@ -5,7 +5,7 @@
 #include "../space/OctreeNodeData.hpp"
 #include "../space/OctreeTriangleTessellator.hpp"
 #include "../space/Tesselator.hpp"
-#include "../space/ThreadContext.hpp"
+#include "../space/OctreeThreadContext.hpp"
 #include <shared_mutex>
 #include <vector>
 
@@ -56,7 +56,7 @@ void tessellateNode(const Octree& tree, OctreeNode* node, const BoundingCube& cu
         return;
     long triCount = 0;
     Tesselator tess(&triCount);
-    ThreadContext ctx;
+    OctreeThreadContext ctx;
     OctreeTriangleTessellator(tree).iterateTriangles(node, cube, level, tess, &ctx, chunkLod);
     if (!tess.geometry.indices.empty()) {
         fillMesh(out, tess.geometry);
@@ -76,7 +76,7 @@ void tessellateNode(const Octree& tree, OctreeNode* node, const BoundingCube& cu
     if (fine > 0 && fine != chunkLod) {
         long triCount2 = 0;
         Tesselator tess2(&triCount2);
-        ThreadContext ctx2;
+        OctreeThreadContext ctx2;
         OctreeTriangleTessellator(tree).iterateTriangles(node, cube, level, tess2, &ctx2, fine);
         if (const char* dbg2 = std::getenv("CHUNK_MESH_DEBUG")) {
             (void)dbg2;

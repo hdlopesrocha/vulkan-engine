@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../math/SpaceType.hpp"
+#include "../space/SpaceType.hpp"
 #include "../math/BrushMode.hpp"
 #include "../math/geometry/ContainmentType.hpp"
 #include "../math/Math.hpp"
@@ -19,7 +19,7 @@ struct NodeOperationResult {
     // Per-vertex mapping state painted alongside brushIndex/brushHsv (see
     // TextureCoordPainter::textureType / paintUV).
     int textureType = 0;
-    glm::vec2 uv = glm::vec2(0.0f, 0.0f);
+    glm::vec2 data = glm::vec2(0.0f, 0.0f);
 
     uint8_t selectedLod;
     uint8_t selectedChunkLod;

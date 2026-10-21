@@ -154,7 +154,7 @@ vec3 nodeMin(uint id) { return cubeMinSize[id].xyz; }
 float nodeSize(uint id) { return cubeMinSize[id].w; }
 vec3 nodeHsvOf(uint id) { return nodeHsv[id * 2u].xyz; }
 int nodeTextureType(uint id) { return int(nodeHsv[id * 2u].w + 0.5); }
-vec2 nodeUv(uint id) { return nodeHsv[id * 2u + 1u].xy; }
+vec2 nodeData(uint id) { return nodeHsv[id * 2u + 1u].xy; }
 int nodeChild(uint id, int i) {
     ivec4 c = (i < 4) ? child03[id] : child47[id];
     return c[i & 3];
@@ -854,10 +854,10 @@ void scanCell(uint cellId) {
 // reproducible run to run. The triangle SET — and therefore the rendered
 // surface, vegetation placement and the proxy boxes — is unaffected.
 
-void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int type, vec2 nodeUvIn, int plane) {
+void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int type, vec2 nodeDataIn, int plane) {
     // texCoord carries the vertex's UV scale (the projection scale for
     // Triplanar/ProjectionX/Y/Z, the authored UV for Custom), read by the shader.
-    const vec2 uv = nodeUvIn;
+    const vec2 data = nodeDataIn;
     const uint o = (pc.vertexBase + slot) * 4u;
     // Vertex layout (math/Vertex.hpp), 4 x vec4 = 64 bytes:
     //   position.xyz | color.x
@@ -865,7 +865,7 @@ void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int type,
     //   normal.xyz  | brushIndex
     //   textureType | hsv
     const vec4 c0 = vec4(p, 1.0);
-    const vec4 c1 = vec4(1.0, 1.0, uv);
+    const vec4 c1 = vec4(1.0, 1.0, data);
     const vec4 c2 = vec4(n, uintBitsToFloat(uint(brush)));
     // textureType is read as an int (Vertex attribute R32_SINT, and the RT
     // path's floatBitsToInt), so it must be stored as int BITS — not a float
@@ -913,7 +913,7 @@ void residentDedup(uint i) {
     vec3 n = cellNormal(c, p);
     int brush = nodeBrush(node);
     if (brush <= DISCARD_BRUSH) brush = pc.fromBrush;
-    residentWriteVertex(slot, p, n, brush, nodeHsvOf(node), nodeTextureType(node), nodeUv(node), plane);
+    residentWriteVertex(slot, p, n, brush, nodeHsvOf(node), nodeTextureType(node), nodeData(node), plane);
 }
 
 void residentIndex(uint i) {

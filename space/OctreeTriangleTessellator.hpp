@@ -7,7 +7,7 @@
 
 class Octree;
 class OctreeNode;
-class ThreadContext;
+class OctreeThreadContext;
 
 // CPU triangle topology for the octree ("the adaptive walker").
 //
@@ -51,7 +51,7 @@ public:
                           const BoundingCube &fromCube,
                           int fromLevel,
                           OctreeNodeTriangleHandler &func,
-                          ThreadContext * context,
+                          OctreeThreadContext * context,
                           int targetLod = 0,
                           const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn = nullptr);
 

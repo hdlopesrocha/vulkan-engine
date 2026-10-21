@@ -2465,7 +2465,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                 std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
                 long refTriangles = 0;
                 Tesselator refTesselator(&refTriangles);
-                ThreadContext refContext;
+                OctreeThreadContext refContext;
                 OctreeTriangleTessellator(*tree).iterateTriangles(
                     nodeData.node, nodeData.cube, nodeData.level, refTesselator, &refContext,
                     chunkLod, std::function<Vertex(OctreeNode*, const BoundingCube&)>());

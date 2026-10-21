@@ -1,7 +1,7 @@
 #pragma once
-#include "../math/TexturePainter.hpp"
+#include "../math/TexturePositionPainter.hpp"
 
-class SimpleBrush : public TexturePainter {
+class SimpleBrush : public TexturePositionPainter {
 	int brush;
 	glm::vec3 hsv;
 

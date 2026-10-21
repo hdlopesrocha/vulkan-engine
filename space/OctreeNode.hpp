@@ -2,7 +2,7 @@
 #include "ChildBlock.hpp"
 #include "../math/geometry/Vertex.hpp"
 #include "../math/geometry/BoundingCube.hpp"
-#include "../math/SpaceType.hpp"
+#include "../space/SpaceType.hpp"
 #include <glm/glm.hpp>
 #include <cstdint>
 
@@ -12,11 +12,13 @@ class OctreeNode {
 
 public:
     int brushIndex = 0;
-    // Per-vertex texture-coordinate technique + UV painted by the TexturePainter
-    // (TextureType values from math/TextureType.hpp). Copying them onto the node
-    // lets the tessellators emit them as vertex attributes.
+    // Per-vertex texture-coordinate technique (TextureType from
+    // math/TextureType.hpp) plus the generic per-node `data` painted by the
+    // TexturePositionPainter — currently the mapping/UV scale that becomes the
+    // vertex's texCoord. Copying them onto the node lets the tessellators emit
+    // them as vertex attributes.
     int textureType = 0;
-    glm::vec2 uv = glm::vec2(0.0f, 0.0f);
+    glm::vec2 data = glm::vec2(0.0f, 0.0f);
     glm::vec3 hsv = glm::vec3(0.0f, 0.5f, 0.5f);
     uint blockId;
     uint8_t bits;

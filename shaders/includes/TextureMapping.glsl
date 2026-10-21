@@ -3,7 +3,7 @@
 
 // Texture-coordinate mapping shared by the solid shading and displacement
 // paths. The technique is a per-vertex value (Vertex::textureType, painted by
-// the TexturePainter) that mirrors TextureType in math/TextureType.hpp:
+// the TexturePositionPainter) that mirrors TextureType in math/TextureType.hpp:
 //   0 = triplanar, 1/2/3 = Projection X/Y/Z, 4 = Angular, 5 = Custom (UV).
 //
 // Requires the caller to have declared materials[] / materialNamed()

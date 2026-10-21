@@ -28,7 +28,7 @@ struct OctreeTriangleTessellator::Walk {
     OctreeNode *from = NULL;
     const BoundingCube &fromCube;
     OctreeNodeTriangleHandler &func;
-    ThreadContext *context = NULL;
+    OctreeThreadContext *context = NULL;
     int targetLod = 0;
     const std::function<Vertex(OctreeNode*, const BoundingCube&)> &vertexFn;
 
@@ -60,7 +60,7 @@ struct OctreeTriangleTessellator::Walk {
     tsl::robin_map<glm::vec3, EdgeCell> cellCache;
 
     Walk(const Octree &tree_, OctreeNode *from_, const BoundingCube &fromCube_,
-         OctreeNodeTriangleHandler &func_, ThreadContext *context_, int targetLod_,
+         OctreeNodeTriangleHandler &func_, OctreeThreadContext *context_, int targetLod_,
          const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn_)
         : tree(tree_), from(from_), fromCube(fromCube_), func(func_),
           context(context_), targetLod(targetLod_), vertexFn(vertexFn_) {
@@ -270,7 +270,7 @@ struct OctreeTriangleTessellator::Walk {
         if (vertexFn) return vertexFn(n, c);
         glm::vec3 pos = SDF::getPosition(n->sdf, c);
         glm::vec3 norm = SDF::getNormalFromPosition(n->sdf, c, pos);
-        Vertex v(pos, norm, n->uv, n->brushIndex);
+        Vertex v(pos, norm, n->data, n->brushIndex);
         v.hsv = n->hsv;
         v.textureType = n->textureType;
         return v;
@@ -294,7 +294,7 @@ struct OctreeTriangleTessellator::Walk {
         Vertex ca = a, cb = b, cc = c;
         const int fallbackBrush = (from != NULL) ? from->brushIndex : DISCARD_BRUSH_INDEX;
         const int fallbackTextureType = (from != NULL) ? from->textureType : 0;
-        const glm::vec2 fallbackUv = (from != NULL) ? from->uv : glm::vec2(0.0f);
+        const glm::vec2 fallbackUv = (from != NULL) ? from->data : glm::vec2(0.0f);
         if(ca.brushIndex <= DISCARD_BRUSH_INDEX) { ca.brushIndex = fallbackBrush; ca.textureType = fallbackTextureType; ca.texCoord = fallbackUv; }
         if(cb.brushIndex <= DISCARD_BRUSH_INDEX) { cb.brushIndex = fallbackBrush; cb.textureType = fallbackTextureType; cb.texCoord = fallbackUv; }
         if(cc.brushIndex <= DISCARD_BRUSH_INDEX) { cc.brushIndex = fallbackBrush; cc.textureType = fallbackTextureType; cc.texCoord = fallbackUv; }
@@ -556,7 +556,7 @@ void OctreeTriangleTessellator::iterateTriangles(
         const BoundingCube &fromCube,
         int fromLevel,
         OctreeNodeTriangleHandler &func,
-        ThreadContext * context,
+        OctreeThreadContext * context,
         int targetLod,
         const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn) {
     OctreeSharedLock lock(tree.treeMutex);

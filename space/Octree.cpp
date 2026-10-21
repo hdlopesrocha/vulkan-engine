@@ -206,7 +206,7 @@ float Octree::getSdfAt(const glm::vec3 &pos) {
 
 
 
-OctreeNodeLevel Octree::fetch(glm::vec3 pos, uint level, bool simplification, ThreadContext * context) const {
+OctreeNodeLevel Octree::fetch(glm::vec3 pos, uint level, bool simplification, OctreeThreadContext * context) const {
     glm::vec4 key = glm::vec4(pos, level);
     if(context->nodeCache.find(key) != context->nodeCache.end()) {
         return context->nodeCache[key];
@@ -264,7 +264,7 @@ float Octree::evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float
     return d;
 }
 
-void Octree::buildShapeSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext, bool force) const {
+void Octree::buildShapeSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext, bool force) const {
     const glm::vec3 cubeMin = frame.cube.getMin();
     const glm::vec3 cubeLength = frame.cube.getLength();
     tsl::robin_map<glm::vec3, float> * shapeSdfCache = &threadContext->shapeSdfCache;
@@ -287,7 +287,7 @@ void Octree::buildShapeSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFr
     }
 }
 
-void Octree::buildResultSDF(const bool isLeaf, const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext) const {
+void Octree::buildResultSDF(const bool isLeaf, const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext) const {
     if(isLeaf) {
         for (uint i = 0; i < 8; ++i) {
             r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
@@ -310,7 +310,7 @@ void Octree::apply(
         const SignedDistanceOperation &operation,
         const SignedDistanceFunction &function,
         const Transformation &model,
-        const TexturePainter &painter,
+        const TexturePositionPainter &painter,
         const TextureCoordPainter &coordPainter,
         float minSize,
         const Simplifier &simplifier,
@@ -322,7 +322,7 @@ void Octree::apply(
     ShapeArgs args = ShapeArgs(operation, function, painter, coordPainter, model, simplifier, minSize);	
     expand(args);
     OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, root ? root->getType() : SpaceType::Empty, 0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
-    ThreadContext localChunkContext;
+    OctreeThreadContext localChunkContext;
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext, updateHandler, deleteHandler);
 }
@@ -347,7 +347,7 @@ bool Octree::isThreadNode(float nodeLength, float minSize, int threadSize) const
 void Octree::shapeChildren(
     const OctreeNodeFrame &frame, 
     const ShapeArgs &args, 
-    ThreadContext * threadContext, 
+    OctreeThreadContext * threadContext, 
     NodeOperationResult childResult[8],
     OctreeNodeDataHandler &updateHandler,
     OctreeNodeDataHandler &deleteHandler) {
@@ -405,8 +405,8 @@ void Octree::shapeChildren(
             NodeOperationResult * result = &childResult[i];
             inFlightShapeOps.fetch_add(1);
             futures.push_back(threadPool.enqueue([this, childFrame, args, result, &updateHandler, &deleteHandler]() {
-                ThreadContext localThreadContext;
-                shape(*result, childFrame, args, &localThreadContext, updateHandler, deleteHandler);
+                OctreeThreadContext localOctreeThreadContext;
+                shape(*result, childFrame, args, &localOctreeThreadContext, updateHandler, deleteHandler);
                 inFlightShapeOps.fetch_sub(1);
             }));
         } else {
@@ -426,7 +426,7 @@ void Octree::shape(
     NodeOperationResult &r,
     OctreeNodeFrame frame, 
     const ShapeArgs &args, 
-    ThreadContext * threadContext,
+    OctreeThreadContext * threadContext,
     OctreeNodeDataHandler &updateHandler,
     OctreeNodeDataHandler &deleteHandler
 ) {    
@@ -503,11 +503,11 @@ void Octree::shape(
                     r.brushIndex = args.painter.paint(_v);
                     r.brushHsv = args.painter.paintHSV(_v);
                     r.textureType = static_cast<int>(args.coordPainter.textureType());
-                    r.uv = args.coordPainter.paintUV(_v);
+                    r.data = args.coordPainter.paintUV(_v);
                     r.node->hsv = r.brushHsv;
                     r.node->brushIndex = r.brushIndex;
                     r.node->textureType = r.textureType;
-                    r.node->uv = r.uv;
+                    r.node->data = r.data;
                     r.node->setBrush(r.brushIndex);
                 }
             }
@@ -558,11 +558,11 @@ void Octree::shape(
                         r.brushIndex = args.painter.paint(_v);
                         r.brushHsv = args.painter.paintHSV(_v);
                         r.textureType = static_cast<int>(args.coordPainter.textureType());
-                        r.uv = args.coordPainter.paintUV(_v);
+                        r.data = args.coordPainter.paintUV(_v);
                         r.node->hsv = r.brushHsv;
                         r.node->brushIndex = r.brushIndex;
                         r.node->textureType = r.textureType;
-                        r.node->uv = r.uv;
+                        r.node->data = r.data;
                         r.node->setBrush(r.brushIndex);
                     }
                 }
@@ -624,9 +624,9 @@ void Octree::shape(
                         r.node->hsv = args.painter.paintHSV(_v);
                         r.node->brushIndex = r.brushIndex;
                         r.node->textureType = static_cast<int>(args.coordPainter.textureType());
-                        r.node->uv = args.coordPainter.paintUV(_v);
+                        r.node->data = args.coordPainter.paintUV(_v);
                         r.textureType = r.node->textureType;
-                        r.uv = r.node->uv;
+                        r.data = r.node->data;
                         r.brushHsv = r.node->hsv;
                     }  
                 } else  {
@@ -655,7 +655,7 @@ void Octree::shape(
                                 childNode->setChunk(false);
                                 childNode->setBrush(r.brushIndex);
                                 childNode->textureType = r.textureType;
-                                childNode->uv = r.uv;
+                                childNode->data = r.data;
                                 childNode->setLod(child.selectedLod);
                                 childNode->setChunkLod(child.selectedChunkLod);
                                 childNode->hsv = child.brushHsv;
@@ -701,7 +701,7 @@ void Octree::shape(
                         r.brushIndex = childBrush;
                         r.brushHsv = childNode->hsv;
                         r.textureType = childNode->textureType;
-                        r.uv = childNode->uv;
+                        r.data = childNode->data;
                     }
                 }
             }    

@@ -2,7 +2,7 @@
 #include "Simplifier.hpp"
 #include "ThreadPool.hpp"
 #include <unordered_set>
-#include "ThreadContext.hpp"
+#include "OctreeThreadContext.hpp"
 #include "OctreeNodeFrame.hpp"
 #include "OctreeNodeLevel.hpp"
 #include "OctreeAllocator.hpp"
@@ -75,7 +75,7 @@ class Octree: public BoundingCube {
         const SignedDistanceOperation &operation, 
         const SignedDistanceFunction &function, 
         const Transformation &model, 
-        const TexturePainter &painter, 
+        const TexturePositionPainter &painter, 
         const TextureCoordPainter &coordPainter,
         float minSize, 
         const Simplifier &simplifier, 
@@ -87,7 +87,7 @@ class Octree: public BoundingCube {
         NodeOperationResult &r,
         OctreeNodeFrame frame, 
         const ShapeArgs &args, 
-        ThreadContext * threadContext,
+        OctreeThreadContext * threadContext,
         OctreeNodeDataHandler &updateHandler,
         OctreeNodeDataHandler &deleteHandler
     );
@@ -95,7 +95,7 @@ class Octree: public BoundingCube {
     OctreeNodeLevel getNodeAt(const glm::vec3 &pos, int level, bool simplification) const;
     OctreeNode* getNodeAt(const glm::vec3 &pos, bool simplification) const;
     float getSdfAt(const glm::vec3 &pos);
-    OctreeNodeLevel fetch(glm::vec3 pos, uint level, bool simplification, ThreadContext * context) const;
+    OctreeNodeLevel fetch(glm::vec3 pos, uint level, bool simplification, OctreeThreadContext * context) const;
 
     // Triangle topology (the adaptive walker) no longer lives here: it moved to
     // OctreeTriangleTessellator (space/OctreeTriangleTessellator.hpp) — the
@@ -112,13 +112,13 @@ class Octree: public BoundingCube {
     bool isChunkNode(float nodeLength) const;
     bool isThreadNode(float nodeLength, float minSize, int threadSize) const;
 private:
-    void buildShapeSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext, bool force) const;
-    void buildResultSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], ThreadContext * threadContext) const;
+    void buildShapeSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext, bool force) const;
+    void buildResultSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext) const;
     float evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float> * threadContext, glm::vec3 p) const;
     void shapeChildren(
         const OctreeNodeFrame &frame, 
         const ShapeArgs &args, 
-        ThreadContext * threadContext, 
+        OctreeThreadContext * threadContext, 
         NodeOperationResult childResult[8],
         OctreeNodeDataHandler &updateHandler,
         OctreeNodeDataHandler &deleteHandler

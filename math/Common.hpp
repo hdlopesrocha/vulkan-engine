@@ -16,7 +16,7 @@ const std::array<glm::ivec3, 8> CUBE_CORNERS = {{
 }};
 
 #include "geometry/ContainmentType.hpp"
-#include "SpaceType.hpp"
+#include "../space/SpaceType.hpp"
 
 
  

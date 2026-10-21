@@ -163,7 +163,7 @@ void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount,
         bSdf1 = app->createBuffer(sizeof(float) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bCube = app->createBuffer(sizeof(float) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bMeta = app->createBuffer(sizeof(int32_t) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-        // 8 floats per node: vec4(hsv.xyz, textureType), vec4(uv.xy, 0, 0).
+        // 8 floats per node: vec4(hsv.xyz, textureType), vec4(data.xy, 0, 0).
         bHsv = app->createBuffer(sizeof(float) * 8 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bChild03 = app->createBuffer(sizeof(int32_t) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bChild47 = app->createBuffer(sizeof(int32_t) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
@@ -273,8 +273,8 @@ void OctreeTopologyCompute::uploadInput(const OctreeTopologyInput& input) {
         hsv[i * 8 + 1] = n.hsv.y;
         hsv[i * 8 + 2] = n.hsv.z;
         hsv[i * 8 + 3] = static_cast<float>(n.textureType);
-        hsv[i * 8 + 4] = n.uv.x;
-        hsv[i * 8 + 5] = n.uv.y;
+        hsv[i * 8 + 4] = n.data.x;
+        hsv[i * 8 + 5] = n.data.y;
         hsv[i * 8 + 6] = 0.0f;
         hsv[i * 8 + 7] = 0.0f;
         for (int k = 0; k < 4; ++k) child03[i * 4 + k] = n.children[k];

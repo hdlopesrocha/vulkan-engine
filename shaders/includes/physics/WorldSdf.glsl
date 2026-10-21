@@ -20,7 +20,7 @@ layout(std430, set = 0, binding = 8, scalar) readonly buffer InChild03 { ivec4 c
 layout(std430, set = 0, binding = 9, scalar) readonly buffer InChild47 { ivec4 child47[]; };
 
 
-// Octree node types (math/SpaceType.hpp): 0 empty, 1 surface, 2 solid.
+// Octree node types (space/SpaceType.hpp): 0 empty, 1 surface, 2 solid.
 const int TYPE_EMPTY = 0;
 const int TYPE_SURFACE = 1;
 const int TYPE_SOLID = 2;

@@ -10,7 +10,7 @@
 #define ATTR_HSV 6
 #define ATTR_INSTANCE 5
 // Per-vertex texture-coordinate technique (math/TextureType.hpp), painted by
-// the TexturePainter.
+// the TexturePositionPainter.
 #define ATTR_TEXTURE_TYPE 9
 // Baked per-instance vegetation height scale (perf report 22 C2/H4): float
 // per instance in the concatenated aux buffer (vertex binding 2).

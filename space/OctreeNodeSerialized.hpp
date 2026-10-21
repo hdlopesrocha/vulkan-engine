@@ -11,7 +11,7 @@ struct OctreeNodeSerialized {
     uint children[8] = {0,0,0,0,0,0,0,0};
     int brushIndex;
     int textureType;
-    glm::vec2 uv;
+    glm::vec2 data;
     glm::vec3 hsv;
     uint8_t bits;
     uint8_t lod = 0;

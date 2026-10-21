@@ -1,6 +1,6 @@
-#include "../math/TexturePainter.hpp"
+#include "../math/TexturePositionPainter.hpp"
 
-class WaterBrush : public TexturePainter {
+class WaterBrush : public TexturePositionPainter {
 	int water;
 
 	public: 

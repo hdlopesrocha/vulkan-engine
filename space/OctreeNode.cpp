@@ -34,7 +34,7 @@ OctreeNode * OctreeNode::init(Vertex vert) {
 	this->setType(SpaceType::Surface);
 	this->brushIndex = vert.brushIndex;
 	this->textureType = vert.textureType;
-	this->uv = vert.texCoord;
+	this->data = vert.texCoord;
 	this->hsv = vert.hsv;
 	this->blockId = UINT_MAX;
 	this->version = 0u;

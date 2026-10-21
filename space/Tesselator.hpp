@@ -1,7 +1,7 @@
 #pragma once
 
 #include "OctreeNodeTriangleHandler.hpp"
-#include "ThreadContext.hpp"
+#include "OctreeThreadContext.hpp"
 #include "../math/geometry/Geometry.hpp"
 #include "../math/geometry/Vertex.hpp"
 
