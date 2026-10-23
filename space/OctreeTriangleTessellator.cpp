@@ -30,7 +30,7 @@ struct OctreeTriangleTessellator::Walk {
     OctreeNodeTriangleHandler &func;
     OctreeThreadContext *context = NULL;
     int targetLod = 0;
-    const std::function<Vertex(OctreeNode*, const BoundingCube&)> &vertexFn;
+    const std::function<CellVertex(OctreeNode*, const BoundingCube&)> &vertexFn;
 
     // Per-call state.
     // Anchor for the upper-traversal cache: findCellAt climbs from a cached
@@ -61,7 +61,7 @@ struct OctreeTriangleTessellator::Walk {
 
     Walk(const Octree &tree_, OctreeNode *from_, const BoundingCube &fromCube_,
          OctreeNodeTriangleHandler &func_, OctreeThreadContext *context_, int targetLod_,
-         const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn_)
+         const std::function<CellVertex(OctreeNode*, const BoundingCube&)>& vertexFn_)
         : tree(tree_), from(from_), fromCube(fromCube_), func(func_),
           context(context_), targetLod(targetLod_), vertexFn(vertexFn_) {
         // Anchor the cache on `from`: its ancestor chain (seeded by the
@@ -74,6 +74,20 @@ struct OctreeTriangleTessellator::Walk {
     static bool samePosition(const glm::vec3 &a, const glm::vec3 &b, float eps) {
         glm::vec3 d = a - b;
         return glm::dot(d, d) <= eps * eps;
+    }
+
+    // Surface point + normal of a cell — the CPU mirror of the GPU's
+    // cellPosCached/cellNormal. The vertexFn override carries the app's
+    // GPU-computed vertices (so their already-done work is reused); when it is
+    // empty (bin/server, Blender export, the topology self-check) the cell's SDF
+    // is solved here. This is the ONLY place the walk calls SDF::getPosition;
+    // everything downstream works on the CellVertex.
+    CellVertex cellVertex(OctreeNode *n, const BoundingCube &c) const {
+        if(vertexFn) return vertexFn(n, c);
+        CellVertex v;
+        v.position = SDF::getPosition(n->sdf, c);
+        v.normal = SDF::getNormalFromPosition(n->sdf, c, v.position);
+        return v;
     }
 
     // Descends to the cell containing pos, starting from the cached anchor
@@ -266,21 +280,23 @@ struct OctreeTriangleTessellator::Walk {
         }
     }
 
-    Vertex nodeVertex(OctreeNode *n, const BoundingCube &c) const {
-        if (vertexFn) return vertexFn(n, c);
-        glm::vec3 pos = SDF::getPosition(n->sdf, c);
-        glm::vec3 norm = SDF::getNormalFromPosition(n->sdf, c, pos);
-        Vertex v(pos, norm, n->data, n->brushIndex);
-        v.hsv = n->hsv;
-        v.textureType = n->textureType;
-        return v;
-    }
-
-    void emitTriangle(const Vertex &a, const Vertex &b, const Vertex &c, float eps) {
-        // a/b/c are vertices (not pointers) now; no null check needed.
-        if(samePosition(a.position, b.position, eps)) return;
-        if(samePosition(b.position, c.position, eps)) return;
-        if(samePosition(c.position, a.position, eps)) return;
+    // Emit one triangle from its three corner CELLS: each corner's node plus
+    // that cell's root-consistent cube. The corner point/normal is resolved by
+    // cellVertex — the app's GPU-computed vertex when vertexFn is set, the cell's
+    // SDF only on GPU-less paths — so no Vertex crosses the walk and the material
+    // is taken off the node by the handler. CPU mirror of the GPU's
+    // emitTriangle(Cell, Cell, Cell, eps) with cellPosCached/cellNormal.
+    void emitTriangle(OctreeNode &a, OctreeNode &b, OctreeNode &c,
+                      const BoundingCube &ca, const BoundingCube &cb, const BoundingCube &cc,
+                      float eps) {
+        const CellVertex va = cellVertex(&a, ca);
+        const CellVertex vb = cellVertex(&b, cb);
+        const CellVertex vc = cellVertex(&c, cc);
+        // Degenerate-triangle guard on the resolved surface points (the same test
+        // the shader applies); the polygon is already deduped in emitSegment.
+        if(samePosition(va.position, vb.position, eps)) return;
+        if(samePosition(vb.position, vc.position, eps)) return;
+        if(samePosition(vc.position, va.position, eps)) return;
         // Brush fallback for unattributed vertices: rung-parent chunks
         // aggregate finer non-chunk cells whose vertices were solved
         // (positions valid) but never painted (brush DISCARD), because paint
@@ -291,17 +307,20 @@ struct OctreeTriangleTessellator::Walk {
         // vertex state is never mutated. When the anchor itself is
         // unattributed the old drop behavior is kept (Tesselator::handle
         // below enforces the same rule).
-        Vertex ca = a, cb = b, cc = c;
         const int fallbackBrush = (from != NULL) ? from->brushIndex : DISCARD_BRUSH_INDEX;
         const int fallbackTextureType = (from != NULL) ? from->textureType : 0;
         const glm::vec2 fallbackUv = (from != NULL) ? from->data : glm::vec2(0.0f);
-        if(ca.brushIndex <= DISCARD_BRUSH_INDEX) { ca.brushIndex = fallbackBrush; ca.textureType = fallbackTextureType; ca.texCoord = fallbackUv; }
-        if(cb.brushIndex <= DISCARD_BRUSH_INDEX) { cb.brushIndex = fallbackBrush; cb.textureType = fallbackTextureType; cb.texCoord = fallbackUv; }
-        if(cc.brushIndex <= DISCARD_BRUSH_INDEX) { cc.brushIndex = fallbackBrush; cc.textureType = fallbackTextureType; cc.texCoord = fallbackUv; }
-        if(ca.brushIndex <= DISCARD_BRUSH_INDEX || cb.brushIndex <= DISCARD_BRUSH_INDEX
-            || cc.brushIndex <= DISCARD_BRUSH_INDEX) return;
+        // Resolve the anchor-chunk brush on local copies: the nodes are shared
+        // by adjacent cells and by other chunk builds running on the worker
+        // pools, so the fallback must never be written back into them.
+        OctreeNode na = a, nb = b, nc = c;
+        if(na.brushIndex <= DISCARD_BRUSH_INDEX) { na.brushIndex = fallbackBrush; na.textureType = fallbackTextureType; na.data = fallbackUv; }
+        if(nb.brushIndex <= DISCARD_BRUSH_INDEX) { nb.brushIndex = fallbackBrush; nb.textureType = fallbackTextureType; nb.data = fallbackUv; }
+        if(nc.brushIndex <= DISCARD_BRUSH_INDEX) { nc.brushIndex = fallbackBrush; nc.textureType = fallbackTextureType; nc.data = fallbackUv; }
+        if(na.brushIndex <= DISCARD_BRUSH_INDEX || nb.brushIndex <= DISCARD_BRUSH_INDEX
+            || nc.brushIndex <= DISCARD_BRUSH_INDEX) return;
 
-        func.handle(ca, cb, cc);
+        func.handle(na, nb, nc, va, vb, vc, eps);
     }
 
     void emitSegment(const EdgeSpan &edge, float start, float end, bool sign0, bool sign1) {
@@ -386,13 +405,18 @@ struct OctreeTriangleTessellator::Walk {
         // quadrant instead; the remaining 3/4 corners still form the surface
         // polygon, and the order is preserved for triangulation.
         EdgeCell plist[4];
-        Vertex pverts[4];
+        // Corner point/normal of each kept cell, resolved once by cellVertex (the
+        // GPU-computed vertex when the app supplied one, the SDF only otherwise)
+        // and reused for the dedup and the owner rotation, so the walk never
+        // builds a Vertex. The emit below re-resolves per triangle corner via
+        // emitTriangle; this array is not rotated with plist.
+        CellVertex pverts[4];
         int pcount = 0;
         for(int q = 0; q < 4; ++q) {
             if(!cells[q].isSurface()) {
                 continue;
             }
-            Vertex vq = nodeVertex(cells[q].node, cells[q].cube);
+            const CellVertex vq = cellVertex(cells[q].node, cells[q].cube);
             bool duplicate = false;
             for(int k = 0; k < pcount; ++k) {
                 if(plist[k].node == cells[q].node
@@ -427,11 +451,11 @@ struct OctreeTriangleTessellator::Walk {
         // z-fought with different textures, leaving bright seams along every
         // chunk border.
         {
+            const CellVertex ownerV = cellVertex(owner.node, owner.cube);
             int it = -1;
             for(int k = 0; k < pcount; ++k) {
                 if(plist[k].node == owner.node
-                    || samePosition(nodeVertex(plist[k].node, plist[k].cube).position,
-                                    nodeVertex(owner.node, owner.cube).position, edge.eps)) {
+                    || samePosition(pverts[k].position, ownerV.position, edge.eps)) {
                     it = k;
                     break;
                 }
@@ -453,16 +477,16 @@ struct OctreeTriangleTessellator::Walk {
         const bool solidAtStart = s0;
         if(pcount == 3) {
             if(solidAtStart)
-                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[1].node, plist[1].cube), nodeVertex(plist[2].node, plist[2].cube), edge.eps);
+                emitTriangle(*plist[0].node, *plist[1].node, *plist[2].node, plist[0].cube, plist[1].cube, plist[2].cube, edge.eps);
             else
-                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[2].node, plist[2].cube), nodeVertex(plist[1].node, plist[1].cube), edge.eps);
+                emitTriangle(*plist[0].node, *plist[2].node, *plist[1].node, plist[0].cube, plist[2].cube, plist[1].cube, edge.eps);
         } else if(pcount == 4) {
             if(solidAtStart) {
-                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[1].node, plist[1].cube), nodeVertex(plist[2].node, plist[2].cube), edge.eps);
-                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[2].node, plist[2].cube), nodeVertex(plist[3].node, plist[3].cube), edge.eps);
+                emitTriangle(*plist[0].node, *plist[1].node, *plist[2].node, plist[0].cube, plist[1].cube, plist[2].cube, edge.eps);
+                emitTriangle(*plist[0].node, *plist[2].node, *plist[3].node, plist[0].cube, plist[2].cube, plist[3].cube, edge.eps);
             } else {
-                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[3].node, plist[3].cube), nodeVertex(plist[2].node, plist[2].cube), edge.eps);
-                emitTriangle(nodeVertex(plist[0].node, plist[0].cube), nodeVertex(plist[2].node, plist[2].cube), nodeVertex(plist[1].node, plist[1].cube), edge.eps);
+                emitTriangle(*plist[0].node, *plist[3].node, *plist[2].node, plist[0].cube, plist[3].cube, plist[2].cube, edge.eps);
+                emitTriangle(*plist[0].node, *plist[2].node, *plist[1].node, plist[0].cube, plist[2].cube, plist[1].cube, edge.eps);
             }
         }
     }
@@ -558,7 +582,7 @@ void OctreeTriangleTessellator::iterateTriangles(
         OctreeNodeTriangleHandler &func,
         OctreeThreadContext * context,
         int targetLod,
-        const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn) {
+        const std::function<CellVertex(OctreeNode*, const BoundingCube&)>& vertexFn) {
     OctreeSharedLock lock(tree.treeMutex);
 
     Walk walk(tree, from, fromCube, func, context, targetLod, vertexFn);

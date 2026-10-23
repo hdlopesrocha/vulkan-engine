@@ -1,7 +1,6 @@
 #pragma once
 #include <cstddef>
 #include <functional>
-#include "../math/geometry/Vertex.hpp"
 #include "../math/geometry/BoundingCube.hpp"
 #include "OctreeNodeTriangleHandler.hpp"
 
@@ -45,15 +44,17 @@ public:
     //   targetLod: +1-shifted STORED ladder level to tessellate. 0 = legacy
     //              full-walk mode, 1 = frontier, k = ancestor. The level-k mesh
     //              is the aggregate of the cells at lod k inside the anchor.
-    //   vertexFn:  optional vertex override (e.g. GPU-generated vertices). When
-    //              empty, vertices come from SDF::getPosition/getNormalFromPosition.
+    //   vertexFn:  optional surface-point/normal override (the app supplies the
+    //              GPU-computed vertices). When empty, the walk solves
+    //              SDF::getPosition/getNormalFromPosition itself — the GPU-less
+    //              paths (bin/server, Blender export, the self-check).
     void iterateTriangles(OctreeNode * from,
                           const BoundingCube &fromCube,
                           int fromLevel,
                           OctreeNodeTriangleHandler &func,
                           OctreeThreadContext * context,
                           int targetLod = 0,
-                          const std::function<Vertex(OctreeNode*, const BoundingCube&)>& vertexFn = nullptr);
+                          const std::function<CellVertex(OctreeNode*, const BoundingCube&)>& vertexFn = nullptr);
 
 private:
     // One walk over the tree: its fixed inputs, the per-call state (anchor,

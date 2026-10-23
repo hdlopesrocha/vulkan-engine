@@ -1,7 +1,21 @@
 #pragma once
 #include "../math/geometry/BoundingCube.hpp"
+#include <glm/glm.hpp>
 
 class OctreeNode;
+
+// The tessellated SURFACE POINT of one cell: a position and a normal, and
+// nothing else. The material (brush index, HSV tint, texture-coordinate
+// technique, UV scale) lives on the OctreeNode, so the walk never builds a
+// Vertex — the only Vertex in the pipeline is the one the handler writes into
+// the output Geometry. In the app these values are the GPU-computed vertices,
+// handed to the walk as its vertexFn override; only the GPU-less paths
+// (bin/server, Blender export, the topology self-check) solve them from the
+// cell's SDF.
+struct CellVertex {
+    glm::vec3 position = glm::vec3(0.0f);
+    glm::vec3 normal = glm::vec3(0.0f, 1.0f, 0.0f);
+};
 
 // One cell visited by the octree triangle walk (OctreeTriangleTessellator):
 // its node, its root-consistent cube and the +1-shifted STORED ladder level it

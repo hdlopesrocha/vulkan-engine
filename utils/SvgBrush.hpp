@@ -23,8 +23,8 @@ public:
              int materialIndex, glm::vec3 fallbackHsv = glm::vec3(0.0f, 0.5f, 0.5f),
              bool tintFromFill = true);
 
-    int paint(const Vertex &vertex) const override;
-    glm::vec3 paintHSV(const Vertex &vertex) const override;
+    int paint(const OctreeNode &o) const override;
+    glm::vec3 paintHSV(const OctreeNode &o) const override;
 
 private:
     std::shared_ptr<const SvgShape> m_shape;

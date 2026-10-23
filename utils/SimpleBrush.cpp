@@ -6,10 +6,10 @@ SimpleBrush::SimpleBrush(int brush_, glm::vec3 hsv_) {
     this->hsv = hsv_;
 }
 
-int SimpleBrush::paint(const Vertex &vertex) const {
+int SimpleBrush::paint(const OctreeNode &o) const {
     return brush;
 }
 
-glm::vec3 SimpleBrush::paintHSV(const Vertex &vertex) const {
+glm::vec3 SimpleBrush::paintHSV(const OctreeNode &o) const {
     return hsv;
 }

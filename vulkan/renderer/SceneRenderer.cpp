@@ -2468,7 +2468,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                 OctreeThreadContext refContext;
                 OctreeTriangleTessellator(*tree).iterateTriangles(
                     nodeData.node, nodeData.cube, nodeData.level, refTesselator, &refContext,
-                    chunkLod, std::function<Vertex(OctreeNode*, const BoundingCube&)>());
+                    chunkLod, std::function<CellVertex(OctreeNode*, const BoundingCube&)>());
                 const float invCubeSize = (cube.getLengthX() > 0.0f) ? (1.0f / cube.getLengthX()) : 1.0f;
                 const std::vector<TriangleKey> gpuGeom = triangleKeys(res.bridge, invCubeSize, true);
                 const std::vector<TriangleKey> cpuGeom = triangleKeys(refTesselator.geometry, invCubeSize, true);

@@ -10,7 +10,7 @@ class NormalBrush : public TexturePositionPainter {
 	public: 
 	NormalBrush(int brush_);
 	NormalBrush(int brush_, glm::vec3 hsv_, glm::vec3 normal_);
-	int paint(const Vertex &vertex) const override;
-	glm::vec3 paintHSV(const Vertex &vertex) const override;
+	int paint(const OctreeNode &o) const override;
+	glm::vec3 paintHSV(const OctreeNode &o) const override;
 };
 

@@ -486,7 +486,7 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                     // server/headless path and the explicit
                     // VULKAN_CPU_TOPOLOGY=1 fallback.
                     {
-                        std::function<Vertex(OctreeNode*, const BoundingCube&)> vertexFn = nullptr;
+                        std::function<CellVertex(OctreeNode*, const BoundingCube&)> vertexFn = nullptr;
                         if (gOctreeMeshCompute) {
                             std::vector<OctreeMeshCell> cells;
                             std::vector<OctreeNode*> cellNodes;
@@ -510,24 +510,24 @@ void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const Geometr
                             collect(params.node, params.cube);
                             if (!cells.empty()) {
                                 auto res = gOctreeMeshCompute(cells, 0.0f);
-                                std::unordered_map<OctreeNode*, Vertex> gpuVerts;
+                                // Only the surface point/normal come from the GPU
+                                // pass; the material stays on the node.
+                                std::unordered_map<OctreeNode*, CellVertex> gpuVerts;
                                 for (size_t i = 0; i < cellNodes.size() && i < res.positions.size(); ++i) {
                                     OctreeNode* n = cellNodes[i];
-                                    glm::vec3 pos(res.positions[i].x, res.positions[i].y, res.positions[i].z);
-                                    glm::vec3 nrm(res.normals[i].x, res.normals[i].y, res.normals[i].z);
-                                    Vertex v(pos, nrm, n->data, n->brushIndex);
-                                    v.textureType = n->textureType;
-                                    v.hsv = n->hsv;
+                                    CellVertex v;
+                                    v.position = glm::vec3(res.positions[i].x, res.positions[i].y, res.positions[i].z);
+                                    v.normal = glm::vec3(res.normals[i].x, res.normals[i].y, res.normals[i].z);
                                     gpuVerts[n] = v;
                                 }
-                                vertexFn = [&gpuVerts](OctreeNode* n, const BoundingCube& c) -> Vertex {
+                                vertexFn = [&gpuVerts](OctreeNode* n, const BoundingCube& c) -> CellVertex {
                                     auto it = gpuVerts.find(n);
                                     if (it != gpuVerts.end()) return it->second;
-                                    glm::vec3 pos = SDF::getPosition(n->sdf, c);
-                                    glm::vec3 nrm = SDF::getNormalFromPosition(n->sdf, c, pos);
-                                    Vertex v(pos, nrm, n->data, n->brushIndex);
-                                    v.hsv = n->hsv;
-                                    v.textureType = n->textureType;
+                                    // Node absent from the GPU table: the only
+                                    // CPU SDF solve in this path.
+                                    CellVertex v;
+                                    v.position = SDF::getPosition(n->sdf, c);
+                                    v.normal = SDF::getNormalFromPosition(n->sdf, c, v.position);
                                     return v;
                                 };
                             }

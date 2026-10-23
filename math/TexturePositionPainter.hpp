@@ -1,14 +1,17 @@
 #pragma once
-#include "geometry/Vertex.hpp"
-#include "TextureType.hpp"
 #include <glm/glm.hpp>
 
-// Paints per-vertex surface attributes while the octree is built. The painter
-// decides (per node/vertex) which material the surface uses (paint) and its HSV
-// tint (paintHSV). The texture-coordinate technique and UV are a per-shape
-// decision and come from the TextureCoordPainter passed to Octree::apply().
+class OctreeNode;
+
+// Paints a node's material assignment. The painter receives the octree node
+// itself (its current brushIndex / hsv / textureType / data), not a surface
+// Vertex — Octree::shape never computes SDF::getPosition / getNormalFromPosition
+// for it.
 class TexturePositionPainter {
 public:
-    virtual int paint(const Vertex &v) const = 0;
-    virtual glm::vec3 paintHSV(const Vertex &v) const { return glm::vec3(0.0f, 0.5f, 0.5f); }
+    virtual int paint(const OctreeNode &o) const = 0;
+    virtual glm::vec3 paintHSV(const OctreeNode &o) const { return glm::vec3(0.0f, 0.5f, 0.5f); }
+    // Reserved: whether paint()/paintHSV() would need the surface position.
+    // Octree::shape does not compute one.
+    virtual bool needsPosition() const { return true; }
 };

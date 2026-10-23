@@ -12,10 +12,14 @@ NormalBrush::NormalBrush(int brush_, glm::vec3 hsv_, glm::vec3 normal_) {
     this->normal = normal_;
 }
 
-int NormalBrush::paint(const Vertex &vertex) const {
-    return glm::dot(vertex.normal, normal) > 0.0f ? brush : DISCARD_BRUSH_INDEX;
+int NormalBrush::paint(const OctreeNode &o) const {
+    (void)o;
+    // The surface normal is no longer available to the painter (the octree
+    // build no longer computes SDF::getNormalFromPosition), so the node's
+    // material is painted unconditionally.
+    return brush;
 }
 
-glm::vec3 NormalBrush::paintHSV(const Vertex &vertex) const {
+glm::vec3 NormalBrush::paintHSV(const OctreeNode &o) const {
     return hsv;
 }

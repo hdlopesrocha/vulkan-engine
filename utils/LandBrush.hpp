@@ -1,23 +1,20 @@
 #pragma once
-
 #include "../math/TexturePositionPainter.hpp"
 #include "../math/BrushMode.hpp"
 
+// Terrain material classifier (height + slope -> material index).
+//
+// The classification itself runs on the GPU (shaders/includes/LandBrush.glsl)
+// per vertex, dispatched by the octree topology compute (OctreeTriangles.comp)
+// where the surface position and normal are already available. On the CPU the
+// painter only marks the node with LAND_BRUSH_INDEX, and needsPosition() ==
+// false lets Octree::shape skip SDF::getPosition / getNormalFromPosition
+// entirely for terrain.
 class LandBrush : public TexturePositionPainter {
-	int underground;
-	int grass;
-	int sand;
-	int softSand;
-	int rock;
-	int snow;
-	int grassMixSand;
-	int grassMixSnow;
-	int rockMixGrass;
-	int rockMixSnow;
-	int rockMixSand;
+public:
+    LandBrush() = default;
 
-	public: 
-	LandBrush();
-	int paint(const Vertex &vertex) const override;
-	glm::vec3 paintHSV(const Vertex &vertex) const override { return glm::vec3(0.0f, 0.5f, 0.5f); }
+    int paint(const OctreeNode &o) const override { (void)o; return LAND_BRUSH_INDEX; }
+    glm::vec3 paintHSV(const OctreeNode &o) const override { (void)o; return glm::vec3(0.0f, 0.5f, 0.5f); }
+    bool needsPosition() const override { return false; }
 };

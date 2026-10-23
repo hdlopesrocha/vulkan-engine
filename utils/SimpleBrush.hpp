@@ -7,6 +7,6 @@ class SimpleBrush : public TexturePositionPainter {
 
 	public: 
 	SimpleBrush(int brush_, glm::vec3 hsv_ = glm::vec3(0.0f, 0.5f, 0.5f));
-	int paint(const Vertex &vertex) const override;
-	glm::vec3 paintHSV(const Vertex &vertex) const override;
+	int paint(const OctreeNode &o) const override;
+	glm::vec3 paintHSV(const OctreeNode &o) const override;
 };

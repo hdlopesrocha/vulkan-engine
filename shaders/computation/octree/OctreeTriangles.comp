@@ -22,6 +22,8 @@ layout(local_size_x = 64) in;
 // Bit-exact CPU cell math (SDF::eval / getPosition / getNormalFromPosition),
 // shared with OctreeMesh.comp so both GPU consumers stay identical.
 #include "../../includes/octree/SdfCell.glsl"
+// Terrain material classification (utils/LandBrush.cpp ported to the GPU).
+#include "../../includes/octree/LandBrush.glsl"
 
 layout(set = 0, binding = 0,  scalar) readonly buffer InSdf0  { vec4 sdf0[]; };
 layout(set = 0, binding = 1,  scalar) readonly buffer InSdf1  { vec4 sdf1[]; };
@@ -453,6 +455,9 @@ bool samePosition(vec3 a, vec3 b, float eps) {
 }
 
 void writeVertex(uint idx, vec3 p, vec3 n, int brush, vec3 h, int type) {
+    // LandBrush only marks its vertices with a sentinel on the CPU; classify the
+    // terrain material here from the surface position/normal.
+    brush = resolveLandBrush(brush, p, n);
     outPos[idx] = vec4(p, uintBitsToFloat(uint(brush)));
     outNrm[idx] = vec4(n, float(gCellIndex));
     outHsv[idx] = vec4(h, float(type));
@@ -855,6 +860,9 @@ void scanCell(uint cellId) {
 // surface, vegetation placement and the proxy boxes — is unaffected.
 
 void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int type, vec2 nodeDataIn, int plane) {
+    // LandBrush only marks its vertices with a sentinel on the CPU; classify the
+    // terrain material here from the surface position/normal.
+    brush = resolveLandBrush(brush, p, n);
     // texCoord carries the vertex's UV scale (the projection scale for
     // Triplanar/ProjectionX/Y/Z, the authored UV for Custom), read by the shader.
     const vec2 data = nodeDataIn;

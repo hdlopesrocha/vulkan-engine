@@ -496,14 +496,12 @@ void Octree::shape(
 
             if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
                 if(r.node != NULL) {
-                    glm::vec3 _pos = SDF::getPosition(r.resultSDF, frame.cube);
-                    glm::vec3 _norm = SDF::getNormalFromPosition(r.resultSDF, frame.cube, _pos);
-                    Vertex _v(_pos, _norm, glm::vec2(0.0f), r.node->brushIndex);
-                    _v.hsv = r.node->hsv;
-                    r.brushIndex = args.painter.paint(_v);
-                    r.brushHsv = args.painter.paintHSV(_v);
+                    // Painters work on the node directly; the octree build never
+                    // computes the surface position/normal (no SDF::getPosition).
+                    r.brushIndex = args.painter.paint(*r.node);
+                    r.brushHsv = args.painter.paintHSV(*r.node);
                     r.textureType = static_cast<int>(args.coordPainter.textureType());
-                    r.data = args.coordPainter.paintUV(_v);
+                    r.data = args.coordPainter.paintUV(*r.node);
                     r.node->hsv = r.brushHsv;
                     r.node->brushIndex = r.brushIndex;
                     r.node->textureType = r.textureType;
@@ -551,14 +549,10 @@ void Octree::shape(
                 r.resultType = SpaceType::Solid;
                 if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
                     if(r.node != NULL) {
-                        glm::vec3 _pos = SDF::getPosition(r.resultSDF, frame.cube);
-                        glm::vec3 _norm = SDF::getNormalFromPosition(r.resultSDF, frame.cube, _pos);
-                        Vertex _v(_pos, _norm, glm::vec2(0.0f), r.node->brushIndex);
-                        _v.hsv = r.node->hsv;
-                        r.brushIndex = args.painter.paint(_v);
-                        r.brushHsv = args.painter.paintHSV(_v);
+                        r.brushIndex = args.painter.paint(*r.node);
+                        r.brushHsv = args.painter.paintHSV(*r.node);
                         r.textureType = static_cast<int>(args.coordPainter.textureType());
-                        r.data = args.coordPainter.paintUV(_v);
+                        r.data = args.coordPainter.paintUV(*r.node);
                         r.node->hsv = r.brushHsv;
                         r.node->brushIndex = r.brushIndex;
                         r.node->textureType = r.textureType;
@@ -613,18 +607,15 @@ void Octree::shape(
             }
 
             if(r.node!= NULL) {
-                glm::vec3 _pos = SDF::getPosition(r.resultSDF, frame.cube);
-                glm::vec3 _norm = SDF::getNormalFromPosition(r.resultSDF, frame.cube, _pos);
                 // Simplification & Painting
                 if(isLeaf) {
                     if(r.shapeType != SpaceType::Empty) {
-                        Vertex _v(_pos, _norm, glm::vec2(0.0f), r.node->brushIndex);
-                        _v.hsv = r.node->hsv;
-                        r.brushIndex = args.painter.paint(_v);
-                        r.node->hsv = args.painter.paintHSV(_v);
+                        // Painters work on the node directly; no SDF::getPosition.
+                        r.brushIndex = args.painter.paint(*r.node);
+                        r.node->hsv = args.painter.paintHSV(*r.node);
                         r.node->brushIndex = r.brushIndex;
                         r.node->textureType = static_cast<int>(args.coordPainter.textureType());
-                        r.node->data = args.coordPainter.paintUV(_v);
+                        r.node->data = args.coordPainter.paintUV(*r.node);
                         r.textureType = r.node->textureType;
                         r.data = r.node->data;
                         r.brushHsv = r.node->hsv;
