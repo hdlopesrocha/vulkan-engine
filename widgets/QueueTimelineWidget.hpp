@@ -27,7 +27,7 @@ private:
     bool rowsBuilt_ = false;
 
     // Snapshot of queue-timeline segments copied from VulkanApp each frame.
-    std::vector<VulkanApp::QueueSegment> segments_;
+    std::vector<QueueSegment> segments_;
 
     // UI state
     bool perFrameMode_ = true;   // true: slot grid for the latest frame; false: rolling Gantt

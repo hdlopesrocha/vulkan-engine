@@ -22,10 +22,9 @@
 //     the stub address, which is stable for the connection lifetime (stubs
 //     are never freed until disconnect, so deferred-slot bookkeeping in
 //     MyApp/SceneRenderer cannot alias a recycled address).
-//   - requestModel3D() fetches MESH_DATA for the stub's server id over the
-//     same connection (serialized, matched by reply id) and rebuilds a
-//     Geometry with computed smooth normals + triplanar UVs. Results are
-//     cached by (serverId, version), so re-dispatches are free.
+//   - Chunk geometry is SDF-only on the wire: records carry the cubes + corner
+//     samples and the client GPU builds Cartesian vertices. There is no
+//     MESH_DATA request in the render path.
 //   - requestSDFCubes()/requestBoundingBoxes() synthesize one debug cube per
 //     chunk from the record (coarser than the local per-node walk, but the
 //     debug overlays consume them unchanged).
@@ -77,9 +76,6 @@ public:
                    std::vector<Octree::OctreeNodeDataHandler> updateHandlers,
                    std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) override;
     void reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) override;
-    void requestModel3D(Layer layer, OctreeNodeData& data,
-                        const GeometryLodCallback& callback,
-                        ThreadPool* poolOverride = nullptr) override;
     void requestSDFCubes(Layer layer, OctreeNodeData& data,
                          const SdfCubeCallback& callback,
                          ThreadPool* poolOverride = nullptr) override;

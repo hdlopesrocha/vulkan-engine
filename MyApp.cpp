@@ -112,8 +112,6 @@
 #include "world/World.hpp"
 #include "vulkan/renderer/DescriptorWriter.hpp"
 #include "services/TextureMixer.hpp"
-#include "services/OctreeMeshCompute.hpp"
-#include "services/OctreeMeshTypes.hpp"
 #include "services/OctreeTopologyCompute.hpp"
 #include "services/ParticlePhysicsSim.hpp"
 #include "server/SceneServer.hpp"
@@ -150,13 +148,11 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
         // queued as its own entry — the consumer publishes it into the chunk's
         // stable slot.
         renderer->processNodeLayer(*scene, layer, nid, nodeCopy,
-            [renderer, cid, nodeCopy, target](Layer layer_, NodeID nid_, const Octree::LoDMesh& lodMesh) {
-                // GPU-resident builds (gpuSlot != UINT32_MAX) carry a live slot
-                // even when the host-side mirror is empty, so only CPU-built
-                // meshes without geometry are dropped here.
-                if (lodMesh.gpuSlot == UINT32_MAX &&
-                    (lodMesh.geom.vertices.empty() || lodMesh.geom.indices.empty())) {
-                    return; // no surface: nothing to publish
+            [renderer, cid, nodeCopy, target](Layer layer_, NodeID nid_, const LoDMesh& lodMesh) {
+                // Every published chunk is GPU-resident. There is no host-side
+                // vertex mirror; an invalidation without a live slot is dropped.
+                if (lodMesh.gpuSlot == UINT32_MAX) {
+                    return;
                 }
                 // lodMesh.lod is the 0-based band level (chunkLod - 1); the
                 // stored chunkLod is 1-based. finishBuild only when the mesh is
@@ -420,7 +416,6 @@ public:
     std::shared_ptr<VideoTextureWidget> videoTextureWidget;
     int videoCubeMaterialIndex = -1;   // material used by MainSceneLoader's video cube
     int sdfGivenMaterialIndex = -1;    // material used by MainSceneLoader's SdfGiven cube
-    std::shared_ptr<OctreeMeshCompute> octreeMeshCompute;
     std::shared_ptr<OctreeTopologyCompute> octreeTopologyCompute;
     // ── Water droplets: GPU particle simulation + SDF ray-marched rendering ─
     // The simulation owns device-local state buffers and collides against the
@@ -574,72 +569,11 @@ public:
         
         textureMixer = std::make_shared<TextureMixer>();
         textureMixer->init(this, &textureArrayManager);
-        octreeMeshCompute = std::make_shared<OctreeMeshCompute>();
-        octreeMeshCompute->init(this);
-        // VULKAN_NO_GPU_VERTS=1: leave gOctreeMeshCompute null so the CPU
-        // walker solves every vertex itself with SDF::getPosition (A/B aid for
-        // the GPU per-cell vertex extraction).
-        if (std::getenv("VULKAN_NO_GPU_VERTS") != nullptr) {
-            std::cout << "[MyApp] VULKAN_NO_GPU_VERTS: using the CPU vertex solver only\n";
-        } else
-        gOctreeMeshCompute = [this](const std::vector<OctreeMeshCell>& cells, float iso) {
-            OctreeMeshResult res = octreeMeshCompute->compute(cells, iso);
-            // VULKAN_MESHCHECK=1: A/B the GPU surface-vertex extraction against
-            // the CPU reference (SDF::getPosition + getNormalFromPosition) for
-            // the cells of this call and report the worst deviation. The shader
-            // is a port of exactly those functions, so the deltas must be 0.
-            if (std::getenv("VULKAN_MESHCHECK") != nullptr) {
-                static std::atomic<int> checked{0};
-                float maxPos = 0.0f;
-                float maxNrm = 0.0f;
-                const size_t n = std::min(cells.size(), res.positions.size());
-                for (size_t i = 0; i < n; ++i) {
-                    const OctreeMeshCell& c = cells[i];
-                    BoundingCube cube(c.cubeMin, c.cubeSize);
-                    float sdfCopy[8];
-                    std::memcpy(sdfCopy, c.sdf, sizeof(sdfCopy));
-                    const glm::vec3 cpuPos = SDF::getPosition(sdfCopy, cube);
-                    const glm::vec3 cpuNrm = SDF::getNormalFromPosition(sdfCopy, cube, cpuPos);
-                    const glm::vec3 gpuPos(res.positions[i].x, res.positions[i].y, res.positions[i].z);
-                    const glm::vec3 gpuNrm(res.normals[i].x, res.normals[i].y, res.normals[i].z);
-                    maxPos = std::max(maxPos, glm::distance(cpuPos, gpuPos));
-                    maxNrm = std::max(maxNrm, glm::distance(cpuNrm, gpuNrm));
-                }
-                if (checked.fetch_add(1) < 8) {
-                    std::cout << "[meshcheck] cells=" << cells.size() << " maxPosDelta=" << maxPos
-                              << " maxNormalDelta=" << maxNrm << std::endl;
-                    // Dump the worst cell's inputs and both results so the
-                    // divergent step can be reproduced offline.
-                    size_t worst = 0;
-                    float worstD = -1.0f;
-                    for (size_t i = 0; i < n; ++i) {
-                        BoundingCube cube(cells[i].cubeMin, cells[i].cubeSize);
-                        float sdfCopy2[8];
-                        std::memcpy(sdfCopy2, cells[i].sdf, sizeof(sdfCopy2));
-                        const glm::vec3 cp = SDF::getPosition(sdfCopy2, cube);
-                        const glm::vec3 gp(res.positions[i].x, res.positions[i].y, res.positions[i].z);
-                        const float d = glm::distance(cp, gp);
-                        if (d > worstD) { worstD = d; worst = i; }
-                    }
-                    if (n > 0) {
-                        const OctreeMeshCell& wc = cells[worst];
-                        std::cout << "[meshcheck] worst cell size=" << wc.cubeSize
-                                  << " min=(" << wc.cubeMin.x << "," << wc.cubeMin.y << "," << wc.cubeMin.z << ")"
-                                  << " sdf=[";
-                        for (int k = 0; k < 8; ++k) std::cout << wc.sdf[k] << (k < 7 ? "," : "");
-                        std::cout << "] cpu=(" << 0 << ") gpu=(" << res.positions[worst].x << ","
-                                  << res.positions[worst].y << "," << res.positions[worst].z << ")"
-                                  << " delta=" << worstD << std::endl;
-                    }
-                }
-            }
-            return res;
-        };
+        // Surface Cartesian vertices are extracted only on the GPU (the
+        // topology pass writes the packed pools). There is no CPU vertex
+        // solver and no readback path to compare against any more.
         octreeTopologyCompute = std::make_shared<OctreeTopologyCompute>();
         octreeTopologyCompute->init(this);
-        gOctreeTopologyCompute = [this](const OctreeTopologyInput& input) {
-            return octreeTopologyCompute->compute(input);
-        };
         textureMixer->attachTextureArrayManager(&textureArrayManager);
         // Record into member so UI can display counts
         mixerParams.clear();
@@ -1482,7 +1416,7 @@ public:
             }
             // Hybrid RT: water volumes join the proxy only while water renders.
             sceneRenderer->rtWaterProxyEnabled = settings.waterEnabled;
-            std::deque<SceneRenderer::PendingMeshData> pendingBatch;
+            std::deque<PendingMeshData> pendingBatch;
             sceneRenderer->drainPendingMeshes(pendingBatch, 16);
             sceneRenderer->processPendingMeshes(this, camera.getPosition(), pendingBatch);
         }
@@ -4989,7 +4923,7 @@ void MyApp::undoBrushLayer(Layer layer, bool group) {
     // layers' outstanding work, then free this layer's GPU chunks.
     if (sceneProcessThread.joinable()) sceneProcessThread.join();
     {
-        std::deque<SceneRenderer::PendingMeshData> pending;
+        std::deque<PendingMeshData> pending;
         sceneRenderer->drainPendingMeshes(pending, std::numeric_limits<size_t>::max());
         for (auto it = pending.begin(); it != pending.end();) {
             if (it->layer == layer) it = pending.erase(it);
@@ -5536,7 +5470,7 @@ void MyApp::postSubmit() {
                 ? sceneRenderer->solidRenderer->getIndirectRenderer().getMeshCount() : 0;
             const size_t waterLoaded = sceneRenderer->waterRenderer
                 ? sceneRenderer->waterRenderer->getIndirectRenderer().getMeshCount() : 0;
-            const SceneRenderer::StreamStats ss = sceneRenderer->streamStats();
+            const StreamStats ss = sceneRenderer->streamStats();
             std::cout << "[stream-diag] tick=" << ++diagTick
                       << " solidLoaded=" << solidLoaded << " waterLoaded=" << waterLoaded
                       << " tracked=" << sceneRenderer->getRegisteredModelCount()

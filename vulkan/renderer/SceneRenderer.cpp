@@ -10,7 +10,6 @@
 #include <stdexcept>
 #include "../../utils/LocalScene.hpp"
 #include "../../services/OctreeTopologyCompute.hpp"
-#include "../../space/OctreeTriangleTessellator.hpp"
 #include "../includes/shader/locations.hpp"
 #include "../includes/debug/DebugModes.hpp"
 #include "../../math/geometry/ContainmentType.hpp"
@@ -26,203 +25,10 @@
 #include <cstdlib>
 
 namespace {
-// ── GPU-resident chunk topology ─────────────────────────────────────────────
-// The app does not tessellate chunk meshes on the CPU: LocalScene flattens the
-// chunk's SDF neighborhood and OctreeTopologyCompute writes the deduped
-// vertices + index stream straight into the renderer's packed pools. The CPU
-// walker stays reachable as an explicit A/B switch (VULKAN_CPU_TOPOLOGY=1) and
-// as the fallback for scenes that cannot flatten their nodes.
-bool chunkTopologyResidentEnabled() {
-    static const bool enabled = []() {
-        const char* v = std::getenv("VULKAN_CPU_TOPOLOGY");
-        return !(v != nullptr && v[0] == '1' && v[1] == '\0');
-    }();
-    return enabled;
-}
-
-// One-shot verification aid: the first resident chunk is rebuilt with the CPU
-// walker and the two triangle sets are compared. VULKAN_TOPOLOGY_SELFCHECK=1.
-// VULKAN_TOPOLOGY_SELFCHECK=1    -> verify the first 4 chunks
-// VULKAN_TOPOLOGY_SELFCHECK=all  -> verify every chunk (diagnostic; logs only
-//                                   the chunks whose triangle sets differ)
-bool topologySelfCheckEnabled() {
-    static const bool enabled = []() {
-        const char* v = std::getenv("VULKAN_TOPOLOGY_SELFCHECK");
-        return v != nullptr && v[0] != '\0';
-    }();
-    return enabled;
-}
-
-bool topologySelfCheckAllChunks() {
-    static const bool all = []() {
-        const char* v = std::getenv("VULKAN_TOPOLOGY_SELFCHECK");
-        return v != nullptr && v[0] == 'a' && v[1] == 'l' && v[2] == 'l';
-    }();
-    return all;
-}
-
-// Tolerance-quantized payload keys for the self-check. The GPU and the CPU
-// walker solve the same QEF system with different fp32 operation order, so a
-// bit-exact hash flags every vertex on a correctly built chunk. Positions are
-// quantized relative to the chunk cube (2048 steps across the chunk), normals
-// and UVs to 1/64; brushIndex stays exact.
-//
-// `geometryOnly` drops normal/UV from the key: it proves the two walkers emit
-// the same vertices at the same places (and the same triangle set), while the
-// full key additionally proves the shading payload agrees.
-uint64_t vertexQuantizedKey(const Vertex& v, float invCubeSize, bool geometryOnly) {
-    auto q = [](float value, float scale) {
-        return static_cast<uint64_t>(static_cast<int64_t>(std::llround(double(value) * double(scale))));
-    };
-    const float posScale = invCubeSize * 2048.0f;
-    uint64_t h = 1469598103934665603ull;
-    auto mix = [&h](uint64_t bits) { h = (h ^ bits) * 1099511628211ull; };
-    mix(q(v.position.x, posScale));
-    mix(q(v.position.y, posScale));
-    mix(q(v.position.z, posScale));
-    mix(static_cast<uint64_t>(static_cast<int64_t>(v.brushIndex)));
-    if (!geometryOnly) {
-        mix(q(v.normal.x, 64.0f)); mix(q(v.normal.y, 64.0f)); mix(q(v.normal.z, 64.0f));
-        mix(q(v.texCoord.x, 64.0f)); mix(q(v.texCoord.y, 64.0f));
-    }
-    return h;
-}
-
-// Canonical per-triangle key: the cyclic rotation of the three vertex payload
-// hashes that starts at the smallest one. Rotation (not sorting) keeps the
-// winding, so two meshes compare equal only when they carry the same triangles
-// with the same orientation — independent of the order each tessellator
-// emitted or deduped them in.
-struct TriangleKey {
-    uint64_t a = 0, b = 0, c = 0;
-};
-
-bool triangleKeyLess(const TriangleKey& l, const TriangleKey& r) {
-    if (l.a != r.a) return l.a < r.a;
-    if (l.b != r.b) return l.b < r.b;
-    return l.c < r.c;
-}
-
-std::vector<TriangleKey> triangleKeys(const Geometry& g, float invCubeSize, bool geometryOnly) {
-    std::vector<TriangleKey> keys;
-    keys.reserve(g.indices.size() / 3);
-    for (size_t i = 0; i + 2 < g.indices.size(); i += 3) {
-        const uint64_t h[3] = {
-            vertexQuantizedKey(g.vertices[g.indices[i + 0]], invCubeSize, geometryOnly),
-            vertexQuantizedKey(g.vertices[g.indices[i + 1]], invCubeSize, geometryOnly),
-            vertexQuantizedKey(g.vertices[g.indices[i + 2]], invCubeSize, geometryOnly)
-        };
-        int best = 0;
-        if (h[1] < h[best]) best = 1;
-        if (h[2] < h[best]) best = 2;
-        keys.push_back(TriangleKey{h[best], h[(best + 1) % 3], h[(best + 2) % 3]});
-    }
-    std::sort(keys.begin(), keys.end(), triangleKeyLess);
-    return keys;
-}
-
-// Same as triangleKeys() but order-insensitive (the three vertex hashes are
-// sorted): distinguishes "same triangle, opposite winding/order" from "same
-// triangle" comparisons.
-std::vector<TriangleKey> triangleKeysSorted(const Geometry& g, float invCubeSize, bool geometryOnly) {
-    std::vector<TriangleKey> keys;
-    keys.reserve(g.indices.size() / 3);
-    for (size_t i = 0; i + 2 < g.indices.size(); i += 3) {
-        uint64_t h[3] = {
-            vertexQuantizedKey(g.vertices[g.indices[i + 0]], invCubeSize, geometryOnly),
-            vertexQuantizedKey(g.vertices[g.indices[i + 1]], invCubeSize, geometryOnly),
-            vertexQuantizedKey(g.vertices[g.indices[i + 2]], invCubeSize, geometryOnly)
-        };
-        if (h[0] > h[1]) std::swap(h[0], h[1]);
-        if (h[1] > h[2]) std::swap(h[1], h[2]);
-        if (h[0] > h[1]) std::swap(h[0], h[1]);
-        keys.push_back(TriangleKey{h[0], h[1], h[2]});
-    }
-    std::sort(keys.begin(), keys.end(), triangleKeyLess);
-    return keys;
-}
-
-// Centroid key: quantized triangle centroid (relative to the chunk) plus the
-// brush index. Winding-, order- and normal-independent; proves both walkers
-// put the same triangles at the same places.
-uint64_t triangleCentroidKey(const Vertex& a, const Vertex& b, const Vertex& c, float invCubeSize) {
-    auto q = [](float value, float scale) {
-        return static_cast<uint64_t>(static_cast<int64_t>(std::llround(double(value) * double(scale))));
-    };
-    const float scale = invCubeSize * 256.0f;
-    const glm::vec3 centroid = (a.position + b.position + c.position) / 3.0f;
-    uint64_t h = 1469598103934665603ull;
-    auto mix = [&h](uint64_t bits) { h = (h ^ bits) * 1099511628211ull; };
-    mix(q(centroid.x, scale)); mix(q(centroid.y, scale)); mix(q(centroid.z, scale));
-    mix(static_cast<uint64_t>(static_cast<int64_t>(a.brushIndex)));
-    return h;
-}
-
-std::vector<TriangleKey> triangleCentroidKeys(const Geometry& g, float invCubeSize) {
-    std::vector<TriangleKey> keys;
-    keys.reserve(g.indices.size() / 3);
-    for (size_t i = 0; i + 2 < g.indices.size(); i += 3) {
-        const uint64_t k = triangleCentroidKey(g.vertices[g.indices[i + 0]],
-                                               g.vertices[g.indices[i + 1]],
-                                               g.vertices[g.indices[i + 2]], invCubeSize);
-        keys.push_back(TriangleKey{k, 0ull, 0ull});
-    }
-    std::sort(keys.begin(), keys.end(), triangleKeyLess);
-    return keys;
-}
-
-// Matched-triangle count between two key sets (both sorted).
-size_t countMatched(const std::vector<TriangleKey>& a, const std::vector<TriangleKey>& b) {
-    size_t i = 0, j = 0, matched = 0;
-    while (i < a.size() && j < b.size()) {
-        if (triangleKeyLess(a[i], b[j])) {
-            ++i;
-        } else if (triangleKeyLess(b[j], a[i])) {
-            ++j;
-        } else {
-            ++matched; ++i; ++j;
-        }
-    }
-    return matched;
-}
-
-// Nearest-vertex distance from the GPU mirror to the CPU reference: a port
-// divergence shows as small deltas (same surface, different rounding), a wrong
-// tessellation as large ones. Both meshes are small (<= a few thousand verts);
-// the reference is sorted on x so each lookup scans a narrow window.
-struct VertexDeviation {
-    float maxDistance = 0.0f;
-    float meanDistance = 0.0f;
-    size_t over2 = 0; // vertices farther than 2 world units from the reference
-};
-
-VertexDeviation vertexDeviation(const Geometry& gpu, const Geometry& cpu, float searchWindow) {
-    VertexDeviation out;
-    if (gpu.vertices.empty() || cpu.vertices.empty()) return out;
-    std::vector<glm::vec3> ref;
-    ref.reserve(cpu.vertices.size());
-    for (const auto& v : cpu.vertices) ref.push_back(v.position);
-    std::sort(ref.begin(), ref.end(), [](const glm::vec3& a, const glm::vec3& b) {
-        return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z);
-    });
-    double sum = 0.0;
-    for (const auto& v : gpu.vertices) {
-        const float lo = v.position.x - searchWindow;
-        const float hi = v.position.x + searchWindow;
-        auto it = std::lower_bound(ref.begin(), ref.end(), lo,
-                                   [](const glm::vec3& p, float x) { return p.x < x; });
-        float best = std::numeric_limits<float>::max();
-        for (; it != ref.end() && it->x <= hi; ++it) {
-            best = std::min(best, glm::distance(v.position, *it));
-        }
-        if (best == std::numeric_limits<float>::max()) best = searchWindow; // no candidate
-        out.maxDistance = std::max(out.maxDistance, best);
-        sum += best;
-        if (best > 2.0f) ++out.over2;
-    }
-    out.meanDistance = static_cast<float>(sum / static_cast<double>(gpu.vertices.size()));
-    return out;
-}
+// Chunk geometry is GPU-only: LocalScene flattens the chunk's SDF
+// neighborhood and OctreeTopologyCompute writes the deduped Cartesian
+// vertices + index stream straight into the renderer's packed pools. There is
+// no CPU walker, no host-side vertex stream and no GPU->CPU vertex readback.
 
 // Stable-slot pool capacities (pre-allocated GPU buffers, never reallocated).
 //
@@ -406,7 +212,7 @@ std::recursive_mutex& SceneRenderer::layerMutex(Layer layer) {
     return *layerStates_[static_cast<size_t>(layer)]->mutex;
 }
 
-std::unordered_map<NodeID, SceneRenderer::PendingDeleteEntry>& SceneRenderer::layerPendingDeletes(Layer layer) {
+std::unordered_map<NodeID, PendingDeleteEntry>& SceneRenderer::layerPendingDeletes(Layer layer) {
     ensureLayerStates(static_cast<size_t>(std::max<Layer>(layer + 1, 2)));
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
     return layerStates_[static_cast<size_t>(layer)]->pendingDeletes;
@@ -443,7 +249,7 @@ IndirectRenderer* SceneRenderer::indirectForLayer(Layer layer) {
     return solidRenderer ? &solidRenderer->getIndirectRenderer() : nullptr;
 }
 
-SceneRenderer::StreamStats SceneRenderer::streamStats() const {
+StreamStats SceneRenderer::streamStats() const {
     StreamStats out;
     out.topologyReady = streamStats_.topologyReady.load(std::memory_order_relaxed);
     out.topologyUpToDate = streamStats_.topologyUpToDate.load(std::memory_order_relaxed);
@@ -883,21 +689,24 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     materialsWrite.pBufferInfo = &materialsInfo;
     writes.push_back(materialsWrite);
 
-    // Per-brush image source table (binding 28). May be unallocated at init
-    // (materials/brush map are allocated later in setupTextures); when it is,
-    // updateTextureDescriptorSet writes it once the real buffer appears.
+    // Per-brush image source table (binding 28). The real brush map is
+    // allocated in setupTextures (before init in the normal app flow), but a
+    // valid descriptor is mandatory even on paths that reach init first: bind
+    // the materials buffer as a placeholder until updateTextureDescriptorSet
+    // sees the real map. Without this the shadow TES (which reads the brush
+    // map) trips VUID-vkCmdDrawIndexedIndirectCount-None-08114.
     brushMapBuffer_ = materialManager->getBrushMapBuffer();
-    if (brushMapBuffer_.buffer != VK_NULL_HANDLE) {
-        VkDescriptorBufferInfo& brushMapInfo = writesBuf.emplace_back(brushMapBuffer_.buffer, 0, VK_WHOLE_SIZE);
-        VkWriteDescriptorSet brushMapWrite{};
-        brushMapWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        brushMapWrite.dstSet = staticDs;
-        brushMapWrite.dstBinding = 28;
-        brushMapWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        brushMapWrite.descriptorCount = 1;
-        brushMapWrite.pBufferInfo = &brushMapInfo;
-        writes.push_back(brushMapWrite);
-    }
+    VkBuffer brushMapBinding = (brushMapBuffer_.buffer != VK_NULL_HANDLE)
+                                   ? brushMapBuffer_.buffer : materialsBuffer.buffer;
+    VkDescriptorBufferInfo& brushMapInfo = writesBuf.emplace_back(brushMapBinding, 0, VK_WHOLE_SIZE);
+    VkWriteDescriptorSet brushMapWrite{};
+    brushMapWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    brushMapWrite.dstSet = staticDs;
+    brushMapWrite.dstBinding = 28;
+    brushMapWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    brushMapWrite.descriptorCount = 1;
+    brushMapWrite.pBufferInfo = &brushMapInfo;
+    writes.push_back(brushMapWrite);
 
     // Initialize WaterRenderer early and allocate a params SSBO sized to texture layers.
     // Use the passed vector of WaterSettings as the source of truth for layer count.
@@ -1252,6 +1061,22 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
                        materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
         wr.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                        waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
+        // Shadow TES displacement reads the brush map (binding 28). The shared
+        // shadow set must carry it too: the per-cascade sets are built by
+        // copying this set, and the solid shadow draw statically uses binding
+        // 28 (VUID-vkCmdDrawIndexedIndirectCount-None-08114 otherwise).
+        VkBuffer shadowBrushMap = (brushMapBuffer_.buffer != VK_NULL_HANDLE)
+                                      ? brushMapBuffer_.buffer : materialsBuffer.buffer;
+        wr.writeBuffer(ds, 28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                       shadowBrushMap, 0, VK_WHOLE_SIZE);
+        // Shared wind field (binding 27): the cascade sets copy it, and the
+        // vegetation shadow VS samples it when grass chunks are present.
+        if (vegetationRenderer) {
+            Buffer windFieldUBO = vegetationRenderer->getWindFieldBuffer();
+            if (windFieldUBO.buffer != VK_NULL_HANDLE)
+                wr.writeBuffer(ds, kWindFieldBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                               windFieldUBO.buffer, 0, sizeof(WindField));
+        }
         wr.writeBuffer(ds, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                        waterRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
         wr.flush();
@@ -1378,7 +1203,7 @@ void SceneRenderer::initDescriptorBuffers(VulkanApp* app) {
         descBuffers_.buffers.push_back(b);
         descBuffers_.addresses.push_back(addr);
     }
-    for (uint32_t binding = 0; binding < 28; ++binding) {
+    for (uint32_t binding = 0; binding <= 28; ++binding) {
         // Binding 11 was removed (legacy cubemap); the query layout carries no
         // entry for it — skip so the offset query never touches a missing
         // binding (VUID-vkGetDescriptorSetLayoutBindingOffsetEXT-binding-08021).
@@ -1502,6 +1327,24 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
                 wBuf(kWindFieldBinding, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                      windFieldUBO.buffer, sizeof(WindField));
         }
+        // Binding 28: per-brush image source table. vkGetDescriptorEXT requires
+        // an exact range (no VK_WHOLE_SIZE), so size it from the entry count;
+        // fall back to the materials buffer before the map is allocated.
+        {
+            constexpr VkDeviceSize kBrushMapEntrySize = sizeof(glm::uvec2);
+            VkDeviceSize brushMapSize = 0;
+            VkBuffer brushMap = VK_NULL_HANDLE;
+            if (materialManagerPtr && materialManagerPtr->brushMapEntryCount() > 0) {
+                brushMap = materialManagerPtr->getBrushMapBuffer().buffer;
+                brushMapSize = static_cast<VkDeviceSize>(materialManagerPtr->brushMapEntryCount()) * kBrushMapEntrySize;
+            }
+            if (brushMap == VK_NULL_HANDLE) {
+                brushMap = materialsBuffer.buffer;
+                brushMapSize = static_cast<VkDeviceSize>(materialsSize);
+            }
+            if (brushMap != VK_NULL_HANDLE && brushMapSize > 0)
+                wBuf(28, ssboSize, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, brushMap, brushMapSize);
+        }
         // Hybrid RT mirrors (classic sets stay authoritative while the
         // descriptor-buffer bind path is inactive). Binding 14 (TLAS) has no
         // mirror (acceleration structures stay on the classic write path).
@@ -1558,7 +1401,7 @@ bool SceneRenderer::descriptorBufferBindActive(VulkanApp* app) const {
     return app->sceneDescriptorLayout->descriptorBufferBindActive();
 }
 
-SceneRenderer::StaticTextureSignature SceneRenderer::currentStaticSignature(TextureArrayManager* textureArrayManager) const {
+StaticTextureSignature SceneRenderer::currentStaticSignature(TextureArrayManager* textureArrayManager) const {
     StaticTextureSignature sig{};
     if (textureArrayManager) {
         sig.textureVersion = textureArrayManager->getVersion();
@@ -1691,10 +1534,16 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             writer.writeBuffer(staticDs, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
 
-        // Brush map SSBO (binding 28) — per-brush image source table.
-        if (brushMapBuffer_.buffer != VK_NULL_HANDLE)
-            writer.writeBuffer(staticDs, 28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                               brushMapBuffer_.buffer, 0, VK_WHOLE_SIZE);
+        // Brush map SSBO (binding 28) — per-brush image source table. Keep a
+        // valid descriptor even before the map is allocated (fallback:
+        // materials) so the shadow/main sets never carry an unwritten binding.
+        {
+            VkBuffer brushMap = (brushMapBuffer_.buffer != VK_NULL_HANDLE)
+                                    ? brushMapBuffer_.buffer : materialsBuffer.buffer;
+            if (brushMap != VK_NULL_HANDLE)
+                writer.writeBuffer(staticDs, 28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                   brushMap, 0, VK_WHOLE_SIZE);
+        }
 
         writer.flush();
     }
@@ -1768,9 +1617,20 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
                 sw.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
             // The shadow TES displacement reads the brush map (binding 28).
-            if (brushMapBuffer_.buffer != VK_NULL_HANDLE)
-                sw.writeBuffer(ds, 28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                               brushMapBuffer_.buffer, 0, VK_WHOLE_SIZE);
+            {
+                VkBuffer brushMap = (brushMapBuffer_.buffer != VK_NULL_HANDLE)
+                                        ? brushMapBuffer_.buffer : materialsBuffer.buffer;
+                if (brushMap != VK_NULL_HANDLE)
+                    sw.writeBuffer(ds, 28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                   brushMap, 0, VK_WHOLE_SIZE);
+            }
+            // Shared wind field (binding 27) for the vegetation shadow VS.
+            if (vegetationRenderer) {
+                Buffer windFieldUBO = vegetationRenderer->getWindFieldBuffer();
+                if (windFieldUBO.buffer != VK_NULL_HANDLE)
+                    sw.writeBuffer(ds, kWindFieldBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                   windFieldUBO.buffer, 0, sizeof(WindField));
+            }
             sw.flush();
         }
         // The per-cascade shadow sets are built once by copying the shared
@@ -1795,25 +1655,19 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 }
 
 
-// Drain whatever CPU-generated mesh data the background loading thread has
-// queued since the last frame, and perform the actual Vulkan GPU uploads.
-// Must be called from the main (render) thread each frame.
+// Drain the chunk-publish queue and install each chunk's draw entry. Must be
+// called from the main (render) thread each frame.
+//
+// Every entry was built by the GPU topology pass, which wrote the chunk's
+// deduped vertices and index stream straight into its span of the renderer's
+// packed pools (PackedSpaceAllocator — see IndirectRenderer::initSlots). The
+// host only publishes the draw entry and consumes the pending-delete record;
+// no Cartesian vertex is uploaded or read back.
 size_t SceneRenderer::publishPendingMeshes(
     VulkanApp* app,
     std::deque<PendingMeshData>& batch,
     const std::function<void(NodeID nid, const Geometry& geom, uint8_t lod)>& onFinestPublished)
 {
-    // One-slot-per-chunk publish. Each queue entry is a self-contained
-    // geometry chunk (one mesh per chunk — chunks arrive one by one). The
-    // mesh is packed into its own span of the shared element pools
-    // (PackedSpaceAllocator — see IndirectRenderer::initSlots) and publishes
-    // its single draw entry. addMeshSlotted is keyed by the chunk id, so
-    // edits of the same chunk resolve to the same slot — re-publishing
-    // allocates a NEW span and frees the old one once the replacement upload
-    // completes.
-    //
-    // The pending-delete entry (one-frame grace) is consumed once per chunk:
-    // the old geometry stays resident until the new upload completes.
     size_t slotsPublished = 0;
     static std::atomic<int> lvlHist[8] = {};
     static std::atomic<int> pubTotal{0};
@@ -1827,7 +1681,7 @@ size_t SceneRenderer::publishPendingMeshes(
     for (auto& item : batch) {
         const Layer layer = item.layer;
         const NodeID nid = item.nid;
-        const Octree::LoDMesh& lod = item.lodMesh;
+        const LoDMesh& lod = item.lodMesh;
 
         // Disabled layers never publish (the LayersWidget frees their slots
         // on disable; re-enabling needs Generate Map to repopulate).
@@ -1866,173 +1720,57 @@ size_t SceneRenderer::publishPendingMeshes(
             }
         }
 
-        const bool gpuResident = (lod.gpuSlot != UINT32_MAX);
-        const bool hasGeometry = !lod.geom.vertices.empty() && !lod.geom.indices.empty();
-        if (!gpuResident && !hasGeometry) continue;
+        // Every published chunk is GPU-resident: the topology pass wrote its
+        // Cartesian vertices straight into the packed pools. There is no
+        // host-side vertex mirror to upload (and none is ever read back).
+        if (lod.gpuSlot == UINT32_MAX) continue;
 
         const glm::vec3 cubeMin = lod.boundsMin;
         const glm::vec3 cubeMax = lod.boundsMax;
 
         const bool frontier = (lod.lod == 0);
-        uint32_t slotIdx = UINT32_MAX;
-        if (gpuResident) {
-            // The compute pass already wrote the chunk's geometry into its
-            // packed span and published the draw entry (the submission was
-            // fence-waited, so the data is live): nothing to allocate or
-            // upload. The chunk goes straight to ReadyToSwap; the mirrored CPU
-            // geometry below still feeds the effect consumers.
-            slotIdx = lod.gpuSlot;
-            if (oldSlot != UINT32_MAX && oldSlot != slotIdx) ir->removeMeshSlotted(oldSlot);
-            if (world_ && frontier) {
-                world_->chunkManager().setSlotIndex(base, slotIdx);
-                world_->chunkManager().finishUpload(base);
-            }
-            // Hybrid RT: the scene BLAS reads the merged vertex/index pools the
-            // pass just wrote from another queue. Re-dirty the AS so a build
-            // that overlapped the write cannot leave these chunks' triangles
-            // broken (a stale BLAS is never rebuilt by camera moves/LoD).
-            if (rayTracing) rayTracing->requestSceneBlasRefresh();
-        } else {
-        // Publish the mesh into its single draw entry slot. The slot index is
-        // the chunk's stable slot (one draw entry per chunk); `lod.lod` is the
-        // chunk's 0-based band rung (0 = finest published rung), published in the
-        // bounds meta for the GPU's per-chunk distance band test (entryLevel).
-        slotIdx = ir->addMeshSlotted(lod.geom, static_cast<uint32_t>(base),
-                                     &cubeMin,
-                                     &cubeMax,
-                                     lod.lod,
-                                     &lod.boundsBase);
-        if (slotIdx == UINT32_MAX) continue; // no free block / element pool exhausted
-
-        // addMeshSlotted re-publishes the existing chunk slot in place when
-        // one is already resident (it allocates a new packed span); then
-        // oldSlot == slotIdx and there is nothing to free.
-        if (oldSlot != UINT32_MAX && oldSlot == slotIdx) oldSlot = UINT32_MAX;
-
-        // Register the frontier chunk's slot for the erase path before the
-        // upload starts; the deferred completion frees any replaced old slot
-        // and promotes the chunk to ReadyToSwap once resident. Coarse
-        // ancestor cells (level > 0) are not tracked by the ChunkManager.
-        if (world_ && frontier)
+        uint32_t slotIdx = lod.gpuSlot;
+        if (oldSlot != UINT32_MAX && oldSlot != slotIdx) ir->removeMeshSlotted(oldSlot);
+        if (world_ && frontier) {
             world_->chunkManager().setSlotIndex(base, slotIdx);
-
-        const bool trackChunkManager = frontier;
-        ir->uploadSlot(app, slotIdx, 0.0f,
-            [ir, oldSlot, this, base, trackChunkManager]() {
-                if (oldSlot != UINT32_MAX) ir->removeMeshSlotted(oldSlot);
-                if (trackChunkManager && this->world_)
-                    this->world_->chunkManager().finishUpload(base);
-                // Hybrid RT: the scene BLAS reads the merged vertex/index pools
-                // this upload just filled, from another queue. Re-dirty the AS
-                // so a build that overlapped the transfer cannot leave these
-                // chunks' triangles broken (a stale BLAS is never rebuilt by
-                // camera moves/LoD, so the corruption would persist - the
-                // "reflections vanish past a range" artifact).
-                if (this->rayTracing)
-                    this->rayTracing->requestSceneBlasRefresh();
-            });
+            world_->chunkManager().finishUpload(base);
         }
+        // Hybrid RT: the scene BLAS reads the merged vertex/index pools the
+        // pass just wrote from another queue. Re-dirty the AS so a build that
+        // overlapped the write cannot leave these chunks' triangles broken (a
+        // stale BLAS is never rebuilt by camera moves/LoD).
+        if (rayTracing) rayTracing->requestSceneBlasRefresh();
 
         {
             auto& chunkMap = layerChunks(layer);
             chunkMap[nid] = Model3DVersion{slotIdx, lod.version};
         }
 
-        // Hybrid RT: record the proxy source of main-scene chunks (world bounds
-        // + dominant material). Solid-mapped chunks feed the solid BLAS;
-        // water-mapped chunks feed the water BLAS so solid reflections see water.
-        // NOTE (refraction fix): the proxy box MUST tightly enclose the actual
-        // mesh surface, not the emitting octree cell. Cell cubes are full
-        // volumes (tens of meters) whose faces sit at cell boundaries far from
-        // the true terrain: a refraction ray from the water surface then starts
-        // INSIDE the solid box and reports the cell-boundary exit (wrong
-        // thickness, wrong XZ offset, side-face shading) instead of the lake
-        // bottom underneath. Tight vertex bounds make each proxy a thin slab
-        // around the true surface, so the refracted ray hits the top face at
-        // the real underwater point with ground-related color/thickness.
+        // Hybrid RT proxy source. The host has no Cartesian vertex stream to
+        // measure a tight silhouette from (vertices are GPU-only and never
+        // read back), so the proxy uses the octree cell's world bounds and the
+        // node's material metadata. Solid-mapped chunks feed the solid BLAS;
+        // water-mapped chunks feed the water BLAS so solid reflections see
+        // water.
         const bool isWaterLayer = (layerRendererType(layer) == LayerRendererType::Water);
-        if (!lod.geom.vertices.empty()) {
+        {
             std::lock_guard<std::recursive_mutex> lock(proxyMutex_);
             SolidProxyData pd;
-            {
-                glm::vec3 tmin = lod.geom.vertices[0].position;
-                glm::vec3 tmax = tmin;
-                // Dominant material (mode of brushIndex) so the proxy average
-                // represents the chunk's actual ground cover, not just corner 0.
-                std::unordered_map<int, uint32_t> matHist;
-                matHist.reserve(8);
-                int bestMat = lod.geom.vertices[0].brushIndex;
-                uint32_t bestCount = 0;
-                for (const auto& v : lod.geom.vertices) {
-                    const glm::vec3& p = v.position;
-                    tmin.x = std::min(tmin.x, p.x);
-                    tmin.y = std::min(tmin.y, p.y);
-                    tmin.z = std::min(tmin.z, p.z);
-                    tmax.x = std::max(tmax.x, p.x);
-                    tmax.y = std::max(tmax.y, p.y);
-                    tmax.z = std::max(tmax.z, p.z);
-                    uint32_t c = ++matHist[v.brushIndex];
-                    if (c > bestCount) { bestCount = c; bestMat = v.brushIndex; }
-                }
-                // Small padding: keeps thin/flat surfaces non-degenerate and
-                // covers GPU TES displacement (which the CPU mesh does not see).
-                constexpr float kProxyPad = 0.15f;
-                tmin -= glm::vec3(kProxyPad);
-                tmax += glm::vec3(kProxyPad);
-                // Clamp inside the emitting cell so a displaced outlier can
-                // never bloat the proxy back into a full-cell volume.
-                tmin.x = std::max(tmin.x, cubeMin.x);
-                tmin.y = std::max(tmin.y, cubeMin.y);
-                tmin.z = std::max(tmin.z, cubeMin.z);
-                tmax.x = std::min(tmax.x, cubeMax.x);
-                tmax.y = std::min(tmax.y, cubeMax.y);
-                tmax.z = std::min(tmax.z, cubeMax.z);
-                pd.minp = tmin;
-                pd.maxp = tmax;
-                pd.materialId = static_cast<uint32_t>(std::max(0, bestMat));
-                if (isWaterLayer) {
-                    // Water reflection proxy: thin slab at the lake surface.
-                    // The water mesh is a flat lake top + terrain-contact
-                    // walls, so the raw vertex bounds span from the lake
-                    // bottom to terrain tops — a box that swallows the whole
-                    // scene. Reflection rays then always hit terrain (closer)
-                    // before the box's distant faces, so water never shows up
-                    // in reflections. Clamp Y to a thin band around the
-                    // dominant (modal) vertex height = the lake surface.
-                    std::unordered_map<int, uint32_t> yHist;
-                    yHist.reserve(64);
-                    for (const auto& v : lod.geom.vertices)
-                        ++yHist[static_cast<int>(v.position.y)];
-                    int bestY = 0;
-                    uint32_t bestYC = 0;
-                    for (const auto& kv : yHist)
-                        if (kv.second > bestYC) { bestYC = kv.second; bestY = kv.first; }
-                    const float surf = static_cast<float>(bestY);
-                    pd.minp.y = surf - 3.0f;
-                    // Extend well ABOVE the surface so the reflection rays
-                    // that pass over the lake (rising only a few degrees per
-                    // chunk) still catch the water slab instead of flying
-                    // past to the far shore / sky. The WaterRenderer.frag own-cell
-                    // rejection keeps the fragment's own cell from
-                    // self-hitting; the rchit own-body guard does the same
-                    // for the pipeline path.
-                    pd.maxp.y = surf + 3.0f;
-                    pd.hgrid.fill(surf);
-                }
-                // 4x4 max-height grid: proxy boxes per cell follow the chunk's
-                // real silhouette, so reflected secondaries land on the true
-                // surface instead of a single flat box top.
-                constexpr int kGrid = 4;
-                const float cellW = std::max((tmax.x - tmin.x) / float(kGrid), 1e-3f);
-                const float cellD = std::max((tmax.z - tmin.z) / float(kGrid), 1e-3f);
-                pd.hgrid.fill(tmin.y);
-                for (const auto& v : lod.geom.vertices) {
-                    const glm::vec3& p = v.position;
-                    int gx = std::clamp(int((p.x - tmin.x) / cellW), 0, kGrid - 1);
-                    int gz = std::clamp(int((p.z - tmin.z) / cellD), 0, kGrid - 1);
-                    float& h = pd.hgrid[gz * kGrid + gx];
-                    h = std::max(h, p.y);
-                }
+            pd.minp = cubeMin;
+            pd.maxp = cubeMax;
+            pd.materialId = static_cast<uint32_t>(std::max(0, lod.brushIndex));
+            if (isWaterLayer) {
+                // No CPU surface height exists: keep the reflection slab thin
+                // around the cell's vertical center. The own-cell rejection in
+                // the water shaders still prevents self-hits.
+                const float surf = 0.5f * (cubeMin.y + cubeMax.y);
+                pd.minp.y = surf - 3.0f;
+                pd.maxp.y = surf + 3.0f;
+                pd.hgrid.fill(surf);
+            } else {
+                // Flat top at the cell's upper bound; the GPU tessellation
+                // displacement remains covered by the cell volume.
+                pd.hgrid.fill(cubeMax.y);
             }
             pd.rung = static_cast<uint32_t>(lod.lod);
             if (isWaterLayer)
@@ -2041,16 +1779,17 @@ size_t SceneRenderer::publishPendingMeshes(
                 solidProxyData[nid] = pd;
         }
 
-        // Generate vegetation for every published solid-mapped chunk (lod.lod is the
-        // 0-based band rung, so every rung carries its own grass for full
-        // terrain coverage). The LoD band gate in
-        // IndirectRenderer.comp keeps exactly one rung per region visible, so only the
-        // selected rung's grass is drawn — generating per rung (not just the
-        // finest) lets grass appear across the whole visible terrain instead of
-        // only in the thinnest high-detail disc around the camera, with no
-        // overdraw because overlapping rungs are never simultaneously visible.
-        if (layerRendererType(layer) == LayerRendererType::Solid && vegetationRenderer && !lod.geom.vertices.empty()) {
-            onFinestPublished(nid, lod.geom, lod.lod);
+        // CPU effect consumers (grass placement, lava anchors) need Cartesian
+        // surface vertices, which no longer cross back to the host. Clear any
+        // stale per-chunk state; the GPU-driven replacements are a follow-up.
+        if (layerRendererType(layer) == LayerRendererType::Solid && vegetationRenderer) {
+            static std::atomic<bool> loggedCpuEffects{false};
+            if (!loggedCpuEffects.exchange(true)) {
+                std::cerr << "[SceneRenderer] grass/lava CPU placement disabled: chunk vertices are "
+                             "GPU-only and never read back\n";
+            }
+            const Geometry empty;
+            onFinestPublished(nid, empty, lod.lod);
         }
 
         ++slotsPublished;
@@ -2352,20 +2091,19 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
 void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 {
     // Drain the swap queue: mark each ready chunk's new mesh version as
-    // current. GPU slot data was already installed by the upload completion
-    // callback, so no resource cleanup is needed here.
+    // current. The GPU topology pass already wrote the resident span and the
+    // publisher installed the draw entry, so no resource cleanup is needed here.
     if (world_) world_->chunkManager().processSwapQueue();
 }
 
 // ── GPU-resident chunk build ────────────────────────────────────────────────
-// The app's chunk path: the octree neighborhood is flattened (LocalScene), the
-// compute pass writes the chunk's deduped vertices and index stream straight
+// The app's only chunk path: the octree neighborhood is flattened (LocalScene),
+// the compute pass writes the chunk's deduped vertices and index stream straight
 // into the renderer's packed pools, and the publisher receives a LoDMesh whose
-// geometry is already resident (gpuSlot/gpuVertexCount/gpuIndexCount) plus the
-// pass's host-visible mirror for the CPU-side effect consumers. No vertex data
-// is ever uploaded. Returns false only when the resident pipeline is
-// unavailable (caller falls back to the CPU walker); once the GPU build starts,
-// a failure means the chunk is skipped with a log — never a CPU fallback.
+// geometry is already resident (gpuSlot/gpuVertexCount/gpuIndexCount). No
+// vertex data is ever uploaded or read back. Returns false only when the
+// resident pipeline is unavailable; once a GPU build starts, a failure means
+// the chunk is skipped with a log — there is no CPU fallback.
 bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                                        OctreeNodeData& nodeData, uint8_t chunkLod,
                                        uint32_t version, OctreeTopologyInput& topoInput,
@@ -2393,7 +2131,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     // (between the two submissions) with the exact sizes.
     OctreeTopologyResidentResult res = topo->computeResident(
         topoInput, [&](const OctreeTopologyDemand& d) -> OctreeTopologyTarget {
-            IndirectRenderer::GpuMeshSpan span = ir.reserveGpuMeshSpan(chunkId, d.suggestedVertexCapacity,
+            GpuMeshSpan span = ir.reserveGpuMeshSpan(chunkId, d.suggestedVertexCapacity,
                                                      d.rawVertexCount, &cubeMin, &cubeMax,
                                                      lod, &cubeMin);
             OctreeTopologyTarget t;
@@ -2447,75 +2185,8 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
         return true;
     }
 
-    // One-shot A/B verification against the CPU walker of the same node. The
-    // mirror is deduped and in pool-slot order while the CPU mesh is deduped in
-    // walk order, so the triangles are compared as an order-independent
-    // multiset of canonical (payload-hash) triples: identical triangle sets
-    // with matching vertex payloads, independent of emission order.
-    if (topologySelfCheckEnabled()) {
-        // A few chunks, not just the first: agreement is very high but a
-        // single sample cannot tell a systematic difference from a
-        // chunk-specific degenerate QEF case. `all` checks every chunk and
-        // only logs the mismatching ones.
-        static std::atomic<int> selfCheckedCount{0};
-        const int checked = selfCheckedCount.fetch_add(1);
-        if (topologySelfCheckAllChunks() || checked < 4) {
-            Octree* tree = scene.getLayerOctree(layer);
-            if (tree != nullptr) {
-                std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
-                long refTriangles = 0;
-                Tesselator refTesselator(&refTriangles);
-                OctreeThreadContext refContext;
-                OctreeTriangleTessellator(*tree).iterateTriangles(
-                    nodeData.node, nodeData.cube, nodeData.level, refTesselator, &refContext,
-                    chunkLod, std::function<CellVertex(OctreeNode*, const BoundingCube&)>());
-                const float invCubeSize = (cube.getLengthX() > 0.0f) ? (1.0f / cube.getLengthX()) : 1.0f;
-                const std::vector<TriangleKey> gpuGeom = triangleKeys(res.bridge, invCubeSize, true);
-                const std::vector<TriangleKey> cpuGeom = triangleKeys(refTesselator.geometry, invCubeSize, true);
-                const std::vector<TriangleKey> gpuGeomSorted = triangleKeysSorted(res.bridge, invCubeSize, true);
-                const std::vector<TriangleKey> cpuGeomSorted = triangleKeysSorted(refTesselator.geometry, invCubeSize, true);
-                const std::vector<TriangleKey> gpuCentroid = triangleCentroidKeys(res.bridge, invCubeSize);
-                const std::vector<TriangleKey> cpuCentroid = triangleCentroidKeys(refTesselator.geometry, invCubeSize);
-                const std::vector<TriangleKey> gpuFull = triangleKeys(res.bridge, invCubeSize, false);
-                const std::vector<TriangleKey> cpuFull = triangleKeys(refTesselator.geometry, invCubeSize, false);
-                const size_t matchedGeom = countMatched(gpuGeom, cpuGeom);
-                const size_t matchedSorted = countMatched(gpuGeomSorted, cpuGeomSorted);
-                const size_t matchedCentroid = countMatched(gpuCentroid, cpuCentroid);
-                const size_t matchedFull = countMatched(gpuFull, cpuFull);
-                const bool geomOk = matchedGeom == gpuGeom.size() &&
-                                    matchedGeom == cpuGeom.size();
-                const bool payloadOk = matchedFull == gpuFull.size() &&
-                                       matchedFull == cpuFull.size();
-                if (!topologySelfCheckAllChunks() || !geomOk || !payloadOk) {
-                    const VertexDeviation dev =
-                        vertexDeviation(res.bridge, refTesselator.geometry, 32.0f);
-                    std::cerr << "[SceneRenderer] resident topology self-check ("
-                              << topoInput.cells.size() << " cells, " << topoInput.nodes.size()
-                              << " nodes, layer=" << layer << ", cubeMin=("
-                              << cube.getMin().x << "," << cube.getMin().y << ","
-                              << cube.getMin().z << "), cubeSize=" << cube.getLengthX()
-                              << ", lod=" << int(chunkLod) - 1 << "): gpu triangles="
-                              << (res.indexCount / 3)
-                              << " cpu triangles=" << (refTesselator.geometry.indices.size() / 3)
-                              << " gpu verts=" << res.poolVertexCount
-                              << " cpu verts=" << refTesselator.geometry.vertices.size()
-                              << " geometry=" << matchedGeom << "/" << gpuGeom.size()
-                              << " geometry(sorted)=" << matchedSorted << "/"
-                              << gpuGeomSorted.size()
-                              << " centroid=" << matchedCentroid << "/" << gpuCentroid.size()
-                              << " payload=" << matchedFull << "/" << gpuFull.size()
-                              << " dev.max=" << dev.maxDistance
-                              << " dev.mean=" << dev.meanDistance
-                              << " dev.over2=" << dev.over2
-                              << "\n";
-                }
-            }
-        }
-    }
-
     streamStats_.residentBuilt.fetch_add(1, std::memory_order_relaxed);
-    Octree::LoDMesh lm;
-    lm.geom = std::move(res.bridge);
+    LoDMesh lm;
     lm.lod = static_cast<uint8_t>(lod);
     lm.version = version;
     lm.cellSize = cube.getLength().x;
@@ -2525,6 +2196,8 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     lm.gpuSlot = res.slotIndex;
     lm.gpuVertexCount = res.poolVertexCount;
     lm.gpuIndexCount = res.indexCount;
+    lm.brushIndex = nodeData.node ? nodeData.node->brushIndex : 0;
+    lm.textureType = nodeData.node ? nodeData.node->textureType : 0;
     onGeometry(layer, nid, lm);
     return true;
 }
@@ -2541,56 +2214,38 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     if (chunkLod < 1) return;
     const uint32_t version = nodeData.node->version;
 
-    // ── GPU-resident build ──────────────────────────────────────────────────
-    // Sends only the chunk's flattened SDF neighborhood to the GPU; the
-    // compute pass writes the geometry straight into the packed pools. The CPU
-    // walker below stays the server path / A/B fallback (VULKAN_CPU_TOPOLOGY=1)
-    // and the fallback for scenes that cannot flatten their nodes.
+    // ── GPU-resident build (the only chunk mesh path) ────────────────────────
+    // Only the chunk's flattened SDF neighborhood is sent to the GPU; the
+    // compute pass writes Cartesian vertices straight into the packed pools.
+    // A scene that cannot flatten its nodes, or a missing compute service, is
+    // a hard skip: there is no CPU walker to fall back to.
     bool handled = false;
-    if (chunkTopologyResidentEnabled()) {
-        if (IndirectRenderer* ir = indirectForLayer(layer)) {
-            OctreeTopologyInput topoInput;
-            const Scene::ChunkTopologyStatus status =
-                scene.buildChunkTopology(layer, nodeData, chunkLod, version, topoInput);
-            if (status == Scene::ChunkTopologyStatus::UpToDate) {
-                streamStats_.topologyUpToDate.fetch_add(1, std::memory_order_relaxed);
-                handled = true; // this revision is already live on the GPU
-            } else if (status == Scene::ChunkTopologyStatus::Ready) {
-                streamStats_.topologyReady.fetch_add(1, std::memory_order_relaxed);
-                handled = buildChunkResident(scene, layer, nid, nodeData, chunkLod, version,
-                                             topoInput, *ir, onGeometry);
-                if (handled) scene.commitChunkTopology(layer, reinterpret_cast<uintptr_t>(nodeData.node), version);
-            } else {
-                streamStats_.topologyUnavailable.fetch_add(1, std::memory_order_relaxed);
-            }
+    if (IndirectRenderer* ir = indirectForLayer(layer)) {
+        OctreeTopologyInput topoInput;
+        const Scene::ChunkTopologyStatus status =
+            scene.buildChunkTopology(layer, nodeData, chunkLod, version, topoInput);
+        if (status == Scene::ChunkTopologyStatus::UpToDate) {
+            streamStats_.topologyUpToDate.fetch_add(1, std::memory_order_relaxed);
+            handled = true; // this revision is already live on the GPU
+        } else if (status == Scene::ChunkTopologyStatus::Ready) {
+            streamStats_.topologyReady.fetch_add(1, std::memory_order_relaxed);
+            handled = buildChunkResident(scene, layer, nid, nodeData, chunkLod, version,
+                                         topoInput, *ir, onGeometry);
+            if (handled) scene.commitChunkTopology(layer, reinterpret_cast<uintptr_t>(nodeData.node), version);
+        } else {
+            streamStats_.topologyUnavailable.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
     if (!handled) {
         streamStats_.cpuFallback.fetch_add(1, std::memory_order_relaxed);
-    {
-        static std::atomic<bool> loggedCpuPath{false};
+        static std::atomic<bool> loggedSkip{false};
         bool expected = false;
-        if (loggedCpuPath.compare_exchange_strong(expected, true))
-            std::cerr << "[SceneRenderer] CPU chunk tessellation active (VULKAN_CPU_TOPOLOGY=1, "
-                         "no resident pipeline, or this scene cannot flatten its nodes)\n";
-    }
-    // NOTE: the walk emits one callback per cell on the root path (each
-    // ancestor at its own level); the cube passed is the EMITTING cell's own
-    // cube — the band center and the meta cellSize must come from it, never
-    // from nodeData (the added node), or every ancestor would publish the
-    // frontier cell's size.
-    scene.requestModel3D(layer, nodeData, [&layer,&onGeometry,&nodeData](const Geometry& geo, uint8_t lod, uint meshVersion, uintptr_t emittingNodeId, const BoundingCube& cube, const BoundingCube& baseCube) {
-        Octree::LoDMesh lm;
-        lm.geom = geo;
-        lm.lod = lod;
-        lm.version = meshVersion;
-        lm.cellSize = cube.getLength().x;
-        lm.boundsMin = cube.getMin();
-        lm.boundsMax = cube.getMax();
-        lm.boundsBase = baseCube.getMin();
-        onGeometry(layer, reinterpret_cast<NodeID>(emittingNodeId), lm);
-    }, poolOverride);
+        if (loggedSkip.compare_exchange_strong(expected, true)) {
+            std::cerr << "[SceneRenderer] chunk skipped: GPU topology unavailable "
+                         "(no CPU tessellation fallback exists)\n";
+        }
+        return;
     }
 
     // SDF debug cubes: collected through the SAME node walk as the solid meshes
@@ -2876,7 +2531,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
         if (solidRenderer && textureArrays_) {
             VkBuffer vb = solidRenderer->getIndirectRenderer().getVertexBufferHandle();
             VkBuffer ib = solidRenderer->getIndirectRenderer().getIndexBufferHandle();
-            std::vector<IndirectRenderer::RTGeometrySpan> spans;
+            std::vector<RTGeometrySpan> spans;
             // Camera-independent raw snapshot (all resident rungs): the BLAS
             // is rebuilt only when the chunk set changes (never on camera
             // moves). The O(n^2) overlap filter below runs only when this
@@ -2885,7 +2540,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
             // Water snapshot up front so either layer can trigger the joint
             // refresh below (the scene BLAS holds both in one geometry list).
             VkBuffer wvb = VK_NULL_HANDLE, wib = VK_NULL_HANDLE;
-            std::vector<IndirectRenderer::RTGeometrySpan> wspan;
+            std::vector<RTGeometrySpan> wspan;
             if (waterRenderer) {
                 wvb = waterRenderer->getIndirectRenderer().getVertexBufferHandle();
                 wib = waterRenderer->getIndirectRenderer().getIndexBufferHandle();
@@ -2904,7 +2559,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 // Non-overlapping: only the finest resident rung per nested
                 // region survives, so LOD0 is never overlaid with LODN in
                 // the reflection.
-                std::vector<IndirectRenderer::RTGeometrySpan> filtered, wfiltered;
+                std::vector<RTGeometrySpan> filtered, wfiltered;
                 if (solidok) IndirectRenderer::filterNonOverlappingSpans(lastSceneSpans_, filtered);
                 if (waterok) IndirectRenderer::filterNonOverlappingSpans(lastWaterSpans_, wfiltered);
                 // Surviving mesh ids per layer: the proxy packer below drops
@@ -2932,12 +2587,12 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     q.buffer = wib;
                     wiaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
                 }
-                std::vector<RayTracingResources::SceneTriGeometry> solidGeoms;
-                std::vector<RayTracingResources::SceneTriGeometry> waterGeoms;
+                std::vector<SceneTriGeometry> solidGeoms;
+                std::vector<SceneTriGeometry> waterGeoms;
                 solidGeoms.reserve(filtered.size());
                 waterGeoms.reserve(wfiltered.size());
                 for (const auto& s : filtered) {
-                    RayTracingResources::SceneTriGeometry g;
+                    SceneTriGeometry g;
                     g.vertexAddress = vaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
                     g.indexAddress = iaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
                     g.vertexBuffer = vb;
@@ -2965,7 +2620,7 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 // when water changed) so a solid-only refresh never drops the
                 // water geometries.
                 for (const auto& s : wfiltered) {
-                    RayTracingResources::SceneTriGeometry g;
+                    SceneTriGeometry g;
                     g.vertexAddress = wvaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
                     g.indexAddress = wiaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
                     g.vertexBuffer = wvb;

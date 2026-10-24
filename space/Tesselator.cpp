@@ -14,9 +14,9 @@ void Tesselator::handle(OctreeNode &o0, OctreeNode &o1, OctreeNode &o2,
         o1.brushIndex>DISCARD_BRUSH_INDEX &&
         o2.brushIndex>DISCARD_BRUSH_INDEX) {
 
-        // The corner point/normal of each node was already resolved by the walk
-        // — the GPU-computed vertex in the app, the cell's SDF only on GPU-less
-        // paths — so nothing is solved here. The material comes off the node.
+        // The corner point/normal of each node was already resolved by the
+        // walk (the Blender exporter's SDF solver) — nothing is solved here.
+        // The material comes off the node.
         //
         // texCoord carries the UV scale the TextureCoordPainter painted (the
         // projection scale for Triplanar/ProjectionX/Y/Z, the authored UV for

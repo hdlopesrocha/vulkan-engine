@@ -2221,7 +2221,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
               << std::endl << std::flush;
 }
 
-void IndirectRenderer::copyGeometryToLevel(const Geometry& mesh, MeshInfo::LevelData& ld)
+void IndirectRenderer::copyGeometryToLevel(const Geometry& mesh, LevelData& ld)
 {
     // Copy vertex data into the level's packed span (absolute position)
     if (!mesh.vertices.empty() && ld.baseVertex + mesh.vertices.size() <= mergedVertices.size()) {
@@ -2269,7 +2269,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
             m.boundsBase = boundsBase ? glm::vec4(*boundsBase, 0.0f) : glm::vec4(0.0f);
             meshes[chunkId] = m;
         } else {
-            MeshInfo::LevelData& prev = existing->second.level_;
+            LevelData& prev = existing->second.level_;
             if (prev.allocated) {
                 if (prev.oldVertexBase != UINT32_MAX) {
                     spaceAlloc.freeVertex(prev.oldVertexBase, prev.oldVertexCount);
@@ -2277,7 +2277,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
                 }
                 spaceAlloc.freeVertex(prev.baseVertex, prev.vertexCount);
                 spaceAlloc.freeIndex(prev.firstIndex, prev.indexCount);
-                prev = MeshInfo::LevelData{};
+                prev = LevelData{};
             }
         }
         if (slotIdx < indirectCommands.size())
@@ -2294,7 +2294,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
     SpanReservation r = reserveSpanLocked(chunkId, neededVerts, neededIdxs,
                                           cubeMin, cubeMax, level, boundsBase);
     if (r.slotIndex == UINT32_MAX || r.info == nullptr) return UINT32_MAX;
-    MeshInfo::LevelData& ld = r.info->level_;
+    LevelData& ld = r.info->level_;
 
     if (!cubeMin || !cubeMax) {
         // No chunk cube supplied: fall back to the mesh's own AABB.
@@ -2344,7 +2344,7 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
 // the staged meta flush for GPU-written spans). If an older span is already
 // pending (a previous republish that never completed), it is freed now: that
 // republish already zeroed the entry, so nothing references it anymore.
-IndirectRenderer::SpanReservation IndirectRenderer::reserveSpanLocked(
+SpanReservation IndirectRenderer::reserveSpanLocked(
     uint32_t chunkId, uint32_t neededVerts, uint32_t neededIdxs,
     const glm::vec3* cubeMin, const glm::vec3* cubeMax, int level,
     const glm::vec3* boundsBase)
@@ -2406,7 +2406,7 @@ IndirectRenderer::SpanReservation IndirectRenderer::reserveSpanLocked(
 
     MeshInfo* chunk = isNewChunk ? nullptr : &existing->second;
     if (chunk) {
-        MeshInfo::LevelData& prev = chunk->level_;
+        LevelData& prev = chunk->level_;
         if (prev.allocated) {
             if (prev.oldVertexBase != UINT32_MAX) {
                 spaceAlloc.freeVertex(prev.oldVertexBase, prev.oldVertexCount);
@@ -2430,7 +2430,7 @@ IndirectRenderer::SpanReservation IndirectRenderer::reserveSpanLocked(
         chunk = &meshes[chunkId];
     }
 
-    MeshInfo::LevelData& ld = chunk->level_;
+    LevelData& ld = chunk->level_;
     ld.allocated   = true;
     ld.baseVertex  = newVBase;
     ld.vertexCount = neededVerts;
@@ -2478,7 +2478,7 @@ void IndirectRenderer::stageSpanFree(uint32_t baseVertex, uint32_t vertexCount,
     spanFreePending_[frame].push_back(rec);
 }
 
-IndirectRenderer::GpuMeshSpan IndirectRenderer::reserveGpuMeshSpan(
+GpuMeshSpan IndirectRenderer::reserveGpuMeshSpan(
     uint32_t chunkId, uint32_t spanVertexCapacity, uint32_t spanIndexCapacity,
     const glm::vec3* cubeMin, const glm::vec3* cubeMax, int level,
     const glm::vec3* boundsBase)
@@ -2556,7 +2556,7 @@ bool IndirectRenderer::publishGpuMeshSpan(uint32_t slotIndex, uint32_t vertexCou
     }
     if (info == nullptr || !info->level_.allocated) return false;
 
-    MeshInfo::LevelData& ld = info->level_;
+    LevelData& ld = info->level_;
     if (vertexCount > ld.vertexCount || indexCount > ld.indexCount) {
         std::cerr << "[IndirectRenderer] publishGpuMeshSpan: slot " << slotIndex
                   << " reported v=" << vertexCount << "/" << ld.vertexCount
@@ -2654,7 +2654,7 @@ void IndirectRenderer::releaseGpuMeshSpan(uint32_t slotIndex)
     }
     if (info == nullptr) return;
 
-    MeshInfo::LevelData& ld = info->level_;
+    LevelData& ld = info->level_;
     if (ld.allocated) {
         if (ld.oldVertexBase != UINT32_MAX || ld.oldIndexBase != UINT32_MAX) {
             spaceAlloc.freeVertex(ld.oldVertexBase, ld.oldVertexCount);
@@ -2662,7 +2662,7 @@ void IndirectRenderer::releaseGpuMeshSpan(uint32_t slotIndex)
         }
         spaceAlloc.freeVertex(ld.baseVertex, ld.vertexCount);
         spaceAlloc.freeIndex(ld.firstIndex, ld.indexCount);
-        ld = MeshInfo::LevelData{};
+        ld = LevelData{};
         info->baseVertex = 0;
         info->vertexCount = 0;
         info->firstIndex = 0;
@@ -2703,7 +2703,7 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
     }
 
     if (info) {
-        MeshInfo::LevelData& ld = info->level_;
+        LevelData& ld = info->level_;
         // A pending deferred old-span free can never fire anymore (no upload
         // of this chunk is in flight once the entry is zeroed below): release
         // it now.
@@ -2715,7 +2715,7 @@ void IndirectRenderer::removeMeshSlotted(uint32_t slotIndex)
             spaceAlloc.freeVertex(ld.baseVertex, ld.vertexCount);
             spaceAlloc.freeIndex(ld.firstIndex, ld.indexCount);
         }
-        ld = MeshInfo::LevelData{};
+        ld = LevelData{};
     }
 
     // Free the slot in the allocator
@@ -2750,7 +2750,7 @@ bool IndirectRenderer::uploadSlot(VulkanApp* app, uint32_t slotIndex, float prio
     }
     if (!info || !info->active) return false;
 
-    MeshInfo::LevelData& ld = info->level_;
+    LevelData& ld = info->level_;
 
     // If the chunk has no geometry, zero the entry (nothing to upload) and
     // run the completion immediately.

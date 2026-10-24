@@ -1497,7 +1497,7 @@ void VulkanApp::recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage ima
         // batched load path, which uses this helper).
         {
             std::lock_guard<std::mutex> plk(pendingLayoutMutex);
-            VulkanApp::PendingLayoutUpdate up;
+            PendingLayoutUpdate up;
             up.image = image;
             up.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             up.baseArrayLayer = targetLayer;
@@ -2770,7 +2770,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         // other threads to skip required barriers prematurely).
         {
             std::lock_guard<std::mutex> plk(pendingLayoutMutex);
-            VulkanApp::PendingLayoutUpdate up;
+            PendingLayoutUpdate up;
             up.image = image;
             up.newLayout = newLayout;
             up.baseArrayLayer = baseArrayLayer;
@@ -3111,7 +3111,7 @@ void VulkanApp::recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffe
     }
 
     std::lock_guard<std::mutex> plk(pendingLayoutMutex);
-    VulkanApp::PendingLayoutUpdate up;
+    PendingLayoutUpdate up;
     up.image = image;
     up.newLayout = newLayout;
     up.baseArrayLayer = baseArrayLayer;
@@ -3946,7 +3946,7 @@ Buffer VulkanApp::createVertexBuffer(const std::vector<Vertex> &vertices) {
     return vertexBuffer;
 }
 
-std::vector<VulkanApp::MemoryHeapBudget> VulkanApp::getMemoryBudgets() const {
+std::vector<MemoryHeapBudget> VulkanApp::getMemoryBudgets() const {
     m_memoryBudgetScratch.clear();
     if (!physicalDevice) return m_memoryBudgetScratch;
 

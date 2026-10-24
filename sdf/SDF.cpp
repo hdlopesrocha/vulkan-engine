@@ -4,6 +4,12 @@
 #include <cstring>
 #include <stb/stb_perlin.h>
 
+// ── Blender-export-only cell solve ──────────────────────────────────────────
+// The engine runtime never calls these two functions. Its Cartesian chunk
+// vertices are produced by shaders/computation/octree/OctreeTriangles.comp and
+// never read back; the CPU octree stores/combines corner SDF samples only. The
+// offline Blender exporter (utils/BlenderExport.cpp) is the sole caller,
+// because it has no GPU to run the shader. Do not add other call sites.
 glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
     SpaceType eval = SDF::eval(sdf);
     if(eval != SpaceType::Surface) {

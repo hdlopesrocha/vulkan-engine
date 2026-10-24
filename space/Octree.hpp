@@ -15,7 +15,6 @@
 #include "../math/geometry/BoundingCube.hpp"
 #include "../math/geometry/Ray.hpp"
 #include <string>
-#include "../math/geometry/Geometry.hpp"
 // Node identifier used by change handlers/collectors to key per-node state
 // (previously defined in the removed OctreeChangeHandler.hpp).
 typedef uintptr_t NodeID;
@@ -24,28 +23,7 @@ typedef uintptr_t NodeID;
 
 class Octree: public BoundingCube {
     public:
-    // ── Parallel scene loading ─────────────────────────────────────────────────
-    // CPU mesh-generation results are pushed here from the background loading
-    // thread; the main (render) thread drains the queue each frame and performs
-    // the actual Vulkan uploads.
-    struct LoDMesh {
-        Geometry geom;
-        uint8_t  lod = 0;     // 0-based LoD level of this mesh (0 = frontier chunks)
-        unsigned int     version = 0; // snapshot of node->version at generation time
-        float    cellSize = 0;  // the chunk's own cell size
-        glm::vec3 boundsMin = glm::vec3(0.0f); // emitting cell's world bounds (band center + meta)
-        glm::vec3 boundsMax = glm::vec3(0.0f);
-        glm::vec3 boundsBase = glm::vec3(0.0f); // emitting chunk's own min corner (informational; the GPU rung gate derives parent cells from the tree root lattice)
-        // GPU-resident builds (services/OctreeTopologyCompute): the compute
-        // pass already wrote the chunk's deduped vertices and index stream
-        // straight into the renderer's packed pools, so the publisher must NOT
-        // allocate a slot or upload anything. `geom` is then only the
-        // host-visible mirror the CPU-side effect consumers read.
-        uint32_t gpuSlot = UINT32_MAX;   // packed-pool slot holding the mesh
-        uint32_t gpuVertexCount = 0;     // deduped vertices written into the span
-        uint32_t gpuIndexCount = 0;      // index stream length (== draw index count)
-    };
-
+    // Published chunk metadata lives in vulkan/LodMesh.hpp (struct LoDMesh).
 
     float chunkSize;
 

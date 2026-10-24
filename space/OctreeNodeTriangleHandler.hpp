@@ -6,9 +6,8 @@
 // three corner NODES plus the surface point/normal resolved for each corner
 // (CellVertex). The walk never hands over a Vertex: the material (brush index,
 // HSV tint, texture-coordinate technique, UV scale) lives on the node, and the
-// point/normal are either the GPU-computed vertices or, on GPU-less paths, the
-// cell's SDF solution. The handler is the one place that assembles the output
-// Vertex (into a Geometry).
+// point/normal come from the caller's Blender-export SDF solver. The handler is
+// the one place that assembles the output Vertex (into a Geometry).
 class OctreeNodeTriangleHandler {
 public:
     long * count;

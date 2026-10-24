@@ -2814,7 +2814,17 @@ void VegetationRenderer::destroyInstanceBuffer(NodeID chunkId, VulkanApp* app, V
 // (cleanup() already clears handles; set appPtr to nullptr here)
 
 void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom) {
-    if (geom.indices.size() < 3 || geom.vertices.empty()) return;
+    if (geom.indices.size() < 3 || geom.vertices.empty()) {
+        // No CPU surface geometry crosses back from the GPU any more, so the
+        // runtime publishes empty chunks here. Drop any stale instance buffer
+        // for the chunk (generateChunkInstancesCPU's empty-input path). The
+        // existence check keeps this O(1) per publish instead of scanning the
+        // consolidation snapshots for every chunk of the scene.
+        if (chunkBuffers.find(nid) != chunkBuffers.end()) {
+            generateChunkInstancesCPU(nid, {}, {}, {}, {}, glm::vec3(0.0f), 0u, app);
+        }
+        return;
+    }
     try {
         // Create tightly-packed position buffer (vec3[]) for CPU-side
         // instance generation below.

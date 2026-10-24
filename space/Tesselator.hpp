@@ -6,9 +6,9 @@
 #include "../math/geometry/Vertex.hpp"
 
 // Collects the triangles of ONE tessellated node (one chunk or one ladder
-// ancestor). Each node gets its own Tesselator instance, so the class stays
-// a plain single-geometry collector: per-node meshes are bucketed by level
-// at the call sites (Processor for the chunk, LocalScene for the ancestors).
+// ancestor). Each node gets its own Tesselator instance, so the class stays a
+// plain single-geometry collector. Used only by the offline Blender exporter;
+// the engine runtime's chunk vertices are written on the GPU.
 class Tesselator : public OctreeNodeTriangleHandler{
 public:
     Geometry geometry;

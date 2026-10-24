@@ -2,7 +2,6 @@
 
 #include "Scene.hpp"
 #include "../space/Octree.hpp"
-#include "../space/Tesselator.hpp"
 #include "types/Settings.hpp"
 #include <unordered_map>
 #include <mutex>
@@ -50,7 +49,6 @@ public:
     // Must be called before any objects captured by enqueued tasks are destroyed.
     void stopPools();
 
-    void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride = nullptr) override;
     ChunkTopologyStatus buildChunkTopology(Layer layer, OctreeNodeData& data, uint8_t chunkLod,
                                            uint32_t version, OctreeTopologyInput& out) override;
     void commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint32_t version) override;
@@ -81,11 +79,9 @@ private:
     Octree* layerOctreeLocked(Layer layer) const;
     std::vector<SceneLayer> layers_;
     mutable std::mutex layersMutex_;
-    // Last-tessellated version per emitting node. requestModel3D's walk emits
-    // every cell on the root path for every added node; without this cache
-    // each cell is re-tessellated (and re-uploaded) once per added descendant
-    // during load. Node versions only bump in the change walk (edits), so a
-    // matching version means the mesh is still current.
+    // Last-tessellated version per emitting node. buildChunkTopology skips a
+    // revision that is already resident on the GPU; node versions only bump in
+    // the change walk (edits), so a matching version means the mesh is current.
     std::mutex emittedMutex_;
     std::unordered_map<uintptr_t, uint32_t> emittedVersion_;
 };

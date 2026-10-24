@@ -16,11 +16,10 @@ struct TopologyPC {
     int32_t fromBrush;
     glm::vec4 rootMinSize; // xyz = world root min, w = world root size
     float worldSize;
-    uint32_t maxVertices;  // arena capacity (0 = resident-only: no arena)
     uint32_t keyCapacity;  // rawKeys[] capacity: hard bound on raw vertices
-    // Resident pipeline (pc.resident != 0): pass 0 = walk, 1 = dedup + pool
-    // vertex write, 2 = index stream write.
-    uint32_t resident;
+    // pass 0 = walk (keys only), 1 = dedup + pool vertex write, 2 = index
+    // stream write. Every pass writes device memory only; nothing is read back
+    // except the integer counters.
     uint32_t pass;
     uint32_t vertexBase;
     uint32_t vertexCapacity;
@@ -28,15 +27,11 @@ struct TopologyPC {
     uint32_t indexCapacity;
 };
 
-// Output sizing. The arena holds the walk's raw triangle stream (xyz position +
-// brush bits, normal + cell tag, hsv) and is only used by the non-resident
-// readback: the resident pipeline rebuilds every vertex from its dedup key, so
-// its arena can can stay a heuristic and can never invalidate the pool output.
-constexpr size_t kVerticesPerCellHint = 24;      // measured raw-vertex density per scan cell
-constexpr size_t kMaxVerticesPerCall = 1u << 19; // 512k vertices -> 24 MB of arena buffers
-// Hard ceiling on the walk's raw vertex count (3 per triangle) for the
-// resident path. The chunk-local index stream has one entry per raw vertex, so
-// this is also the index-span bound. Measured worst chunk: ~3.8M raw vertices.
+// Measured raw-vertex density per scan cell, used to size the key space.
+constexpr size_t kVerticesPerCellHint = 24;
+// Hard ceiling on the walk's raw vertex count (3 per triangle): the chunk-local
+// index stream has one entry per raw vertex, so this is also the index-span
+// bound. Measured worst chunk: ~3.8M raw vertices.
 constexpr size_t kMaxKeysPerCall = 1u << 23;     // 8M -> 32 MB of keys (device local)
 }
 
@@ -51,8 +46,10 @@ void OctreeTopologyCompute::init(VulkanApp* vkApp) {
     if (pipeline != VK_NULL_HANDLE) return;
     VkDevice device = vkApp->getDevice();
 
-    VkDescriptorSetLayoutBinding bindings[18] = {};
-    for (int b = 0; b < 18; ++b) {
+    // 8 input tables + counters/keys/table + the two packed pool spans.
+    constexpr uint32_t kBindingCount = 13;
+    VkDescriptorSetLayoutBinding bindings[kBindingCount] = {};
+    for (uint32_t b = 0; b < kBindingCount; ++b) {
         bindings[b].binding = b;
         bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].descriptorCount = 1;
@@ -60,7 +57,7 @@ void OctreeTopologyCompute::init(VulkanApp* vkApp) {
     }
     VkDescriptorSetLayoutCreateInfo dli{};
     dli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dli.bindingCount = 18;
+    dli.bindingCount = kBindingCount;
     dli.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(device, &dli, nullptr, &descLayout) != VK_SUCCESS)
         throw std::runtime_error("OctreeTopologyCompute: desc layout");
@@ -99,7 +96,7 @@ void OctreeTopologyCompute::init(VulkanApp* vkApp) {
 
     VkDescriptorPoolSize ps{};
     ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    ps.descriptorCount = 18;
+    ps.descriptorCount = kBindingCount;
     VkDescriptorPoolCreateInfo dpi{};
     dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dpi.poolSizeCount = 1;
@@ -131,16 +128,11 @@ void OctreeTopologyCompute::destroy(VulkanApp* vkApp) {
         vkApp->destroyBuffer(bChild03);
         vkApp->destroyBuffer(bChild47);
         vkApp->destroyBuffer(bCells);
-        vkApp->destroyBuffer(bPos);
-        vkApp->destroyBuffer(bNrm);
-        vkApp->destroyBuffer(bOutHsv);
         vkApp->destroyBuffer(bCounter);
         vkApp->destroyBuffer(bRawKeys);
         vkApp->destroyBuffer(bDedupTable);
-        vkApp->destroyBuffer(bBridgeVerts);
-        vkApp->destroyBuffer(bBridgeIdx);
     }
-    nodeCap = cellCap = vertexCap = keyCap = tableCap = bridgeVertCap = bridgeIdxCap = 0;
+    nodeCap = cellCap = keyCap = tableCap = 0;
     pipeline = VK_NULL_HANDLE;
     layout = VK_NULL_HANDLE;
     descLayout = VK_NULL_HANDLE;
@@ -148,7 +140,7 @@ void OctreeTopologyCompute::destroy(VulkanApp* vkApp) {
 }
 
 void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount,
-                                           size_t vertexCount, size_t keyCount) {
+                                           size_t keyCount) {
     const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     const size_t tableCount = nodeCount * kVertexKeysPerNode;
     if (nodeCount > nodeCap) {
@@ -174,15 +166,6 @@ void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount,
         bCells = app->createBuffer(sizeof(uint32_t) * cellCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         cellCap = cellCount;
     }
-    if (vertexCount > vertexCap) {
-        app->destroyBuffer(bPos);
-        app->destroyBuffer(bNrm);
-        app->destroyBuffer(bOutHsv);
-        bPos = app->createBuffer(sizeof(float) * 4 * vertexCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-        bNrm = app->createBuffer(sizeof(float) * 4 * vertexCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-        bOutHsv = app->createBuffer(sizeof(float) * 4 * vertexCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-        vertexCap = vertexCount;
-    }
     if (keyCount > keyCap) {
         // Device-local: the keys are written by the walk and only ever read by
         // the two resident passes.
@@ -206,26 +189,10 @@ void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount,
     }
 }
 
-void OctreeTopologyCompute::ensureBridgeCapacity(size_t uniqueCapacity, size_t indexCapacity) {
-    const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    if (uniqueCapacity > bridgeVertCap) {
-        // 4 x vec4 per deduped vertex = the renderer's 64-byte Vertex.
-        app->destroyBuffer(bBridgeVerts);
-        bBridgeVerts = app->createBuffer(sizeof(float) * 16 * uniqueCapacity,
-                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-        bridgeVertCap = uniqueCapacity;
-    }
-    if (indexCapacity > bridgeIdxCap) {
-        app->destroyBuffer(bBridgeIdx);
-        bBridgeIdx = app->createBuffer(sizeof(uint32_t) * indexCapacity,
-                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-        bridgeIdxCap = indexCapacity;
-    }
-}
-
 namespace {
-// Compute writes -> host reads. Every submission that hands counters or bridge
-// data back to the host ends with this.
+// Compute writes -> host reads (integer counters only). Every submission that
+// hands counters back to the host ends with this; the vertex/index pools are
+// never read by the host.
 void hostReadBarrier(VkCommandBuffer cmd) {
     VkMemoryBarrier2 barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -283,15 +250,15 @@ void OctreeTopologyCompute::uploadInput(const OctreeTopologyInput& input) {
     for (size_t i = 0; i < cellCount; ++i) cells[i] = input.cells[i];
     uint32_t* counters = (uint32_t*)bCounter.mappedData;
     counters[0] = 0; // emitted vertices (raw, 3 per triangle)
-    counters[1] = 0; // arena overflow (bridge readback truncated)
+    counters[1] = 0; // reserved (historical arena overflow counter)
     counters[2] = 0; // deduped vertices written into the resident pool span
     counters[3] = 0; // drops: key capacity or pool span overflow
 }
 
-// Points the descriptor set at the arena (non-resident) or at the resident
-// target's pools. Bindings 12/13 always point at the keys/table; 14/15 fall
-// back to arena buffers when there is no target (the resident passes do not
-// run in that case, but every declared binding still needs a valid buffer).
+// Points the descriptor set at the resident target's pools. Bindings 9/10
+// always point at the keys/table; 11/12 fall back to a small input buffer for
+// the walk pass (which never touches them, but every declared binding still
+// needs a valid buffer).
 // A storage descriptor's range must not exceed
 // VkPhysicalDeviceLimits::maxStorageBufferRange (128 MB on some drivers, while
 // the packed pools are 768/192 MB) and its offset must be aligned. Bind the
@@ -320,8 +287,7 @@ static PoolSpanBinding makePoolSpanBinding(const OctreeTopologyTarget& target,
     // the shader addresses it through relVertexBase/relIndexBase, so the last
     // rel elements live just past `capacity * stride`. Without the padding the
     // tail of the span falls outside the bound range and is never written
-    // (stale pool entries -> stretched triangles), while the host-side bridge
-    // mirror stays correct — invisible to a bridge-only self-check.
+    // (stale pool entries -> stretched triangles).
     b.vertexRange = VkDeviceSize(b.relVertexBase) * sizeof(Vertex) + vBytes;
 
     const VkDeviceSize iBytes = VkDeviceSize(target.indexCapacity) * sizeof(uint32_t);
@@ -333,26 +299,23 @@ static PoolSpanBinding makePoolSpanBinding(const OctreeTopologyTarget& target,
 }
 
 void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget* target) {
+    constexpr uint32_t kBindingCount = 13;
     const bool resident = target != nullptr &&
                           target->vertexBuffer != VK_NULL_HANDLE &&
                           target->indexBuffer != VK_NULL_HANDLE;
-    VkBuffer bufs[18] = {bSdf0.buffer, bSdf1.buffer, bCube.buffer, bMeta.buffer, bHsv.buffer,
-                         bChild03.buffer, bChild47.buffer, bCells.buffer,
-                         bPos.buffer, bNrm.buffer, bOutHsv.buffer, bCounter.buffer,
-                         bRawKeys.buffer, bDedupTable.buffer,
-                         resident ? target->vertexBuffer : bPos.buffer,
-                         resident ? target->indexBuffer : bCells.buffer,
-                         bBridgeVerts.buffer, bBridgeIdx.buffer};
+    VkBuffer bufs[kBindingCount] = {bSdf0.buffer, bSdf1.buffer, bCube.buffer, bMeta.buffer,
+                                    bHsv.buffer, bChild03.buffer, bChild47.buffer, bCells.buffer,
+                                    bCounter.buffer, bRawKeys.buffer, bDedupTable.buffer,
+                                    resident ? target->vertexBuffer : bCells.buffer,
+                                    resident ? target->indexBuffer : bCells.buffer};
     // Every declared binding must name a valid buffer even when the current
-    // mode never touches it (the resident path allocates no arena, the
-    // non-resident path no bridge). Fall back to a small always-present input
-    // buffer: reads/writes of it would be a bug, but the layout stays valid.
-    for (int b = 0; b < 18; ++b) {
+    // pass never touches it; fall back to a small always-present input buffer.
+    for (uint32_t b = 0; b < kBindingCount; ++b) {
         if (bufs[b] == VK_NULL_HANDLE) bufs[b] = bCells.buffer;
     }
-    VkDescriptorBufferInfo infos[18];
-    VkWriteDescriptorSet writes[18] = {};
-    for (int b = 0; b < 18; ++b) {
+    VkDescriptorBufferInfo infos[kBindingCount];
+    VkWriteDescriptorSet writes[kBindingCount] = {};
+    for (uint32_t b = 0; b < kBindingCount; ++b) {
         infos[b] = {bufs[b], 0, app->getClampedWholeSizeRange(bufs[b])};
         writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[b].dstSet = descSet;
@@ -361,16 +324,16 @@ void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget* target)
         writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[b].pBufferInfo = &infos[b];
     }
-    // Bindings 14/15 are the renderer's packed pools: bind this chunk's span
+    // Bindings 11/12 are the renderer's packed pools: bind this chunk's span
     // (offset+range) so the descriptor stays inside every device's
     // maxStorageBufferRange; the shader indexes it span-relative.
     if (resident) {
         const PoolSpanBinding span = makePoolSpanBinding(*target,
                                                          app->getMinStorageBufferOffsetAlignment());
-        infos[14] = {bufs[14], span.vertexOffset, span.vertexRange};
-        infos[15] = {bufs[15], span.indexOffset, span.indexRange};
+        infos[11] = {bufs[11], span.vertexOffset, span.vertexRange};
+        infos[12] = {bufs[12], span.indexOffset, span.indexRange};
     }
-    vkUpdateDescriptorSets(app->getDevice(), 18, writes, 0, nullptr);
+    vkUpdateDescriptorSets(app->getDevice(), kBindingCount, writes, 0, nullptr);
 }
 
 namespace {
@@ -394,129 +357,13 @@ void countStats(uint64_t& calls, double& totalMs, double& lastMs, double& cells,
 }
 } // namespace
 
-// Non-resident path: the walk writes the raw triangle stream into the
-// host-visible arena, which this assembles back into emission order (stable
-// bucket sort by the shader's per-vertex scan-cell tag, so the result matches
-// the CPU walker's cell-major order index for index).
-OctreeTopologyResult OctreeTopologyCompute::compute(const OctreeTopologyInput& input) {
-    std::lock_guard<std::mutex> lock(mutex);
-    OctreeTopologyResult res;
-    const size_t nodeCount = input.nodes.size();
-    const size_t cellCount = input.cells.size();
-    if (app == nullptr || nodeCount == 0 || cellCount == 0) return res;
-    if (pipeline == VK_NULL_HANDLE) init(app);
-
-    const auto t0 = std::chrono::steady_clock::now();
-
-    const size_t want = cellCount * kVerticesPerCellHint;
-    const size_t arena = std::min(want, kMaxVerticesPerCall);
-    ensureCapacity(nodeCount, cellCount, arena, /*keyCount=*/arena);
-    const size_t vertexArena = std::min(arena, vertexCap);
-
-    uploadInput(input);
-    writeDescriptors(nullptr);
-
-    TopologyPC pc{};
-    pc.cellCount = (uint32_t)cellCount;
-    pc.targetLod = input.targetLod;
-    pc.fromId = (int32_t)input.fromId;
-    pc.fromBrush = input.fromBrush;
-    pc.rootMinSize = glm::vec4(input.rootMin, input.rootSize);
-    pc.worldSize = input.rootSize;
-    pc.maxVertices = (uint32_t)vertexArena;
-    // Non-resident: the arena IS the output, so the arena cap is also the hard
-    // representable bound (an overflowing triangle is dropped and reported).
-    pc.keyCapacity = (uint32_t)vertexArena;
-    pc.resident = 0u;
-
-    const uint32_t cellGroups = (uint32_t)((cellCount + 63) / 64);
-
-    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &descSet, 0, nullptr);
-        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TopologyPC), &pc);
-        vkCmdDispatch(cmd, cellGroups, 1, 1);
-        hostReadBarrier(cmd);
-    });
-
-    const uint32_t* counters = (const uint32_t*)bCounter.mappedData;
-    const uint32_t rawCount = counters[0];
-    const uint32_t arenaOverflow = counters[1];
-    const uint32_t dropped = counters[3];
-    res.truncated = arenaOverflow > 0 || dropped > 0;
-    res.vertexCount = std::min<uint32_t>(rawCount, (uint32_t)vertexArena);
-    res.vertexCount -= res.vertexCount % 3u;
-    if (res.truncated) {
-        countStats(statCalls, statMs, statMsLast, statCells, statNodes, statTriangles,
-                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
-                   cellCount, nodeCount, 0.0);
-        return res;
-    }
-
-    const float* pp = (const float*)bPos.mappedData;
-    const float* pn = (const float*)bNrm.mappedData;
-    const float* ph = (const float*)bOutHsv.mappedData;
-
-    const uint32_t n = res.vertexCount;
-    std::vector<OctreeTopologyVertex> appVerts(n);
-    std::vector<uint32_t> appCell(n);
-    for (uint32_t i = 0; i < n; ++i) {
-        OctreeTopologyVertex v;
-        v.position = glm::vec3(pp[i * 4 + 0], pp[i * 4 + 1], pp[i * 4 + 2]);
-        uint32_t brushBits = 0;
-        std::memcpy(&brushBits, &pp[i * 4 + 3], sizeof(uint32_t));
-        v.brushIndex = (int32_t)brushBits;
-        v.normal = glm::vec3(pn[i * 4 + 0], pn[i * 4 + 1], pn[i * 4 + 2]);
-        v.hsv = glm::vec3(ph[i * 4 + 0], ph[i * 4 + 1], ph[i * 4 + 2]);
-        // Per-vertex mapping technique packed in outHsv.w. The painted Custom UV
-        // is not carried in the non-resident arena (the resident path, used by
-        // the app, rebuilds it from the node metadata), so it stays (0, 0) here.
-        v.textureType = static_cast<int32_t>(ph[i * 4 + 3] + 0.5f);
-        appVerts[i] = v;
-        appCell[i] = (uint32_t)pn[i * 4 + 3];
-    }
-
-    std::vector<uint32_t> count(cellCount + 1, 0u);
-    for (uint32_t i = 0; i < n; ++i) {
-        if (appCell[i] >= cellCount) {
-            // Cannot happen for a completed dispatch (the shader tags each
-            // vertex with its own invocation index). Treat it as garbage from a
-            // lost device rather than emitting vertices with no owning cell.
-            res.truncated = true;
-            res.vertexCount = 0;
-            res.triangleCount = 0;
-            return res;
-        }
-        ++count[appCell[i]];
-    }
-    uint32_t running = 0;
-    for (size_t c = 0; c < cellCount; ++c) {
-        const uint32_t run = count[c];
-        count[c] = running;
-        running += run;
-    }
-    count[cellCount] = running;
-
-    res.vertices.resize(n);
-    for (uint32_t i = 0; i < n; ++i) {
-        const uint32_t ci = appCell[i];
-        res.vertices[count[ci]++] = appVerts[i];
-    }
-    res.triangleCount = res.vertexCount / 3u;
-
-    countStats(statCalls, statMs, statMsLast, statCells, statNodes, statTriangles,
-               std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
-               cellCount, nodeCount, double(res.triangleCount));
-    return res;
-}
-
 // Resident path. Two submissions with a host round trip in between:
 //   1) walk — writes the dedup keys and the raw count. The index stream has
 //      exactly one entry per raw vertex, so its span can only be sized once
 //      that count is known; `provider` reserves the span.
 //   2) dedup + index stream — writes the renderer's packed pools directly
-//      (device-local, never read back) and mirrors the result into the
-//      host-visible bridge the CPU-side effect consumers read.
+//      (device-local, never read back). Only integer counters return to the
+//      host; no Cartesian vertex ever crosses back from the GPU.
 // No vertex data is ever uploaded: the app only sends the node SDF tables.
 OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
     const OctreeTopologyInput& input, const OctreeTopologyTargetProvider& provider) {
@@ -546,13 +393,10 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
     pc.fromBrush = input.fromBrush;
     pc.rootMinSize = glm::vec4(input.rootMin, input.rootSize);
     pc.worldSize = input.rootSize;
-    pc.maxVertices = 0u;          // resident: the arena is not needed
-    pc.resident = 1u;
     pc.pass = 0u;
 
     for (int attempt = 0; attempt < 6 && !walkOk; ++attempt) {
-        ensureCapacity(nodeCount, cellCount, /*vertexCount=*/0, keyWant);
-        ensureBridgeCapacity(nodeCount * kVertexKeysPerNode, keyWant);
+        ensureCapacity(nodeCount, cellCount, keyWant);
         keys = std::min(keyWant, keyCap);
         maxUnique = std::min(nodeCount * kVertexKeysPerNode, keys);
         uploadInput(input); // also resets the four counters
@@ -631,9 +475,9 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
     writeDescriptors(&target);
     const PoolSpanBinding poolSpan = makePoolSpanBinding(
         target, app->getMinStorageBufferOffsetAlignment());
-    pc.vertexBase = poolSpan.relVertexBase; // span-relative inside binding 14
+    pc.vertexBase = poolSpan.relVertexBase; // span-relative inside binding 11
     pc.vertexCapacity = target.vertexCapacity;
-    pc.indexBase = poolSpan.relIndexBase; // span-relative inside binding 15
+    pc.indexBase = poolSpan.relIndexBase; // span-relative inside binding 12
     pc.indexCapacity = target.indexCapacity;
     const uint32_t vertexGroups = (uint32_t)((rawCount + 63) / 64);
 
@@ -672,8 +516,8 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
         fillDep.pMemoryBarriers = &fill;
         vkCmdPipelineBarrier2(cmd, &fillDep);
 
-        // Pass 1 (dedup into the pooled span + bridge mirror) reads the keys
-        // the walk wrote; pass 2 (index stream) reads the table pass 1 filled.
+        // Pass 1 (dedup into the pooled span) reads the keys the walk wrote;
+        // pass 2 (index stream) reads the table pass 1 filled.
         computeBarrier(VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
                        VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
         pc.pass = 1u;
@@ -732,73 +576,6 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
                       << " capacity=" << target.vertexCapacity
                       << " drops=" << dropPhase2 << "): skipped\n";
         return res;
-    }
-
-    // Bridge: host-visible mirror of exactly what the pool span holds, in the
-    // same slot order the index stream references.
-    res.bridge.vertices.resize(unique);
-    if (unique > 0)
-        std::memcpy(res.bridge.vertices.data(), bBridgeVerts.mappedData,
-                    size_t(unique) * sizeof(Vertex));
-    res.bridge.indices.resize(rawCount);
-    if (rawCount > 0)
-        std::memcpy(res.bridge.indices.data(), bBridgeIdx.mappedData,
-                    size_t(rawCount) * sizeof(uint32_t));
-
-    // Optional verification (VULKAN_POOL_SELFCHECK=1): read the packed pool span
-    // back and compare it with the bridge. The topology self-check compares the
-    // bridge (what the shader intended) with the CPU walker; this check proves
-    // the device pool the renderer actually draws contains the same bytes.
-    {
-        static const bool poolCheck = std::getenv("VULKAN_POOL_SELFCHECK") != nullptr;
-        static std::atomic<int> poolChecks{0};
-        if (poolCheck && unique > 0 && rawCount > 0 && poolChecks.fetch_add(1) < 16) {
-            const VkDeviceSize vBytes = VkDeviceSize(unique) * sizeof(Vertex);
-            const VkDeviceSize iBytes = VkDeviceSize(rawCount) * sizeof(uint32_t);
-            Buffer stage = app->createBuffer(vBytes + iBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            if (stage.buffer != VK_NULL_HANDLE) {
-                app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-                    VkBufferCopy vc{};
-                    vc.srcOffset = VkDeviceSize(target.baseVertex) * sizeof(Vertex);
-                    vc.dstOffset = 0;
-                    vc.size = vBytes;
-                    vkCmdCopyBuffer(cmd, target.vertexBuffer, stage.buffer, 1, &vc);
-                    VkBufferCopy ic{};
-                    ic.srcOffset = VkDeviceSize(target.firstIndex) * sizeof(uint32_t);
-                    ic.dstOffset = vBytes;
-                    ic.size = iBytes;
-                    vkCmdCopyBuffer(cmd, target.indexBuffer, stage.buffer, 1, &ic);
-                });
-                const uint8_t* host = static_cast<const uint8_t*>(stage.mappedData);
-                size_t vBad = 0;
-                size_t iBad = 0;
-                for (size_t v = 0; v < unique; ++v) {
-                    if (std::memcmp(host + v * sizeof(Vertex), &res.bridge.vertices[v], sizeof(Vertex)) != 0) ++vBad;
-                }
-                const uint32_t* hostIdx = reinterpret_cast<const uint32_t*>(host + vBytes);
-                for (size_t i = 0; i < rawCount; ++i) {
-                    if (hostIdx[i] != res.bridge.indices[i]) {
-                        if (iBad < 4) {
-                            std::cerr << "[pool-check]   idx[" << i << "] pool=" << hostIdx[i]
-                                      << " bridge=" << res.bridge.indices[i] << "\n";
-                        }
-                        ++iBad;
-                    }
-                }
-                if (vBad || iBad) {
-                    std::cerr << "[pool-check] MISMATCH verts=" << unique << " bad=" << vBad
-                              << " idx=" << rawCount << " bad=" << iBad
-                              << " baseVertex=" << target.baseVertex
-                              << " vertexBase=" << poolSpan.relVertexBase
-                              << " firstIndex=" << target.firstIndex
-                              << " indexBase=" << poolSpan.relIndexBase << "\n";
-                } else {
-                    std::cerr << "[pool-check] ok verts=" << unique << " idx=" << rawCount << "\n";
-                }
-                app->destroyBuffer(stage);
-            }
-        }
     }
 
     countStats(statCalls, statMs, statMsLast, statCells, statNodes, statTriangles,

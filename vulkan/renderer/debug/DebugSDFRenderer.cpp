@@ -465,7 +465,7 @@ void DebugSDFRenderer::clearCubes() {
 
 void DebugSDFRenderer::registerToIndirect() {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
-    std::vector<IndirectRenderer::SdfCube> sdf;
+    std::vector<SdfCube> sdf;
     std::vector<CubeSDF> cubes;
     size_t total = 0;
     for (const auto& entry : nodeDebugSDFCubes) total += entry.second.size();

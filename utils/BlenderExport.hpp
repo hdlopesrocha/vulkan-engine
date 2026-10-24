@@ -14,19 +14,11 @@ class Scene;
 
 // Offline Blender export of the tessellated octree.
 //
-// Pipeline (Vulkan-free; runs on a worker thread or headless):
-//   1. Walk every scene layer and rebuild each chunk's tessellated geometry
-//      with the engine's own CPU walker (OctreeTriangleTessellator +
-//      Tesselator) — the reference implementation the GPU topology pass
-//      mirrors. No GPU readback is involved.
-//   2. Re-run the renderer's deterministic grass placement
-//      (utils/GrassPlacement) on the same chunk geometry and export the tufts
-//      as a point cloud carrying variant/rotation/height attributes.
-//   3. Bake the generated mixer layers (Perlin blends of two source layers)
-//      on the CPU with the same equations as shaders/computation/TextureMixer.comp.
-//   4. Serialize the merged meshes, embedded textures, app-generated SDF
-//      effect instances and a JSON sidecar, and copy the Blender setup script
-//      next to the .glb.
+// This is the only host-side consumer allowed to solve SDF cells into
+// Cartesian surface points/normals (SDF::getPosition / getNormalFromPosition):
+// the offline exporter has no GPU. The engine runtime stores SDF samples only;
+// its Cartesian chunk vertices are written by the GPU topology pass and are
+// never read back.
 //
 // The Blender script builds the real materials (triplanar blending, per-vertex
 // material indices, normal/roughness/AO maps, grass blades, SDF proxies). The

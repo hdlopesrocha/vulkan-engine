@@ -23,10 +23,11 @@
 //                           u32 vertCount, u32 idxCount,
 //                           vertCount x 3 f32 positions, idxCount x u32 indices,
 //                           vertCount x i32 per-vertex brushIndex.
-//                           vertCount == 0 means "no geometry" (unknown id,
-//                           non-surface chunk, or empty mesh). The trailing
-//                           brush array may be absent (old senders); receivers
-//                           then fall back to the chunk record's brush.
+//                           Kept for protocol compatibility: the server is
+//                           SDF-only, so it always sends vertCount == 0 and
+//                           clients build vertices on the GPU from the chunk
+//                           records (cube + eight corner samples). The trailing
+//                           brush array may be absent (old senders).
 //     0x15 SCENE_META     : u32 layerCount, then per layer:
 //                           u8 layer, f32 rootMin xyz, f32 rootLen,
 //                           f32 chunkSize, u8 rootChunkLod (stored, +1-shifted),

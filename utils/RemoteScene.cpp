@@ -687,56 +687,6 @@ Geometry RemoteScene::buildGeometry(const chunkproto::MeshData& mesh, int brushI
     return geo;
 }
 
-void RemoteScene::requestModel3D(Layer layer, OctreeNodeData& data,
-                                 const GeometryLodCallback& callback, ThreadPool* /*poolOverride*/) {
-    if (!connected_ || !data.node || !callback) return;
-    // Snapshot the stub fields under lock; everything below is lock-free.
-    uint64_t serverId = 0;
-    uint32_t version = 0;
-    BoundingCube cube(glm::vec3(0.0f), 0.0f);
-    int brushIndex = 0;
-    uint8_t chunkLod = 0;
-    OctreeNode* stubNode = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(stubsMutex_);
-        Stub* stub = findByNode(data.node);
-        if (!stub || !stub->alive) return;
-        stubNode = &stub->node;
-        serverId = stub->serverId;
-        version = stub->node.version;
-        cube = stub->cube;
-        brushIndex = stub->node.getBrush();
-        chunkLod = stub->node.getChunkLod();
-    }
-    if (chunkLod < 1) return;
-    // Version-keyed cache: re-dispatches and repeated rungs are free, and a
-    // newer stub version naturally misses and re-fetches.
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex_);
-        auto it = meshCache_.find({serverId, version});
-        if (it != meshCache_.end() && !it->second.vertices.empty() && !it->second.indices.empty()) {
-            callback(it->second, (uint8_t)(chunkLod - 1), version,
-                     reinterpret_cast<uintptr_t>(stubNode), cube, cube);
-            return;
-        }
-    }
-    chunkproto::MeshData mesh;
-    if (!fetchMesh(serverId, mesh)) {
-        scheduleRetry(layer, serverId);
-        return;
-    }
-    if (mesh.positions.empty() || mesh.indices.empty()) return; // nothing to publish
-    Geometry geo = buildGeometry(mesh, brushIndex);
-    if (geo.vertices.empty() || geo.indices.empty()) return;
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex_);
-        if (meshCache_.size() > 2048) meshCache_.clear();
-        meshCache_[{serverId, mesh.version}] = geo;
-    }
-    callback(geo, (uint8_t)(chunkLod - 1), mesh.version,
-             reinterpret_cast<uintptr_t>(stubNode), cube, cube);
-}
-
 void RemoteScene::requestSDFCubes(Layer layer, OctreeNodeData& data,
                                   const SdfCubeCallback& callback, ThreadPool* /*poolOverride*/) {
     (void)layer;

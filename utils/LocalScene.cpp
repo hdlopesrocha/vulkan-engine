@@ -2,8 +2,6 @@
 #include "../space/OctreeFile.hpp"
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeAllocator.hpp"
-#include "../space/OctreeTriangleTessellator.hpp"
-#include "../services/OctreeMeshTypes.hpp"
 #include "../services/OctreeTopologyTypes.hpp"
 #include "../space/IteratorHandler.hpp"
 #include "../sdf/SDF.hpp"
@@ -440,127 +438,6 @@ bool LocalScene::buildSdfRegionTable(Layer layer, const glm::vec3& min, const gl
     return true;
 }
 
-void LocalScene::requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride) {
-    std::shared_ptr<Octree> tree;
-    {
-        std::lock_guard<std::mutex> lock(layersMutex_);
-        Octree* raw = layerOctreeLocked(layer);
-        if (raw && layer >= 0 && static_cast<size_t>(layer) < layers_.size())
-            tree = layers_[static_cast<size_t>(layer)].octree;
-    }
-    if (!tree) return;
-    OctreeThreadContext context;
-
-
-    // Walk starts AT the chunk node (not the whole tree): processNodeLayer already
-    // passes the correct chunk with its chunkLod, so only this chunk's subtree is
-    // ever visited. Hold the tree shared lock for the traversal, exactly as the
-    // prior Octree::iterateMultiThreaded did (the triangle walker re-locks shared).
-    {
-        std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
-        IteratorHandler handler;
-        ThreadPool& pool = (poolOverride != nullptr) ? *poolOverride : tree->threadPool;
-        handler.iterateMultiThreaded(*tree, data, pool,
-        [this, tree,&data,&context,&callback](const Octree &treeRef, OctreeNodeData &params) {
-            if(params.node->getType() != SpaceType::Surface) {
-                return true;  // descend through non-surface cells toward the chunk
-            }
-
-            const uint8_t chunkLod = params.node->getChunkLod();
-            if (chunkLod > 0) {
-                const uintptr_t nodeId = reinterpret_cast<uintptr_t>(params.node);
-                bool skip = false;
-                {
-                    std::lock_guard<std::mutex> lock(emittedMutex_);
-                    auto it = emittedVersion_.find(nodeId);
-                    skip = (it != emittedVersion_.end() && it->second == params.node->version);
-                }
-                if (!skip) {
-                    long trianglesCount = 0;
-                    Tesselator nodeTesselator(&trianglesCount);
-
-                    // CPU walker path. The app does not come through here: its
-                    // chunks are built by the GPU topology pass straight into
-                    // the packed pools (Scene::buildChunkTopology +
-                    // OctreeTopologyCompute::computeResident). This remains the
-                    // server/headless path and the explicit
-                    // VULKAN_CPU_TOPOLOGY=1 fallback.
-                    {
-                        std::function<CellVertex(OctreeNode*, const BoundingCube&)> vertexFn = nullptr;
-                        if (gOctreeMeshCompute) {
-                            std::vector<OctreeMeshCell> cells;
-                            std::vector<OctreeNode*> cellNodes;
-                            std::function<void(OctreeNode*, const BoundingCube&)> collect =
-                                [&](OctreeNode* n, const BoundingCube& c) {
-                                    if (!n) return;
-                                    if (n->getType() == SpaceType::Surface && n->getLod() > 0) {
-                                        OctreeMeshCell cell;
-                                        for (int i = 0; i < 8; ++i) cell.sdf[i] = n->sdf[i];
-                                        cell.cubeMin = c.getMin();
-                                        cell.cubeSize = c.getLengthX();
-                                        cell.brushIndex = n->brushIndex;
-                                        cells.push_back(cell);
-                                        cellNodes.push_back(n);
-                                    }
-                                    OctreeNode* ch[8] = {};
-                                    n->getChildren(*tree->allocator, ch);
-                                    for (int i = 0; i < 8; ++i)
-                                        if (ch[i]) collect(ch[i], c.getChild(i));
-                                };
-                            collect(params.node, params.cube);
-                            if (!cells.empty()) {
-                                auto res = gOctreeMeshCompute(cells, 0.0f);
-                                // Only the surface point/normal come from the GPU
-                                // pass; the material stays on the node.
-                                std::unordered_map<OctreeNode*, CellVertex> gpuVerts;
-                                for (size_t i = 0; i < cellNodes.size() && i < res.positions.size(); ++i) {
-                                    OctreeNode* n = cellNodes[i];
-                                    CellVertex v;
-                                    v.position = glm::vec3(res.positions[i].x, res.positions[i].y, res.positions[i].z);
-                                    v.normal = glm::vec3(res.normals[i].x, res.normals[i].y, res.normals[i].z);
-                                    gpuVerts[n] = v;
-                                }
-                                vertexFn = [&gpuVerts](OctreeNode* n, const BoundingCube& c) -> CellVertex {
-                                    auto it = gpuVerts.find(n);
-                                    if (it != gpuVerts.end()) return it->second;
-                                    // Node absent from the GPU table: the only
-                                    // CPU SDF solve in this path.
-                                    CellVertex v;
-                                    v.position = SDF::getPosition(n->sdf, c);
-                                    v.normal = SDF::getNormalFromPosition(n->sdf, c, v.position);
-                                    return v;
-                                };
-                            }
-                        }
-
-                        OctreeTriangleTessellator(*tree).iterateTriangles(params.node, params.cube, params.level, nodeTesselator, &context, chunkLod, vertexFn);
-                    }
-
-                    {
-                        std::lock_guard<std::mutex> lock(emittedMutex_);
-                        emittedVersion_[nodeId] = params.node->version;
-                    }
-                    if(!nodeTesselator.geometry.indices.empty()) {
-                        callback(nodeTesselator.geometry, chunkLod - 1, params.node->version,
-                                 reinterpret_cast<uintptr_t>(params.node), params.cube, data.cube);
-                    }
-                }
-            }
-            // Only the chunk node (the traversal root) is processed; stop descent.
-            return false;
-        },
-        [](const Octree &treeRef, OctreeNodeData &params, uint8_t order[8]) {
-            for(int i = 0 ; i < 8 ; ++i) {
-                order[i] = i;
-            }   
-        },
-        [tree,&data,&context](const Octree &treeRef, OctreeNodeData &params) {
-            return params.node ? params.node->chunkLod > 0 : false;
-        }
-        );
-    }
-}
-
 void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride) {
     std::shared_ptr<Octree> tree;
     {
@@ -883,7 +760,7 @@ void LocalScene::reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& u
 
 void LocalScene::invalidateTessellationCache(Layer layer) {
     (void)layer;
-    // requestModel3D skips nodes whose version matches this cache. After the
+    // buildChunkTopology skips nodes whose version matches this cache. After the
     // GPU slots for a layer are freed (disable / renderer switch), a re-emit
     // must re-tessellate even though octree versions are unchanged. The map
     // is keyed by node address only, so clear it wholesale; the next dispatch

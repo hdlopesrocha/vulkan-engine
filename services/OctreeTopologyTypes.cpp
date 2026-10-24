@@ -1,3 +1,5 @@
 #include "OctreeTopologyTypes.hpp"
 
-std::function<OctreeTopologyResult(const OctreeTopologyInput&)> gOctreeTopologyCompute = nullptr;
+// The topology types are plain data. The GPU pass writes Cartesian vertices
+// directly into the renderer's packed pools; there is no host-side triangle
+// stream to define here.

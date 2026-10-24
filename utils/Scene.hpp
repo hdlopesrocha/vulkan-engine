@@ -18,50 +18,12 @@ using Layer = int;
 constexpr Layer LAYER_OPAQUE = 0;
 constexpr Layer LAYER_TRANSPARENT = 1;
 
-// Per-layer renderer selection (edited in the LayersWidget). Solid layers
-// feed the SolidRenderer's IndirectRenderer, Water layers feed the
-// WaterRenderer's one. Both passes still render once per frame; the mapping
-// only decides which GPU pipeline a layer's chunks are published into.
-enum class LayerRendererType : uint8_t {
-    Solid = 0,
-    Water = 1,
-    Video = 2
-};
+#include "LayerRendererType.hpp"
+#include "SceneLoaderCallback.hpp"
 
-inline const char* layerRendererName(LayerRendererType r) {
-    switch (r) {
-        case LayerRendererType::Water: return "Water";
-        case LayerRendererType::Video: return "Video";
-        default: return "Solid";
-    }
-}
-
-
-// Forward declaration: an optional thread pool may be supplied to
-// requestModel3D so a caller (e.g. brush editing) can tessellate on a
-// dedicated pool instead of the scene's shared generation pool.
+// Forward declaration: optional pools may be supplied to the debug/SDF walks
+// so a caller (e.g. brush editing) does not serialize on the scene pool.
 class ThreadPool;
-
-// One tessellation walk returns the chunk's whole LoD ladder: lods[i] is the
-// level-i mesh (0 = full-detail frontier, up to the chunk root's coarse cell).
-
-class SceneLoaderCallback {
-public:
-    SceneLoaderCallback() = default;
-    ~SceneLoaderCallback() = default;
-
-    // Dynamic layers: octrees[i] is scene layer i, with its update/delete
-    // handlers at the same index. Implementations should tolerate any size
-    // (>= 1): the default procedural loader populates layer 0 (opaque) and
-    // layer 1 (transparent) when present and leaves extra layers empty.
-    virtual void loadScene(
-        std::vector<Octree*>& octrees,
-        std::vector<Octree::OctreeNodeDataHandler>& updateHandlers,
-        std::vector<Octree::OctreeNodeDataHandler>& deleteHandlers
-    ) = 0;
-
-   
-};
 
 class Scene {
 
@@ -94,26 +56,22 @@ public:
     // Drop tessellation dedup state so a re-emitted layer actually
     // re-tessellates instead of being skipped as up-to-date. Default no-op.
     virtual void invalidateTessellationCache(Layer layer) { (void)layer; }
-    virtual void requestModel3D(Layer layer, OctreeNodeData &data, const GeometryLodCallback& callback, ThreadPool* poolOverride = nullptr) = 0;
 
-    // ── GPU-resident chunk topology (app path) ───────────────────────────────
-    // The app does not tessellate on the CPU: it flattens the octree
-    // neighborhood the GPU topology walker needs for one chunk
-    // (services/OctreeTopologyCompute) and the compute pass writes the chunk's
-    // deduped vertices and index stream straight into the renderer's packed
-    // pools. requestModel3D stays the CPU/server path.
+    // ── GPU-resident chunk topology (the only chunk mesh path) ───────────────
+    // The host never tessellates: it flattens the octree neighborhood the GPU
+    // topology walker needs for one chunk (services/OctreeTopologyCompute) and
+    // the compute pass writes the chunk's deduped Cartesian vertices and index
+    // stream straight into the renderer's packed pools. Scenes without an
+    // octree to flatten cannot render geometry.
     enum class ChunkTopologyStatus {
         Ready,      // `out` holds this revision's neighborhood: run the GPU pass
         UpToDate,   // this revision is already on the GPU: skip the chunk
-        Unavailable // this scene cannot flatten its nodes: use the CPU path
+        Unavailable // this scene cannot flatten its nodes: skip the chunk
     };
     // `chunkLod` is the node's stored (1-based) chunk level: the walk target is
-    // exactly this value and the published mesh rung is chunkLod - 1, matching
-    // the CPU path's callback. `version` is the node revision the caller
-    // captured (commit passes the same value back, so a concurrent brush edit
-    // re-emits instead of being swallowed). LocalScene implements this;
-    // RemoteScene has no octree to flatten (its chunks arrive as meshes from
-    // the server).
+    // exactly this value and the published mesh rung is chunkLod - 1. `version`
+    // is the node revision the caller captured (commit passes the same value
+    // back, so a concurrent brush edit re-emits instead of being swallowed).
     virtual ChunkTopologyStatus buildChunkTopology(Layer layer, OctreeNodeData& data,
                                                    uint8_t chunkLod, uint32_t version,
                                                    OctreeTopologyInput& out) {
@@ -138,10 +96,10 @@ public:
         (void)layer; (void)min; (void)max; (void)out; (void)maxNodes;
         return false;
     }
-    // Collect SDF debug cubes the same way requestModel3D collects meshes: the
-    // walk emits one callback per node that carries a drawable SDF face, with the
-    // node's own cube (band box) so the caller can place a debug cube. Boxes are
-    // emitted for nodes at lod==1 (the same level the solid ladder uses).
+    // Collect SDF debug cubes: the walk emits one callback per node that
+    // carries a drawable SDF face, with the node's own cube (band box) so the
+    // caller can place a debug cube. Boxes are emitted for nodes at lod==1
+    // (the same level the solid ladder uses).
     using SdfCubeCallback = std::function<void(
         const BoundingCube& cube,
         const std::array<float, 8>& sdf,

@@ -567,16 +567,16 @@ void ShadowRenderer::blurCascade(VulkanApp* app, VkCommandBuffer commandBuffer, 
     // it back) are independent subresources, so one vkCmdPipelineBarrier2
     // covers both. Same stage/access mapping as the two single transitions.
     {
-        std::vector<VulkanApp::BatchTransition> mid;
+        std::vector<BatchTransition> mid;
         mid.reserve(2);
-        VulkanApp::BatchTransition tempBack{};
+        BatchTransition tempBack{};
         tempBack.image     = blurTempImage;
         tempBack.format    = EVSM_FORMAT;
         tempBack.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         tempBack.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         tempBack.mipLevels = 1;
         mid.push_back(tempBack);
-        VulkanApp::BatchTransition cascadeOut{};
+        BatchTransition cascadeOut{};
         cascadeOut.image     = cas.colorImage;
         cascadeOut.format    = EVSM_FORMAT;
         cascadeOut.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -749,14 +749,15 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
                 app->resources.addDescriptorSet(shadowCascadeSets_[f][c], "ShadowRenderer: cascade shadow DS");
 
                 // Copy the shared shadow set (textures, dummy depth, storage buffers,
-                // RT bindings, wind field, …) then redirect binding 0 at this cascade's UBO slot
-                // so the cascade draws read only their own light-space matrix.
-                // (Binding 0 is overwritten by the DescriptorWriter below, so it is
+                // RT bindings, wind field, brush map, …) then redirect binding 0 at this
+                // cascade's UBO slot so the cascade draws read only their own light-space
+                // matrix. (Binding 0 is overwritten by the DescriptorWriter below, so it is
                 // excluded from the copy list. Binding 11 skipped: removed with
                 // the legacy cubemap. Binding 27 (wind field) must be copied:
-                // VegetationRendererShadow.vert samples it.)
+                // VegetationRendererShadow.vert samples it. Binding 28 (brush map)
+                // must be copied: the shadow TES displacement samples it.)
                 static const uint32_t kCopyBindings[] = {
-                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 27};
+                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 27, 28};
                 for (uint32_t b : kCopyBindings) {
                     // Binding 14 (TLAS) only exists in the layout when RT is enabled.
                     if (b == 14 && !app->rayTracingEnabled()) continue;
@@ -810,10 +811,10 @@ void ShadowRenderer::refreshCascadeTextureBindings(VulkanApp* app) {
     // Same binding list ensureShadowParallelResources copies the cascade sets
     // with: everything except binding 0 (the per-cascade UBO, which never
     // changes on a texture realloc) and the removed binding 11. Binding 14
-    // (TLAS) only exists when ray tracing is enabled. Binding 27 (wind
-    // field) is included for the same reason as above.
+    // (TLAS) only exists when ray tracing is enabled. Binding 27 (wind field)
+    // and binding 28 (brush map) are included for the same reason as above.
     static const uint32_t kCopyBindings[] = {
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 27};
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 27, 28};
     constexpr size_t kBindingCount = sizeof(kCopyBindings) / sizeof(kCopyBindings[0]);
     const size_t frames = std::min<size_t>(shadowDescriptorSets_.size(), shadowCascadeSets_.size());
     std::vector<VkCopyDescriptorSet> copies;

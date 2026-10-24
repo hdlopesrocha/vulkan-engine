@@ -436,6 +436,11 @@ void Octree::shape(
     const bool isNodeLeaf = r.node == NULL || r.node->isLeaf();
     r.brushIndex = r.node ? r.node->brushIndex : frame.brushIndex;
     r.brushHsv = r.node ? r.node->hsv : frame.hsv;
+    // Mapping state: start from the node's existing values so an untouched node
+    // keeps what an earlier apply painted. A subdivided node then overwrites
+    // these with its dominant painted child below (same rule as the brush).
+    r.textureType = r.node ? r.node->textureType : 0;
+    r.data = r.node ? r.node->data : glm::vec2(0.0f);
     bool isChunk = isChunkNode(nodeLength);
     bool isLeaf = isShapeLeaf && isNodeLeaf;
     r.selectedLod = isLeaf ? 1u : 0u;
@@ -717,6 +722,14 @@ void Octree::shape(
         r.node->setChunkLod(r.selectedChunkLod);
         r.node->setBrush(r.brushIndex);
         r.node->hsv = r.brushHsv;
+        // Mapping state must land on the node too: the tessellators read it
+        // back per vertex (Vertex::texCoord = UV scale, Vertex::textureType).
+        // Internal cells are never painted (painting runs at the shape leaf),
+        // so without this every chunkLod > 1 mesh — which is built from cells
+        // at lod > 1 — sampled its textures with a zero UV scale, collapsing
+        // to one texel. This is the dominant painted child's mapping state.
+        r.node->textureType = r.textureType;
+        r.node->data = r.data;
 
         if(r.node->getChunkLod() > 0 && r.resultType == SpaceType::Surface) {
             ++r.node->version;

@@ -406,7 +406,7 @@ private:
 
     // Shared color+body+column end-of-pass transitions. `reserveCount` lets
     // the caller reserve room up front (avoids reallocation mid-build).
-    std::vector<VulkanApp::BatchTransition> buildWaterEndTransitions(uint32_t frameIndex, size_t reserveCount);
+    std::vector<BatchTransition> buildWaterEndTransitions(uint32_t frameIndex, size_t reserveCount);
 
     void createWaterPipelines(VulkanApp* app, const std::vector<WaterSettings>& waterParams);
     void initializeWaterParamsBuffer(const std::vector<WaterSettings>& waterParams);

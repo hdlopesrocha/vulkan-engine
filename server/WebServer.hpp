@@ -88,9 +88,9 @@ private:
     void wsLoop(int fd);
     void sendSnapshotTo(int fd);
     void sendMeshTo(int fd, uint64_t chunkId);
-    // Bulk geometry push for REQUEST_ALL_MESHES: one MESH_DATA per live
-    // chunk with non-empty tessellation (empties are skipped to save
-    // bandwidth; receivers treat a missing id as "no geometry").
+    // Protocol-compatible handler for REQUEST_ALL_MESHES. The server is
+    // SDF-only, so every chunk mesh is empty and the stream is intentionally
+    // empty; clients build triangles from the chunk records on the GPU.
     void sendAllMeshesTo(int fd);
 
     void sendRaw(int fd, const std::vector<uint8_t>& gzipped, uint8_t opcode);

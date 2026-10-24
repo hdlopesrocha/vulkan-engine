@@ -46,6 +46,16 @@ class World;
 #include "../../world/World.hpp"
 
 #include "CommandBufferState.hpp"
+#include "../LodMesh.hpp"
+#include "../PendingMeshData.hpp"
+#include "PendingNode.hpp"
+#include "PendingDeleteEntry.hpp"
+#include "SceneLayerState.hpp"
+#include "StreamStats.hpp"
+#include "StreamCounters.hpp"
+#include "SolidProxyData.hpp"
+#include "StaticTextureSignature.hpp"
+#include "Set0DescriptorBuffers.hpp"
 
 class SceneRenderer : public Renderer {
 public:
@@ -124,10 +134,6 @@ public:
     void stopGenPools();
    
     // Pending change queues (thread-safe)
-    struct PendingNode {
-        Layer layer;
-        OctreeNodeData node;
-    };
 
     // ── Dynamic per-layer GPU state ──
     // One entry per Scene layer (index = Layer). Each layer tracks its own
@@ -135,19 +141,6 @@ public:
     // shared IndirectRenderers (solid/water) are selected per layer via the
     // Scene's LayerRendererType (LayersWidget). States are heap-allocated so
     // PublishTarget references stay stable across vector growth.
-    struct PendingDeleteEntry {
-        uint32_t slotIndex = UINT32_MAX;
-        uint32_t birthFrame = 0;
-    };
-    struct SceneLayerState {
-        std::unordered_map<NodeID, Model3DVersion> chunks;
-        std::unordered_map<NodeID, PendingDeleteEntry> pendingDeletes;
-        std::unique_ptr<std::recursive_mutex> mutex;
-        std::unique_ptr<ThreadPool> genPool;
-        SceneLayerState()
-            : mutex(std::make_unique<std::recursive_mutex>()),
-              genPool(std::make_unique<ThreadPool>(std::max(2u, std::thread::hardware_concurrency() / 2))) {}
-    };
 
     // Texture arrays (owned by main): per-layer albedo averages feed the RT
     // proxy albedo. Set once in init(); read on the render thread.
@@ -194,27 +187,9 @@ public:
 
     // Chunk-streaming counters (diagnostic; VULKAN_STREAM_DIAG prints them):
     // how the GPU topology path resolved every node it was asked to build.
-    struct StreamStats {
-        uint64_t topologyReady = 0;
-        uint64_t topologyUpToDate = 0;
-        uint64_t topologyUnavailable = 0;
-        uint64_t residentBuilt = 0;   // resident pass produced geometry
-        uint64_t residentEmpty = 0;   // resident pass ran, no triangles
-        uint64_t residentFailed = 0;  // span/sizing failure (chunk skipped)
-        uint64_t cpuFallback = 0;     // resident disabled/unavailable -> CPU walk
-    };
     StreamStats streamStats() const;
 
     // Relaxed atomics written from the build path (worker/main threads).
-    struct StreamCounters {
-        std::atomic<uint64_t> topologyReady{0};
-        std::atomic<uint64_t> topologyUpToDate{0};
-        std::atomic<uint64_t> topologyUnavailable{0};
-        std::atomic<uint64_t> residentBuilt{0};
-        std::atomic<uint64_t> residentEmpty{0};
-        std::atomic<uint64_t> residentFailed{0};
-        std::atomic<uint64_t> cpuFallback{0};
-    };
     StreamCounters streamStats_;
 
     // Remove all registered meshes for one layer (from both IRs — the layer
@@ -261,23 +236,7 @@ public:
     void destroyDescriptorBuffers(VulkanApp* app);
     // cleanup declared above (accepts VulkanApp*)
 
-    using GeometryHandler = const std::function<void(Layer, NodeID, const Octree::LoDMesh&)>&;
-
-
-    
-    struct PendingMeshData {
-        Layer          layer;
-        NodeID         nid;
-        Octree::LoDMesh lodMesh;
-        OctreeNodeData nodeData;   // world cube of the source node (stable band center)
-        // Pad to a multiple of 8 bytes. An odd-sized value type makes the
-        // std::unordered_map hash node's in-place value slot 1 byte smaller than
-        // sizeof(PendingMeshData) used by the (compiler-generated) move/copy
-        // constructor, so moving a PendingMeshData out of the map reads 1 byte
-        // past the node and corrupts the adjacent heap chunk header (app aborts
-        // on free with "corrupted size vs. prev_size").
-        uint8_t        _pad[7] = {};
-    };
+    using GeometryHandler = const std::function<void(Layer, NodeID, const LoDMesh&)>&;
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
@@ -293,12 +252,12 @@ public:
 
     // ── GPU-resident chunk build ─────────────────────────────────────────────
     // Runs the GPU topology pass for one chunk and hands the publisher an
-    // Octree::LoDMesh that already lives in the renderer's packed pools
-    // (gpuSlot/gpuVertexCount/gpuIndexCount set, `geom` = the host-visible
-    // mirror for the CPU-side effect consumers). Non-resident builds keep the
-    // old path (slot allocation + vertex upload). Returns true when this
-    // function took ownership of the node (published or deliberately skipped),
-    // false when the caller must fall back to the CPU walker.
+    // LoDMesh that already lives in the renderer's packed pools
+    // (gpuSlot/gpuVertexCount/gpuIndexCount set). There is no host-visible
+    // vertex mirror: the Cartesian stream stays device-local and is never read
+    // back. Returns true when this function took ownership of the node
+    // (published or deliberately skipped); false when the GPU pass is
+    // unavailable, in which case the chunk is skipped (no CPU fallback).
     bool buildChunkResident(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData,
                             uint8_t chunkLod, uint32_t version, OctreeTopologyInput& topoInput,
                             IndirectRenderer& ir, GeometryHandler onGeometry);
@@ -325,21 +284,6 @@ public:
     // the chunk geometry (world bounds + dominant material). Guarded by
     // solidChunksMutex. Opaque chunks feed the solid BLAS; transparent
     // (water) chunks feed the water BLAS so solid reflections see water.
-    struct SolidProxyData {
-        glm::vec3 minp = glm::vec3(0.0f);
-        glm::vec3 maxp = glm::vec3(0.0f);
-        uint32_t materialId = 0;
-        // 4x4 max-height grid over the XZ bounds (row-major, gz*4+gx). Proxy
-        // boxes are emitted per grid cell so secondary rays follow the real
-        // terrain shape instead of one flat box top per chunk; reflection
-        // positions then match the surface to ~cell/4 instead of cell size.
-        std::array<float, 16> hgrid = {};
-        // 0-based band rung at publish (0 = frontier/finest). Coarse ancestors
-        // (rung > 0) nest over the fine boxes and must be EXCLUDED from the
-        // proxy set: their huge flat tops would otherwise dominate refraction
-        // hits (terraces + giant rectangles) in the far field.
-        uint32_t rung = 0;
-    };
     std::unordered_map<NodeID, SolidProxyData> solidProxyData;
     std::unordered_map<NodeID, SolidProxyData> waterProxyData;
     // Guards solidProxyData/waterProxyData (previously solidChunksMutex).
@@ -381,10 +325,10 @@ public:
     // Last submitted real-geometry span set: chunk re-uploads move the packed
     // spans even when the proxy bounds/material stay identical, so the scene
     // BLAS must refresh on span changes, not only on proxy changes.
-    std::vector<IndirectRenderer::RTGeometrySpan> lastSceneSpans_;
+    std::vector<RTGeometrySpan> lastSceneSpans_;
     // Raw water span set, same change-detection role as lastSceneSpans_
     // (without it the scene BLAS would rebuild every 30 frames when idle).
-    std::vector<IndirectRenderer::RTGeometrySpan> lastWaterSpans_;
+    std::vector<RTGeometrySpan> lastWaterSpans_;
     // Chunk ids (truncated NodeIDs — the same domain as
     // RTGeometrySpan::chunkId) surviving the non-overlapping filter, per
     // layer. The proxy packer drops entries outside these sets so coarse
@@ -493,31 +437,6 @@ private:
     // guard selects the GPU-side path (direct vkGetDescriptorEXT host writes
     // into the descriptor buffer, overlapped with compute) instead of the
     // classic vkUpdateDescriptorSets fallback below.
-    struct StaticTextureSignature {
-        VkSampler samplers[5] = {};
-        VkImageView views[5] = {};
-        VkSampler shadowSampler = VK_NULL_HANDLE;
-        VkImageView shadowViews[3] = {};
-        VkBuffer materials = VK_NULL_HANDLE;
-        VkBuffer waterParams = VK_NULL_HANDLE;
-        VkBuffer brushMap = VK_NULL_HANDLE;
-        // Bumped by TextureArrayManager::allocate()/destroy(). Included so a
-        // (re)allocation always forces the descriptor refresh even if the
-        // driver recycles image/sampler handles to the previous values
-        // (perf report 23 C1 follow-up).
-        uint32_t textureVersion = 0;
-        bool valid = false;
-        bool matches(const StaticTextureSignature& o) const {
-            for (int i = 0; i < 5; ++i)
-                if (samplers[i] != o.samplers[i] || views[i] != o.views[i]) return false;
-            if (shadowSampler != o.shadowSampler) return false;
-            for (int i = 0; i < 3; ++i)
-                if (shadowViews[i] != o.shadowViews[i]) return false;
-            return materials == o.materials && waterParams == o.waterParams &&
-                   brushMap == o.brushMap &&
-                   textureVersion == o.textureVersion;
-        }
-    };
     StaticTextureSignature lastStaticSignature_{};
 
     // Build the StaticTextureSignature for the current resources (shared by
@@ -534,15 +453,8 @@ private:
     // buffers are warm mirrors (classic sets stay authoritative); once the
     // main layout flips to DESCRIPTOR_BUFFER_BIT, bindSet0ForFrame() becomes
     // the bind path and classic set-0 writes stop.
-    // NOTE (hybrid RT): offsets cover set-0 bindings 0..27 (binding 11 absent
+    // NOTE (hybrid RT): offsets cover set-0 bindings 0..28 (binding 11 absent
     // — legacy cubemap removed). Binding 14 (TLAS) has no warm mirror.
-    struct Set0DescriptorBuffers {
-        std::vector<Buffer> buffers;                 // one per frame
-        std::vector<VkDeviceAddress> addresses;      // device address per frame
-        VkDeviceSize setSize = 0;                    // aligned set-0 byte size
-        std::array<VkDeviceSize, 28> bindingOffsets{}; // driver binding offsets
-        bool ready = false;
-    };
     Set0DescriptorBuffers descBuffers_;
 
     // Camera position from the last processPendingMeshes call; used by the

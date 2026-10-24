@@ -550,7 +550,7 @@ void DebugCubeRenderer::registerBoundingBoxesToIndirect() {
     }
     setCubes(all);
     if (terrainIR_) {
-        std::vector<IndirectRenderer::BBox> aabb;
+        std::vector<BBox> aabb;
         aabb.reserve(all.size());
         for (const auto& c : all)
             aabb.push_back({glm::vec3(c.cube.getMin()), glm::vec3(c.cube.getMax()),

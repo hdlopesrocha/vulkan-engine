@@ -76,18 +76,11 @@ struct OctreeTriangleTessellator::Walk {
         return glm::dot(d, d) <= eps * eps;
     }
 
-    // Surface point + normal of a cell — the CPU mirror of the GPU's
-    // cellPosCached/cellNormal. The vertexFn override carries the app's
-    // GPU-computed vertices (so their already-done work is reused); when it is
-    // empty (bin/server, Blender export, the topology self-check) the cell's SDF
-    // is solved here. This is the ONLY place the walk calls SDF::getPosition;
-    // everything downstream works on the CellVertex.
+    // Surface point + normal of a cell, supplied by the caller's vertexFn (the
+    // Blender exporter's SDF solver). The walk never solves a Cartesian vertex
+    // itself: runtime chunk vertices are GPU-only.
     CellVertex cellVertex(OctreeNode *n, const BoundingCube &c) const {
-        if(vertexFn) return vertexFn(n, c);
-        CellVertex v;
-        v.position = SDF::getPosition(n->sdf, c);
-        v.normal = SDF::getNormalFromPosition(n->sdf, c, v.position);
-        return v;
+        return vertexFn(n, c);
     }
 
     // Descends to the cell containing pos, starting from the cached anchor
@@ -282,9 +275,8 @@ struct OctreeTriangleTessellator::Walk {
 
     // Emit one triangle from its three corner CELLS: each corner's node plus
     // that cell's root-consistent cube. The corner point/normal is resolved by
-    // cellVertex — the app's GPU-computed vertex when vertexFn is set, the cell's
-    // SDF only on GPU-less paths — so no Vertex crosses the walk and the material
-    // is taken off the node by the handler. CPU mirror of the GPU's
+    // the caller's vertexFn, so no Vertex crosses the walk and the material is
+    // taken off the node by the handler. CPU mirror of the GPU's
     // emitTriangle(Cell, Cell, Cell, eps) with cellPosCached/cellNormal.
     void emitTriangle(OctreeNode &a, OctreeNode &b, OctreeNode &c,
                       const BoundingCube &ca, const BoundingCube &cb, const BoundingCube &cc,
@@ -405,8 +397,7 @@ struct OctreeTriangleTessellator::Walk {
         // quadrant instead; the remaining 3/4 corners still form the surface
         // polygon, and the order is preserved for triangulation.
         EdgeCell plist[4];
-        // Corner point/normal of each kept cell, resolved once by cellVertex (the
-        // GPU-computed vertex when the app supplied one, the SDF only otherwise)
+        // Corner point/normal of each kept cell, resolved once by cellVertex
         // and reused for the dedup and the owner rotation, so the walk never
         // builds a Vertex. The emit below re-resolves per triangle corner via
         // emitTriangle; this array is not rotated with plist.
@@ -583,6 +574,7 @@ void OctreeTriangleTessellator::iterateTriangles(
         OctreeThreadContext * context,
         int targetLod,
         const std::function<CellVertex(OctreeNode*, const BoundingCube&)>& vertexFn) {
+    if (!vertexFn) return; // no solver -> no Cartesian output (Blender-only path)
     OctreeSharedLock lock(tree.treeMutex);
 
     Walk walk(tree, from, fromCube, func, context, targetLod, vertexFn);

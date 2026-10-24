@@ -21,7 +21,7 @@ public:
         BoundingBox cube;
         glm::vec3 color;
         // LoD meta carried so registerBoundingBoxesToIndirect can build the
-        // IndirectRenderer::BBox (with cellSize/level/base) and the shader's
+        // BBox (with cellSize/level/base) and the shader's
         // clipmap band gate keeps exactly one rung per region.
         float cellSize = 0.0f;
         int level = 0;

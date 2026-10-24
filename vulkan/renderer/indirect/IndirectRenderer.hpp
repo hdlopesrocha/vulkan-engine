@@ -20,6 +20,16 @@
 #include "../../includes/shader/locations.hpp"
 #include "../SlotAllocator.hpp"
 #include "../PackedSpaceAllocator.hpp"
+#include "LevelData.hpp"
+#include "MeshInfo.hpp"
+#include "GpuMeshSpan.hpp"
+#include "SdfCube.hpp"
+#include "BBox.hpp"
+#include "RTGeometrySpan.hpp"
+#include "SpanReservation.hpp"
+#include "CascadeCullFrame.hpp"
+#include "MetaStageRecord.hpp"
+#include "PendingSpanFree.hpp"
 
 namespace streaming { class UploadManager; }
 
@@ -52,45 +62,6 @@ public:
         streamCategory_ = category;
     }
     bool hasUploadManager() const { return uploadMgr_ != nullptr; }
-    struct MeshInfo {
-        uint32_t id = UINT32_MAX;
-        uint32_t baseVertex = 0;
-        uint32_t vertexCount = 0;
-        uint32_t firstIndex = 0;
-        uint32_t indexCount = 0;
-        glm::vec4 boundsMin = glm::vec4(0.0f); // object-space AABB min (xyz)
-        glm::vec4 boundsMax = glm::vec4(0.0f); // object-space AABB max (xyz)
-        VkDeviceSize indirectOffset = 0; // byte offset into indirect buffer
-        uint32_t drawIndex = UINT32_MAX; // position in indirectCommands list
-        uint32_t slotIndex = UINT32_MAX; // stable slot (if using slotted mode)
-        bool active = false;
-        // Emitting cell's min corner (published as the bounds entry's fourth
-        // vec4). The hierarchical LoD gate derives parent cells from the tree
-        // root lattice, not from this field, so it is informational only now.
-        glm::vec4 boundsBase = glm::vec4(0.0f);
-        // Single chunk mesh (slotted mode): one packed span in the shared
-        // vertex/index element pools, one draw entry per chunk. Chunks arrive
-        // one by one — each chunk publishes exactly one mesh.
-        struct LevelData {
-            bool allocated = false;
-            uint32_t baseVertex = 0;   // absolute element offset (mergedVertices)
-            uint32_t vertexCount = 0;
-            uint32_t firstIndex = 0;   // absolute element offset (mergedIndices)
-            uint32_t indexCount = 0;
-            int level = 0;             // 0-based LoD level (0 = frontier chunk)
-            // Ranges of the mesh's PREVIOUS geometry, freed once the
-            // replacement upload completes (deferred — in-flight frames may
-            // still reference them). UINT32_MAX base = nothing pending.
-            uint32_t oldVertexBase = UINT32_MAX;
-            uint32_t oldVertexCount = 0;
-            uint32_t oldIndexBase = UINT32_MAX;
-            uint32_t oldIndexCount = 0;
-            glm::vec4 boundsMin = glm::vec4(0.0f);
-            glm::vec4 boundsMax = glm::vec4(0.0f);
-        };
-        LevelData level_ = {};
-        // NOTE: per-mesh buffers removed — meshes are packed into the merged buffers
-    };
 
     IndirectRenderer();
     ~IndirectRenderer();
@@ -150,15 +121,6 @@ public:
     //   releaseGpuMeshSpan()  — the pass was skipped (arena/span overflow or a
     //                           device fault): free the reservation, the chunk
     //                           stays undrawn.
-    struct GpuMeshSpan {
-        uint32_t slotIndex = UINT32_MAX;
-        uint32_t baseVertex = 0;     // pool element index the pass writes at
-        uint32_t vertexCapacity = 0; // element budget reserved for the pass
-        uint32_t firstIndex = 0;     // index pool element index the pass writes at
-        uint32_t indexCapacity = 0;  // index element budget reserved for the pass
-        VkBuffer vertexBuffer = VK_NULL_HANDLE;
-        VkBuffer indexBuffer = VK_NULL_HANDLE;
-    };
     GpuMeshSpan reserveGpuMeshSpan(uint32_t chunkId, uint32_t spanVertexCapacity,
                                    uint32_t spanIndexCapacity,
                                    const glm::vec3* cubeMin, const glm::vec3* cubeMax,
@@ -250,17 +212,6 @@ public:
     // the solid entries and frustum-culls them in the SAME IndirectRenderer.comp dispatch,
     // writing survivors to a dedicated SDF output stream. The SDF debug renderer
     // then draws from those buffers (see getSdfCompactBuffer / getSdfCountBuffer).
-    struct SdfCube {
-        glm::vec3 minp;
-        glm::vec3 maxp;
-        // LoD meta so the SDF cull can apply the SAME clipmap band gate as the solid
-        // terrain (keeps exactly one rung per region, no overlap with finer rungs).
-        // Mirrors the solid bounds entry: cellSize = chunk cube side, level = chunkLod
-        // rung, base = chunk min corner (shared column anchor).
-        float cellSize = 0.0f;
-        int level = 0;
-        glm::vec3 base = glm::vec3(0.0f);
-    };
     void setSdfCubes(const std::vector<SdfCube>& cubes);
     // Capacity of the folded SDF command stream (sdfCompactBuf): the maximum number
     // of SDF DrawCmds IndirectRenderer.comp can emit per frame. Used to bound maxDrawCount.
@@ -278,17 +229,6 @@ public:
     // IndirectRenderer.comp dispatch, writing survivors to a dedicated bbox output stream.
     // The bounding-box debug renderer then draws from those buffers (see
     // getBboxCompactBuffer / getBboxCountBuffer).
-    struct BBox {
-        glm::vec3 minp;
-        glm::vec3 maxp;
-        // LoD meta so the bbox cull can apply the SAME clipmap band gate as the
-        // solid terrain (keeps exactly one rung per region, no overlap). Mirrors
-        // the solid bounds entry: cellSize = chunk cube side, level = chunkLod
-        // rung, base = chunk min corner (shared column anchor).
-        float cellSize = 0.0f;
-        int level = 0;
-        glm::vec3 base = glm::vec3(0.0f);
-    };
     void setBoundingBoxes(const std::vector<BBox>& boxes);
     // Capacity of the folded bounding-box command stream (bboxCompactBuf): the max
     // number of bbox DrawCmds IndirectRenderer.comp can emit per frame. Used to bound maxDrawCount.
@@ -412,22 +352,6 @@ public:
     // acceleration structure build references the merged buffers directly (no
     // data copies): index values are relative to the chunk's baseVertex, and
     // vertexBuffer uses Vertex stride (position at offset 0).
-    struct RTGeometrySpan {
-        uint32_t chunkId = 0;      // NodeID (joins the proxy material registry)
-        uint32_t baseVertex = 0;
-        uint32_t vertexCount = 0;
-        uint32_t firstIndex = 0;
-        uint32_t indexCount = 0;
-        int32_t level = 0;         // 0-based LoD rung (0 = finest published rung)
-        glm::vec3 spanMin = glm::vec3(0.0f); // emitting cell bounds (nesting test)
-        glm::vec3 spanMax = glm::vec3(0.0f);
-        bool operator==(const RTGeometrySpan& o) const {
-            return chunkId == o.chunkId && baseVertex == o.baseVertex &&
-                   vertexCount == o.vertexCount && firstIndex == o.firstIndex &&
-                   indexCount == o.indexCount && level == o.level &&
-                   spanMin == o.spanMin && spanMax == o.spanMax;
-        }
-    };
     // Snapshot the active spans (thread-safe). NOTE: this helper still uses the
     // retired camera-to-centre band (distance / (baseCell * lodBias)) and is NOT
     // kept in sync with the raster's hierarchical rung gate in IndirectRenderer.comp;
@@ -587,7 +511,7 @@ private:
     // ── Slotted-mode internals ──
     // Copy vertex/index data from a Geometry into the level's packed span in
     // mergedVertices/mergedIndices (absolute offsets). Requires slotted mode.
-    void copyGeometryToLevel(const Geometry& mesh, MeshInfo::LevelData& ld);
+    void copyGeometryToLevel(const Geometry& mesh, LevelData& ld);
 
     // Caller must hold `mutex`. Allocates the chunk's draw entry on first use,
     // packs a new span of `neededVerts`/`neededIdxs` elements, registers the
@@ -595,12 +519,6 @@ private:
     // for deferred release. `boundsFromCube` is false when the caller has no
     // cube and wants the mesh AABB (NULL cubeMin/cubeMax). Returns slotIndex ==
     // UINT32_MAX on failure (no draw block / pools exhausted).
-    struct SpanReservation {
-        uint32_t slotIndex = UINT32_MAX;
-        MeshInfo* info = nullptr;
-        uint32_t baseVertex = 0;
-        uint32_t firstIndex = 0;
-    };
     SpanReservation reserveSpanLocked(uint32_t chunkId, uint32_t neededVerts,
                                       uint32_t neededIdxs, const glm::vec3* cubeMin,
                                       const glm::vec3* cubeMax, int level,
@@ -729,10 +647,6 @@ private:
     std::array<TrackedHandle<VkDescriptorSet>, MAX_CULL_FRAMES> computeDescriptorSets;
 
     // ── Cascade-aware culling (per-frame resources) ──
-    struct CascadeCullFrame {
-        std::array<Buffer, 3> compactBuffers; // compact output per cascade (DEVICE_LOCAL)
-        std::array<Buffer, 3> countBuffers;   // visible count per cascade (DEVICE_LOCAL)
-    };
     std::array<CascadeCullFrame, MAX_CULL_FRAMES> cascadeCullFrames;
     Buffer cascadeMatrixBuffer; // storage buffer with 3 mat4 cascade matrices
     Buffer cascadeDummyBuffer;  // bound to the cascade bindings of external (Solid360) descriptor sets
@@ -781,12 +695,6 @@ private:
     // queued here and copied to the GPU buffers via vkCmdCopyBuffer at the
     // start of the next prepareCull (main thread, same command buffer), which
     // is queue-ordered after every in-flight frame's reads.
-    struct MetaStageRecord {
-        uint32_t entryIndex = 0;
-        VkDrawIndexedIndirectCommand cmd{};
-        glm::vec4 bounds[4] = { glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f) };
-        bool boundsValid = false;
-    };
     std::array<std::vector<MetaStageRecord>, MAX_CULL_FRAMES> metaStagePending_;
     std::vector<MetaStageRecord> metaStageFlush_;
     std::array<Buffer, MAX_CULL_FRAMES> metaStageBuffers{};
@@ -796,12 +704,6 @@ private:
     // staged meta write that swaps their draw entry (same frame slot as
     // metaStagePending_): until that write is recorded, in-flight frames may
     // still draw the old span.
-    struct PendingSpanFree {
-        uint32_t baseVertex = UINT32_MAX;
-        uint32_t vertexCount = 0;
-        uint32_t firstIndex = UINT32_MAX;
-        uint32_t indexCount = 0;
-    };
     std::array<std::vector<PendingSpanFree>, MAX_CULL_FRAMES> spanFreePending_;
     std::vector<PendingSpanFree> spanFreeFlush_;
     // Caller must hold `mutex`. Queues a span for release with the next staged

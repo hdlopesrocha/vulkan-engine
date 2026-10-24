@@ -1213,9 +1213,9 @@ bool WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
     // resolve to no-ops inside the same call. H4: body/column entries are
     // omitted in no-body mode.
     {
-        std::vector<VulkanApp::BatchTransition> batch;
+        std::vector<BatchTransition> batch;
         batch.reserve(useBody ? 4 : 2);
-        VulkanApp::BatchTransition colorBegin{};
+        BatchTransition colorBegin{};
         colorBegin.image     = waterDepthImages[frameIndex];
         colorBegin.format    = VK_FORMAT_R32G32B32A32_SFLOAT;
         colorBegin.oldLayout = waterDepthImageLayouts[frameIndex];
@@ -1223,7 +1223,7 @@ bool WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
         colorBegin.mipLevels = 1;
         batch.push_back(colorBegin);
         if (useBody && waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
-            VulkanApp::BatchTransition bodyBegin{};
+            BatchTransition bodyBegin{};
             bodyBegin.image     = waterBodyImages[frameIndex];
             bodyBegin.format    = VK_FORMAT_R16G16B16A16_SFLOAT;
             bodyBegin.oldLayout = waterBodyImageLayouts[frameIndex];
@@ -1232,7 +1232,7 @@ bool WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
             batch.push_back(bodyBegin);
         }
         if (useBody && waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
-            VulkanApp::BatchTransition columnBegin{};
+            BatchTransition columnBegin{};
             columnBegin.image     = waterColumnImages[frameIndex];
             columnBegin.format    = VK_FORMAT_R16G16_SFLOAT;
             columnBegin.oldLayout = waterColumnImageLayouts[frameIndex];
@@ -1241,7 +1241,7 @@ bool WaterRenderer::beginWaterGeometryPass(VkCommandBuffer cmd, uint32_t frameIn
             batch.push_back(columnBegin);
         }
         if (waterGeomDepthImages[frameIndex] != VK_NULL_HANDLE) {
-            VulkanApp::BatchTransition depthBegin{};
+            BatchTransition depthBegin{};
             depthBegin.image     = waterGeomDepthImages[frameIndex];
             depthBegin.format    = VK_FORMAT_D32_SFLOAT;
             depthBegin.oldLayout = waterGeomDepthImageLayouts[frameIndex];
@@ -1346,16 +1346,16 @@ void WaterRenderer::endWaterRendering(VkCommandBuffer cmd) {
 
 // Shared color+body+column end-of-pass transitions. `reserveCount` lets the
 // depth variant reserve room for its extra depth entry without reallocating.
-std::vector<VulkanApp::BatchTransition> WaterRenderer::buildWaterEndTransitions(uint32_t frameIndex, size_t reserveCount) {
+std::vector<BatchTransition> WaterRenderer::buildWaterEndTransitions(uint32_t frameIndex, size_t reserveCount) {
     // Batched end barriers: water color + body + column
     // COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL (sampled by the
     // forward swapchain/postprocess pass, which blurs the body using the
     // packed water column depth). H4: in no-body mode the aux attachments were
     // never transitioned/attached, so their barriers and layout updates are
     // skipped and only the color target is restored.
-    std::vector<VulkanApp::BatchTransition> batch;
+    std::vector<BatchTransition> batch;
     batch.reserve(reserveCount);
-    VulkanApp::BatchTransition colorEnd{};
+    BatchTransition colorEnd{};
     colorEnd.image     = waterDepthImages[frameIndex];
     colorEnd.format    = VK_FORMAT_R32G32B32A32_SFLOAT;
     colorEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -1363,7 +1363,7 @@ std::vector<VulkanApp::BatchTransition> WaterRenderer::buildWaterEndTransitions(
     colorEnd.mipLevels = 1;
     batch.push_back(colorEnd);
     if (activePassBodyAttachments_ && waterBodyImages[frameIndex] != VK_NULL_HANDLE) {
-        VulkanApp::BatchTransition bodyEnd{};
+        BatchTransition bodyEnd{};
         bodyEnd.image     = waterBodyImages[frameIndex];
         bodyEnd.format    = VK_FORMAT_R16G16B16A16_SFLOAT;
         bodyEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -1372,7 +1372,7 @@ std::vector<VulkanApp::BatchTransition> WaterRenderer::buildWaterEndTransitions(
         batch.push_back(bodyEnd);
     }
     if (activePassBodyAttachments_ && waterColumnImages[frameIndex] != VK_NULL_HANDLE) {
-        VulkanApp::BatchTransition columnEnd{};
+        BatchTransition columnEnd{};
         columnEnd.image     = waterColumnImages[frameIndex];
         columnEnd.format    = VK_FORMAT_R16G16_SFLOAT;
         columnEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -1686,16 +1686,16 @@ void WaterRenderer::renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint3
     // pass semaphore, so the main targets are complete and in SHADER_READ_ONLY.
     // Transition both to attachment layouts (batched single barrier).
     {
-        std::vector<VulkanApp::BatchTransition> batch;
+        std::vector<BatchTransition> batch;
         batch.reserve(2);
-        VulkanApp::BatchTransition colorBegin{};
+        BatchTransition colorBegin{};
         colorBegin.image     = colorImage;
         colorBegin.format    = app->getSwapchainImageFormat();
         colorBegin.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         colorBegin.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         colorBegin.mipLevels = 1;
         batch.push_back(colorBegin);
-        VulkanApp::BatchTransition depthBegin{};
+        BatchTransition depthBegin{};
         depthBegin.image     = depthImage;
         depthBegin.format    = VK_FORMAT_D32_SFLOAT;
         depthBegin.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1767,16 +1767,16 @@ void WaterRenderer::renderMainTargets(VulkanApp* app, VkCommandBuffer cmd, uint3
     // Back to SHADER_READ_ONLY: the composite samples the color target and the
     // depth target is read by later passes (brush overlay, debug widgets).
     {
-        std::vector<VulkanApp::BatchTransition> batch;
+        std::vector<BatchTransition> batch;
         batch.reserve(2);
-        VulkanApp::BatchTransition colorEnd{};
+        BatchTransition colorEnd{};
         colorEnd.image     = colorImage;
         colorEnd.format    = app->getSwapchainImageFormat();
         colorEnd.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         colorEnd.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         colorEnd.mipLevels = 1;
         batch.push_back(colorEnd);
-        VulkanApp::BatchTransition depthEnd{};
+        BatchTransition depthEnd{};
         depthEnd.image     = depthImage;
         depthEnd.format    = VK_FORMAT_D32_SFLOAT;
         depthEnd.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;

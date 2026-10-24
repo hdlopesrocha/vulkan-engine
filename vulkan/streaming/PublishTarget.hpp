@@ -17,12 +17,12 @@ struct PublishTarget {
     // queue for both streams (solid + water); each entry is keyed by its
     // emitting octree node id and carries its own single LoDMesh (no ladder
     // structures anywhere).
-    std::unordered_map<NodeID, SceneRenderer::PendingMeshData>& meshData;
+    std::unordered_map<NodeID, PendingMeshData>& meshData;
     std::mutex& queueMutex;
     // Chunk registry whose entries are removed on delete (solid vs water).
     std::unordered_map<NodeID, Model3DVersion>& chunks;
     // Mutex guarding [chunks] (per-space, chosen by the caller).
     std::recursive_mutex& chunksMutex;
     // Deferred slot-registry on delete (solid/water) used in slotted mode.
-    std::unordered_map<NodeID, SceneRenderer::PendingDeleteEntry>& deferredSlots;
+    std::unordered_map<NodeID, PendingDeleteEntry>& deferredSlots;
 };

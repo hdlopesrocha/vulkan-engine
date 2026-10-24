@@ -95,6 +95,8 @@ function parseMeshEntry(dv, rawLen, off) {
 }
 function parseMesh(raw) {
   // MESH_DATA: magic[4], type, then one entry (see parseMeshEntry). The
+  // server is SDF-only and always sends an empty entry; the viewer builds
+  // vertices from the chunk record on the GPU. The
   // trailing brush array may be absent (old senders) -> brush is null and
   // callers fall back to the chunk record's brush.
   if (raw.length < 29) return null;

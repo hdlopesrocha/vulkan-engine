@@ -1,13 +1,13 @@
-// Bit-exact ports of the CPU cell functions the octree tessellator uses:
+// Bit-exact ports of the CPU cell functions the offline Blender exporter uses:
 //
 //   SDF::eval()                  -> sdfEvalType()
 //   SDF::getPosition()           -> sdfCellPosition()
 //   SDF::getNormalFromPosition() -> sdfCellNormal()
 //   Math::solveLinearSystem()    -> sdfSolveLinearSystem() (Cramer, glm::det order)
 //
-// Shared by every GPU octree consumer (OctreeTriangles.comp and
-// OctreeMesh.comp) so the two can never drift apart: they call the same
-// arithmetic in the same order as the CPU.
+// This is the runtime's ONLY Cartesian cell solver (OctreeTriangles.comp calls
+// it). The CPU implementations exist for the offline Blender exporter only;
+// the engine never solves a chunk vertex on the host and never reads one back.
 //
 // The functions are pure (they take the 8 stored corner values and the cell
 // cube, not a node table), so a caller with any storage layout can use them.

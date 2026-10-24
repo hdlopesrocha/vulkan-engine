@@ -2,8 +2,8 @@
 #include <shared_mutex>
 
 // Read guard for Octree::treeMutex. iterate* can nest (an iterate handler may
-// re-enter the octree, e.g. LocalScene::requestModel3D calls the triangle
-// walker from inside a traversal handler), and std::shared_mutex is not
+// re-enter the octree, e.g. the Blender exporter calls the triangle walker
+// from inside a traversal handler), and std::shared_mutex is not
 // recursive, so only the OUTERMOST iterate acquires the lock; inner ones (same
 // thread) piggyback on the outer read. apply takes the exclusive path (it is
 // the only writer) and is never re-entered from an iterate handler.

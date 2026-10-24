@@ -26,8 +26,9 @@
 #include "../space/Octree.hpp"
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeTriangleTessellator.hpp"
-#include "../space/Tesselator.hpp"
 #include "../space/OctreeThreadContext.hpp"
+#include "../space/Tesselator.hpp"
+#include "../sdf/SDF.hpp"
 #include "Scene.hpp"
 
 namespace blender_export {
@@ -341,6 +342,23 @@ void collectChunks(const Octree& tree, std::vector<ChunkRef>& out) {
     }
 }
 
+// The offline exporter has no GPU, so it is the ONLY place allowed to solve a
+// cell's Cartesian surface point/normal on the host. The engine runtime never
+// calls these functions: its chunk vertices are written by the GPU topology
+// pass and are never read back. Keeping the solve behind this lambda makes the
+// restriction explicit at every CPU call site.
+static CellVertex exportCellVertex(OctreeNode* node, const BoundingCube& cube) {
+    CellVertex v;
+    float sdf[8];
+    std::memcpy(sdf, node->sdf, sizeof(sdf));
+    v.position = SDF::getPosition(sdf, cube);
+    v.normal = SDF::getNormalFromPosition(sdf, cube, v.position);
+    return v;
+}
+
+static const std::function<CellVertex(OctreeNode*, const BoundingCube&)> kExportVertexFn =
+    exportCellVertex;
+
 int finestSurfaceLod(const Octree& tree, OctreeNode* node) {
     if (!node) return -1;
     int best = -1;
@@ -356,9 +374,10 @@ int finestSurfaceLod(const Octree& tree, OctreeNode* node) {
     return best;
 }
 
-// Tessellates one chunk exactly like the CPU/server path
-// (server/ChunkMesh.cpp): the chunk's ladder rung first, then the finest
-// Surface rung present as a fallback so no drawable geometry is missing.
+// Tessellates one chunk exactly like the engine's GPU topology pass: the
+// chunk's ladder rung first, then the finest Surface rung present as a fallback
+// so no drawable geometry is missing. The CPU walker receives the exporter's
+// SDF vertex solver; it never solves a Cartesian vertex itself.
 bool tessellateChunk(const Octree& tree, const ChunkRef& chunk, Geometry& geometry) {
     geometry = Geometry();
     const uint8_t chunkLod = chunk.node->getChunkLod();
@@ -368,7 +387,7 @@ bool tessellateChunk(const Octree& tree, const ChunkRef& chunk, Geometry& geomet
     Tesselator tess(&triCount);
     OctreeThreadContext ctx;
     OctreeTriangleTessellator(tree).iterateTriangles(
-        chunk.node, chunk.cube, chunk.level, tess, &ctx, chunkLod);
+        chunk.node, chunk.cube, chunk.level, tess, &ctx, chunkLod, kExportVertexFn);
     if (!tess.geometry.indices.empty()) {
         geometry = std::move(tess.geometry);
         return true;
@@ -380,7 +399,7 @@ bool tessellateChunk(const Octree& tree, const ChunkRef& chunk, Geometry& geomet
         Tesselator tess2(&triCount2);
         OctreeThreadContext ctx2;
         OctreeTriangleTessellator(tree).iterateTriangles(
-            chunk.node, chunk.cube, chunk.level, tess2, &ctx2, fine);
+            chunk.node, chunk.cube, chunk.level, tess2, &ctx2, fine, kExportVertexFn);
         if (!tess2.geometry.indices.empty()) {
             geometry = std::move(tess2.geometry);
             return true;

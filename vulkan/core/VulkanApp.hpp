@@ -29,29 +29,12 @@
 // includes the backend header; the class exposes helpers that fill it.
 struct ImGui_ImplVulkan_InitInfo;
 
-struct GraphicsPipelineConfig {
-    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
-    VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT;
-    VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE;
-    bool depthTestEnable = true;
-    bool depthWriteEnable = true;
-    bool colorWrite = true;
-    VkCompareOp depthCompareOp = VK_COMPARE_OP_LESS;
-    VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    bool depthClampEnable = false;
-    std::vector<VkFormat> colorFormats = {};
-    VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
-    bool noColorAttachment = false;
-    bool depthBiasEnable = false;
-    bool blendEnable = false;
-    // Blend factors applied when blendEnable is true. Straight alpha by
-    // default; pipelines with a different accumulation model (e.g.
-    // premultiplied coverage) override these.
-    VkBlendFactor blendSrcColorFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    VkBlendFactor blendDstColorFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    VkBlendFactor blendSrcAlphaFactor = VK_BLEND_FACTOR_ONE;
-    VkBlendFactor blendDstAlphaFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-};
+#include "GraphicsPipelineConfig.hpp"
+#include "PendingLayoutUpdate.hpp"
+#include "QueueSegment.hpp"
+#include "ResourceType.hpp"
+#include "MemoryHeapBudget.hpp"
+#include "BatchTransition.hpp"
 
 class SceneDescriptorLayout;
 class SceneQueues;
@@ -268,7 +251,6 @@ public:
     // These are applied to `imageLayerLayouts` only when the command buffer
     // has actually executed (synchronously or when its fence signals) to
     // avoid marking layouts as changed before the GPU performs the barrier.
-    struct PendingLayoutUpdate { VkImage image; VkImageLayout newLayout; uint32_t baseArrayLayer; uint32_t layerCount; bool isBarrier; };
     std::unordered_map<VkCommandBuffer, std::vector<PendingLayoutUpdate>> commandBufferPendingLayouts;
     std::mutex pendingLayoutMutex;
     
@@ -697,14 +679,6 @@ public:
         // records a segment {queue, startNs, endNs, frame}. The segment end is
         // resolved when its fence signals inside processPendingCommandBuffers,
         // so the UI can draw exactly when each queue is processing.
-        struct QueueSegment {
-            VkQueue  queue    = VK_NULL_HANDLE;
-            VkFence  fence    = VK_NULL_HANDLE;
-            uint64_t frame    = 0;   // drawFrame index at submit time
-            uint64_t submitId = 0;
-            uint64_t startNs  = 0;   // steady_clock at submit
-            uint64_t endNs    = 0;   // steady_clock when fence signaled (0 = ongoing)
-        };
         // Snapshot of recent segments (oldest first). Copy-based: no VulkanApp*
         // is retained by the caller. Thread-safe.
         void getQueueTimeline(std::vector<QueueSegment>& out) const;
@@ -716,16 +690,8 @@ public:
 
         int getWidth();
         int getHeight();
-        
-        enum class ResourceType { Buffer, DeviceMemory, Image, ImageView, Sampler, Framebuffer, ShaderModule, PipelineLayout, Pipeline, DescriptorPool, DescriptorSetLayout, DescriptorSet };
 
         // GPU memory budget information (VK_EXT_memory_budget)
-        struct MemoryHeapBudget {
-            VkMemoryHeapFlags flags;
-            VkDeviceSize      usage;   // bytes currently allocated (estimated by driver)
-            VkDeviceSize      budget;  // bytes available before paging/system memory (0 = unknown)
-            VkDeviceSize      size;    // total heap size
-        };
         std::vector<MemoryHeapBudget> getMemoryBudgets() const;
         
         // Public utility methods for texture manipulation
@@ -769,22 +735,6 @@ public:
         void recordTransitionImageLayoutLayer(VkCommandBuffer commandBuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t baseArrayLayer, uint32_t layerCount);
 
         // One batched transition request for recordTransitionBatch().
-        struct BatchTransition {
-            VkImage       image          = VK_NULL_HANDLE;
-            VkFormat      format         = VK_FORMAT_UNDEFINED;
-            VkImageLayout oldLayout      = VK_IMAGE_LAYOUT_UNDEFINED;
-            VkImageLayout newLayout      = VK_IMAGE_LAYOUT_UNDEFINED;
-            uint32_t      mipLevels      = 1;
-            uint32_t      baseArrayLayer = 0;
-            uint32_t      layerCount     = 1;
-            // When true and oldLayout == newLayout, the entry is emitted as a
-            // VK_ACCESS_2_NONE / VK_PIPELINE_STAGE_2_NONE no-op barrier inside
-            // the same vkCmdPipelineBarrier2 call (documents the frame-graph
-            // edge without stalling). Entries without isNoOp whose resolved
-            // layouts are equal are skipped entirely (same as the single
-            // transition early-out).
-            bool          isNoOp         = false;
-        };
         // Record N image layout transitions in a SINGLE vkCmdPipelineBarrier2
         // call. Applies the exact same stage/access mapping and layout
         // tracking as recordTransitionImageLayoutLayer per image, so semantics
