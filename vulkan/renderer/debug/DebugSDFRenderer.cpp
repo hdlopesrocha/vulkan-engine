@@ -444,8 +444,23 @@ void DebugSDFRenderer::destroyRenderTargets(VulkanApp* app) {
     }
 }
 
+void DebugSDFRenderer::setEnabled(bool enabled) {
+    const bool was = enabled_.exchange(enabled, std::memory_order_relaxed);
+    // H3: toggling off releases the retained records immediately. A collection
+    // already in flight cannot re-add them (updateCubesForChunk re-checks the
+    // bit under cubesMutex), and nothing consumes them while the overlay is off
+    // (the draw path is gated by Settings::showSDFDebug).
+    if (was && !enabled) clearCubes();
+}
+
 void DebugSDFRenderer::updateCubesForChunk(NodeID nid, const std::vector<CubeSDF>& cubes) {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    // H3: drop writes while disabled so a walk that started before a toggle-off
+    // cannot repopulate the map (and so nothing is retained with the overlay off).
+    if (!isEnabled()) {
+        nodeDebugSDFCubes.erase(nid);
+        return;
+    }
     if (cubes.empty()) {
         nodeDebugSDFCubes.erase(nid);
     } else {
@@ -461,6 +476,11 @@ void DebugSDFRenderer::removeCubesForNode(NodeID id) {
 void DebugSDFRenderer::clearCubes() {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
     nodeDebugSDFCubes.clear();
+    // Drop the flattened per-frame snapshot too: registerToIndirect() rebuilds
+    // it from the map on the next enabled frame, and it is a second full copy of
+    // the cube set (~the same size as the map).
+    activeCubes.clear();
+    hasCubes_ = false;
 }
 
 void DebugSDFRenderer::registerToIndirect() {

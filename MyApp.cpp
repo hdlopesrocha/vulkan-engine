@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <atomic>
 #include <array>
+#include <unordered_set>
 #include <shared_mutex>
 #include <sstream>
 #include <cstdint>
@@ -998,6 +999,12 @@ public:
         sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
         step("scene renderer init (renderers, pipelines, descriptors)");
 
+        // H3 (perf report 29): seed the debug collection gates from the settings
+        // before any chunk is built, so the default (both overlays off) never
+        // runs the SDF-cube / bounding-box subtree walks or retains their
+        // records. Runtime toggles are applied per frame in postSubmit().
+        applyDebugOverlaySettings();
+
         // Bind the video texture array now that both the service (setupTextures)
         // and the video layer renderer exist.
         if (sceneRenderer->videoRenderer) {
@@ -1293,6 +1300,18 @@ public:
     // it on a worker thread; GPU upload follows progressively on the main
     // thread. Safe to call from the UI thread.
     void repopulateLayer(Layer layer);
+
+    // ── H3 (perf report 29): debug overlay collection gate ─────────────────
+    // Applies Settings::showSDFDebug / showBoundingBoxes to the debug
+    // renderers' collection bits (startup + every frame, so a widget toggle is
+    // picked up). The draw path keeps checking the settings itself; this only
+    // starts/stops the subtree walks and their retained records. A false->true
+    // transition runs one re-collection pass so the overlay is complete
+    // immediately. Main thread only.
+    void applyDebugOverlaySettings();
+    // One-shot re-collection of both debug overlays for every live chunk
+    // (no re-tessellation, no upload). See applyDebugOverlaySettings().
+    void recollectDebugOverlays();
 
     // Start the background tessellation thread for the current scene. Every
     // layer dispatches on its own thread so all layers tessellate truly in
@@ -5270,6 +5289,73 @@ void MyApp::repopulateLayer(Layer layer) {
     std::thread([this, layer]() { dispatchLayerEvents(layer); }).detach();
 }
 
+// ── H3 (perf report 29): debug overlay collection gate ─────────────────────
+// The two debug renderers' enabled bits are the only gate on the per-chunk
+// subtree walks (SceneRenderer::collectDebugForChunk). Applying the settings
+// here starts/stops collection; the draw path keeps checking
+// settings.showSDFDebug / settings.showBoundingBoxes exactly as before, so
+// nothing about what is drawn changes — with both off (the default) the walks
+// and the ~478 MB of retained records simply never happen.
+void MyApp::applyDebugOverlaySettings() {
+    if (!sceneRenderer) return;
+    const bool sdfOn = settings.showSDFDebug;
+    const bool bboxOn = settings.showBoundingBoxes;
+    const bool sdfWas = sceneRenderer->debugSDFRenderer && sceneRenderer->debugSDFRenderer->isEnabled();
+    const bool bboxWas = sceneRenderer->boundingBoxRenderer && sceneRenderer->boundingBoxRenderer->isEnabled();
+    // Steady state: four relaxed atomic loads, nothing else.
+    if (sdfOn == sdfWas && bboxOn == bboxWas) return;
+
+    // Off clears the retained per-chunk records inside setEnabled(false).
+    if (sceneRenderer->debugSDFRenderer) sceneRenderer->debugSDFRenderer->setEnabled(sdfOn);
+    if (sceneRenderer->boundingBoxRenderer) sceneRenderer->boundingBoxRenderer->setEnabled(bboxOn);
+
+    // On: repopulate every live chunk once. Without this, an overlay switched
+    // on mid-session would stay empty until each chunk happened to rebuild.
+    if ((sdfOn && !sdfWas) || (bboxOn && !bboxWas)) recollectDebugOverlays();
+}
+
+// One-shot re-collection for every live chunk. reemitLayer() walks the octree
+// and hands us each chunk node (the same nodes loadScene/repopulateLayer see)
+// without re-tessellating or uploading anything; collectDebugForChunk() then
+// runs the enabled debug walks for the chunks that currently own a published
+// mesh — exactly the set processNodeLayer collected for, so the overlay matches
+// a build-time collection. Runs on the main thread, which is also where every
+// octree mutation happens (brush apply / scene load), so no node can be freed
+// while the walks run. Cost: the two walks over the live chunks, once, on the
+// toggle that enables an overlay.
+void MyApp::recollectDebugOverlays() {
+    if (!world || !sceneRenderer) return;
+    Scene& scene = world->activeScene();
+    const size_t layerCount = scene.layerCount();
+    for (size_t i = 0; i < layerCount; ++i) {
+        const Layer layer = static_cast<Layer>(i);
+        if (!scene.layerEnabled(layer)) continue;
+
+        // Snapshot the live chunk ids (published chunks and their ancestor
+        // cells) under the layer's map lock.
+        std::unordered_set<NodeID> live;
+        {
+            std::lock_guard<std::recursive_mutex> lock(sceneRenderer->layerMutex(layer));
+            const auto& chunks = sceneRenderer->layerChunks(layer);
+            live.reserve(chunks.size());
+            for (const auto& kv : chunks) live.insert(kv.first);
+        }
+        if (live.empty()) continue;
+
+        // reemitLayer invokes the handler under the octree's shared lock, so
+        // only copy the descriptors here; the debug walks run afterwards and
+        // take that lock themselves.
+        std::vector<OctreeNodeData> nodes;
+        scene.reemitLayer(layer, [&nodes](const OctreeNodeData& nd) { nodes.push_back(nd); });
+        for (OctreeNodeData& nd : nodes) {
+            if (!nd.node) continue;
+            const NodeID nid = reinterpret_cast<NodeID>(nd.node);
+            if (live.find(nid) == live.end()) continue;
+            sceneRenderer->collectDebugForChunk(scene, layer, nid, nd, &sceneRenderer->layerGenPool(layer));
+        }
+    }
+}
+
 // Builds (once) the GPU droplet simulation + renderer for the active scene.
 //
 // The collision table is the cropped octree SDF region: the same node layout
@@ -5407,6 +5493,11 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     ensureDroplets();
 }
 void MyApp::postSubmit() {
+    // H3 (perf report 29): follow the overlay settings every frame. The widget
+    // writes settings.showSDFDebug / showBoundingBoxes directly, so this is the
+    // single place that turns them into collection gates (a toggle-on also runs
+    // the one-shot re-collection). Steady state is four relaxed atomic loads.
+    applyDebugOverlaySettings();
     pollBlenderExport();
     // Droplet diagnostics: throttled counter readback (never in the hot path).
     if (settings.dropletsEnabled && settings.dropletStats && particleSim && particleSim->ready()) {

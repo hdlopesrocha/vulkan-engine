@@ -7,6 +7,7 @@
 #include "../../../math/geometry/BoundingBox.hpp"
 #include "../../../space/Octree.hpp" // for NodeID
 #include <vector>
+#include <atomic>
 #include <unordered_map>
 #include <mutex>
 #include <glm/glm.hpp>
@@ -79,9 +80,21 @@ public:
     void renderOverlay(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet ds,
                        const std::vector<CubeWithColor>& widgetCubes);
 
+    // ── H3 (perf report 29): debug-collection gate ─────────────────────────
+    // This bit is the ONLY gate on the per-chunk mesh-bounding-box subtree walk
+    // (SceneRenderer::collectDebugForChunk). The DRAW path keeps checking
+    // Settings::showBoundingBoxes exactly as before, so this bit never changes
+    // what is drawn — when it is clear the walk, the per-chunk vector/mutex and
+    // the retained per-chunk records are skipped entirely. Default false: the
+    // overlay is off by default.
+    void setEnabled(bool enabled);
+    bool isEnabled() const { return enabled_.load(std::memory_order_relaxed); }
+
     // ── Per-chunk mesh bounding-box accumulation (processNodeLayer) ──
     // Replaces the chunk's cached box list; consumed flattened on the render
-    // thread. Mirrors the SDF-cube path's chunk-keyed caching.
+    // thread. Mirrors the SDF-cube path's chunk-keyed caching. Writes are
+    // dropped when isEnabled() is false (a collection already in flight when the
+    // overlay is toggled off must not retain records).
     void setBoundingBoxesForChunk(NodeID id, const std::vector<CubeWithColor>& cubes);
     // Register the cached per-chunk mesh bounding boxes with the solid
     // IndirectRenderer's merged cull dispatch (folds box AABBs into the terrain
@@ -92,6 +105,11 @@ public:
     void clearBoundingBoxesToIndirect();
 
 private:
+    // H3 collection gate (see setEnabled): atomic because the per-chunk
+    // collection runs on the tessellation workers while the main thread
+    // applies the settings toggle.
+    std::atomic<bool> enabled_{false};
+
     // Per-node debug cubes keyed by octree node id
     std::unordered_map<NodeID, CubeWithColor> nodeDebugCubes;
     // Per-chunk mesh bounding boxes keyed by chunk node id

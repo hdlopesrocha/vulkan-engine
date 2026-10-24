@@ -534,8 +534,26 @@ void DebugCubeRenderer::renderOverlay(VulkanApp* app, VkCommandBuffer& cmd, VkDe
     render(app, cmd, ds);
 }
 
+void DebugCubeRenderer::setEnabled(bool enabled) {
+    const bool was = enabled_.exchange(enabled, std::memory_order_relaxed);
+    // H3: toggling off releases the retained per-chunk boxes immediately. A
+    // collection already in flight cannot re-add them (setBoundingBoxesForChunk
+    // re-checks the bit under cubesMutex), and nothing consumes them while the
+    // overlay is off (the draw path is gated by Settings::showBoundingBoxes).
+    if (was && !enabled) {
+        std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+        chunkBBoxCubes.clear();
+    }
+}
+
 void DebugCubeRenderer::setBoundingBoxesForChunk(NodeID id, const std::vector<CubeWithColor>& cubes) {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
+    // H3: drop writes while disabled so a walk that started before a toggle-off
+    // cannot repopulate the map (and so nothing is retained with the overlay off).
+    if (!isEnabled()) {
+        chunkBBoxCubes.erase(id);
+        return;
+    }
     chunkBBoxCubes[id] = cubes;
 }
 

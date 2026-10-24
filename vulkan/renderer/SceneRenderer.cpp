@@ -17,6 +17,7 @@
 #include <array>
 #include <bit>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cfloat>
 #include <mutex>
@@ -91,6 +92,9 @@ constexpr uint32_t kIndexBytesPerChunk  = 1u << 17;  // 128 KB per chunk
 } // namespace
 
 void SceneRenderer::cleanup(VulkanApp* app) {
+    // M7 (report 29): flush the final debug-walk window (no-op unless
+    // VULKAN_SETUP_DIAG is set) before the renderers are torn down.
+    logDebugWalkStats(true);
     // Tear down the async streaming engine FIRST, while the solid/water
     // IndirectRenderers (and their indirect/bounds buffers) are still alive:
     // UploadManager::destroy waits on in-flight transfers and fires each
@@ -459,7 +463,10 @@ SceneRenderer::SceneRenderer() :
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
     waterWireframe(std::make_unique<WireframeRenderer>()),
     skySettings(std::make_unique<SkySettings>()),
-    cloudSettings(std::make_unique<CloudSettings>())
+    cloudSettings(std::make_unique<CloudSettings>()),
+    // M7 (report 29): debug-walk instrumentation, cached once (getenv is not in
+    // the hot path). Off => zero overhead in collectDebugForChunk.
+    debugWalkDiag_(std::getenv("VULKAN_SETUP_DIAG") != nullptr)
 {
     // Vegetation cull is MERGED into the solid IndirectRenderer's single
     // IndirectRenderer.comp dispatch, so the vegetation renderer must share the solid
@@ -2248,12 +2255,43 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
         return;
     }
 
+    // ── Debug overlays (H3, perf report 29) ─────────────────────────────────
+    // The SDF-cube and mesh-bounding-box subtree walks are collected by
+    // collectDebugForChunk() only when the matching renderer's enabled bit is
+    // set (applied from Settings::showSDFDebug / showBoundingBoxes by MyApp, at
+    // startup and on toggle). That bit is the ONLY gate: the draw path still
+    // checks the settings itself, so gating collection never changes what is
+    // drawn. With both overlays off (the default) no walk runs, no per-chunk
+    // vector/mutex is built and no per-chunk record is retained.
+    collectDebugForChunk(scene, layer, nid, nodeData, poolOverride);
+}
+
+// ── H3 (perf report 29): gated debug collection for one chunk ───────────────
+// The two blocks are the same walks processNodeLayer has always run; the only
+// change is that each is entered only when its renderer's enabled bit is set.
+// Shared with MyApp::recollectDebugOverlays (one-shot re-collection when an
+// overlay is switched on mid-session) so both paths collect identical cubes.
+void SceneRenderer::collectDebugForChunk(Scene& scene, Layer layer, NodeID nid,
+                                          OctreeNodeData& nodeData, ThreadPool* poolOverride) {
+    const bool collectSdf = debugSDFRenderer && debugSDFRenderer->isEnabled();
+    const bool collectBoxes = boundingBoxRenderer && boundingBoxRenderer->isEnabled();
+    if (!collectSdf && !collectBoxes) return;
+
+    // M7 (report 29): VULKAN_SETUP_DIAG-only timing. When the env var is off,
+    // debugWalkDiag_ is false: no clock reads, no atomics, no output.
+    const bool diag = debugWalkDiag_;
+    const auto walkStart = diag ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
+    uint64_t walks = 0;
+    uint64_t cubes = 0;
+    uint64_t boxes = 0;
+
     // SDF debug cubes: collected through the SAME node walk as the solid meshes
     // (requestSDFCubes walks the chunk subtree and emits lod==1 nodes that carry a
     // drawable SDF face). Accumulate them for this chunk and publish to the
     // DebugSDFRenderer, which renders them via the terrain IndirectRenderer's
     // folded SDF draw stream.
-    if (debugSDFRenderer) {
+    if (collectSdf) {
         std::vector<DebugSDFRenderer::CubeSDF> sdfCubes;
         std::mutex sdfMtx;
         scene.requestSDFCubes(layer, nodeData,
@@ -2276,6 +2314,8 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
                 sdfCubes.push_back(std::move(c));
             }, poolOverride);
         debugSDFRenderer->updateCubesForChunk(nid, sdfCubes);
+        ++walks;
+        cubes = sdfCubes.size();
     }
 
     // Mesh bounding boxes: collected through the SAME node walk as the solid
@@ -2284,7 +2324,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     // shows all node boxes at the chunk's current resolution, not one chunk-sized
     // box). Accumulate them per chunk and publish to the bounding-box renderer,
     // which renders them via the terrain IndirectRenderer's folded bbox stream.
-    if (boundingBoxRenderer) {
+    if (collectBoxes) {
         std::vector<DebugCubeRenderer::CubeWithColor> bbCubes;
         std::mutex bbMtx;
         scene.requestBoundingBoxes(layer, nodeData,
@@ -2304,8 +2344,44 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
                 bbCubes.push_back(std::move(c));
             }, poolOverride);
         boundingBoxRenderer->setBoundingBoxesForChunk(nid, bbCubes);
+        ++walks;
+        boxes = bbCubes.size();
     }
 
+    if (diag) {
+        const double us = std::chrono::duration<double, std::micro>(
+            std::chrono::steady_clock::now() - walkStart).count();
+        dbgWalks_.fetch_add(walks, std::memory_order_relaxed);
+        dbgWalkCubes_.fetch_add(cubes, std::memory_order_relaxed);
+        dbgWalkBoxes_.fetch_add(boxes, std::memory_order_relaxed);
+        dbgWalkTotalUs_.fetch_add(static_cast<uint64_t>(us), std::memory_order_relaxed);
+        dbgWalkWindowUs_.fetch_add(static_cast<uint64_t>(us), std::memory_order_relaxed);
+        dbgWalkWindowWalks_.fetch_add(walks, std::memory_order_relaxed);
+        // One "chunk" per collection; a full table every 256 chunks plus the
+        // final flush at shutdown. Off the normal log path by construction.
+        const uint32_t chunks = dbgWalkChunks_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if ((chunks % 256u) == 0) logDebugWalkStats(false);
+    }
+}
+
+// M7 (report 29): one [setup-diag] line with the cumulative walk cost and the
+// last window's cost. Called from a worker at every 256th chunk and once from
+// cleanup() (force) so a partial final window is never lost. No-op when
+// VULKAN_SETUP_DIAG is off.
+void SceneRenderer::logDebugWalkStats(bool force) {
+    if (!debugWalkDiag_) return;
+    if (!force && dbgWalkChunks_.load(std::memory_order_relaxed) == 0) return;
+    const uint64_t windowUs = dbgWalkWindowUs_.exchange(0, std::memory_order_relaxed);
+    const uint64_t windowWalks = dbgWalkWindowWalks_.exchange(0, std::memory_order_relaxed);
+    const uint64_t totalUs = dbgWalkTotalUs_.load(std::memory_order_relaxed);
+    std::cout << "[setup-diag] debug-walks chunks=" << dbgWalkChunks_.load(std::memory_order_relaxed)
+              << " walks=" << dbgWalks_.load(std::memory_order_relaxed)
+              << " sdfCubes=" << dbgWalkCubes_.load(std::memory_order_relaxed)
+              << " bboxBoxes=" << dbgWalkBoxes_.load(std::memory_order_relaxed)
+              << " totalMs=" << (totalUs / 1000.0)
+              << " lastWindowMs=" << (windowUs / 1000.0)
+              << " lastWindowWalks=" << windowWalks
+              << std::endl;
 }
 
 size_t SceneRenderer::getTransparentModelCount() {

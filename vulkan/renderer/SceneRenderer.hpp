@@ -250,6 +250,18 @@ public:
         ThreadPool* poolOverride = nullptr
     );
 
+    // ── H3 (perf report 29): gated debug collection ─────────────────────────
+    // Runs the SDF-cube walk and/or the mesh-bounding-box walk for one chunk,
+    // each only when its renderer's enabled bit is set (DebugSDFRenderer /
+    // DebugCubeRenderer::isEnabled). The bit is the ONLY gate — the draw path
+    // still checks Settings::showSDFDebug / showBoundingBoxes, so this never
+    // changes what is drawn; it only stops the walk and the retained per-chunk
+    // records when the overlay is off. processNodeLayer calls it for every
+    // built/up-to-date chunk; MyApp::recollectDebugOverlays calls it once per
+    // live chunk when an overlay is switched on mid-session.
+    void collectDebugForChunk(Scene& scene, Layer layer, NodeID nid,
+                              OctreeNodeData& nodeData, ThreadPool* poolOverride = nullptr);
+
     // ── GPU-resident chunk build ─────────────────────────────────────────────
     // Runs the GPU topology pass for one chunk and hands the publisher an
     // LoDMesh that already lives in the renderer's packed pools
@@ -490,6 +502,22 @@ private:
     // add/remove; each entry's own mutex guards its chunk maps.
     mutable std::mutex layerStatesMutex_;
     std::vector<std::unique_ptr<SceneLayerState>> layerStates_;
+
+    // ── M7 (perf report 29): debug-walk instrumentation ────────────────────
+    // Enabled once from VULKAN_SETUP_DIAG in the constructor. When false the
+    // collection path reads one bool and touches no clock, atomic or log; when
+    // true it accumulates walks/cubes/boxes and the walk time and prints one
+    // [setup-diag] line every 256 chunks plus a final flush in cleanup().
+    // Relaxed atomics: counters only, no ordering requirement (workers update).
+    bool debugWalkDiag_ = false;
+    std::atomic<uint64_t> dbgWalks_{0};        // subtree walks (SDF + bbox)
+    std::atomic<uint64_t> dbgWalkCubes_{0};    // SDF cubes collected
+    std::atomic<uint64_t> dbgWalkBoxes_{0};    // bounding boxes collected
+    std::atomic<uint64_t> dbgWalkTotalUs_{0};  // cumulative walk time
+    std::atomic<uint64_t> dbgWalkWindowUs_{0}; // walk time since the last print
+    std::atomic<uint64_t> dbgWalkWindowWalks_{0};
+    std::atomic<uint32_t> dbgWalkChunks_{0};   // chunks that ran >= 1 walk
+    void logDebugWalkStats(bool force);
 };
 
 // ...existing code...

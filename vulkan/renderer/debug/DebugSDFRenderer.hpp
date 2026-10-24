@@ -8,6 +8,7 @@
 #include "../../../space/Octree.hpp" // for NodeID, Octree, OctreeNode
 #include "../../../space/OctreeNodeData.hpp"
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <vector>
@@ -64,9 +65,21 @@ public:
     void setSdfColorLayout(uint32_t frameIndex, VkImageLayout l) { if (frameIndex < SDF_FRAMES) sdfColorImageLayouts[frameIndex] = l; }
     void setSdfDepthLayout(uint32_t frameIndex, VkImageLayout l) { if (frameIndex < SDF_FRAMES) sdfDepthImageLayouts[frameIndex] = l; }
 
+    // ── H3 (perf report 29): debug-collection gate ─────────────────────────
+    // This bit is the ONLY gate on the per-chunk SDF subtree walk
+    // (SceneRenderer::collectDebugForChunk). The DRAW path keeps checking
+    // Settings::showSDFDebug exactly as before, so this bit never changes what
+    // is drawn — when it is clear the walk, the per-chunk vector/mutex and the
+    // retained per-chunk records (the bulk of the ~478 MB) are skipped
+    // entirely. Default false: the overlay is off by default.
+    void setEnabled(bool enabled);
+    bool isEnabled() const { return enabled_.load(std::memory_order_relaxed); }
+
     // ── Per-chunk SDF cube tracking (moved from SceneRenderer) ──
     // Populated by processNodeLayer via scene.requestSDFCubes (worker thread)
     // after chunk (re)builds; consumed as a copy on the render thread.
+    // Writes are dropped when isEnabled() is false (a collection already in
+    // flight when the overlay is toggled off must not retain records).
     void updateCubesForChunk(NodeID nid, const std::vector<CubeSDF>& cubes);
     void removeCubesForNode(NodeID id);
     void clearCubes();
@@ -77,6 +90,11 @@ public:
     void registerToIndirect();
 
 private:
+    // H3 collection gate (see setEnabled): atomic because the per-chunk
+    // collection runs on the tessellation workers while the main thread
+    // applies the settings toggle.
+    std::atomic<bool> enabled_{false};
+
     // Per-node SDF face cubes keyed by octree node id
     std::unordered_map<NodeID, std::vector<CubeSDF>> nodeDebugSDFCubes;
     mutable std::recursive_mutex cubesMutex;
