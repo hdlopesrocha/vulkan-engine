@@ -1,5 +1,5 @@
 #include "HeightMapDistanceFunction.hpp"
-#include "SDF.hpp"
+#include "BoxDistanceFunction.hpp"
 #include "../math/HeightMap.hpp"
 
 HeightMapDistanceFunction::HeightMapDistanceFunction(HeightMap * map_, float bias, const Transformation &model)
@@ -12,8 +12,8 @@ float HeightMapDistanceFunction::distance(const glm::vec3 &p) const {
 
     float sdf = map->distance(p);
 
-    float d = SDF::opIntersection(
-        SDF::box(pos+m_model.translate, len),
+    float d = glm::max(
+        BoxDistanceFunction::boxDistance(pos+m_model.translate, len),
         sdf
     );
 

@@ -1,4 +1,5 @@
 #include "TriangleStripDistanceFunction.hpp"
+#include "TriangleDistanceFunction.hpp"
 #include <algorithm>
 
 TriangleStripDistanceFunction::TriangleStripDistanceFunction(
@@ -19,7 +20,9 @@ float TriangleStripDistanceFunction::distance(const glm::vec3 &p) const {
     pos = glm::inverse(m_model.quaternion) * pos;
     glm::vec3 q = pos / m_model.scale;
 
-    float stripDist = SDF::triangleStrip(q, v0, v1, v2, v3, halfThick);
+    float d0 = TriangleDistanceFunction::thickTriangleDistance(q, v0, v1, v2, halfThick);
+    float d1 = TriangleDistanceFunction::thickTriangleDistance(q, v1, v2, v3, halfThick);
+    float stripDist = glm::min(d0, d1);
 
     float minScale = glm::min(glm::min(m_model.scale.x, m_model.scale.y), m_model.scale.z);
     float d = stripDist * minScale;

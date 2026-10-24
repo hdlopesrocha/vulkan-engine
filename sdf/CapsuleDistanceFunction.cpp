@@ -8,7 +8,12 @@ CapsuleDistanceFunction::CapsuleDistanceFunction(glm::vec3 a_, glm::vec3 b_, flo
 float CapsuleDistanceFunction::distance(const glm::vec3 &p) const {
     glm::vec3 pos = p - m_model.translate;
     pos = glm::inverse(m_model.quaternion) * pos;
-    float d = SDF::capsule(pos / m_model.scale, a, b, radius);
+    glm::vec3 q = pos / m_model.scale;
+
+    glm::vec3 pa = q - a, ba = b - a;
+    float h = glm::clamp(glm::dot(pa, ba) / glm::dot(ba, ba), 0.0f, 1.0f);
+    float d = glm::length(pa - ba * h) - radius;
+
     float minScale = glm::min(glm::min(m_model.scale.x, m_model.scale.y), m_model.scale.z);
     return d * minScale;
 }

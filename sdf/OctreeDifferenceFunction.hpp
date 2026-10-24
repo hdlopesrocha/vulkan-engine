@@ -3,7 +3,6 @@
 #include "../math/geometry/BoundingBox.hpp"
 #include "../math/geometry/Transformation.hpp"
 #include "../space/Octree.hpp"
-#include "SDF.hpp"
 
 class OctreeDifferenceFunction : public SignedDistanceFunction {
     public:

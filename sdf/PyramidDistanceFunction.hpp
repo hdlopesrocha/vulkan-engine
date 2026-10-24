@@ -3,7 +3,6 @@
 #include <glm/glm.hpp>
 #include "../math/geometry/Transformation.hpp"
 #include "../math/geometry/BoundingSphere.hpp"
-#include "SDF.hpp"
 
 class PyramidDistanceFunction : public SignedDistanceFunction {
 public:
