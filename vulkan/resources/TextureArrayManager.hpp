@@ -89,9 +89,6 @@ public:
     int addAllocationListener(std::function<void()> cb);
     void removeAllocationListener(int listenerId);
 
-    // Destroy GPU resources (images, views, memory, samplers)
-    void destroy(class VulkanApp* app);
-
     // Release the per-layer 2D views + ImGui descriptors (deferred via
     // VulkanApp::deferDestroyUntilAllPending). Split out of destroy() so a
     // resolution change can drop the views that reference the old images
@@ -111,8 +108,7 @@ public:
     // C1, extending the report-22 pool telemetry to texture memory).
     void logMemoryUtilization(const char* name) const;
 
-    // Variant of load/loadTriples that accepts an explicit VulkanApp instead of relying on an internal pointer
-    uint load(class VulkanApp* app, const char* albedoFile, const char* normalFile, const char* bumpFile, const char* roughnessFile = nullptr, const char* aoFile = nullptr);
+    // Load a set of triples (albedo/normal/bump/roughness/ao) into layers.
     size_t loadTriples(class VulkanApp* app, const std::vector<TextureTriple> &triples);
 
     // Invalidate all cached ImGui texture descriptors (e.g. after swapchain recreation

@@ -69,7 +69,6 @@ public:
     const ResourceMap<VkDescriptorPool> &getDescriptorPoolMap() const;
     const ResourceMap<VkDescriptorSet> &getDescriptorSetMap() const;
     const ResourceMap<VkDescriptorSetLayout> &getDescriptorSetLayoutMap() const;
-    const ResourceMap<VkSemaphore> &getSemaphoreMap() const;
     std::vector<std::pair<uintptr_t, std::pair<VkDeviceMemory, std::string>>> getDeviceMemorySnapshot() const;
 
     // Cleanup all resources in a safe deterministic order. The device must be valid.
@@ -81,7 +80,6 @@ public:
     bool removeImage(VkImage img);
     bool removeImageView(VkImageView iv);
     bool removeSampler(VkSampler s);
-    bool removeFramebuffer(VkFramebuffer fb);
     bool removeBuffer(VkBuffer b);
     // VMA-aware tracking
     void setAllocator(VmaAllocator alloc) { vmaAlloc = alloc; }

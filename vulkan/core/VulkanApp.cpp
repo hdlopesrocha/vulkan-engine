@@ -1345,33 +1345,6 @@ void VulkanApp::destroyImageWithVma(VkImage image, VmaAllocation allocation, VkD
     }
 }
 
-void VulkanApp::generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount, uint32_t baseArrayLayer) {
-    // Existing blocking helper kept for convenience
-    VkFormatProperties formatProperties;
-    vkGetPhysicalDeviceFormatProperties(physicalDevice, imageFormat, &formatProperties);
-
-    if (!(formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
-        throw std::runtime_error("texture image format does not support linear blitting!");
-    }
-
-    // Use runSingleTimeCommands to serialize allocation/submit/free and avoid
-    // concurrent command-pool/queue usage from multiple threads.
-    runSingleTimeCommands([&](VkCommandBuffer cmd) {
-        recordGenerateMipmaps(cmd, image, imageFormat, texWidth, texHeight, mipLevels, layerCount, baseArrayLayer);
-    });
-
-    // Update authoritative tracked layout for the affected layers after
-    // performing the synchronous transition so future record-time callers
-    // observe the correct oldLayout.
-    {
-        std::lock_guard<std::mutex> lk(imageLayoutMutex);
-        for (uint32_t l = 0; l < layerCount; ++l) {
-            uint64_t key = ((uint64_t)(uintptr_t)image << 32) | (uint64_t)(baseArrayLayer + l);
-            imageLayerLayouts[key] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        }
-    }
-}
-
 // Record mipmap generation commands into an existing command buffer (no begin/end or wait)
 void VulkanApp::recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount, uint32_t baseArrayLayer) {
     VkImageMemoryBarrier2 barrier{};
@@ -3108,24 +3081,6 @@ VkImageLayout VulkanApp::getImageLayoutTracked(VkImage image, uint32_t baseArray
     return VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
-void VulkanApp::recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer, uint32_t layerCount) {
-    if (image == VK_NULL_HANDLE) return;
-    // If no command buffer was provided, update authoritative map immediately
-    if (commandBuffer == VK_NULL_HANDLE) {
-        setImageLayoutTracked(image, newLayout, baseArrayLayer, layerCount);
-        return;
-    }
-
-    std::lock_guard<std::mutex> plk(pendingLayoutMutex);
-    PendingLayoutUpdate up;
-    up.image = image;
-    up.newLayout = newLayout;
-    up.baseArrayLayer = baseArrayLayer;
-    up.layerCount = layerCount;
-    up.isBarrier = false;
-    commandBufferPendingLayouts[commandBuffer].push_back(up);
-}
-
 // Deferred-destruction helpers
 void VulkanApp::deferDestroyUntilAllPending(std::function<void()> destroyFn) {
     // Always enqueue a VK_NULL_HANDLE deferred destroy which means "wait
@@ -3498,44 +3453,6 @@ VkResult VulkanApp::allocateDescriptorSetsThreadSafe(const VkDescriptorSetAlloca
         std::cerr << "[VulkanApp::allocateDescriptorSetsThreadSafe] vkAllocateDescriptorSets failed: " << res << std::endl;
     }
     return res;
-}
-
-void VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &descriptors) {
-    // Filter out any writes that would pass VK_NULL_HANDLE for buffer or image
-    // (some callers may attempt to update before resources are allocated).
-    std::vector<VkWriteDescriptorSet> filtered;
-    filtered.reserve(descriptors.size());
-    for (size_t i = 0; i < descriptors.size(); ++i) {
-        const VkWriteDescriptorSet &w = descriptors[i];
-        if (w.pImageInfo) {
-            if (w.pImageInfo[0].imageView == VK_NULL_HANDLE || w.pImageInfo[0].sampler == VK_NULL_HANDLE) {
-                continue;
-            }
-            filtered.push_back(w);
-        } else if (w.pBufferInfo) {
-            if (w.pBufferInfo[0].buffer == VK_NULL_HANDLE) {
-                continue;
-            }
-            filtered.push_back(w);
-        } else {
-            // No image or buffer info; include as-is
-            filtered.push_back(w);
-        }
-    }
-    if (filtered.empty()) return;
-    // Filter out writes targeting invalid descriptor set handles to prevent
-    // VUID-VkWriteDescriptorSet-dstSet-00320 validation errors.
-    std::vector<VkWriteDescriptorSet> safe;
-    safe.reserve(filtered.size());
-    for (auto &f : filtered) {
-        if ((uint64_t)f.dstSet == 0x6c100000006c1ULL) {
-            std::cerr << "[VulkanApp::updateDescriptorSet] *** SKIPPING BAD HANDLE 0x6c100000006c1 *** binding=" << f.dstBinding << std::endl;
-            continue;
-        }
-        safe.push_back(f);
-    }
-    if (safe.empty()) return;
-    vkUpdateDescriptorSets(device, static_cast<uint32_t>(safe.size()), safe.data(), 0, nullptr);
 }
 
 void VulkanApp::updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> descriptors) {

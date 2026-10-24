@@ -148,7 +148,6 @@ bool VulkanResourceManager::removeDeviceMemory(VkDeviceMemory mem) {
 bool VulkanResourceManager::removeImage(VkImage img) { std::lock_guard<std::mutex> lk(mtx); return images.erase((uintptr_t)img) > 0; }
 bool VulkanResourceManager::removeImageView(VkImageView iv) { std::lock_guard<std::mutex> lk(mtx); return imageViews.erase((uintptr_t)iv) > 0; }
 bool VulkanResourceManager::removeSampler(VkSampler s) { std::lock_guard<std::mutex> lk(mtx); return samplers.erase((uintptr_t)s) > 0; }
-bool VulkanResourceManager::removeFramebuffer(VkFramebuffer fb) { std::lock_guard<std::mutex> lk(mtx); return framebuffers.erase((uintptr_t)fb) > 0; }
 bool VulkanResourceManager::removeBuffer(VkBuffer b) {
     std::lock_guard<std::mutex> lk(mtx);
     return buffers.erase((uintptr_t)b) > 0;
@@ -203,8 +202,6 @@ const VulkanResourceManager::ResourceMap<VkShaderModule> &VulkanResourceManager:
 const VulkanResourceManager::ResourceMap<VkDescriptorPool> &VulkanResourceManager::getDescriptorPoolMap() const { return descriptorPools; }
 const VulkanResourceManager::ResourceMap<VkDescriptorSet> &VulkanResourceManager::getDescriptorSetMap() const { return descriptorSets; }
 const VulkanResourceManager::ResourceMap<VkDescriptorSetLayout> &VulkanResourceManager::getDescriptorSetLayoutMap() const { return descriptorSetLayouts; }
-const VulkanResourceManager::ResourceMap<VkSemaphore> &VulkanResourceManager::getSemaphoreMap() const { return semaphores; }
-
 std::vector<std::pair<uintptr_t, std::pair<VkDeviceMemory, std::string>>> VulkanResourceManager::getDeviceMemorySnapshot() const {
     std::vector<std::pair<uintptr_t, std::pair<VkDeviceMemory, std::string>>> out;
     {

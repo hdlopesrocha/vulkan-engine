@@ -210,10 +210,6 @@ class VulkanApp {
 
 public:
     uint32_t getCurrentFrame() const { return currentFrame; }
-    VkFence getCurrentFrameFence() const {
-        if (inFlightFences.empty()) return VK_NULL_HANDLE;
-        return inFlightFences[currentFrame % inFlightFences.size()];
-    }
     // Cross-queue ordering aid: a submission that waits on this timeline at this
     // value runs only after every frame submitted so far has finished executing.
     // Used by VideoTextureService to update texture-array layers in place
@@ -312,10 +308,6 @@ public:
         void createDepthResources();
 
     public:
-        // Generate mipmaps for an image. Works on array textures by specifying
-        // layerCount and baseArrayLayer to affect a subset of layers.
-        void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1, uint32_t baseArrayLayer = 0);
-
         // Record mipmap generation commands into an existing command buffer (no begin/end or wait)
         void recordGenerateMipmaps(VkCommandBuffer commandBuffer, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, uint32_t layerCount = 1, uint32_t baseArrayLayer = 0);
 
@@ -465,7 +457,6 @@ public:
     // shared descriptor pools across multiple threads.
     VkResult allocateDescriptorSetsThreadSafe(const VkDescriptorSetAllocateInfo* pAllocInfo, VkDescriptorSet* pDescriptorSets);
         void updateDescriptorSet(std::initializer_list<VkWriteDescriptorSet> descriptors);
-        void updateDescriptorSet(const std::vector<VkWriteDescriptorSet> &descriptors);
         void registerDescriptorSet(VkDescriptorSet ds) { if (ds != VK_NULL_HANDLE) registeredDescriptorSets.push_back(ds); }
         const std::vector<VkDescriptorSet>& getRegisteredDescriptorSets() const { return registeredDescriptorSets; }
         VkDescriptorSetLayout getDescriptorSetLayout() const;
@@ -721,11 +712,6 @@ public:
         // Update the authoritative tracked layout for an image (no barrier emitted).
         void setImageLayoutTracked(VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1);
         VkImageLayout getImageLayoutTracked(VkImage image, uint32_t baseArrayLayer = 0) const;
-        // Record a tracked layout change associated with a specific command buffer.
-        // If `commandBuffer` is VK_NULL_HANDLE the authoritative map is updated
-        // immediately; otherwise the change is queued and applied when the
-        // command buffer completes (avoids premature updates during recording).
-        void recordTrackedLayoutForCommandBuffer(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout newLayout, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
 
         // Allocate a primary command buffer from the app command pool for asynchronous submissions.
