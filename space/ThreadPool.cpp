@@ -58,13 +58,8 @@ void ThreadPool::stop()
 	}
 }
 
-// Wake one/all workers. Kept separate from the enqueue path so a batch of
+// Wake all workers. Kept separate from the enqueue path so a batch of
 // enqueueDetachedNoNotify() tasks costs a single wakeup (perf report 29, L8).
-void ThreadPool::notifyOne()
-{
-	condition.notify_one();
-}
-
 void ThreadPool::notifyAll()
 {
 	condition.notify_all();

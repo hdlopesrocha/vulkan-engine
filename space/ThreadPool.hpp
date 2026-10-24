@@ -21,18 +21,13 @@ public:
     auto enqueue(F&& f, Args&&... args) 
         -> std::future<std::invoke_result_t<F, Args...>>;
 
-    // Enqueue a fire-and-forget task (no future, no heap-allocated packaged_task)
-    template<class F, class... Args>
-    void enqueueDetached(F&& f, Args&&... args);
-
-    // Same as enqueueDetached but without waking a worker. Callers that push a
-    // batch of tasks must call notifyOne()/notifyAll() once after the batch;
+    // Enqueue a fire-and-forget task without waking a worker. Callers that
+    // push a batch of tasks must call notifyAll() once after the batch;
     // waking a worker per task is pure overhead when the workers are already
-    // running (perf report 29, L8). The queue mutex is released before these
-    // return, so the following notify is always outside the lock.
+    // running (perf report 29, L8). The queue mutex is released before this
+    // returns, so the following notify is always outside the lock.
     template<class F, class... Args>
     void enqueueDetachedNoNotify(F&& f, Args&&... args);
-    void notifyOne();
     void notifyAll();
 
     // Wait on a future from THIS pool while helping run queued tasks. A plain

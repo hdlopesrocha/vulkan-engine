@@ -26,13 +26,6 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
 }
 
 template<class F, class... Args>
-void ThreadPool::enqueueDetached(F&& f, Args&&... args)
-{
-    enqueueDetachedNoNotify(std::forward<F>(f), std::forward<Args>(args)...);
-    notifyOne();
-}
-
-template<class F, class... Args>
 void ThreadPool::enqueueDetachedNoNotify(F&& f, Args&&... args)
 {
     SmallFunction sf(
@@ -46,7 +39,7 @@ void ThreadPool::enqueueDetachedNoNotify(F&& f, Args&&... args)
         tasks.emplace(std::move(sf));
     }
     // Deliberately no notify: the caller batches the enqueues and wakes the
-    // pool once with notifyOne()/notifyAll().
+    // pool once with notifyAll().
 }
 
 // Wait for a pool future, running queued tasks in the meantime so nested
