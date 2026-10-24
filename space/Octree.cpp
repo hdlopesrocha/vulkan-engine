@@ -581,6 +581,29 @@ void Octree::shapeChildren(
 }
 
 
+// Report every published chunk rung in a subtree that is about to be freed,
+// plus the node that stops being a surface chunk. The scene's change collector
+// keys pending updates by node address; the octree allocator recycles freed
+// nodes, so without the matching deletes a node allocated at a recycled
+// address would inherit the old pending add (whose cube belongs to the freed
+// occupant) and its own add would be dropped or built against the wrong cube.
+// Must run before OctreeNode::clear() releases the children to the allocator.
+static void reportDeletedSubtree(OctreeNode* node, const BoundingCube &cube, uint level,
+                                 OctreeAllocator &allocator,
+                                 const Octree::OctreeNodeDataHandler &deleteHandler) {
+    if (node == nullptr || !deleteHandler) return;
+    if (node->getChunkLod() > 0) {
+        deleteHandler(OctreeNodeData(level, node, cube, nullptr));
+    }
+    OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+    node->getChildren(allocator, children);
+    for (uint i = 0; i < 8; ++i) {
+        if (children[i] != NULL) {
+            reportDeletedSubtree(children[i], cube.getChild(i), level + 1, allocator, deleteHandler);
+        }
+    }
+}
+
 void Octree::shape(
     NodeOperationResult &r,
     OctreeNodeFrame frame, 
@@ -898,6 +921,11 @@ void Octree::shape(
     // Materialize this node's properties for both subdivided and terminal nodes.
     if(process && r.node != NULL) {
         if(r.resultType != SpaceType::Surface) {
+            // The node stops being a surface chunk and its children are about
+            // to be recycled: report the whole subtree deleted first so the
+            // scene drops its pending add / tessellation dedupe records for
+            // these addresses.
+            reportDeletedSubtree(r.node, frame.cube, frame.level, *allocator, deleteHandler);
             r.node->clear(*allocator, NULL);
         }
         r.node->setType(r.resultType);

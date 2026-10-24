@@ -11,11 +11,19 @@
 // (Octree::UpdateHandler / Octree::DeleteHandler) instead of an
 // OctreeChangeHandler subclass.
 //
-//   - updateHandler records a node as ADDED, keeping the newest version when
-//     the same node was recorded before (Octree::apply can touch a chunk
-//     several times before dispatch — e.g. one apply per brush SDF entry).
+//   - updateHandler records a node as ADDED. Adds arrive in traversal order
+//     for a given address, so the last one wins: it carries the cube/level of
+//     the node that currently occupies that address.
 //   - deleteHandler records a node as DELETED, unconditionally overriding any
 //     earlier add (a node erased after being added ends up as deleted).
+//
+// Address reuse is why both rules matter. The octree allocator recycles freed
+// nodes, so a pending add for address A can be followed by A being freed
+// (delete) and reallocated for a different chunk (add). Comparing
+// `existing.node->version` cannot distinguish those: both entries point at
+// the same address, so the second add would see v == v and be dropped. The
+// version comparison is therefore deliberately gone -- the stored entry is
+// simply replaced.
 //
 // No user callback runs from the octree worker threads: apply() invokes the
 // lambdas during the (threaded) traversal, but dispatch() replays the final
@@ -57,11 +65,11 @@ private:
     void onNodeAdded(const OctreeNodeData& data) {
         NodeID id = reinterpret_cast<NodeID>(data.node);
         std::lock_guard<std::mutex> guard(mtx);
-        OctreeNodeData& existingData = updates[id].first;
-        if (existingData.node == nullptr ||
-            existingData.node->version < data.node->version) {
-            updates[id] = {OctreeNodeData{data}, true};
-        }
+        // Last add wins. Do NOT compare versions through the stored pointer:
+        // the allocator reuses addresses, so existing.node and data.node can
+        // be the same object and the comparison would always be v < v, which
+        // silently dropped the new occupant's add (missing chunks).
+        updates[id] = {OctreeNodeData{data}, true};
     }
     void onNodeDeleted(const OctreeNodeData& data) {
         NodeID id = reinterpret_cast<NodeID>(data.node);
