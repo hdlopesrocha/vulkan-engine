@@ -63,9 +63,6 @@ public:
     // failure.
     bool write(const std::string& path, std::string& error) const;
 
-    size_t vertexCount() const;
-    size_t triangleCount() const;
-
 private:
     struct Image {
         std::string name;

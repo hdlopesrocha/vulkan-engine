@@ -122,8 +122,6 @@ inline std::vector<uint8_t> gzipDecompress(const std::vector<uint8_t>& in) {
 
 // ---- message builders (raw, UNCOMPRESSED; caller gzips before WS send) ----
 std::vector<uint8_t> buildRequestAll();
-std::vector<uint8_t> buildRequestMesh(uint64_t chunkId);
-std::vector<uint8_t> buildRequestAllMeshes();
 std::vector<uint8_t> buildSnapshotStart(uint32_t total);
 std::vector<uint8_t> buildSnapshotEnd();
 std::vector<uint8_t> buildChunkBatch(const ChunkRecord* recs, size_t count);

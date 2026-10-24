@@ -22,12 +22,6 @@ public:
 
     ThreadPool threadPool;
 
-    // Back-compat accessors: layer 0 is the opaque layer, layer 1 (if present)
-    // the transparent one.
-    Octree& getOpaqueOctree();
-    const Octree& getOpaqueOctree() const;
-    Octree& getTransparentOctree();
-    const Octree& getTransparentOctree() const;
 public:
     LocalScene();
     ~LocalScene();

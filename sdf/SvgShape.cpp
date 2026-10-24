@@ -489,25 +489,6 @@ bool SvgShape::parseColor(const std::string& text, glm::vec3& rgb) {
     return false;
 }
 
-glm::vec3 SvgShape::rgbToHsvDegrees(const glm::vec3& rgb) {
-    const float maxC = std::max(rgb.r, std::max(rgb.g, rgb.b));
-    const float minC = std::min(rgb.r, std::min(rgb.g, rgb.b));
-    const float delta = maxC - minC;
-    float h = 0.0f;
-    if (delta > 1e-6f) {
-        if (maxC == rgb.r) h = 60.0f * std::fmod((rgb.g - rgb.b) / delta, 6.0f);
-        else if (maxC == rgb.g) h = 60.0f * (((rgb.b - rgb.r) / delta) + 2.0f);
-        else h = 60.0f * (((rgb.r - rgb.g) / delta) + 4.0f);
-    }
-    if (h < 0.0f) h += 360.0f;
-    const float s = (maxC <= 1e-6f) ? 0.0f : delta / maxC;
-    return glm::vec3(h, s, maxC);
-}
-
-bool SvgShape::contains(const glm::vec2& p) const {
-    return containingContour(p) >= 0;
-}
-
 int SvgShape::containingContour(const glm::vec2& p) const {
     int found = -1;
     for (size_t i = 0; i < contours.size(); ++i) {

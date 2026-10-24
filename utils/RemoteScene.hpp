@@ -31,9 +31,7 @@
 //
 // Threading: the receiver thread only records into the (thread-safe)
 // UniqueChangeCollector lambdas received by loadScene; MyApp dispatches on
-// its tessellation threads exactly like the local path. Mesh fetches run on
-// the caller's worker thread with a 30 s timeout; on failure the event is
-// re-recorded (throttled per chunk) so a later dispatch retries.
+// its tessellation threads exactly like the local path.
 
 #include "Scene.hpp"
 #include "WsClient.hpp"
@@ -42,7 +40,6 @@
 // Wire codec (server/ is compiled into the app too; the protocol is shared).
 #include "../server/ChunkProtocol.hpp"
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -67,7 +64,7 @@ public:
     // TCP + WS handshake only (fast fail). False = keep LocalScene.
     bool connect(const Endpoint& ep, int timeoutMs = 4000);
     bool isConnected() const { return connected_.load(); }
-    // Idempotent. Wakes fetchers, joins the receiver thread.
+    // Idempotent. Joins the receiver thread.
     void disconnect();
     bool failed() const { return failed_.load(); } // set when socket dies mid-loadScene
     // Scene interface --------------------------------------------------
@@ -108,18 +105,6 @@ private:
         uint8_t layer = 0;
         bool alive = true;
     };
-    struct CacheKey {
-        uint64_t serverId;
-        uint32_t version;
-        bool operator==(const CacheKey& o) const {
-            return serverId == o.serverId && version == o.version;
-        }
-    };
-    struct CacheKeyHash {
-        size_t operator()(const CacheKey& k) const noexcept {
-            return std::hash<uint64_t>{}(k.serverId * 1000003ull + k.version);
-        }
-    };
     struct LayerInfo {
         std::string name = "Layer";
         LayerRendererType renderer = LayerRendererType::Solid;
@@ -135,21 +120,11 @@ private:
     // Registry ----------------------------------------------------------
     Stub* upsertStub(const chunkproto::ChunkRecord& rec); // creates/refreshes
     Stub* findByNode(OctreeNode* node);                   // stubsMutex held
-    bool killStub(uint64_t serverId);                     // marks dead, keeps memory
 
-    // Fetch path ----------------------------------------------------------
-    // Synchronously requests one mesh (serialized across threads). Returns
-    // false on timeout/disconnect/stale reply.
-    bool fetchMesh(uint64_t serverId, chunkproto::MeshData& out);
     // Receiver-thread routing for one gunzipped frame.
     void routeFrame(const std::vector<uint8_t>& raw);
     void receiverLoop();
     void disconnectLocked(); // lifeMutex_ held
-
-    // Throttled re-record of a failed chunk so a later dispatch retries.
-    void scheduleRetry(Layer layer, uint64_t serverId);
-
-    static Geometry buildGeometry(const chunkproto::MeshData& mesh, int brushIndex);
 
     // Connection ----------------------------------------------------------
     WsClient client_;
@@ -174,7 +149,6 @@ private:
     mutable std::mutex stubsMutex_;
     std::unordered_map<uint64_t, std::unique_ptr<Stub>> byServer_;
     std::unordered_map<OctreeNode*, uint64_t> byNode_;
-    std::unordered_map<uint64_t, int64_t> lastRetryMs_;
 
     // Scene meta (root lattice + ladder depth per layer, index = Layer).
     mutable std::mutex metaMutex_;
@@ -183,17 +157,5 @@ private:
     std::vector<float> chunkSize_;
     std::vector<uint8_t> rootChunkLod_;
 
-    // Mesh cache by (serverId, version).
-    mutable std::mutex cacheMutex_;
-    std::unordered_map<CacheKey, Geometry, CacheKeyHash> meshCache_;
-
-    // Outstanding mesh fetch (at most one per connection; server replies in
-    // request order, matched by reply id).
-    std::mutex fetchMutex_;
-    std::condition_variable fetchCv_;
-    bool fetchPending_ = false;
-    uint64_t fetchId_ = 0;
-    chunkproto::MeshData fetchReply_;
-    bool fetchReady_ = false;
     std::mutex sendMutex_; // serializes frame writes across threads
 };

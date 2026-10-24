@@ -195,10 +195,6 @@ bool WsClient::connect(const std::string& host, uint16_t port,
     return true;
 }
 
-bool WsClient::sendBinary(const uint8_t* data, size_t len) {
-    return sendBinary(std::vector<uint8_t>(data, data + len));
-}
-
 bool WsClient::sendBinary(const std::vector<uint8_t>& v) {
     if (fd_ < 0) {
         lastError_ = "not connected";

@@ -90,20 +90,6 @@ int GltfWriter::addNode(std::string name, int mesh) {
     return static_cast<int>(nodes_.size()) - 1;
 }
 
-size_t GltfWriter::vertexCount() const {
-    size_t n = 0;
-    for (const Mesh& m : meshes_)
-        for (const Primitive& p : m.primitives) n += p.positions.size() / 3;
-    return n;
-}
-
-size_t GltfWriter::triangleCount() const {
-    size_t n = 0;
-    for (const Mesh& m : meshes_)
-        for (const Primitive& p : m.primitives) n += p.indices.size() / 3;
-    return n;
-}
-
 bool GltfWriter::write(const std::string& path, std::string& error) const {
     std::vector<uint8_t> bin;
     std::vector<Accessor> accessors;

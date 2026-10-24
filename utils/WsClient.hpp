@@ -34,7 +34,6 @@ public:
 
     // Send one binary frame (payload should already be gzipped by the
     // caller). Returns false when the socket is dead.
-    bool sendBinary(const uint8_t* data, size_t len);
     bool sendBinary(const std::vector<uint8_t>& v);
 
     // Read one full message (binary or text opcode; continuations reassembled,

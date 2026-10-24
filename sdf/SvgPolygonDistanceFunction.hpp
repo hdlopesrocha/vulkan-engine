@@ -20,8 +20,7 @@
 // edges with the sign taken from the even-odd fill rule.
 //
 // Local profile coordinates (used by SvgBrush for per-contour colours) are
-// p_local = (R^-1 (p - center)) / scale, so the SVG's normalized space is
-// reached with localProfilePoint().
+// p_local = (R^-1 (p - center)) / scale.
 class SvgPolygonDistanceFunction : public SignedDistanceFunction {
 public:
     SvgPolygonDistanceFunction(std::shared_ptr<const SvgShape> shape,
@@ -34,8 +33,6 @@ public:
     const std::shared_ptr<const SvgShape> &shape() const { return m_shape; }
     glm::vec3 halfExtents() const { return m_half; }
     glm::vec3 localPoint(const glm::vec3 &p) const;
-    // Normalized SVG-space point ([−1,1]²) for a world position.
-    glm::vec2 localProfilePoint(const glm::vec3 &p) const;
 
 private:
     float polygonDistance(const glm::vec2 &p) const;

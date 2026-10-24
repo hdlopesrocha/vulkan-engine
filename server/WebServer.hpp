@@ -47,7 +47,6 @@ public:
     // Resolved automatically at start() from the usual texture locations; call
     // setTextureRoot() before start() to point it somewhere else.
     void setTextureRoot(const std::string& path) { textureRoot_ = path; }
-    const std::string& textureRoot() const { return textureRoot_; }
 
     // Snapshot provider for REQUEST_ALL (must be thread-safe).
     void setSnapshotProvider(std::function<std::vector<chunkproto::ChunkRecord>()> fn);

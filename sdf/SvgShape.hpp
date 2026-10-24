@@ -38,15 +38,9 @@ public:
                                      std::string* resolvedPath = nullptr);
     static bool fromString(const std::string& text, SvgShape& out, std::string& error);
 
-    // Even-odd containment across the closed contours (holes work naturally).
-    bool contains(const glm::vec2& p) const;
     // Index of the contour that contains p (the last matched contour wins so
     // later/drawn-on-top shapes colour the pixel), or -1.
     int containingContour(const glm::vec2& p) const;
 
-    // Fill colour -> engine HSV tint. The solid shader treats (0,0.5,0.5) as
-    // neutral and scales saturation/value by 2, so the returned (hue in
-    // degrees, sat*0.5, val*0.5) reproduces exactly the RGB fill colour.
-    static glm::vec3 rgbToHsvDegrees(const glm::vec3& rgb);
     static bool parseColor(const std::string& text, glm::vec3& rgb);
 };

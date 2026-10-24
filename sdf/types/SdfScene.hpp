@@ -71,13 +71,6 @@ public:
     static SdfScene createSmokeBomb(const glm::vec3& center, float scale,
                                      float seed = 0.0f);
 
-    // Default fire demo: 1 flame definition, 1 volumetric fire material,
-    // 1 container AABB, N instances with random pos/scale/seed
-    // (std::mt19937 seeded with 1234).
-    static SdfScene createFireDemo(uint32_t flameCount = 64,
-                                    glm::vec3 center = glm::vec3(0.0f),
-                                    float areaSize = 20.0f);
-
     // Fire scene from explicit anchors (tapered base-anchored flames,
     // container auto-fit, adaptive grid targeting ~6 m cells). Empty
     // anchors -> scene with no containers (renders nothing).

@@ -360,68 +360,8 @@ SdfScene SdfScene::createSmokeBomb(const glm::vec3& center, float scale, float s
     return scene;
 }
 
-SdfScene SdfScene::createFireDemo(uint32_t flameCount, glm::vec3 center, float areaSize) {
-    SdfScene scene;
-    // 1 capsule-based flame definition with noise deformation.
-    SdfDefinition flame;
-    flame.prim = SdfPrimitiveType::Capsule;
-    flame.op = SdfOpType::Union;
-    flame.params0 = glm::vec4(0.5f, 1.0f, 0.0f, 0.0f); // radius, half height
-    flame.params1 = glm::vec4(0.0f);
-    flame.deformFlags = kDeformNoise;
-    flame.smoothK = 0.5f;
-    scene.addDefinition(flame);
-
-    // 1 volumetric fire material (defaults are already fire-like).
-    SdfMaterial fire;
-    fire.mode = SdfMaterialType::Volume;
-    fire.baseColor = glm::vec4(1.0f, 0.5f, 0.1f, 1.0f);
-    fire.roughness = 0.5f;
-    fire.metallic = 0.0f;
-    fire.opacity = 1.0f;
-    fire.emission = glm::vec3(1.0f, 0.92f, 0.78f);
-    fire.emissionIntensity = 2.5f;
-    fire.density = 1.0f;
-    fire.absorption = 0.5f;
-    fire.scattering = 0.5f;
-    fire.tempScale = 1.0f;
-    fire.noiseScale = 2.5f;
-    fire.turbulence = 0.6f;
-    fire.riseSpeed = 1.5f;
-    scene.addMaterial(fire);
-
-    // 1 container AABB around the fire area.
-    const glm::vec3 minp = center + glm::vec3(-areaSize * 0.5f, 0.0f, -areaSize * 0.5f);
-    const glm::vec3 maxp = center + glm::vec3(areaSize * 0.5f, 8.0f, areaSize * 0.5f);
-    scene.addContainer(minp, maxp, glm::uvec3(8u, 8u, 8u));
-
-    // N instances with random pos/scale/seed.
-    std::mt19937 rng(1234);
-    std::uniform_real_distribution<float> dxzX(minp.x, maxp.x);
-    std::uniform_real_distribution<float> dxzZ(minp.z, maxp.z);
-    std::uniform_real_distribution<float> dy(minp.y, minp.y + 2.0f);
-    std::uniform_real_distribution<float> dscale(0.5f, 1.5f);
-    std::uniform_real_distribution<float> dseed(0.0f, 100.0f);
-    for (uint32_t i = 0; i < flameCount; ++i) {
-        SdfInstance in;
-        in.defIdx = 0;
-        in.matIdx = 0;
-        in.position = glm::vec3(dxzX(rng), dy(rng), dxzZ(rng));
-        in.rotation = glm::vec3(0.0f);
-        in.scale = dscale(rng);
-        in.heightScale = 1.0f;
-        in.radiusScale = 1.0f;
-        in.intensity = 1.0f;
-        in.seed = dseed(rng);
-        in.containerIdx = 0;
-        scene.addInstance(in);
-    }
-    return scene;
-}
-
 namespace {
-// Shared flame definition + fire material for all fire-scene builders.
-// Keeps createFireDemo and createFireFromAnchors on the same look.
+// Shared flame definition + fire material for the fire-scene builder.
 void addFlameDefinitionAndMaterial(SdfScene& scene,
                                    const SdfScene::FlameShape& shape) {
     SdfDefinition flame;

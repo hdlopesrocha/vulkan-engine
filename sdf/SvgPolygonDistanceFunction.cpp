@@ -85,13 +85,6 @@ glm::vec3 SvgPolygonDistanceFunction::localPoint(const glm::vec3 &p) const {
     return glm::inverse(m_model.quaternion) * (p - getCenter());
 }
 
-glm::vec2 SvgPolygonDistanceFunction::localProfilePoint(const glm::vec3 &p) const {
-    const glm::vec3 local = localPoint(p);
-    const float sx = (std::fabs(m_half.x) > 1e-6f) ? m_half.x : 1.0f;
-    const float sz = (std::fabs(m_half.z) > 1e-6f) ? m_half.z : 1.0f;
-    return glm::vec2(local.x / sx, local.z / sz);
-}
-
 BoundingSphere SvgPolygonDistanceFunction::getSphere(const Transformation &model,
                                                      float bias) const {
     return BoundingSphere(getCenter(), glm::length(model.scale) + bias);

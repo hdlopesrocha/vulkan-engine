@@ -294,21 +294,6 @@ Octree* LocalScene::layerOctreeLocked(Layer layer) const {
     return layers_[static_cast<size_t>(layer)].octree.get();
 }
 
-Octree& LocalScene::getOpaqueOctree() { return *getLayerOctree(LAYER_OPAQUE); }
-const Octree& LocalScene::getOpaqueOctree() const {
-    return *const_cast<LocalScene*>(this)->getLayerOctree(LAYER_OPAQUE);
-}
-Octree& LocalScene::getTransparentOctree() {
-    Octree* o = getLayerOctree(LAYER_TRANSPARENT);
-    if (!o) o = getLayerOctree(LAYER_OPAQUE);
-    return *o;
-}
-const Octree& LocalScene::getTransparentOctree() const {
-    const Octree* o = const_cast<LocalScene*>(this)->getLayerOctree(LAYER_TRANSPARENT);
-    if (!o) o = const_cast<LocalScene*>(this)->getLayerOctree(LAYER_OPAQUE);
-    return *o;
-}
-
 void LocalScene::resetAllLayers() {
     std::lock_guard<std::mutex> lock(layersMutex_);
     for (auto& l : layers_) {

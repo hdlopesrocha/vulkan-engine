@@ -87,19 +87,6 @@ std::vector<uint8_t> buildRequestAll() {
     return std::vector<uint8_t>{MSG_REQUEST_ALL};
 }
 
-std::vector<uint8_t> buildRequestMesh(uint64_t chunkId) {
-    std::vector<uint8_t> v;
-    v.reserve(9);
-    v.push_back(MSG_REQUEST_MESH);
-    for (int i = 0; i < 8; ++i)
-        v.push_back(static_cast<uint8_t>((chunkId >> (8 * i)) & 0xFF));
-    return v;
-}
-
-std::vector<uint8_t> buildRequestAllMeshes() {
-    return std::vector<uint8_t>{MSG_REQUEST_ALL_MESHES};
-}
-
 std::vector<uint8_t> buildSnapshotStart(uint32_t total) {
     std::vector<uint8_t> v;
     v.reserve(9);

@@ -18,28 +18,6 @@ int64_t nowMs() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// Triplanar helpers duplicated from space/Tesselator.cpp (kept static there).
-// Remote meshes carry positions only, so UVs are rebuilt here with the same
-// dominant-axis mapping the local tessellator uses.
-int triplanarPlane(const glm::vec3& normal) {
-    const glm::vec3 a = glm::abs(normal);
-    if (a.x > a.y && a.x > a.z) return normal.x > 0 ? 0 : 1;
-    if (a.y > a.x && a.y > a.z) return normal.y > 0 ? 2 : 3;
-    return normal.z > 0 ? 4 : 5;
-}
-
-glm::vec2 triplanarMapping(const glm::vec3& position, int plane) {
-    switch (plane) {
-        case 0: return glm::vec2(-position.z, -position.y);
-        case 1: return glm::vec2(position.z, -position.y);
-        case 2: return glm::vec2(position.x, position.z);
-        case 3: return glm::vec2(position.x, -position.z);
-        case 4: return glm::vec2(position.x, -position.y);
-        case 5: return glm::vec2(-position.x, -position.y);
-        default: return glm::vec2(0.0f);
-    }
-}
-
 bool checkMagic(const std::vector<uint8_t>& raw) {
     return raw.size() >= 5 && raw[0] == 'C' && raw[1] == 'H' && raw[2] == 'K' && raw[3] == '1';
 }
@@ -218,12 +196,6 @@ void RemoteScene::disconnect() {
 
 void RemoteScene::disconnectLocked() {
     connected_ = false;
-    {
-        std::lock_guard<std::mutex> lock(fetchMutex_);
-        fetchPending_ = false;
-        fetchReady_ = false;
-    }
-    fetchCv_.notify_all();
     client_.close();
     if (receiverThread_.joinable() &&
         receiverThread_.get_id() != std::this_thread::get_id()) {
@@ -270,16 +242,6 @@ RemoteScene::Stub* RemoteScene::findByNode(OctreeNode* node) {
     if (it == byNode_.end()) return nullptr;
     auto jt = byServer_.find(it->second);
     return jt != byServer_.end() ? jt->second.get() : nullptr;
-}
-
-bool RemoteScene::killStub(uint64_t serverId) {
-    std::lock_guard<std::mutex> lock(stubsMutex_);
-    auto it = byServer_.find(serverId);
-    if (it == byServer_.end()) return false;
-    // Memory is intentionally kept (address stability for NodeID use
-    // elsewhere); only the alive flag flips.
-    it->second->alive = false;
-    return true;
 }
 
 // ---------------------------------------------------------------- snapshot
@@ -433,7 +395,6 @@ void RemoteScene::loadScene(SceneLoaderCallback& /*callback*/,
         } else if (type == chunkproto::MSG_SNAPSHOT_END) {
             break;
         }
-        // MESH_DATA cannot appear here (no request outstanding); ignore it.
     }
     std::cout << "[RemoteScene] snapshot ok: " << nChunks << " chunks in "
               << (nowMs() - t0) << " ms\n";
@@ -455,8 +416,6 @@ void RemoteScene::routeFrame(const std::vector<uint8_t>& raw) {
                 continue;
             Stub* stub = upsertStub(rec);
             if (!stub) continue;
-            // Drop the mesh cache entry: the same (id) with a newer version
-            // must re-fetch. Old-version entries stay valid history.
             OctreeNodeData nd(stub->level, &stub->node, stub->cube, nullptr);
             Octree::OctreeNodeDataHandler handler;
             {
@@ -478,13 +437,6 @@ void RemoteScene::routeFrame(const std::vector<uint8_t>& raw) {
             Stub* stub = it->second.get();
             const uint8_t layer = stub->layer;
             stub->alive = false;
-            {
-                std::lock_guard<std::mutex> clock(cacheMutex_);
-                for (auto ci = meshCache_.begin(); ci != meshCache_.end();) {
-                    if (ci->first.serverId == id) ci = meshCache_.erase(ci);
-                    else ++ci;
-                }
-            }
             OctreeNodeData nd(stub->level, &stub->node, stub->cube, nullptr);
             Octree::OctreeNodeDataHandler handler;
             {
@@ -515,38 +467,6 @@ void RemoteScene::routeFrame(const std::vector<uint8_t>& raw) {
             }
         }
         if (maxLayer >= 0) ensureCapacityForLayer(maxLayer);
-    } else if (type == chunkproto::MSG_MESH_DATA) {
-        // Mesh replies belong to the single outstanding fetch (server answers
-        // per-connection FIFO). Anything else is a late duplicate: drop it.
-        if (raw.size() < 29) return;
-        const uint64_t id = readU64LE(raw.data() + 5);
-        std::lock_guard<std::mutex> lock(fetchMutex_);
-        if (!fetchPending_ || id != fetchId_) return;
-        const uint32_t nVerts = readU32LE(raw.data() + 21);
-        const uint32_t nIdx = readU32LE(raw.data() + 25);
-        if (raw.size() < 29u + (size_t)nVerts * 12u + (size_t)nIdx * 4u) return;
-        fetchReply_ = chunkproto::MeshData();
-        fetchReply_.id = id;
-        fetchReply_.version = readU32LE(raw.data() + 13);
-        fetchReply_.layer = raw[17];
-        fetchReply_.positions.resize((size_t)nVerts * 3);
-        memcpy(fetchReply_.positions.data(), raw.data() + 29, (size_t)nVerts * 12u);
-        fetchReply_.indices.resize(nIdx);
-        memcpy(fetchReply_.indices.data(), raw.data() + 29 + (size_t)nVerts * 12u, (size_t)nIdx * 4u);
-        // Trailing per-vertex brush array (append-only extension): absent on
-        // old senders, in which case buildGeometry falls back per vertex.
-        fetchReply_.brush.clear();
-        {
-            const size_t need = 29u + (size_t)nVerts * 12u + (size_t)nIdx * 4u + (size_t)nVerts * 4u;
-            if (raw.size() >= need && nVerts > 0) {
-                const uint8_t* bp = raw.data() + 29 + (size_t)nVerts * 12u + (size_t)nIdx * 4u;
-                fetchReply_.brush.resize(nVerts);
-                for (uint32_t i = 0; i < nVerts; ++i)
-                    fetchReply_.brush[i] = static_cast<int32_t>(readU32LE(bp + 4 * i));
-            }
-        }
-        fetchReady_ = true;
-        fetchCv_.notify_one();
     }
     // SNAPSHOT_START/END outside a snapshot: ignore.
 }
@@ -570,68 +490,13 @@ void RemoteScene::receiverLoop() {
                   << "); rendering frozen at last state\n";
     }
     connected_ = false;
-    fetchCv_.notify_all();
-}
-
-// ---------------------------------------------------------------- fetch
-
-bool RemoteScene::fetchMesh(uint64_t serverId, chunkproto::MeshData& out) {
-    std::unique_lock<std::mutex> lock(fetchMutex_);
-    if (!connected_) return false;
-    {
-        std::lock_guard<std::mutex> slock(sendMutex_);
-        auto gz = chunkproto::gzipCompress(chunkproto::buildRequestMesh(serverId));
-        if (!client_.sendBinary(gz)) {
-            connected_ = false;
-            return false;
-        }
-    }
-    fetchPending_ = true;
-    fetchId_ = serverId;
-    fetchReady_ = false;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    while (!fetchReady_ && connected_)
-        if (fetchCv_.wait_until(lock, deadline) == std::cv_status::timeout) break;
-    fetchPending_ = false;
-    if (!fetchReady_) return false;
-    out = std::move(fetchReply_);
-    fetchReply_ = chunkproto::MeshData();
-    return true;
-}
-
-void RemoteScene::scheduleRetry(Layer layer, uint64_t serverId) {
-    OctreeNodeData nd;
-    bool have = false;
-    Octree::OctreeNodeDataHandler handler;
-    {
-        std::lock_guard<std::mutex> lock(stubsMutex_);
-        const int64_t now = nowMs();
-        auto it = lastRetryMs_.find(serverId);
-        if (it != lastRetryMs_.end() && now - it->second < 5000) return;
-        lastRetryMs_[serverId] = now;
-        auto jt = byServer_.find(serverId);
-        if (jt == byServer_.end() || !jt->second->alive) return;
-        Stub* stub = jt->second.get();
-        nd = OctreeNodeData(stub->level, &stub->node, stub->cube, nullptr);
-        have = true;
-    }
-    // Re-record so a later dispatch retries the fetch. Stubs are never freed
-    // before disconnect, so nd stays valid.
-    {
-        std::lock_guard<std::mutex> hlock(handlersMutex_);
-        if (layer >= 0 && static_cast<size_t>(layer) < updateHandlers_.size())
-            handler = updateHandlers_[static_cast<size_t>(layer)];
-    }
-    if (have && handler) handler(nd);
 }
 
 void RemoteScene::reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) {
     if (!updateHandler || layer < 0) return;
     // Snapshot the layer's live stubs under lock, then invoke the handler
     // without holding stubsMutex_ (collector lambdas only touch their own
-    // map; stub addresses are stable until disconnect). The mesh cache is
-    // version-keyed, so re-emitted chunks re-resolve from cache without
-    // re-fetching from the server.
+    // map; stub addresses are stable until disconnect).
     std::vector<OctreeNodeData> pending;
     {
         std::lock_guard<std::mutex> lock(stubsMutex_);
@@ -646,46 +511,6 @@ void RemoteScene::reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& 
 }
 
 // ---------------------------------------------------------------- Scene
-
-Geometry RemoteScene::buildGeometry(const chunkproto::MeshData& mesh, int brushIndex) {
-    Geometry geo;
-    const size_t nv = mesh.positions.size() / 3;
-    const size_t nt = mesh.indices.size() / 3;
-    if (nv == 0 || mesh.indices.size() % 3 != 0) return geo;
-    for (uint32_t idx : mesh.indices) {
-        if (idx >= nv) return Geometry(); // corrupt payload: publish nothing
-    }
-    // Per-vertex brush when the sender provided it, else the chunk brush.
-    const bool haveBrush = mesh.brush.size() == nv;
-    // Area-weighted smooth normals (≈ the SDF-gradient normals the local
-    // tessellator emits).
-    std::vector<glm::vec3> normals(nv, glm::vec3(0.0f));
-    for (size_t t = 0; t < nt; ++t) {
-        const uint32_t a = mesh.indices[3 * t], b = mesh.indices[3 * t + 1], c = mesh.indices[3 * t + 2];
-        const glm::vec3 pa(mesh.positions[3 * a], mesh.positions[3 * a + 1], mesh.positions[3 * a + 2]);
-        const glm::vec3 pb(mesh.positions[3 * b], mesh.positions[3 * b + 1], mesh.positions[3 * b + 2]);
-        const glm::vec3 pc(mesh.positions[3 * c], mesh.positions[3 * c + 1], mesh.positions[3 * c + 2]);
-        const glm::vec3 n = glm::cross(pb - pa, pc - pa);
-        if (glm::dot(n, n) > 1e-12f) {
-            normals[a] += n;
-            normals[b] += n;
-            normals[c] += n;
-        }
-    }
-    geo.vertices.reserve(nv);
-    geo.indices.reserve(mesh.indices.size());
-    for (size_t i = 0; i < nv; ++i) {
-        glm::vec3 n = normals[i];
-        const float l = glm::length(n);
-        n = l > 1e-9f ? n / l : glm::vec3(0.0f, 1.0f, 0.0f);
-        const glm::vec3 p(mesh.positions[3 * i], mesh.positions[3 * i + 1], mesh.positions[3 * i + 2]);
-        const int bi = haveBrush ? mesh.brush[i] : brushIndex;
-        Vertex v(p, n, triplanarMapping(p, triplanarPlane(n)) * 0.1f, bi);
-        geo.vertices.push_back(v);
-    }
-    geo.indices.assign(mesh.indices.begin(), mesh.indices.end());
-    return geo;
-}
 
 void RemoteScene::requestSDFCubes(Layer layer, OctreeNodeData& data,
                                   const SdfCubeCallback& callback, ThreadPool* /*poolOverride*/) {
