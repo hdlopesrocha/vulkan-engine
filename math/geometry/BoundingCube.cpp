@@ -1,7 +1,6 @@
 #include "BoundingCube.hpp"
 #include "AbstractBoundingBox.hpp"
 #include "../Math.hpp"
-#include "Ray.hpp"
 
 BoundingCube::BoundingCube() : AbstractBoundingBox(glm::vec3(0)) {
 	this->length = 0;
@@ -56,16 +55,4 @@ BoundingCube BoundingCube::getChild(int i) const {
     return BoundingCube(min + newLength * glm::vec3(CUBE_CORNERS[i]), newLength);
 }
 
-glm::vec3 BoundingCube::getChildCenter(int i) const {
-	float newLength = 0.5f*length;
-    return (min + 0.5f*newLength) + glm::vec3(CUBE_CORNERS[i])*newLength;
-}
 
-
-bool BoundingCube::intersects(const Ray& ray) const {
-    return ray.intersects(*this);
-}
-
-void BoundingCube::setMax(glm::vec3 v) {
-    this->min = v - glm::vec3(length);
-}

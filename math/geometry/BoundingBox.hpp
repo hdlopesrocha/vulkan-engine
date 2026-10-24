@@ -10,12 +10,8 @@ public:
     BoundingBox(glm::vec3 min_, glm::vec3 max_);
     BoundingBox();
     void setMax(glm::vec3 v);
-    void setMaxX(float v);
     void setMaxY(float v);
-    void setMaxZ(float v);
-    void setMinX(float v);
     void setMinY(float v);
-    void setMinZ(float v);
 
     glm::vec3 getLength() const override;
     float getLengthX() const override;

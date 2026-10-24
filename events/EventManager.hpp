@@ -21,9 +21,6 @@ public:
     // Register a handler to receive events. Duplicate registrations are ignored.
     void subscribe(HandlerPtr handler);
 
-    // Unregister a handler.
-    void unsubscribe(HandlerPtr handler);
-
     // Publish an event immediately to all subscribed handlers.
     void publish(const EventPtr &event);
 

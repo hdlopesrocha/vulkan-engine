@@ -70,10 +70,7 @@ class Octree: public BoundingCube {
         OctreeNodeDataHandler &deleteHandler
     );
     bool intersect(const Ray& ray, glm::vec3& outPos) const;
-    OctreeNodeLevel getNodeAt(const glm::vec3 &pos, int level, bool simplification) const;
-    OctreeNode* getNodeAt(const glm::vec3 &pos, bool simplification) const;
     float getSdfAt(const glm::vec3 &pos);
-    OctreeNodeLevel fetch(glm::vec3 pos, uint level, bool simplification, OctreeThreadContext * context) const;
 
     // Triangle topology (the adaptive walker) no longer lives here: it moved to
     // OctreeTriangleTessellator (space/OctreeTriangleTessellator.hpp) — the

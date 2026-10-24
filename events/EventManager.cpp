@@ -18,12 +18,6 @@ void EventManager::subscribe(HandlerPtr handler) {
     if (it == handlers.end()) handlers.push_back(handler);
 }
 
-void EventManager::unsubscribe(HandlerPtr handler) {
-    if (!handler) return;
-    std::lock_guard<std::mutex> lock(handlersMutex);
-    handlers.erase(std::remove(handlers.begin(), handlers.end(), handler), handlers.end());
-}
-
 void EventManager::publish(const EventPtr &event) {
     if (!event) return;
     // make a snapshot of handlers to avoid holding the lock while invoking callbacks

@@ -45,26 +45,11 @@ void BoundingBox::setMax(glm::vec3 v) {
     this->max = v;
 }
 
-void BoundingBox::setMaxX(float v){
-    this->max.x = v;
-}
-
 void BoundingBox::setMaxY(float v){
     this->max.y = v;
-}
-
-void BoundingBox::setMaxZ(float v){
-    this->max.z = v;
-}
-
-void BoundingBox::setMinX(float v){
-    this->min.x = v;
 }
 
 void BoundingBox::setMinY(float v){
     this->min.y = v;
 }
 
-void BoundingBox::setMinZ(float v){
-    this->min.z = v;
-}

@@ -47,9 +47,6 @@ public:
     // Returns true on the rising edge of the Home button press.
     bool homeButtonPressed();
 
-    // Returns true on the rising edge of the A button press.
-    bool aButtonPressed();
-
     // Returns true on the rising edge of the Nunchuk C button press.
     bool cButtonPressed();
 
@@ -71,7 +68,6 @@ private:
     // Tracking state for control mapping
     uint16_t prevButtons = 0;
     bool homePrev = false;
-    bool aPrev = false;
     bool cPrev = false;
     bool zPrev = false;
     float startYaw = 0.0f;

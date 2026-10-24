@@ -142,52 +142,6 @@ bool Octree::intersect(const Ray& ray, glm::vec3& outPos) const {
 
 
 
-OctreeNodeLevel Octree::getNodeAt(const glm::vec3 &pos, int level, bool simplification) const{
-    OctreeNode * candidate = root;
-    OctreeNode* node = candidate;
-    BoundingCube cube = *this;
-    uint currentLevel = 0;
-	if(!contains(pos)) {
-		return OctreeNodeLevel(NULL, 0);
-	}
-    while (candidate != NULL && level-- > 0 ) {
-        if (simplification && node->getLod() == 1u) {
-            break;
-        }
-        int i = getNodeIndex(pos, cube);
-        cube = cube.getChild(i);
-        ChildBlock * block = node->getBlock(*allocator);
-        candidate = block != NULL ? block->get(i, *allocator) : NULL;
-        if(candidate != NULL) {
-            node = candidate;
-            ++currentLevel;
-        }
-    }
-    return OctreeNodeLevel(node, currentLevel);
-}
-
-OctreeNode* Octree::getNodeAt(const glm::vec3 &pos, bool simplification) const {
-    OctreeNode * candidate = root;
-    OctreeNode* node = candidate;
-    BoundingCube cube = *this;
-	if(!contains(pos)) {
-		return NULL;
-	}
-    while (candidate != NULL) {
-        if (simplification && node->getLod() == 1u) {
-            break;
-        }
-        int i = getNodeIndex(pos, cube);
-        cube = cube.getChild(i);
-        ChildBlock * block = node->getBlock(*allocator);
-        candidate = block != NULL ? block->get(i, *allocator) : NULL;
-        if(candidate != NULL) {
-            node = candidate;
-        }
-    }
-    return node;
-}
-
 float Octree::getSdfAt(const glm::vec3 &pos) {
     OctreeNode * candidate = root;
     OctreeNode * node = candidate;
@@ -214,17 +168,6 @@ float Octree::getSdfAt(const glm::vec3 &pos) {
 
 
 
-
-OctreeNodeLevel Octree::fetch(glm::vec3 pos, uint level, bool simplification, OctreeThreadContext * context) const {
-    glm::vec4 key = glm::vec4(pos, level);
-    if(context->nodeCache.find(key) != context->nodeCache.end()) {
-        return context->nodeCache[key];
-    } else {
-        OctreeNodeLevel nodeLevel = getNodeAt(pos, level, simplification);
-        context->nodeCache[key] = nodeLevel;
-        return nodeLevel;
-    }
-}
 
 
 
