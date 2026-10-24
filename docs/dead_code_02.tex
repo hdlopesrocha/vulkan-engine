@@ -1,0 +1,1109 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{array}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    },
+    notebox/.style={
+        colback=orange!5!white,
+        colframe=orange!70!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+% Long unbreakable \texttt{} paths are the main source of overfull boxes;
+% loosen line breaking instead of running into the margin.
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\file}[1]{\textsl{#1}}
+\newcommand{\sev}[1]{\textbf{#1}}
+
+\title{Dead Code Report 02: Vulkan Engine \\
+\large The Residual Set After the First Sweep --- Uncalled Methods, \\
+Inline Accessors, Whole Units, and One Dormant Network Path}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report re-audits the Vulkan engine at commit \texttt{9f0d76cb} (2026-10-24),
+after the thirty-six \code{dead-code(...)} commits that followed report~01 and
+after the three fixes derived from \code{perf_report_29}. The method is the
+same linker-level relocation scan used in report~01 --- a symbol that is defined
+but never a relocation target has no direct call, no address-taken use, and no
+vtable entry --- followed by class-qualified textual verification, an
+inline-accessor scan, and a cascade closure over everything only a dead caller
+reaches.
+
+The result is much smaller than report~01 and far more concentrated:
+\textbf{74 non-trivial methods with zero call sites} (1{,}094 body lines),
+\textbf{58 inline accessors and trivial methods} (179 lines), three whole units
+(\code{EditableTexture} 212 lines, \code{Frustum} 67 lines,
+\code{OctreeTopologyStats} 14 lines), and one dormant feature path --- the
+\code{RemoteScene} mesh-fetch cluster (about 190 lines including members).
+With declarations the deletable set is roughly \textbf{1{,}820 lines}.
+
+Two findings are new relative to report~01. First, the perf work itself created
+dead code: the batched-wakeup fix (L8) left \code{ThreadPool::enqueueDetached}
+and \code{notifyOne} without callers. Second, the audit rejected an extension
+that a fix agent had just added: the new per-phase fields on
+\code{OctreeTopologyCompute::stats()} would have been dead on arrival because
+\code{stats()} itself has no caller. The profiler output on stderr is the live
+interface; the accessor and its \code{OctreeTopologyStats} header are deleted
+instead.
+
+Unlike report~01, no finding here touches a pipeline layout, a descriptor
+binding, or a shader interface. Every deletion is CPU-side and
+behaviour-preserving; the risk is link-level, not validation-level.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Scope and Methodology}
+\label{sec:method}
+
+\textbf{Snapshot.} HEAD \texttt{9f0d76cb} (\textit{debug: gate overlay
+collection on the settings, instrument the walks}), 2026-10-24. The working
+tree contains only the user's uncommitted \code{sdf/} work
+(\code{TriangleDistanceFunction} and edits to the SVG/SDF primitives), which
+this audit did not touch and which does not affect any finding below.
+The tree is 47{,}418 C++ lines and 12{,}936 header lines across 521 tracked
+\code{.cpp}/\code{.hpp}/\code{.tpp} files, excluding \code{third_party/},
+\code{bin/}, and shaders. The debug build completes with zero warnings under
+\code{-Wall -Wshadow}, so dead code remains invisible in the build log.
+
+\textbf{Why a second report.} Report~01 (snapshot \texttt{6ba38f1}) found
+129 methods plus roughly 5{,}000--6{,}500 lines across dead classes,
+duplication, and feature paths. The 36 commits that followed removed the bulk
+of that set. What remains is not a random sample of the old list: it is
+(a) code that became dead \emph{after} report~01, including code killed by the
+perf fixes; (b) methods the first scan could not separate because their names
+are common or overloaded; (c) inline accessors, which have no symbol to scan;
+and (d) one whole client feature path that report~01 classified as live.
+
+\textbf{Techniques.}
+\begin{enumerate}
+    \item \textbf{Relocation scan.} For every project object in
+    \code{bin/obj/debug}, the set of defined global text symbols
+    (\code{nm -f posix}) was diffed against every relocation target
+    (\code{objdump -r}) and undefined symbol across all objects. A symbol that
+    is defined but never a relocation target has no direct call, no
+    address-taken use, and no vtable/function-pointer entry anywhere in the
+    project. The scan covered 1{,}009 unreferenced project method symbols
+    before filtering; constructors, destructors, and compiler-generated
+    symbols were discarded, leaving 356 call candidates and 136 unique
+    class/method pairs.
+    \item \textbf{Class-qualified textual verification.} Each candidate was
+    re-checked with \code{grep -rn} over every \code{.cpp}/\code{.hpp} file,
+    distinguishing declarations, definitions, log strings, and calls. This
+    pass removes false positives from common names (e.g.\ \code{clear},
+    \code{init}, \code{contains}) and confirms the relocation result.
+    \item \textbf{Inline-accessor scan.} A parser over all headers collected
+    every function with a body in a class definition and counted its
+    occurrences in the whole tree. Fifty-eight definitions had exactly one
+    occurrence --- the definition itself. Each was checked for pointer,
+    macro, and string use before being listed.
+    \item \textbf{Cascade closure.} For each dead method, its callees were
+    inspected. A callee is deleted only if every caller is in the dead set
+    (e.g.\ \code{Octree::fetch} $\rightarrow$ \code{getNodeAt(pos, level,
+    simplification)}; \code{ImpostorCapture::captureAll} $\rightarrow$
+    \code{capture}). Conversely, a method is \emph{not} deleted if a live
+    caller exists, even when the relocation scan flagged it because the call
+    is inlined or devirtualized.
+    \item \textbf{Header-inclusion scan.} Every project header was searched as
+    an \code{#include} target. Three headers are included but unused
+    (\code{EditableTexture.hpp} by \code{VegetationRenderer.hpp}) or included
+    by nobody (\code{Frustum.hpp}, \code{OctreeTopologyStats.hpp}).
+\end{enumerate}
+
+\textbf{What the scan cannot see.} Calls that exist only inside
+\code{#ifdef USE_IMGUI} blocks in \emph{other} translation units are invisible
+to the debug object tree only if the enclosing file is also excluded from the
+debug build. Widget translation units are compiled in both modes (only the UI
+runtime is gated), so the widget findings below come from real object files;
+they were nevertheless re-checked textually in both preprocessor modes.
+Virtual overrides and \code{std::function} targets are retained unless a
+class-qualified search proves no call site exists. Line counts are
+brace-matched body spans; they are estimates, not exact patch sizes.
+
+\textbf{Not re-audited.} Shader binding cross-checks, the duplicate-block
+detector, and the feature-path catalogue of report~01 are out of scope here.
+The duplicate-block clusters that report~01 listed were either fixed or
+explicitly deferred; re-running the detector would report the same deferred
+items and is not evidence of new dead code.
+
+\begin{notebox}{Self-audit of the perf-report fixes}
+The three commits derived from \code{perf_report_29} were audited with the
+same tools before this report was written.
+\code{26f06f3e} (octree cache/fork/wakeup) made
+\code{ThreadPool::enqueueDetached} and \code{notifyOne} dead, because
+\code{Octree.cpp} now calls \code{enqueueDetachedNoNotify} and \code{notifyAll}
+directly; both are deleted in \S\ref{sec:events}.
+\code{7b32479a} (topology) added per-phase fields to
+\code{OctreeTopologyCompute::stats()} and extended
+\code{OctreeTopologyStats}. That extension was reverted before the commit:
+\code{stats()} has no caller and no widget exposes it, so the new fields would
+have been dead on arrival. The stderr profiler that \code{M7} actually asks for
+is kept, and \code{stats()} plus its header are deleted here.
+\code{9f0d76cb} (debug overlay gating) is live and unchanged.
+\end{notebox}
+
+\section{Summary of Findings}
+\label{sec:summary}
+
+\begin{center}\footnotesize
+\begin{longtable}{p{0.50\textwidth}rr}
+\toprule
+Category & Count & Body lines \\
+\midrule
+\endfirsthead
+\toprule
+Category & Count & Body lines \\
+\midrule
+\endhead
+\multicolumn{3}{l}{\textbf{A. Methods in live files with zero call sites}}\\
+Services (\code{AudioAnalyzer}, \code{MaterialManager},
+\code{OctreeTopologyCompute}, \code{TextureMixer},
+\code{VideoTextureService}) & 15 & 143 \\
+Core and resources (\code{VulkanApp}, \code{VulkanResourceManager},
+\code{TextureArrayManager}) & 7 & 195 \\
+Renderers (\code{SceneRenderer}, \code{SdfRenderer}, \code{VideoRenderer},
+\code{WaterBackFaceRenderer}, \code{VegetationRenderer},
+\code{ImpostorCapture}) & 17 & 209 \\
+Events and space (\code{NunchukPublisher}, \code{EventManager},
+\code{Octree}, \code{OctreeFile}) & 7 & 134 \\
+Math (\code{BoundingBox}, \code{BoundingCube}, \code{Frustum}) & 9 & 68 \\
+Utils and server (\code{GltfWriter}, \code{LocalScene},
+\code{RemoteScene}, \code{ChunkProtocol}) & 12 & 133 \\
+SDF (\code{SvgShape}, \code{SvgPolygonDistanceFunction}, \code{SdfScene}) & 4 & 81 \\
+Application and widgets & 3 & 131 \\
+\midrule
+\textbf{Subtotal} & \textbf{74} & \textbf{1{,}094} \\
+\midrule
+\multicolumn{3}{l}{\textbf{B. Inline accessors and trivial methods}}\\
+Header-defined getters, setters, and forwarders with one occurrence & 58 & 179 \\
+\midrule
+\multicolumn{3}{l}{\textbf{C. Whole units}}\\
+\code{vulkan/resources/EditableTexture.{cpp,hpp}} (include-only) & 1 class & 212 \\
+\code{math/geometry/Frustum.{cpp,hpp}} (never included) & 1 class & 21 \\
+\code{services/OctreeTopologyStats.hpp} (only \code{stats()} uses it) & 1 struct & 14 \\
+\midrule
+\multicolumn{3}{l}{\textbf{D. Dormant feature path}}\\
+\code{RemoteScene} client mesh fetch (\code{MSG_MESH_DATA}) & 1 path & $\sim$190 \\
+\midrule
+\multicolumn{3}{l}{\textbf{E. Deliberately kept}}\\
+\code{IndirectRenderer::addMeshSlotted}/\code{uploadSlot} (latent slot API) & 2 & 296 \\
+\code{SceneRenderer::bindSet0ForFrame} (descriptor-buffer fallback) & 1 & 73 \\
+\midrule
+\textbf{Deletable total (A+B+C+D)} & & $\approx$\textbf{1{,}820} \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+The ``body lines'' column counts only the brace-matched method bodies, not the
+declarations. Category~A's 74 declarations add roughly 110 lines. The
+\code{Frustum} row in~C counts only the 21 lines outside its two methods, which
+are already in~A (the unit is 67 lines in total); \code{EditableTexture}
+includes its header. The deliberately kept items in~E are discussed in
+\S\ref{sec:latent} and are not part of the total.
+
+\section{Dead Functions}
+\label{sec:deadfuncs}
+
+Every method below has a defined symbol that is never a relocation target in
+any project object \emph{and} no call-shaped textual use outside its
+declaration and definition. The complete table with exact spans is
+Appendix~\ref{app:full}.
+
+\subsection{Services}
+\label{sec:services}
+
+\textbf{\code{AudioAnalyzer::setBandEdges(float, float)}} (4 lines,
+\code{services/AudioAnalyzer.cpp:41--44}). Writes the bass/mid crossover
+frequencies. The header comment says the defaults are ``kept configurable via
+\code{setBandEdges()}'', but nothing configures them: \code{MusicWidget} calls
+the window, spectrum-smoothing, amplitude-smoothing, and beat-sensitivity
+setters, never this one. The comment is stale and should go with the method.
+
+\textbf{\code{MaterialManager::destroy(VulkanApp*)}} (13 lines,
+\code{vulkan/resources/MaterialManager.cpp:95--107}). Clears local handles and
+the CPU cache but frees nothing: every buffer it names was registered with
+\code{VulkanResourceManager} at creation, and the class destructor is
+\code{= default}. It reads as a manual-ownership teardown that the codebase
+does not have, and no caller exists.
+
+\textbf{\code{OctreeTopologyCompute::destroy(VulkanApp*)}} (29 lines,
+\code{services/OctreeTopologyCompute.cpp:137--165}). The buffers come from
+\code{VulkanApp::createBuffer}, which registers each one with
+\code{resources.addBufferVma} before returning; the pipeline, layout, and
+descriptor pool are likewise registered. The destructor already prints the
+profiler summary and clears the global instance. \code{destroy} is a second,
+unused teardown path.
+
+\textbf{\code{OctreeTopologyCompute::stats()}} (11 lines,
+\code{services/OctreeTopologyCompute.cpp:783--793}). Returns the rolling
+counters. It has no caller: no widget, no log path, and no test consumes it.
+The live diagnostic is the \code{VULKAN_SETUP_DIAG} table printed from
+\code{recordProfile}/\code{printProfileSummary}. Deleting \code{stats()} makes
+\code{services/OctreeTopologyStats.hpp} dead (14 lines), so both go together.
+See the self-audit box above: this is the accessor that a fix agent had just
+extended.
+
+\textbf{\code{TextureMixer::isLayerGenerationPending(uint32_t)}} (7 lines),
+\textbf{\code{waitForLayerGeneration(VulkanApp*, uint32_t, uint64_t)}} (29
+lines), and \textbf{\code{getGlobalInstance()}} (1 line,
+\code{services/TextureMixer.cpp:32}). The wait loop is the only caller of the
+singleton accessor, and nothing calls the wait loop. The static
+\code{g_texture_mixer_instance} is written by the constructor and then never
+read. Removing the pair also removes the only reason the singleton exists.
+
+\textbf{\code{VideoTextureService}} (8 methods, 49 body lines). In the FFmpeg
+branch: \code{backendCompiledIn} (7), \code{findAssetDirectory} (17),
+\code{isSlotLoaded} (6), \code{videoArrayImage} (1), \code{videoArrayMips} (1),
+\code{videoArrayHeight} (1), \code{slotOf} (5), \code{togglePlaying} (11).
+The stub branch defines the same eight (\code{VideoTextureService.cpp:1955},
+\code{:1957}, \code{:1962}, \code{:1964}, \code{:1973}, \code{:1977}).
+Nothing queries whether FFmpeg is compiled in, nothing resolves an asset
+directory through the service, and nothing reads the array image, mip count,
+height, or slot mapping: the video renderer binds the service's texture array
+through the service's own descriptor path. \code{togglePlaying} is not used by
+\code{VideoTextureWidget}, which drives play/pause through the explicit
+methods. Both branches must be edited together or the stub build breaks.
+
+\subsection{Core and Resources}
+\label{sec:core}
+
+\textbf{\code{VulkanApp::generateMipmaps(VkImage, VkFormat, int32_t, int32_t,
+uint32_t, uint32_t, uint32_t)}} (26 lines,
+\code{vulkan/core/VulkanApp.cpp:1348--1373}). The live mip generator is
+\code{ImpostorCapture::generateMipmaps}, which records into an existing
+command buffer and is called twice from \code{recordCaptureViews}
+(\code{ImpostorCapture.cpp:412--413}). The app-level helper predates it and has
+no caller.
+
+\textbf{\code{VulkanApp::recordTrackedLayoutForCommandBuffer}} (17 lines,
+\code{vulkan/core/VulkanApp.cpp:3111--3127}). Layout tracking moved into the
+recording helpers; this entry point is not called from any renderer.
+
+\textbf{\code{VulkanApp::updateDescriptorSet(const std::vector<VkWriteDescriptorSet>&)}}
+(37 lines, \code{vulkan/core/VulkanApp.cpp:3503--3539}). A full duplicate of
+the \code{std::initializer_list} overload that follows it
+(\code{:3541}). The list overload is live at
+\code{widgets/RenderTargetsWidget.cpp:295} and
+\code{vulkan/resources/SkySphere.cpp:54,151}; the vector overload is not. The
+two bodies differ only in the container type and the same bad-handle guard, so
+deleting the vector version removes 37 lines without touching a call site.
+
+\textbf{\code{VulkanResourceManager::removeFramebuffer(VkFramebuffer)}} (1 line,
+\code{vulkan/core/VulkanResourceManager.cpp:151}). Framebuffers are gone from
+the dynamic-rendering path; the erase helper has no caller.
+
+\textbf{\code{VulkanResourceManager::getSemaphoreMap()}} (1 line,
+\code{:206}). Returns the internal map by const reference. No reader exists;
+the resource-manager widget iterates its own snapshot.
+
+\textbf{\code{TextureArrayManager::destroy(VulkanApp*)}} (21 lines,
+\code{vulkan/resources/TextureArrayManager.cpp:178--198}) and
+\textbf{\code{TextureArrayManager::load(...)}} (92 lines,
+\code{:465--556}). \code{load} is the single-triple legacy path: it stages one
+albedo/normal/bump/roughness/AO set into the next layer. The live bring-up path
+is \code{loadTriples}, called twice from \code{MyApp.cpp:568} and
+\code{:4506}. \code{destroy} has no caller because the arrays and views are
+resource-manager owned; the live teardown is \code{releaseLayerViews} plus the
+manager. This is the largest single-method deletion in the report.
+
+\subsection{Renderers}
+\label{sec:renderers}
+
+\textbf{\code{SceneRenderer}} (3 methods, 27 lines).
+\code{removeAllMeshesSolidOnly} (12 lines,
+\code{vulkan/renderer/SceneRenderer.cpp:332--343}) and
+\code{removeAllMeshesWaterOnly} (11 lines, \code{:345--355}) are reached only
+by the inline wrappers \code{removeAllRegisteredMeshes} and
+\code{removeAllTransparentMeshes} (\code{SceneRenderer.hpp:201--202}), which
+are themselves uncalled; the live reset path is \code{resetSceneState} plus the
+indirect renderers' own clears. \code{layerStateCount} (4 lines,
+\code{:202--205}) is a debug accessor with no reader. The two
+\code{GenPoolRef} accessors in the header (\code{:495--496}) exist only for
+these methods and go with them.
+
+\textbf{\code{SdfRenderer}} (7 methods, 42 lines). \code{setScene} (5,
+\code{SdfRenderer.cpp:322--326}), \code{updateScene} (3, \code{:636--638}),
+\code{setMarchParams} (6, \code{:679--684}), \code{setMarchRange} (7,
+\code{:686--692}), \code{setMarchTiers} (9, \code{:714--722}),
+\code{setSmokeWideContainer} (7, \code{:480--486}), and
+\code{onSwapchainResized} (5, \code{:2142--2146}). The live scene path is
+\code{pendingScene_}/\code{lavaScene_}/\code{smokeScene_} with
+\code{applyScene}; the live march parameters are written through
+\code{config()} by \code{RaymarchWidget}. \code{onSwapchainResized} is not an
+override of \code{VulkanApp::onSwapchainResized} (different class) and is
+never wired into the swapchain callback; \code{SceneRenderer} rebuilds SDF
+targets through its own resize path. The inline \code{isRayMarchingEnabled}
+and \code{hasScene} accessors (\code{SdfRenderer.hpp:146,278}) have no reader
+and are part of the same group.
+
+\textbf{\code{VideoRenderer::clear()}} (4 lines,
+\code{vulkan/renderer/video/VideoRenderer.cpp:406--409}) and
+\textbf{\code{colorLayout()}} (3 lines, \code{VideoRenderer.hpp:70--72}).
+\code{clear} is a reset without a caller; teardown goes through
+\code{cleanup}. \code{colorLayout} returns the tracked layout for a frame the
+renderer already owns internally.
+
+\textbf{\code{WaterBackFaceRenderer::init(VulkanApp*)}} (3 lines,
+\code{vulkan/renderer/water/WaterBackFaceRenderer.cpp:14--16}). Not a virtual
+override (the \code{Renderer} base declares only \code{cleanup},
+\code{setCmdState}, and the destructor). Its whole body is
+\code{appPtr = app}; the live \code{createRenderTargets} path sets the same
+member (\code{:305}), so \code{init} is redundant rather than load-bearing.
+
+\textbf{\code{VegetationRenderer::setBillboardArrayTextures(...)}} (18 lines,
+\code{vulkan/renderer/vegetation/VegetationRenderer.cpp:1003--1020}). The live
+descriptor refresh is the \code{TextureArrayManager} allocation listener
+(\code{onTextureArraysReallocated} $\rightarrow$ \code{refreshVegDescriptors}),
+which updates the existing set in place. Report~01 already identified the only
+\code{MyApp} call to this setter as a no-op; that call was removed, and the
+setter is now unreachable. The inline \code{setUseGpuPlacement},
+\code{gpuPlacementEnabled}, and \code{isConsolidationDirty}
+(\code{VegetationRenderer.hpp:115,116,163}) are the same kind of vestigial
+switch: no reader, no writer outside the header.
+
+\textbf{\code{ImpostorCapture}} (4 methods, 115 lines).
+\code{capture} (55 lines, \code{ImpostorCapture.cpp:454--508}),
+\code{captureAll} (10, \code{:510--519}), \code{captureAsync} (38,
+\code{:521--558}), and \code{updateTexDescSet} (12, \code{:1078--1089}).
+These are the synchronous predecessors of the live asynchronous path:
+\code{ImpostorService.cpp:47} calls \code{captureAllAsync}, which uses
+\code{submitCaptureTypesAsync}, \code{completeCaptureType},
+\code{recordCaptureViews}, and \code{writeCaptureCameraUbos}. \code{capture} is
+called only by \code{captureAll}, and \code{captureAsync} by nobody.
+\code{updateTexDescSet} is superseded by the descriptor writes inside the
+async path. Deleting the four leaves the entire live capture path intact.
+
+\subsection{Events and Space}
+\label{sec:events}
+
+\textbf{\code{NunchukPublisher::aButtonPressed()}} (7 lines,
+\code{events/NunchukPublisher.cpp:792--798}) and the \code{aPrev} member
+(\code{NunchukPublisher.hpp:74}). \code{GamepadPublisher} has an identically
+named, live pair (\code{GamepadPublisher.cpp:59--63}, called from
+\code{RadialMenuHandler.cpp:192}); the Nunchuk one is never polled. The
+duplicate name is why a name-only scan cannot separate them.
+
+\textbf{\code{EventManager::unsubscribe(HandlerPtr)}} (5 lines,
+\code{events/EventManager.cpp:21--25}). Handler lists are cleared wholesale on
+teardown; nothing unsubscribes a single handler.
+
+\textbf{\code{Octree::fetch(...)}} (10 lines, \code{space/Octree.cpp:218--227}),
+\textbf{\code{Octree::getNodeAt(const glm::vec3&, int, bool)}} (23 lines,
+\code{:145--167}), and \textbf{\code{Octree::getNodeAt(const glm::vec3&,
+bool)}} (21 lines, \code{:169--189}). \code{fetch} calls the three-argument
+overload; the two-argument overload has no caller at all. The live spatial
+query path is \code{intersect} and the chunk-manager lookups. This is a clean
+three-method cascade: delete the entry point and both query overloads together.
+
+\textbf{\code{OctreeFile::load(std::string, float)}} (33 lines,
+\code{space/OctreeFile.cpp:61--93}) and \textbf{\code{save(std::string,
+float)}} (35 lines, \code{:95--129}). The live serialization path is
+\code{readFromStream}/\code{writeToStream}, used by \code{LocalScene.cpp:623,
+669--670,697} and \code{MyApp.cpp:4884,4972}. \code{load}/\code{save} add file
+naming and zlib framing on top and are called by nobody.
+
+\subsection{Math}
+\label{sec:math}
+
+\textbf{\code{BoundingBox::setMaxX/setMaxZ/setMinX/setMinZ}} (4 $\times$ 3
+lines, \code{math/geometry/BoundingBox.cpp:48--70}). The whole-vector
+\code{setMax}/\code{setMin} are live. The Y-axis pair is also live:
+\code{utils/MainSceneLoader.hpp:456--457} clamps the water box with
+\code{setMaxY(0)} and \code{setMinY(...)}. Only the X/Z per-axis setters are
+unused. This is exactly the kind of asymmetry that a name-based sweep would get
+wrong in both directions.
+
+\textbf{\code{BoundingCube::getChildCenter(int)}} (4 lines,
+\code{math/geometry/BoundingCube.cpp:59--62}),
+\textbf{\code{BoundingCube::intersects(const Ray&)}} (3 lines, \code{:65--67}),
+and \textbf{\code{BoundingCube::setMax(glm::vec3)}} (3 lines, \code{:69--71}).
+The box/box \code{intersects} inherited from \code{AbstractBoundingBox} is live;
+the ray overload is a separate non-override with no caller. \code{getChild}
+already returns the child cube, so \code{getChildCenter} has no user.
+\code{setMax} is the cube-specific setter; the live path uses
+\code{setLength} and the base-class extents.
+
+\textbf{\code{Ray::getOrigin()}} (1 line, \code{math/geometry/Ray.hpp:12}).
+\code{Ray} itself is live (the Nunchuk aim raycast at
+\code{NunchukPublisher.cpp:700}); only the accessor is unused.
+
+\textbf{\code{Frustum}} (whole unit, 67 lines). No file includes
+\code{Frustum.hpp}; the constructor and \code{test} are defined in
+\code{Frustum.cpp} and never referenced. \code{ContainmentType} is used by
+other geometry types, but the frustum class is not part of any visibility
+path. See \S\ref{sec:units}.
+
+\subsection{Utils and Server}
+\label{sec:utils}
+
+\textbf{\code{GltfWriter::vertexCount()}} and \textbf{\code{triangleCount()}}
+(6 lines each, \code{utils/GltfWriter.cpp:93--105}). Statistics accessors for
+the exporter; the exporter logs node and mesh counts through other paths.
+
+\textbf{\code{LocalScene::getOpaqueOctree()}} and
+\textbf{\code{getTransparentOctree()}} (both overloads, 14 lines total,
+\code{utils/LocalScene.cpp:297--310}). The live accessor is
+\code{getLayerOctree(Layer)}; \code{MyApp} and the renderers use the layer
+API. The four typed getters are convenience wrappers with no user.
+
+\textbf{\code{RemoteScene::fetchMesh}}, \textbf{\code{scheduleRetry}},
+\textbf{\code{buildGeometry}}, and \textbf{\code{killStub}} (96 lines total)
+are the visible part of the dormant mesh-fetch path; they are described
+together with the receiver branch and members in \S\ref{sec:remote}.
+
+\textbf{\code{chunkproto::buildRequestMesh(uint64_t)}} (8 lines,
+\code{server/ChunkProtocol.cpp:90--97}) and
+\textbf{\code{buildRequestAllMeshes()}} (3 lines, \code{:99--101}). These are
+the client-side request builders. They become unreachable when the fetch path
+goes; the server-side handlers (\code{WebServer.cpp:750,758}) and the message
+constants stay, because other clients speak the same protocol.
+
+\textbf{\code{WsClient::sendBinary(const uint8_t*, size_t)}} (3 lines,
+\code{utils/WsClient.cpp:198--200}). A forwarding overload over the
+\code{std::vector} version. Its only caller was \code{fetchMesh}; the live
+snapshot request and every other send use the vector overload.
+
+\textbf{\code{WebServer::textureRoot()}} (1 line, \code{server/WebServer.hpp:50}).
+Accessor for the texture root; no reader.
+
+\subsection{SDF}
+\label{sec:sdf}
+
+\textbf{\code{SvgShape::rgbToHsvDegrees(const glm::vec3&)}} (14 lines,
+\code{sdf/SvgShape.cpp:492--505}) and \textbf{\code{SvgShape::contains(const
+glm::vec2&)}} (3 lines, \code{:507--509}). The HSV conversion was for brush
+tinting on the SVG path; the live tint path is the Nunchuk colour subpage,
+which has its own conversion. \code{contains} is a point-in-polygon test; the
+distance function uses \code{localPoint} and its own winding logic.
+
+\textbf{\code{SvgPolygonDistanceFunction::localProfilePoint(const glm::vec3&)}}
+(6 lines, \code{sdf/SvgPolygonDistanceFunction.cpp:88--93}). Normalized
+SVG-space projection; \code{localPoint} is the live one.
+
+\textbf{\code{SdfScene::createFireDemo(uint32_t, glm::vec3, float)}} (58
+lines, \code{sdf/types/SdfScene.cpp:363--420}). A demo fire ring built from
+evenly spaced anchors. The live fire path is
+\code{createFireFromAnchors}, which \code{SdfRenderer} calls with anchors from
+the scene (\code{SdfRenderer.cpp:429,862}). The demo has no loader and no
+caller; its own comment notes that it must be kept visually in sync with
+\code{createFireFromAnchors}, which is maintenance cost for dead code.
+
+\subsection{Application and Widgets}
+\label{sec:app}
+
+\textbf{\code{MyApp::dispatchSolidEvents()}} (3 lines,
+\code{MyApp.cpp:5195--5197}) and \textbf{\code{dispatchLiquidEvents()}} (8
+lines, \code{:5199--5206}). Both are thin wrappers over
+\code{dispatchLayerEvents(LAYER_OPAQUE/LAYER_TRANSPARENT)}. The live pump is
+\code{dispatchAllEvents}, which snapshots the collector count and dispatches
+every layer; nothing calls the per-layer pair.
+
+\textbf{\code{RenderTargetsWidget::cleanup()}} (120 lines,
+\code{widgets/RenderTargetsWidget.cpp:662--781}). A near-copy of the
+destructor's owned-descriptor sweep, extended with the linear-target image
+teardown and the linearization pipeline, layout, descriptor set, and sampler
+destruction. It is never called. The live paths already cover the work:
+\code{destroyLinearTargets()} (called from \code{setFrameInfo} on resize)
+destroys the images, views, and allocations, and the pipeline, layout, and
+sampler are registered with \code{VulkanResourceManager}. The destructor
+retains the descriptor removal. Deleting \code{cleanup} also removes a
+duplicated \code{removeOwnedDesc(waterDepthLinearDescriptor, ...)} line: the
+second call is harmless because the first nulls the handle, but it is a copy
+error that only exists in dead code.
+
+\textbf{\code{MusicWidget::isPlaying()}} (1 line,
+\code{widgets/MusicWidget.hpp:44}), \textbf{\code{OctreeExplorerWidget::
+setExportBlenderCallback(...)}} (3 lines,
+\code{widgets/OctreeExplorerWidget.hpp:21--23}), and
+\textbf{\code{ImGuiHelpers::openPtr(...)}} (1 line,
+\code{widgets/components/ImGuiHelpers.hpp:22}). The music widget drives the
+analyzer directly; the octree explorer never registers an export callback (the
+Blender export is started from \code{MyApp}); the pointer-opening helper was
+replaced by the reference overload that is actually used.
+
+\section{Whole Units}
+\label{sec:units}
+
+\textbf{\code{vulkan/resources/EditableTexture.{cpp,hpp}} (212 lines).} The
+class is the old per-layer editable CPU texture: allocate, upload, draw an
+ImGui editor, invalidate the descriptor on pool rebuild. It was replaced by the
+\code{TextureArrayManager} arrays, which own the albedo/normal/bump/roughness/
+AO layers and expose them through \code{getImTexture}. The only remaining
+reference is \code{#include "../../resources/EditableTexture.hpp"} at
+\code{vulkan/renderer/vegetation/VegetationRenderer.hpp:6}; the class is never
+named in that header or its source. Deleting the include also removes an
+unnecessary \code{<imgui.h>} dependency from the vegetation renderer header.
+The files are compiled (they are in \code{vulkan/resources/*.cpp}), so the
+symbols exist and the relocation scan sees them; they are simply unreachable.
+
+\textbf{\code{math/geometry/Frustum.{cpp,hpp}} (67 lines).} The header is
+included by nobody. The class has a matrix constructor that extracts six planes
+and a \code{test} that classifies a bounding box. No renderer, culler, or
+widget uses it; visibility is decided by the octree and the indirect renderer's
+own bounds. Report~01 listed \code{Frustum} as an orphan candidate but did not
+delete it; this report closes it.
+
+\textbf{\code{services/OctreeTopologyStats.hpp} (14 lines).} A plain struct of
+rolling counters, included only by \code{OctreeTopologyCompute.hpp} and
+returned only by the uncalled \code{stats()}. The live profiler prints its own
+per-window table and does not use the struct. Delete the header, the
+\code{stats()} declaration, and the include together.
+
+\section{Inline Accessors and Vestigial State}
+\label{sec:inline}
+
+Inline functions have no out-of-line symbol, so the relocation scan cannot see
+them. The header parser found 58 definitions whose name occurs exactly once in
+the tree --- the definition itself. They fall into four groups.
+
+\begin{center}\footnotesize
+\begin{longtable}{p{0.42\textwidth}p{0.40\textwidth}r}
+\toprule
+File & Symbol & Lines \\
+\midrule
+\endfirsthead
+\toprule
+File & Symbol & Lines \\
+\midrule
+\endhead
+\code{services/AudioAnalyzer.hpp:47} & \code{windowType} & 1 \\
+\code{services/AudioAnalyzer.hpp:52} & \code{spectrumSmoothing} & 1 \\
+\code{services/AudioAnalyzer.hpp:53} & \code{amplitudeSmoothing} & 1 \\
+\code{services/AudioAnalyzer.hpp:58} & \code{beatSensitivity} & 1 \\
+\code{services/AudioAnalyzer.hpp:77} & \code{spectrumData} & 1 \\
+\code{services/AudioAnalyzer.hpp:78} & \code{spectrumBins} & 1 \\
+\code{services/AudioAnalyzer.hpp:90} & \code{waveformCapacity} & 1 \\
+\code{services/ParticlePhysicsSim.hpp:107} & \code{regionNodeCount} & 1 \\
+\code{sdf/SvgPolygonDistanceFunction.hpp:35} & \code{halfExtents} & 1 \\
+\code{utils/MainSceneLoader.hpp:83} & \code{shapeIndex} & 3 \\
+\code{utils/LayerRendererType.hpp:15} & \code{layerRendererName} & 7 \\
+\code{math/TextureType.hpp:25} & \code{textureTypeName} & 10 \\
+\code{math/geometry/Ray.hpp:12} & \code{getOrigin} & 1 \\
+\code{widgets/MusicWidget.hpp:44} & \code{isPlaying} & 1 \\
+\code{widgets/OctreeExplorerWidget.hpp:21} & \code{setExportBlenderCallback} & 3 \\
+\code{widgets/components/ImGuiHelpers.hpp:22} & \code{openPtr} & 1 \\
+\code{vulkan/core/VulkanApp.hpp:213} & \code{getCurrentFrameFence} & 4 \\
+\code{vulkan/renderer/SceneRenderer.hpp:201} & \code{removeAllRegisteredMeshes} & 1 \\
+\code{vulkan/renderer/SceneRenderer.hpp:202} & \code{removeAllTransparentMeshes} & 1 \\
+\code{vulkan/renderer/SceneRenderer.hpp:495} & \code{solidGenPoolRef} & 1 \\
+\code{vulkan/renderer/SceneRenderer.hpp:496} & \code{waterGenPoolRef} & 1 \\
+\code{vulkan/renderer/DescriptorUpdateStats.hpp:19} & \code{updateCalls} & 3 \\
+\code{vulkan/renderer/SlotAllocator.hpp:115} & \code{updateCounts} & 11 \\
+\code{vulkan/renderer/SlotAllocator.hpp:128} & \code{getSlot} & 7 \\
+\code{vulkan/renderer/SlotAllocator.hpp:149} & \code{totalVertexCapacity} & 3 \\
+\code{vulkan/renderer/SlotAllocator.hpp:154} & \code{totalIndexCapacity} & 3 \\
+\code{vulkan/renderer/SceneQueues.hpp:28} & \code{getGeometryQueue} & 1 \\
+\code{vulkan/renderer/CommandBufferState.hpp:34} & \code{bindComputePipeline} & 5 \\
+\code{vulkan/renderer/CommandBufferState.hpp:58} & \code{bindGraphicsPipelineUnchecked} & 4 \\
+\code{vulkan/renderer/DescriptorBuffer.hpp:36} & \code{bindingOffset} & 9 \\
+\code{vulkan/renderer/DescriptorBufferHelper.hpp:22} & \code{bindingInfo} & 8 \\
+\code{vulkan/renderer/solid/SolidRenderer.hpp:92} & \code{activeGraphicsPipeline} & 6 \\
+\code{vulkan/renderer/rt/RayTracingResources.hpp:158} & \code{getRTSetLayout} & 1 \\
+\code{vulkan/renderer/sdf/SdfRenderer.hpp:146} & \code{isRayMarchingEnabled} & 1 \\
+\code{vulkan/renderer/sdf/SdfRenderer.hpp:278} & \code{hasScene} & 1 \\
+\code{vulkan/renderer/vegetation/VegetationRenderer.hpp:115} & \code{setUseGpuPlacement} & 1 \\
+\code{vulkan/renderer/vegetation/VegetationRenderer.hpp:116} & \code{gpuPlacementEnabled} & 1 \\
+\code{vulkan/renderer/vegetation/VegetationRenderer.hpp:163} & \code{isConsolidationDirty} & 1 \\
+\code{vulkan/renderer/video/VideoRenderer.hpp:70} & \code{colorLayout} & 3 \\
+\code{vulkan/renderer/water/WaterRenderer.hpp:153} & \code{rtShadingEnabled} & 1 \\
+\code{vulkan/renderer/water/WaterRenderer.hpp:189} & \code{rtProfilingEnabled} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:64} & \code{hasUploadManager} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:282} & \code{getVegTableBuffer} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:283} & \code{isVegetationCullEnabled} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:286} & \code{getVegDummyBuffer} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:304} & \code{getIndirectBuffer} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:305} & \code{getBoundsBuffer} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:306} & \code{getCompactBuffer} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:314} & \code{getLastVisibleCount} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:315} & \code{getComputeDescriptorSetLayout} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:342} & \code{visitActiveMeshInfos} & 7 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:360} & \code{copyRTGeometrySpans} & 32 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:479} & \code{getVertexBufferSize} & 1 \\
+\code{vulkan/renderer/indirect/IndirectRenderer.hpp:480} & \code{getIndexBufferSize} & 1 \\
+\code{vulkan/includes/shader/vertex_layouts.hpp:14} & \code{defaultBindings} & 3 \\
+\code{vulkan/includes/shader/vertex_layouts.hpp:18} & \code{vertexAndInstanceBindings} & 6 \\
+\code{vulkan/includes/shader/vertex_layouts.hpp:37} & \code{defaultAttributesWithInstance} & 5 \\
+\code{server/WebServer.hpp:50} & \code{textureRoot} & 1 \\
+\midrule
+\textbf{Total} & \textbf{58 symbols} & \textbf{179} \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+Three caveats apply to this table.
+
+\begin{enumerate}
+    \item \textbf{Grouped families.} The \code{IndirectRenderer} getters
+    (\code{getIndirectBuffer}, \code{getBoundsBuffer}, \code{getCompactBuffer},
+    \code{getLastVisibleCount}, \code{getComputeDescriptorSetLayout},
+    \code{hasUploadManager}, \code{getVegTableBuffer}, \code{getVegDummyBuffer},
+    \code{isVegetationCullEnabled}, \code{visitActiveMeshInfos},
+    \code{copyRTGeometrySpans}) are a deliberate inspection surface: they exist
+    so the resource-manager widget and external tools can read the renderer's
+    buffers. They have no in-tree caller, but deleting them removes the only
+    supported way to inspect those handles without exposing members. The
+    conservative choice is to keep this family and delete only the four
+    \code{SlotAllocator} helpers and the two size getters, which duplicate
+    public capacity fields. The prompt in \S\ref{sec:prompt} takes that
+    conservative branch.
+    \item \textbf{State, not just code.} \code{solidGenPoolRef},
+    \code{waterGenPoolRef}, \code{updateCalls}, and the three
+    \code{VegetationRenderer} flags are write-only or never-written state.
+    Deleting the accessor is only half the change; the backing member and its
+    initializer must go too, or the compiler will warn about an unused private
+    field (\code{-Wunused-private-field} is not enabled, so it would survive
+    silently).
+    \item \textbf{Name collisions.} \code{getSlot} is not
+    \code{ChunkManager::getSlotIndex}; \code{textureTypeName} is not
+    \code{layerRendererName}. Each was checked with its class qualifier before
+    being listed.
+\end{enumerate}
+
+\section{Dead Feature Path: RemoteScene Mesh Fetch}
+\label{sec:remote}
+
+The remote scene speaks the chunk protocol in \code{server/ChunkProtocol.hpp}.
+The server can answer \code{MSG_REQUEST_MESH} and
+\code{MSG_REQUEST_ALL_MESHES} with \code{MSG_MESH_DATA}
+(\code{server/WebServer.cpp:750--764}, \code{ChunkProtocol.cpp:190}). The
+client never asks. The only sender of those requests was
+\code{RemoteScene::fetchMesh}, which has no caller anywhere in the tree, so the
+receiver's \code{MSG_MESH_DATA} branch can never see a reply to a request it
+made. The snapshot path (\code{MSG_REQUEST_ALL} $\rightarrow$
+\code{START/META/BATCH/END}) and the live batch path are separate and remain
+live.
+
+The dormant cluster is larger than the four methods because it owns state:
+
+\begin{center}\footnotesize
+\begin{tabular}{p{0.52\textwidth}rr}
+\toprule
+Part & Lines & Note \\
+\midrule
+\code{fetchMesh} & 23 & request, 30\,s wait, reply move \\
+\code{scheduleRetry} & 25 & 5\,s throttle via \code{lastRetryMs_} \\
+\code{buildGeometry} & 39 & normals, triplanar UVs, brush ids \\
+\code{killStub} & 9 & delete path flips \code{alive} directly \\
+\code{MSG_MESH_DATA} branch & 33 & receiver-side reply matching \\
+\code{triplanarPlane}/\code{triplanarMapping} & 18 & used only by \code{buildGeometry} \\
+\code{CacheKey}/\code{CacheKeyHash} + \code{meshCache_} & 14 & cache is erased, never inserted \\
+\code{lastRetryMs_} + \code{cacheMutex_} & 2 & only the two dead paths touch them \\
+\code{fetchMutex_}/\code{fetchCv_}/\code{fetchPending_}/ & 8 & reply slot and wakeups \\
+\code{fetchId_}/\code{fetchReply_}/\code{fetchReady_} & & \\
+\code{disconnectLocked}/\code{receiverLoop} wakeups & 6 & only wake the fetch wait \\
+\midrule
+\textbf{Total} & $\approx$\textbf{190} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two details make the path look alive to a superficial check. First,
+\code{meshCache_} appears in the delete handler
+(\code{RemoteScene.cpp:483--485}), where it prunes entries for a deleted
+chunk --- but nothing ever inserts an entry, so the loop iterates an always-empty
+map. Second, \code{disconnectLocked} and \code{receiverLoop} both call
+\code{fetchCv_.notify_all()}; those wakeups exist only to unblock
+\code{fetchMesh}'s 30-second wait. The delete path already flips
+\code{stub->alive = false} itself (\code{:422,480}), so \code{killStub} is a
+third copy of the same operation.
+
+\textbf{What is deleted.} \code{fetchMesh}, \code{scheduleRetry},
+\code{buildGeometry}, \code{killStub}, the \code{MSG_MESH_DATA} branch, the
+two triplanar helpers, \code{CacheKey}/\code{CacheKeyHash}, \code{meshCache_},
+\code{cacheMutex_}, \code{lastRetryMs_}, \code{fetchMutex_}, \code{fetchCv_},
+\code{fetchPending_}, \code{fetchId_}, \code{fetchReply_},
+\code{fetchReady_}, the fetch lines in \code{disconnectLocked} and
+\code{receiverLoop}, the cache-prune loop in the delete handler, the
+\code{<condition_variable>} include if nothing else needs it, and the two
+\code{chunkproto} request builders that only \code{fetchMesh} used
+(\code{buildRequestMesh}, \code{buildRequestAllMeshes}).
+
+\textbf{What is kept.} All message constants, including
+\code{MSG_REQUEST_MESH}, \code{MSG_REQUEST_ALL_MESHES}, and
+\code{MSG_MESH_DATA}; the server handlers; the server's
+\code{buildMeshData}; \code{sendMutex_} (the live snapshot request at
+\code{RemoteScene.cpp:331} uses it); \code{findByNode}; \code{reemitLayer}; and
+the delete path. This is a client-feature deletion, not a protocol deletion:
+the server keeps serving mesh requests to any other client, and the protocol
+header remains the single source of truth for the wire format.
+
+\section{Deliberately Kept: Latent API}
+\label{sec:latent}
+
+Two uncalled APIs are \emph{not} in the delete set, and the distinction matters
+for the prompt.
+
+\textbf{\code{IndirectRenderer::addMeshSlotted}} (96 lines,
+\code{IndirectRenderer.cpp:2241--2336}) and
+\textbf{\code{uploadSlot}} (200 lines, \code{:2736--2935}). A complete
+slotted-upload interface: allocate a slot, upload vertex/index spans, publish
+the slot. The streaming engine currently goes through the chunk-manager path
+and the upload manager; the slotted path is the target of the in-progress
+migration described in the renderer's own comments. It is reachable by design
+and would be re-added immediately if deleted. Keep, and mark with a comment
+naming the migration, so the next audit does not re-litigate it.
+
+\textbf{\code{SceneRenderer::bindSet0ForFrame}} (73 lines,
+\code{SceneRenderer.cpp:1384--1456}). The descriptor-buffer fallback for set~0
+when the main layout carries \code{DESCRIPTOR_BUFFER_BIT}. Report~01 already
+classified it as intentionally uncalled; the layout still has the conditional
+comment at \code{SceneRenderer.hpp:466}, so the API is part of a supported
+mode, not an accident. Keep.
+
+The difference from the delete set is not size but intent: a latent API has a
+documented migration or a supported mode behind it, and deleting it would
+remove a capability. A dead method is a superseded duplicate or a leftover
+entry point, and deleting it removes only maintenance cost. The
+\code{RenderTargetsWidget::cleanup} case shows the test: it duplicates the
+destructor and \code{destroyLinearTargets} with no capability that the live
+paths lack, so it is dead, not latent.
+
+\section{Cascades and Deletion Order}
+\label{sec:cascade}
+
+The deletions are grouped so that each commit leaves the tree link-clean and
+each group's justification is local.
+
+\begin{enumerate}
+    \item \textbf{Services.} \code{AudioAnalyzer::setBandEdges};
+    \code{MaterialManager::destroy};
+    \code{OctreeTopologyCompute::{destroy,stats}} plus
+    \code{OctreeTopologyStats.hpp};
+    \code{TextureMixer::{isLayerGenerationPending,waitForLayerGeneration,
+    getGlobalInstance}} plus the static pointer;
+    \code{VideoTextureService}'s eight methods in both branches.
+    \item \textbf{Core and resources.} \code{VulkanApp::{generateMipmaps,
+    recordTrackedLayoutForCommandBuffer, updateDescriptorSet(vector)}};
+    \code{VulkanResourceManager::{removeFramebuffer,getSemaphoreMap}};
+    \code{TextureArrayManager::{destroy,load}}.
+    \item \textbf{Renderers.} \code{SceneRenderer}'s two remove methods and
+    \code{layerStateCount} plus the wrappers and pool refs;
+    \code{SdfRenderer}'s seven methods plus the two inline accessors;
+    \code{VideoRenderer::{clear,colorLayout}};
+    \code{WaterBackFaceRenderer::init};
+    \code{VegetationRenderer::setBillboardArrayTextures} plus the three inline
+    flags; \code{ImpostorCapture::{capture,captureAll,captureAsync,
+    updateTexDescSet}}.
+    \item \textbf{Events, space, math.} \code{NunchukPublisher::
+    aButtonPressed} plus \code{aPrev}; \code{EventManager::unsubscribe};
+    \code{Octree::fetch} and both \code{getNodeAt} overloads;
+    \code{OctreeFile::{load,save}};
+    \code{BoundingBox}'s four X/Z setters;
+    \code{BoundingCube::{getChildCenter,intersects(Ray),setMax}};
+    \code{Ray::getOrigin}; the \code{Frustum} unit.
+    \item \textbf{Utils, server, SDF.} \code{GltfWriter}'s two counters;
+    \code{LocalScene}'s four typed getters; the \code{RemoteScene} fetch
+    cluster; \code{chunkproto}'s two request builders;
+    \code{WsClient::sendBinary(const uint8_t*, size_t)};
+    \code{WebServer::textureRoot}; \code{SvgShape}'s two methods;
+    \code{SvgPolygonDistanceFunction::localProfilePoint};
+    \code{SdfScene::createFireDemo}.
+    \item \textbf{Application and widgets.} \code{MyApp}'s two dispatch
+    wrappers; \code{RenderTargetsWidget::cleanup}; the three widget accessors;
+    the conservative subset of the inline table (the four \code{SlotAllocator}
+    helpers and the two \code{IndirectRenderer} size getters).
+    \item \textbf{Perf-fix residue.} \code{ThreadPool::enqueueDetached} and
+    \code{notifyOne}, which the L8 fix made dead.
+\end{enumerate}
+
+Ordering inside a group matters in four places. \code{Octree::fetch} must go
+with both \code{getNodeAt} overloads: deleting \code{fetch} first leaves the
+three-argument overload with no caller and the two-argument overload dead from
+the start. \code{ImpostorCapture::capture} must go with \code{captureAll}
+(its only caller) but \emph{not} with \code{captureAllAsync}, which is live.
+\code{OctreeTopologyCompute::stats} must go with
+\code{OctreeTopologyStats.hpp}, or the header becomes an orphan. The
+\code{RemoteScene} methods must go with the receiver branch and the members,
+or the branch keeps reading a reply slot nobody waits on.
+
+\section{Verification Plan}
+\label{sec:verify}
+
+\begin{enumerate}
+    \item \code{make -j8 debug} after each group. The debug build compiles
+    every project translation unit, including \code{widgets/*.cpp},
+    \code{server/*.cpp}, and \code{space/*.cpp}; a deletion that breaks a
+    caller fails here. Output is teed to \code{logs/build.log} by the make
+    target.
+    \item \code{grep -rn} for each removed name over \code{.cpp}/\code{.hpp}/
+    \code{.tpp}; the only allowed hits are comments that mention the old API,
+    and those comments should be updated or removed in the same commit.
+    \item Link check: \code{make -j8 debug} links \code{bin/app}. The server
+    binary is not built by the agent (release target), but the deleted
+    server-side symbols are compiled into the app's objects and their absence
+    of callers is textual, so the server link risk is nil.
+    \item No runtime validation is performed as part of this audit. Every
+    deletion is CPU-side: no pipeline layout, descriptor binding, shader
+    interface, or synchronization object changes. The usual
+    \code{VULKAN_GPU_ASSISTED=1} run is therefore a formality for this set,
+    not a correctness gate. If a later commit mixes these deletions with
+    renderer-state changes, that run becomes mandatory again.
+    \item Widget paths: the debug build compiles the widget translation units
+    but does not run the ImGui UI. The four widget deletions were verified
+    textually in both preprocessor modes; a release run remains the user's
+    check, not the agent's.
+\end{enumerate}
+
+\section{Proposed Prompt}
+\label{sec:prompt}
+
+The prompt below is written to be pasted into a coding agent in this
+repository. It is directory-staged, forbids mixing the deletions with
+behaviour changes, and names the exact symbols so the agent does not re-run the
+audit from scratch.
+
+\begin{tcolorbox}[promptbox={Prompt --- Dead-code sweep 02}]
+Goal: delete the residual dead code identified in
+\code{docs/dead_code_02.tex} at \code{/home/hdlrocha/vulkan-engine}. Read
+\code{AGENTS.md} first. Never modify \code{third_party/}. Do not mix these
+deletions with behaviour changes, refactors, or formatting. Do not touch the
+uncommitted \code{sdf/} work.
+
+Baseline: HEAD \code{9f0d76cb}. For every symbol, confirm with a
+class-qualified \code{grep -rn} before deleting, and remove the header
+declaration with the definition. If a symbol turns out to have a live caller,
+leave it and report why.
+
+Group 1 --- services. Delete \code{AudioAnalyzer::setBandEdges};
+\code{MaterialManager::destroy}; \code{OctreeTopologyCompute::destroy} and
+\code{stats()} plus \code{services/OctreeTopologyStats.hpp} and its include;
+\code{TextureMixer::isLayerGenerationPending}, \code{waitForLayerGeneration},
+\code{getGlobalInstance}, and \code{g_texture_mixer_instance};
+\code{VideoTextureService::backendCompiledIn}, \code{findAssetDirectory},
+\code{isSlotLoaded}, \code{videoArrayImage}, \code{videoArrayMips},
+\code{videoArrayHeight}, \code{slotOf}, \code{togglePlaying} in \emph{both}
+the FFmpeg and stub branches.
+
+Group 2 --- core and resources. Delete \code{VulkanApp::generateMipmaps},
+\code{recordTrackedLayoutForCommandBuffer}, and the
+\code{std::vector<VkWriteDescriptorSet>} overload of
+\code{updateDescriptorSet} (keep the \code{std::initializer_list} overload);
+\code{VulkanResourceManager::removeFramebuffer} and \code{getSemaphoreMap};
+\code{TextureArrayManager::destroy} and \code{load} (keep
+\code{loadTriples}).
+
+Group 3 --- renderers. Delete \code{SceneRenderer::removeAllMeshesSolidOnly},
+\code{removeAllMeshesWaterOnly}, \code{layerStateCount}, the wrappers
+\code{removeAllRegisteredMeshes}/\code{removeAllTransparentMeshes}, and the
+two \code{GenPoolRef} accessors; \code{SdfRenderer::setScene},
+\code{updateScene}, \code{setMarchParams}, \code{setMarchRange},
+\code{setMarchTiers}, \code{setSmokeWideContainer},
+\code{onSwapchainResized}, plus the inline \code{isRayMarchingEnabled} and
+\code{hasScene}; \code{VideoRenderer::clear} and \code{colorLayout};
+\code{WaterBackFaceRenderer::init};
+\code{VegetationRenderer::setBillboardArrayTextures} plus the inline
+\code{setUseGpuPlacement}, \code{gpuPlacementEnabled},
+\code{isConsolidationDirty} and their members;
+\code{ImpostorCapture::capture}, \code{captureAll}, \code{captureAsync}, and
+\code{updateTexDescSet}. Keep \code{captureAllAsync} and its helpers.
+
+Group 4 --- events, space, math. Delete \code{NunchukPublisher::aButtonPressed}
+and \code{aPrev} (do not touch \code{GamepadPublisher}'s live pair);
+\code{EventManager::unsubscribe}; \code{Octree::fetch} and both
+\code{getNodeAt} overloads; \code{OctreeFile::load} and \code{save} (keep
+\code{readFromStream}/\code{writeToStream}); \code{BoundingBox}'s
+\code{setMaxX}, \code{setMaxZ}, \code{setMinX}, \code{setMinZ} (keep the Y
+setters, which the water box uses); \code{BoundingCube::getChildCenter},
+\code{intersects(const Ray&)}, and \code{setMax}; \code{Ray::getOrigin};
+delete \code{math/geometry/Frustum.{cpp,hpp}}.
+
+Group 5 --- utils, server, SDF. Delete \code{GltfWriter::vertexCount} and
+\code{triangleCount}; \code{LocalScene}'s four typed octree getters; the
+\code{RemoteScene} fetch path exactly as listed in \S6 of the report
+(\code{fetchMesh}, \code{scheduleRetry}, \code{buildGeometry}, \code{killStub},
+the \code{MSG_MESH_DATA} branch, the triplanar helpers, \code{CacheKey} and
+\code{CacheKeyHash}, \code{meshCache_}, \code{cacheMutex_},
+\code{lastRetryMs_}, the six fetch members, the fetch wakeups, and the
+cache-prune loop) while keeping every message constant, the server handlers,
+and \code{sendMutex_}; \code{chunkproto::buildRequestMesh} and
+\code{buildRequestAllMeshes}; \code{WsClient::sendBinary(const uint8_t*,
+size_t)}; \code{WebServer::textureRoot}; \code{SvgShape::rgbToHsvDegrees} and
+\code{contains}; \code{SvgPolygonDistanceFunction::localProfilePoint};
+\code{SdfScene::createFireDemo}. Delete
+\code{vulkan/resources/EditableTexture.{cpp,hpp}} and the include in
+\code{VegetationRenderer.hpp}.
+
+Group 6 --- application and widgets. Delete \code{MyApp::dispatchSolidEvents}
+and \code{dispatchLiquidEvents}; \code{RenderTargetsWidget::cleanup} (keep the
+destructor and \code{destroyLinearTargets}); \code{MusicWidget::isPlaying};
+\code{OctreeExplorerWidget::setExportBlenderCallback};
+\code{ImGuiHelpers::openPtr}; \code{SlotAllocator::updateCounts},
+\code{getSlot}, \code{totalVertexCapacity}, \code{totalIndexCapacity};
+\code{IndirectRenderer::getVertexBufferSize} and \code{getIndexBufferSize}.
+Do \emph{not} delete the other \code{IndirectRenderer} getters or
+\code{bindSet0ForFrame}; see \S7 of the report.
+
+Group 7 --- perf-fix residue. Delete \code{ThreadPool::enqueueDetached} and
+\code{notifyOne} (their callers moved to
+\code{enqueueDetachedNoNotify}/\code{notifyAll} in \code{26f06f3e}), including
+the template definition in \code{ThreadPool.tpp} and the declaration in
+\code{ThreadPool.hpp}.
+
+After each group: \code{make -j8 debug}; zero warnings and zero errors. Grep
+for every removed symbol. Report per group: files changed, lines removed,
+build result, and any symbol that turned out to be live (restore it and say
+why). Commit each group separately with
+\code{MSG="dead-code(<scope>): ..." make commit}. Do not run the app, do not
+run valgrind or callgrind, and do not run \code{pdflatex}.
+\end{tcolorbox}
+
+\begin{tcolorbox}[promptbox={Prompt --- short form}]
+Delete the residual dead code from \code{docs/dead_code_02.tex} at HEAD
+\code{9f0d76cb}, one commit per directory group, verifying with
+\code{make -j8 debug} and class-qualified greps. The set is: the 74 methods in
+Appendix~A; \code{EditableTexture}, \code{Frustum}, and
+\code{OctreeTopologyStats}; the \code{RemoteScene} mesh-fetch cluster (keep
+the protocol constants, server handlers, and \code{sendMutex_}); the
+\code{ThreadPool} pair left dead by the L8 fix; and the conservative inline
+subset in \S5. Keep \code{IndirectRenderer::addMeshSlotted}/\code{uploadSlot},
+\code{SceneRenderer::bindSet0ForFrame}, the \code{IndirectRenderer} buffer
+getters, \code{GamepadPublisher::aButtonPressed}, and the Y-axis
+\code{BoundingBox} setters. Do not touch the \code{sdf/} working tree. No
+behaviour changes, no refactors, no app runs, no PDF builds.
+\end{tcolorbox}
+
+\appendix
+\section{Complete Dead-Method Table}
+\label{app:full}
+
+Methods whose symbol is never a relocation target in any project object and
+whose name has no call-shaped textual use outside declaration/definition.
+``Lines'' is the brace-matched body span. The four \code{RemoteScene} rows are
+part of the feature path in \S\ref{sec:remote}; the two \code{Frustum} rows are
+part of the whole-unit deletion in \S\ref{sec:units}.
+
+\begin{center}\footnotesize
+\begin{longtable}{p{0.44\textwidth}p{0.42\textwidth}r}
+\toprule
+Location & Symbol & Lines \\
+\midrule
+\endfirsthead
+\toprule
+Location & Symbol & Lines \\
+\midrule
+\endhead
+\code{services/AudioAnalyzer.cpp:41--44} & \code{AudioAnalyzer::setBandEdges} & 4 \\
+\code{vulkan/resources/MaterialManager.cpp:95--107} & \code{MaterialManager::destroy} & 13 \\
+\code{services/OctreeTopologyCompute.cpp:783--793} & \code{OctreeTopologyCompute::stats()} & 11 \\
+\code{services/OctreeTopologyCompute.cpp:137--165} & \code{OctreeTopologyCompute::destroy} & 29 \\
+\code{services/TextureMixer.cpp:157--163} & \code{TextureMixer::isLayerGenerationPending} & 7 \\
+\code{services/TextureMixer.cpp:165--193} & \code{TextureMixer::waitForLayerGeneration} & 29 \\
+\code{services/TextureMixer.cpp:32--32} & \code{TextureMixer::getGlobalInstance()} & 1 \\
+\code{services/VideoTextureService.cpp:1411--1417} & \code{VideoTextureService::backendCompiledIn()} & 7 \\
+\code{services/VideoTextureService.cpp:1437--1453} & \code{VideoTextureService::findAssetDirectory()} & 17 \\
+\code{services/VideoTextureService.cpp:1633--1638} & \code{VideoTextureService::isSlotLoaded(slot) const} & 6 \\
+\code{services/VideoTextureService.cpp:1640--1640} & \code{VideoTextureService::videoArrayImage() const} & 1 \\
+\code{services/VideoTextureService.cpp:1645--1645} & \code{VideoTextureService::videoArrayMips() const} & 1 \\
+\code{services/VideoTextureService.cpp:1647--1647} & \code{VideoTextureService::videoArrayHeight() const} & 1 \\
+\code{services/VideoTextureService.cpp:1742--1746} & \code{VideoTextureService::slotOf(index) const} & 5 \\
+\code{services/VideoTextureService.cpp:1796--1806} & \code{VideoTextureService::togglePlaying(index)} & 11 \\
+\code{vulkan/core/VulkanApp.cpp:1348--1373} & \code{VulkanApp::generateMipmaps} & 26 \\
+\code{vulkan/core/VulkanApp.cpp:3111--3127} & \code{VulkanApp::recordTrackedLayoutForCommandBuffer} & 17 \\
+\code{vulkan/core/VulkanApp.cpp:3503--3539} & \code{VulkanApp::updateDescriptorSet(vector)} & 37 \\
+\code{vulkan/core/VulkanResourceManager.cpp:151--151} & \code{VulkanResourceManager::removeFramebuffer} & 1 \\
+\code{vulkan/core/VulkanResourceManager.cpp:206--206} & \code{VulkanResourceManager::getSemaphoreMap()} & 1 \\
+\code{vulkan/resources/TextureArrayManager.cpp:178--198} & \code{TextureArrayManager::destroy} & 21 \\
+\code{vulkan/resources/TextureArrayManager.cpp:465--556} & \code{TextureArrayManager::load} & 92 \\
+\code{vulkan/renderer/SceneRenderer.cpp:332--343} & \code{SceneRenderer::removeAllMeshesSolidOnly()} & 12 \\
+\code{vulkan/renderer/SceneRenderer.cpp:345--355} & \code{SceneRenderer::removeAllMeshesWaterOnly()} & 11 \\
+\code{vulkan/renderer/SceneRenderer.cpp:202--205} & \code{SceneRenderer::layerStateCount()} & 4 \\
+\code{vulkan/renderer/sdf/SdfRenderer.cpp:480--486} & \code{SdfRenderer::setSmokeWideContainer} & 7 \\
+\code{vulkan/renderer/sdf/SdfRenderer.cpp:322--326} & \code{SdfRenderer::setScene} & 5 \\
+\code{vulkan/renderer/sdf/SdfRenderer.cpp:636--638} & \code{SdfRenderer::updateScene()} & 3 \\
+\code{vulkan/renderer/sdf/SdfRenderer.cpp:679--684} & \code{SdfRenderer::setMarchParams} & 6 \\
+\code{vulkan/renderer/sdf/SdfRenderer.cpp:686--692} & \code{SdfRenderer::setMarchRange} & 7 \\
+\code{vulkan/renderer/sdf/SdfRenderer.cpp:714--722} & \code{SdfRenderer::setMarchTiers} & 9 \\
+\code{vulkan/renderer/sdf/SdfRenderer.cpp:2142--2146} & \code{SdfRenderer::onSwapchainResized} & 5 \\
+\code{vulkan/renderer/video/VideoRenderer.cpp:406--409} & \code{VideoRenderer::clear} & 4 \\
+\code{vulkan/renderer/water/WaterBackFaceRenderer.cpp:14--16} & \code{WaterBackFaceRenderer::init} & 3 \\
+\code{vulkan/renderer/vegetation/VegetationRenderer.cpp:1003--1020} & \code{VegetationRenderer::setBillboardArrayTextures} & 18 \\
+\code{vulkan/renderer/vegetation/ImpostorCapture.cpp:454--508} & \code{ImpostorCapture::capture} & 55 \\
+\code{vulkan/renderer/vegetation/ImpostorCapture.cpp:510--519} & \code{ImpostorCapture::captureAll} & 10 \\
+\code{vulkan/renderer/vegetation/ImpostorCapture.cpp:521--558} & \code{ImpostorCapture::captureAsync} & 38 \\
+\code{vulkan/renderer/vegetation/ImpostorCapture.cpp:1078--1089} & \code{ImpostorCapture::updateTexDescSet} & 12 \\
+\code{events/NunchukPublisher.cpp:792--798} & \code{NunchukPublisher::aButtonPressed()} & 7 \\
+\code{events/EventManager.cpp:21--25} & \code{EventManager::unsubscribe} & 5 \\
+\code{space/Octree.cpp:218--227} & \code{Octree::fetch} & 10 \\
+\code{space/Octree.cpp:145--167} & \code{Octree::getNodeAt(pos, level, simplification)} & 23 \\
+\code{space/Octree.cpp:169--189} & \code{Octree::getNodeAt(pos, simplification)} & 21 \\
+\code{space/OctreeFile.cpp:61--93} & \code{OctreeFile::load} & 33 \\
+\code{space/OctreeFile.cpp:95--129} & \code{OctreeFile::save} & 35 \\
+\code{utils/GltfWriter.cpp:93--98} & \code{GltfWriter::vertexCount()} & 6 \\
+\code{utils/GltfWriter.cpp:100--105} & \code{GltfWriter::triangleCount()} & 6 \\
+\code{utils/LocalScene.cpp:297--297} & \code{LocalScene::getOpaqueOctree()} & 1 \\
+\code{utils/LocalScene.cpp:298--300} & \code{LocalScene::getOpaqueOctree() const} & 3 \\
+\code{utils/LocalScene.cpp:301--305} & \code{LocalScene::getTransparentOctree()} & 5 \\
+\code{utils/LocalScene.cpp:306--310} & \code{LocalScene::getTransparentOctree() const} & 5 \\
+\code{utils/RemoteScene.cpp:578--600} & \code{RemoteScene::fetchMesh} & 23 \\
+\code{utils/RemoteScene.cpp:602--626} & \code{RemoteScene::scheduleRetry} & 25 \\
+\code{utils/RemoteScene.cpp:650--688} & \code{RemoteScene::buildGeometry} & 39 \\
+\code{utils/RemoteScene.cpp:275--283} & \code{RemoteScene::killStub} & 9 \\
+\code{server/ChunkProtocol.cpp:99--101} & \code{buildRequestAllMeshes()} & 3 \\
+\code{server/ChunkProtocol.cpp:90--97} & \code{buildRequestMesh} & 8 \\
+\code{sdf/SvgShape.cpp:492--505} & \code{SvgShape::rgbToHsvDegrees} & 14 \\
+\code{sdf/SvgShape.cpp:507--509} & \code{SvgShape::contains} & 3 \\
+\code{sdf/SvgPolygonDistanceFunction.cpp:88--93} & \code{SvgPolygonDistanceFunction::localProfilePoint} & 6 \\
+\code{sdf/types/SdfScene.cpp:363--420} & \code{SdfScene::createFireDemo} & 58 \\
+\code{math/geometry/BoundingBox.cpp:48--50} & \code{BoundingBox::setMaxX} & 3 \\
+\code{math/geometry/BoundingBox.cpp:56--58} & \code{BoundingBox::setMaxZ} & 3 \\
+\code{math/geometry/BoundingBox.cpp:60--62} & \code{BoundingBox::setMinX} & 3 \\
+\code{math/geometry/BoundingBox.cpp:68--70} & \code{BoundingBox::setMinZ} & 3 \\
+\code{math/geometry/BoundingCube.cpp:59--62} & \code{BoundingCube::getChildCenter} & 4 \\
+\code{math/geometry/BoundingCube.cpp:65--67} & \code{BoundingCube::intersects(Ray)} & 3 \\
+\code{math/geometry/BoundingCube.cpp:69--71} & \code{BoundingCube::setMax} & 3 \\
+\code{math/geometry/Frustum.cpp:4--14} & \code{Frustum::Frustum} & 11 \\
+\code{math/geometry/Frustum.cpp:16--50} & \code{Frustum::test} & 35 \\
+\code{MyApp.cpp:5195--5197} & \code{MyApp::dispatchSolidEvents()} & 3 \\
+\code{MyApp.cpp:5199--5206} & \code{MyApp::dispatchLiquidEvents()} & 8 \\
+\code{widgets/RenderTargetsWidget.cpp:662--781} & \code{RenderTargetsWidget::cleanup()} & 120 \\
+\midrule
+\textbf{Total} & \textbf{74 methods} & \textbf{1{,}094} \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\end{document}

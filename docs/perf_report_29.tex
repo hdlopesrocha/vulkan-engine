@@ -1,0 +1,664 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+% Long unbreakable \texttt{} paths are the main source of overfull boxes in
+% this report; a generous emergencystretch plus sloppy paragraph breaking lets
+% TeX loosen those lines instead of running into the margin.
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\title{Performance Report 29: Vulkan Engine \\
+\large Before the First Frame --- Setup Cost and the Octree Load Path}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Reports~20--28 optimized what the engine draws. This report turns to what
+happens before the first interactive frame. In the recorded run
+\texttt{LocalScene::loadScene} took \textbf{81.31\,s}
+(\texttt{logs/run.log:315}) and the first \texttt{drawFrame()} reported
+\textbf{81.92\,s} (\texttt{logs/run.log:325}). The chunk-topology pass
+accumulated \textbf{83.89\,s} of worker time over 1024 chunks
+(\texttt{logs/run.log:762}), but its own cumulative averages carry the tell:
+39.3\,ms/chunk for the first 256, 164.6 for the second, 119.6 for the third,
+and 4.2 for the last 256 (\texttt{run.log:371,660,750,762}). The per-chunk
+work did not get forty times cheaper; the three layer workers spent the middle
+of the load queued behind each other. Callgrind attributes \textbf{237.8M}
+corner-cache probes to \textbf{32.1M} real SDF evaluations (86\% hits),
+15.5M \texttt{shape} calls, 5.45M node allocations and about 3.8M task
+enqueues. The audit finds \textbf{9 issues} (2 critical, 2 high, 3 medium,
+2 low): a float-keyed corner cache whose leaf pass runs twice, a per-chunk
+two-submit topology path serialized on a global mutex, two debug walks that
+run with their flags off and retain roughly 478\,MB, and allocation churn in
+the hot shape loop. Scope score \textbf{4.3/10}; folded into the combined
+estimate at 10\% weight, \textbf{5.8/10}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{Scope and Method}
+
+Scope is bring-up from process start to the first non-stalling frame. That
+covers the setup entry (\texttt{MyApp::setup}, \texttt{MyApp.cpp:749}), scene construction
+(\texttt{MainSceneLoader::loadScene}, \texttt{utils/MainSceneLoader.hpp:310}),
+\texttt{LocalScene::loadScene} (\texttt{utils/LocalScene.cpp:563}), the 315
+octree \texttt{apply} calls they issue, the chunk-topology flatten/compute
+path (\texttt{services/OctreeTopologyCompute.cpp}), the two debug collection
+walks in \texttt{SceneRenderer::processNodeLayer}
+(\texttt{vulkan/renderer/SceneRenderer.cpp:2205}), and the upload/submit
+plumbing they share. Out of scope, and deliberately so: the rendering
+optimizations of reports~20--28, GDAL heightmap load, texture-array decode,
+shader compilation and pipeline creation, input, and the ImGui layer.
+
+Method matches the earlier reports: full reads with file:line evidence.
+The application was \emph{not} re-executed for this report. Wall-clock numbers
+come from the recorded native run \texttt{logs/run.log} (clean tree at
+\texttt{f6c5687b}); instruction and call counts come from
+\texttt{logs/callgrind.out}, whose \texttt{loadScene} took 3912.75\,s
+(\texttt{logs/callgrind.log:1801}) --- a 48$\times$ inflation that serializes
+the three layer workers. Instruction shares are therefore used only for
+\emph{relative} attribution, never as wall-clock. Struct sizes used in the
+memory arithmetic were verified by compiling the real headers:
+\texttt{CubeSDF} = 80\,B, \texttt{CubeWithColor} = 64\,B,
+\texttt{NodeOperationResult} = 120\,B, \texttt{OctreeThreadContext} = 240\,B.
+\texttt{VULKAN\_SETUP\_DIAG} was not enabled in the recorded run (no
+\texttt{[setup-diag]} lines), which is itself issue M7.
+
+\subsection{The Gate: Mesh-Identical}
+\label{sec:gate29}
+
+Same three qualifying classes as the rendering reports, translated to setup:
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+\item The \emph{same pure SDF evaluation} --- same function, same point, same
+float arithmetic --- executed fewer times. Independent pure evaluations may be
+reordered or moved between threads; no surviving evaluation may change its
+inputs or its result.
+\item \emph{Provably dead work} removed: a walk whose output is never read, a
+store never loaded, a pass whose values are already in hand.
+\item \emph{Identical bytes through a cheaper path}: the same node tables, the
+same dispatches in the same per-chunk order, batched into fewer submissions or
+one upload arena.
+\end{enumerate}
+
+Every prompt fails closed on a mesh-identical A/B: byte-identical
+\texttt{OctreeNode} SDF arrays and \texttt{OctreeTopologyInput}; identical
+triangle set after canonical sort (the packed pool's vertex order is not
+reproducible even run-to-run by design,
+\texttt{shaders/computation/octree/OctreeTriangles.comp:799--801}); and
+pixel-identical overlays for the debug paths. No change to \texttt{minSize},
+chunk size, the LOD ladder, thread counts, or scene content is admitted by
+this gate.
+
+% The budget table is too tall to share a page with the gate list above it;
+% starting it on a fresh page keeps the heading, table and caption together
+% instead of leaving the heading orphaned above a deferred float.
+\clearpage
+\subsection{Measured Budgets}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{6.1cm}rp{5.0cm}@{}}
+\toprule
+\textbf{Measurement} & \textbf{Value} & \textbf{Evidence} \\
+\midrule
+\texttt{LocalScene::loadScene} wall time & 81.31\,s & \texttt{run.log:315} \\
+First \texttt{drawFrame()} wall time & 81.92\,s & \texttt{run.log:325} \\
+Topology worker time, 1024 chunks & 83.89\,s cumulative & 1024 $\times$ 81.926\,ms, \texttt{run.log:762} \\
+Topology rate, chunks 1--256 & 39.3\,ms/chunk (10.07\,s) & \texttt{run.log:371} \\
+Topology rate, chunks 257--512 & 164.6\,ms/chunk (42.14\,s) & \texttt{run.log:660} \\
+Topology rate, chunks 513--768 & 119.6\,ms/chunk (30.62\,s) & \texttt{run.log:750} \\
+Topology rate, chunks 769--1024 & 4.2\,ms/chunk (1.07\,s) & \texttt{run.log:762} \\
+Long frames while chunks streamed & 115, 126, 148\,ms & \texttt{run.log:476,479,738} \\
+SDF corner-cache probes & 237.77M & callgrind calls \\
+Real SDF distance evaluations & 32.1M (86\% hits) & callgrind calls \\
+\texttt{Octree::shape} invocations & 15.52M & callgrind calls \\
+\texttt{buildShapeSDF} invocations & 29.72M & callgrind calls \\
+Node allocations & 5.45M & callgrind calls \\
+Task enqueues (debug / shape) & 2.27M / 1.47M & callgrind calls \\
+Node-table upload traffic & $\sim$289\,MB & 2.256M nodes $\times$ 128\,B \\
+Debug caches retained, flags off & $\sim$478\,MB & 5.15M$\times$80\,B + 1.03M$\times$64\,B \\
+Texture arrays, main & 720 / 747\,MB & \texttt{run.log:323} \\
+\bottomrule
+\end{tabular}
+\caption{All wall-clock values are from the native run; all counts are from
+callgrind. Cumulative worker time exceeds the wall because three layer
+workers overlap. The 4.2\,ms/chunk of the last window is the uncontended
+cost; the first 768 chunks average 107.8\,ms, a $\sim$26$\times$ convoy
+factor. If the 81.92\,s first frame is the topology convoy --- M7 exists to
+prove it --- the three workers achieved a parallel efficiency of only 1.02$\times$
+(83.89\,s of work in 81.92\,s).}
+\end{table}
+
+\subsection{Banked Before Report 29}
+\label{sec:banked29}
+
+The setup path is not starting from zero, and the report does not re-propose
+what already works. Banked: the GPU-resident topology path itself --- only
+node SDF tables cross to the GPU, \texttt{OctreeTriangles.comp} writes the
+packed pools directly, and only integer counters return
+(\texttt{OctreeTopologyCompute.cpp:360--367}); device-local keys and dedup
+table (\texttt{:169--186}); the span-relative pool binding that stays inside
+every device's \texttt{maxStorageBufferRange} (\texttt{:269--299}); the
+\texttt{hostReadBarrier} discipline (\texttt{:196--208}); and the first
+\texttt{VULKAN\_SETUP\_DIAG} hooks (\texttt{MyApp.cpp:754--772}). Report~28's
+items are all rendering and do not overlap this scope.
+
+\subsection{Recommended Order}
+
+H3 (gate the dead debug walks) $\rightarrow$ C2 (batch the topology
+submissions) $\rightarrow$ C1 (one leaf pass, integer corner keys)
+$\rightarrow$ H4 (task and map churn) $\rightarrow$ M7 (per-phase timers)
+$\rightarrow$ M5 (pool topology) $\rightarrow$ M6 (descriptor writes)
+$\rightarrow$ L9 (key headroom) $\rightarrow$ L8 (batched wakeups).
+H3 is two conditions and removes 60\% of the task traffic; C2 is the largest
+wall-clock item; C1 is the largest instruction item. M7 is listed before
+M5/M6 because it is what makes their deltas measurable, not because it is
+large.
+
+% =====================================================================
+\section{Cost Model}
+% =====================================================================
+
+\begin{equation}
+\begin{aligned}
+C_{\mathrm{setup}} = &\underbrace{A\,(C_{\mathrm{apply}} + N_s\,C_{\mathrm{shape}} + E\,C_{\mathrm{probe}})}_{\text{octree construction}} \\
+&+ \underbrace{\sum_{c=1}^{F} \bigl( S\,(C_{\mathrm{submit}} + C_{\mathrm{fence}}) + U_c\,C_{\mathrm{upload}} + K\,C_{\mathrm{desc}} \bigr)}_{\text{chunk topology}} \\
+&+ \underbrace{D\,(C_{\mathrm{sdfwalk}} + C_{\mathrm{bboxwalk}})}_{\text{debug collection}} + \underbrace{T\,C_{\mathrm{task}} + M\,C_{\mathrm{alloc}}}_{\text{allocation churn}}
+\end{aligned}
+\end{equation}
+
+Measured values: $A = 315$ applies (35 direct sites plus 24 road segments
+and 256 ring segments, \texttt{MainSceneLoader.hpp:498,522});
+$N_s = 15.52$M \texttt{shape} calls; $E = 237.8$M probes of which 32.1M miss;
+$F = 1024$ chunks; $S = 2$ submissions per chunk (2048 fence waits);
+$U_c = 128$\,B/node, 289\,MB total; $K = 26$ descriptor writes per chunk;
+$D = 2$ walks per chunk; $T \approx 3.8$M tasks; $M = 5.45$M node
+allocations. C1 removes the second leaf pass and cuts $C_{\mathrm{probe}}$;
+C2 attacks $S$, $U_c$ and $K$; H3 removes $D$ when the overlays are off; H4
+attacks $T$ and the per-node maps. The equation's outputs --- the node SDF
+arrays and the triangle set --- are unchanged for every item: the gate.
+
+% =====================================================================
+\section{Memory Residency}
+% =====================================================================
+
+The scene's texture arrays are the dominant resident allocation and are not
+this report's target: 720 of 747\,MB, five maps at 149\,MB each
+(\texttt{run.log:323}). The octree itself is 5.45M nodes at 72\,B
+($\sim$392\,MB) plus allocator block overhead; that is the scene, not churn,
+and H4 leaves it alone.
+
+The avoidable resident cost is the debug caches: 5.15M \texttt{CubeSDF}
+records at 80\,B (412\,MB) plus 1.03M \texttt{CubeWithColor} records at 64\,B
+(66\,MB) --- 478\,MB retained for overlays whose flags default to
+\texttt{false} (\texttt{types/Settings.hpp:101--102}). H3 removes them when
+the overlays are off and frees them when the toggle goes off.
+
+The topology buffers are small in residency but large in traffic: the seven
+host-visible input buffers are reused and sized to the largest chunk (a few
+MB), while \texttt{uploadInput} writes 128\,B per node per chunk --- 289\,MB
+across the load. C2 keeps the same bytes but moves them through one staging
+arena per layer instead of 1024 mapped writes.
+
+Transient churn is larger than either: 124.18M \texttt{NodeOperationResult}
+constructions at 120\,B is 14.9\,GB of constructor traffic (stack-scoped, not
+resident), 26M \texttt{std::unordered\_map} constructions in the child loop,
+and 3.8M futures with their shared state. H4 addresses all three without
+changing a single SDF value.
+
+% =====================================================================
+\section{Critical Issues}
+% =====================================================================
+
+\subsection{C1: The Leaf Corner Pass Runs Twice, and the Cache Is Float-Keyed}
+\label{sec:c1}
+
+\textbf{Severity: Critical.}
+
+Two exact problems share one loop. First, every leaf evaluates its eight
+corners twice. \texttt{shape} calls
+\texttt{buildShapeSDF(\ldots,true)} unconditionally at
+\texttt{space/Octree.cpp:456}; for a leaf, that fills \texttt{r.shapeSDF}
+from the eight corners at \texttt{:272--275}. At \texttt{:597} the function
+calls \texttt{buildShapeSDF} again, and because \texttt{isLeaf} is true the
+same branch re-evaluates the same eight points with the same
+\texttt{cubeMin}/\texttt{cubeLength} (\texttt{:272}). The cache turns the
+second pass into hits, but a hit is still a probe: the counts are 29.72M
+\texttt{buildShapeSDF} calls against 15.52M \texttt{shape} calls, so
+$\sim$14.2M second calls produce up to $\sim$114M redundant probes --- 48\%
+of the 237.8M total. Deleting the leaf arm of \texttt{:597} is exact: the
+values are already in \texttt{r.shapeSDF}, and \texttt{buildResultSDF}
+(\texttt{:290--307}) only reads them.
+
+Second, the surviving probes are expensive. \texttt{evaluateSDF}
+(\texttt{:257--265}) keys a \texttt{tsl::robin\_map} by a 12-byte
+\texttt{glm::vec3}, hashed through \texttt{hashCombine(murmurMix(\ldots))}
+and compared with a three-float equality. The profile's single largest
+self-cost function is \texttt{glm::vec3(float,float,float)} at 78.75e9
+instructions (6.78\% of the program), and the probe path adds
+\texttt{robin\_hash::find\_impl} (22.17e9, 1.91\%), \texttt{operator==} on
+\texttt{vec3} (9.79e9), \texttt{bucket\_entry::value} (9.32e9), and the hash
+machinery (roughly 7e9 each). Together the probe path is on the order of a
+tenth of all retired instructions in the unoptimized debug build.
+
+The key can be exact and cheap because every corner lies on the tree's own
+lattice. \texttt{expand} doubles the root until it contains the shape
+(\texttt{Octree.cpp:222--255}), so node lengths are $L_{\mathrm{root}}/2^l$
+and every corner is \texttt{rootMin + n * L\_leaf}, where $L_{\mathrm{leaf}}$
+is the leaf cube length (the largest $L_{\mathrm{root}}/2^l$ not exceeding
+\texttt{minSize}). Both \texttt{p - rootMin} and $L_{\mathrm{leaf}}$ are
+exactly representable floats, and the exact quotient is an integer, so IEEE
+division returns that integer exactly. A packed \texttt{uint64} lattice index
+(21 bits per axis) therefore selects exactly the same entries as the float
+key. A flat open-addressed table of 16-byte entries, reserved to the previous
+apply's peak, replaces the node-based robin map and its per-entry
+allocations. A debug assert that the division is integral guards future
+non-lattice scenes and falls back to the float key if it ever fails.
+
+\begin{tcolorbox}[promptbox={Prompt --- C1: one leaf pass, integer corner keys}]
+Goal: halve the probes, then make each probe cheap. Steps: (1) at
+\texttt{Octree.cpp:597}, call \texttt{buildShapeSDF} only when
+\texttt{!isLeaf}; add a debug assertion that \texttt{r.shapeSDF} equals a
+freshly evaluated set for leaves; (2) add \texttt{rootMin} and the leaf
+spacing $L_{\mathrm{leaf}}$ to \texttt{ShapeArgs}, key the cache by a packed
+\texttt{uint64} lattice index with a debug integrality assert; (3) replace
+\texttt{robin\_map<vec3,float>} in \texttt{OctreeThreadContext} with a flat
+open-addressed table reserved per apply; (4) keep the per-task contexts (they
+capture the 86\% reuse) and add hit/miss counters under M7. Files:
+\texttt{space/Octree.cpp}, \texttt{space/Octree.hpp},
+\texttt{space/OctreeThreadContext.hpp}, \texttt{space/ShapeArgs.hpp}.
+Validation: byte-identical \texttt{OctreeNode} SDF arrays for the fixed
+scene, identical triangle set, probe count down by $\sim$48\%,
+validation-clean.
+\end{tcolorbox}
+
+\subsection{C2: Chunk Topology Pays Two Global Fence Waits per Chunk}
+\label{sec:c2}
+
+\textbf{Severity: Critical.}
+
+\texttt{computeResident} takes a process-wide mutex for its entire body
+(\texttt{OctreeTopologyCompute.cpp:370}) and then calls
+\texttt{runSingleTimeCommands} twice (\texttt{:409} and \texttt{:484}). That
+helper takes a second global mutex for the whole record-submit-wait sequence
+(\texttt{vulkan/core/VulkanApp.cpp:1060}) and waits on the fence while
+holding it (\texttt{:1148}). For 1024 chunks that is 2048 global lock
+acquisitions and 2048 fence waits, all on the graphics queue, with three
+layer workers that cannot overlap. If the first-frame stall is this convoy
+(M7 will confirm), the measured parallel efficiency is 1.02$\times$: 83.89\,s
+of cumulative worker time against an 81.92\,s frame. The per-window rates
+make the convoy visible --- 39.3, 164.6, 119.6,
+then 4.2\,ms/chunk --- while the average node count falls monotonically
+(3410, 3076, 2474, 2203), so the middle window is not doing more work. The
+last 256 chunks are the queue with nothing in front of it.
+
+Each chunk also uploads 128\,B per node through seven host-visible coherent
+buffers (\texttt{:154--161}, \texttt{:225--250}): 2.256M nodes, 289\,MB, plus
+a counter reset per chunk. It rewrites all 13 descriptor bindings twice
+(\texttt{:403}, \texttt{:475}), 26.6k updates, although only bindings 11/12
+change between the calls. None of this is wrong; it is simply unbatched.
+
+The exact fix is per-layer batching. Flatten every chunk of a layer, append
+its node table to one staging arena, and record all of that layer's walk
+dispatches into one command buffer (one preallocated descriptor set per
+chunk, binding per-chunk slices of the arena). Submit once; read all counters
+with one map. Reserve each chunk's span from the exact counts, then record
+all fill/dedup/index sequences into a second command buffer and submit once.
+The result is 6 submissions and 6 fence waits for the whole scene (3 layers
+$\times$ 2 phases) instead of 2048, three uploads instead of 1024, and 13k
+descriptor writes instead of 26.6k. The per-chunk dispatch order, barriers
+and shader code are unchanged; only the grouping and the arena offsets move.
+The measured floor is 4.2\,ms/chunk, so 1024 chunks over three workers is
+$\sim$1.4\,s of worker time even if batching saves nothing else.
+
+\begin{tcolorbox}[promptbox={Prompt --- C2: batched topology, one arena}]
+Goal: one submit per layer per phase, one upload per layer. Steps: (1) add a
+per-layer arena holding all chunks' node tables and a counter array of four
+uints per chunk; add a \texttt{nodeBase} push-constant field and rebase
+\texttt{cellIds} by it (integer addition only); (2) flatten all chunks, append,
+record walk dispatches with per-chunk descriptor sets into one command
+buffer, submit once; (3) map the counters once, reserve spans from the exact
+counts, record fill/dedup/index per chunk into a second buffer, submit once;
+(4) keep the old per-chunk path behind a debug flag for A/B. Files:
+\texttt{services/OctreeTopologyCompute.cpp/.hpp},
+\texttt{services/OctreeTopologyTypes.hpp},
+\texttt{shaders/\allowbreak computation/\allowbreak octree/\allowbreak OctreeTriangles.comp},
+\texttt{vulkan/\allowbreak renderer/\allowbreak SceneRenderer.cpp}. Validation: mesh-identical
+triangle set, synchronization validation plus
+\texttt{VULKAN\_GPU\_ASSISTED=1 make run-debug}, validation-clean; check the
+per-chunk fill/dedup barriers survive the merge.
+\end{tcolorbox}
+
+% =====================================================================
+\section{High-Severity Issues}
+% =====================================================================
+
+\subsection{H3: Two Debug Walks Run With Their Flags Off}
+\label{sec:h3}
+
+\textbf{Severity: High.}
+
+\texttt{SceneRenderer} always constructs both debug renderers
+(\texttt{SceneRenderer.cpp:458--459}) and always initializes them
+(\texttt{:563--564}). \texttt{processNodeLayer} therefore enters the SDF
+cube block (\texttt{:2256--2279}) and the bounding-box block
+(\texttt{:2287--2307}) for every chunk, and each block runs a full
+\texttt{iterateMultiThreaded} over the chunk subtree
+(\texttt{LocalScene.cpp:441,487}). The settings that are supposed to control
+them default to \texttt{false} (\texttt{Settings.hpp:101--102}) and gate only
+registration and drawing (\texttt{MyApp.cpp:1996--2001,2891,3348}), never
+collection.
+
+The cost is measured: 8.4M node visits and 5.15M cubes for the SDF walk,
+13.5M visits and 1.03M boxes for the bbox walk; 2.27M of the 3.8M total task
+enqueues (60\%) come from these two walks; the retained records are 478\,MB.
+All of it is invisible in the default configuration. When the user does
+enable an overlay, the walk is identical, so the gate holds.
+
+The fix is an enabled bit on each renderer, set when the settings toggle
+changes, plus a one-shot full rebuild when it turns on and a clear when it
+turns off. The collection blocks then read the bit instead of the pointer.
+Toggling on mid-session must repopulate every live chunk, not just newly
+built ones; the existing per-chunk map makes that a dirty-mark pass.
+
+\begin{tcolorbox}[promptbox={Prompt --- H3: gate debug collection on the settings}]
+Goal: no walk, no retention, no tasks when the overlay is off. Steps:
+(1) add \texttt{setEnabled(bool)} and an atomic flag to
+\texttt{DebugSDFRenderer} and \texttt{DebugCubeRenderer}; (2) gate the two
+blocks in \texttt{processNodeLayer} on the flag; (3) on toggle-on, clear and
+mark all live chunks for a one-shot recollection; on toggle-off, clear the
+stored records; (4) keep the draw-side settings checks as they are. Files:
+\texttt{vulkan/\allowbreak renderer/\allowbreak SceneRenderer.cpp},
+\texttt{vulkan/\allowbreak renderer/\allowbreak debug/\allowbreak DebugSDFRenderer.*},
+\texttt{vulkan/\allowbreak renderer/\allowbreak debug/\allowbreak DebugCubeRenderer.*}, \texttt{MyApp.cpp}.
+Validation: with both flags off, zero cubes/boxes and zero debug tasks
+(counters); with a flag on, pixel-identical overlay A/B against the current
+build; validation-clean.
+\end{tcolorbox}
+
+\subsection{H4: Per-Node Allocation Churn in the Shape Loop}
+\label{sec:h4}
+
+\textbf{Severity: High.}
+
+The shape loop allocates in four places that do not need to. (1)
+\texttt{NodeOperationResult} is 120\,B and is constructed 124.18M times: the
+\texttt{children[8]} array at \texttt{Octree.cpp:449--455} (960\,B per
+\texttt{shape} call, each element default-initialized to \texttt{INFINITY}),
+the \texttt{childResult[8]} parameter, and temporaries. That is 14.9\,GB of
+constructor traffic. (2) \texttt{std::unordered\_map<int,int> brushCounts}
+is declared inside the eight-child loop at \texttt{:679}; with at most eight
+children and at most eight distinct brush indices, it is a linear scan
+wearing a hash table: one construction and destruction per child per
+non-leaf node, roughly 15M in the profile. (3) \texttt{shapeChildren} builds a
+\texttt{std::vector} of futures per call (\texttt{:357}) without a reserve;
+use a fixed array of eight plus a count. (4) \texttt{ThreadPool::enqueue}
+allocates a \texttt{make\_shared} packaged task and its future state for
+every task (\texttt{space/ThreadPool.tpp:11--17}) --- 3.8M heap allocations.
+In \texttt{shapeChildren} the futures are only waited on
+(\texttt{Octree.cpp:419}); a detached enqueue plus the existing
+\texttt{inFlightShapeOps} counter removes the future, the shared state and
+the allocation. \texttt{IteratorHandler} genuinely needs the future for
+work-stealing (\texttt{space/IteratorHandler.cpp:54}), so leave that path
+alone --- and H3 removes most of its traffic anyway.
+
+None of this touches arithmetic. The octree node allocator's 5.45M
+allocations are the tree itself and stay.
+
+\begin{tcolorbox}[promptbox={Prompt --- H4: remove per-node allocation churn}]
+Goal: no heap allocation in the shape loop's child bookkeeping. Steps:
+(1) replace \texttt{brushCounts} with an eight-entry stack array and a linear
+scan, preserving the strict-greater tie rule; (2) replace the futures vector
+with a fixed array of eight and a count, or with detached enqueues plus the
+existing atomic counter; (3) leave \texttt{IteratorHandler}'s cooperative
+futures untouched; (4) add a debug-only allocation counter to prove the drop.
+Files: \texttt{space/Octree.cpp}, \texttt{space/ThreadPool.tpp/.hpp},
+\texttt{space/IteratorHandler.cpp}. Validation: byte-identical node SDF
+arrays and triangle set; validation-clean.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Medium-Severity Issues}
+% =====================================================================
+
+\subsection{M5: One-Level Fork Band, Three Pools, Fresh Contexts}
+
+\textbf{Severity: Medium.}
+
+\texttt{isThreadNode} admits exactly one ladder level:
+\texttt{minSize*8 < L <= minSize*16} (\texttt{Octree.cpp:343--345}). A fork
+therefore exposes at most eight tasks, and every threaded child constructs a
+fresh \texttt{OctreeThreadContext} (\texttt{:408}) --- a 240-byte object plus
+an empty hash map --- discarding the parent's cache at the fork. Three layer
+workers, an \texttt{Octree} pool sized to
+\texttt{hardware\_concurrency()} (\texttt{Octree.hpp:41}), a
+\texttt{LocalScene} pool of the same size (\texttt{LocalScene.cpp:174}) and a
+per-layer generation pool all exist at once; during setup most of those
+threads are parked on the two global mutexes of C2.
+
+Fork two levels (up to 64 tasks) to keep a shared pool fed, size that pool
+once, and recycle contexts from a small per-thread pool so the corner cache
+survives between tasks. The pure evaluations are unchanged; only which
+thread computes a given corner changes.
+
+\subsection{M6: Descriptor Rewrites Twice per Chunk}
+
+\textbf{Severity: Medium.}
+
+\texttt{writeDescriptors} fills all 13 bindings
+(\texttt{OctreeTopologyCompute.cpp:301--337}) and is called twice per chunk:
+once with a null target before the walk (\texttt{:403}) and once with the
+span before dedup (\texttt{:475}). Only bindings 11/12 differ; the other
+nine are rewritten 1024 times each for nothing. Either write the input
+bindings once per capacity change and only 11/12 per chunk, or push the 13
+descriptors per dispatch with \texttt{VK\_KHR\_push\_descriptor} when
+supported. With C2's per-chunk sets, this becomes one write per chunk.
+
+\subsection{M7: Setup Has No Per-Phase Instrumentation}
+
+\textbf{Severity: Medium (blocking for verification, not for correctness).}
+
+\texttt{VULKAN\_SETUP\_DIAG} wraps only the top-level setup steps
+(\texttt{MyApp.cpp:754--772}) and was off in the recorded run.
+\texttt{LocalScene::loadScene} times only its total
+(\texttt{LocalScene.cpp:565--578}). \texttt{countStats} prints a cumulative
+average every 256 chunks (\texttt{OctreeTopologyCompute.cpp:340--357}) ---
+which is exactly what hid the 26$\times$ convoy: the cumulative average at
+1024 is 81.9\,ms, while the last window is 4.2\,ms. There are no counters for
+cache hits/misses, tasks, uploaded bytes, fence time, descriptor time, or
+debug-walk time.
+
+Add a small setup profiler with scoped timers and relaxed atomics, enabled by
+the existing environment variable: per apply, flatten, upload, walk, fence,
+descriptor and debug walk; cache hits/misses per apply; bytes and tasks per
+chunk. Print a final table with the last-window rate as well as the average.
+Instrumentation only; no behavior change.
+
+% =====================================================================
+\section{Low-Severity / Hygiene Issues}
+% =====================================================================
+
+\subsection{L8: One Wakeup per Task}
+
+\texttt{ThreadPool::enqueue} calls \texttt{condition.notify\_one()} for every
+task (\texttt{ThreadPool.tpp:25}). With 3.8M tasks that is 3.8M wakeups,
+most of them while workers are already running. Notify once after a fork's
+eight enqueues, or only when the queue transitions from empty to non-empty.
+The \texttt{SmallFunction} inline wrapper (16-byte shared pointer,
+\texttt{:22--23}) is already the right shape and stays.
+
+\subsection{L9: The Key-Capacity Guess Is 12 Vertices Short}
+
+\texttt{kVerticesPerCellHint} is 24
+(\texttt{OctreeTopologyCompute.cpp:31}), which underestimates dense chunks.
+The log records eight retries; two of them are
+\texttt{emitted=275508 cap=275496} and \texttt{emitted=13308 cap=13296}
+(\texttt{run.log:341--343,412,464,554,633}) --- short by 12 to 24 vertices.
+Each retry doubles the key space, re-uploads the full node table and re-runs
+the walk: a complete extra pass. Add a small headroom
+(\texttt{cells * 25 + 64}) and keep the retry as a safety net. Capacity only;
+the emitted keys are unchanged.
+
+% =====================================================================
+\section{Deliberately Unchanged}
+\label{sec:unchanged29}
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item \textbf{Texture decode and GDAL heightmap.} 720/747\,MB of texture
+arrays and the TIF load are I/O- and decode-bound; changing formats or
+resolutions is a content change, not an exact win.
+\item \textbf{Shader compilation and pipeline creation.} One-time and cached;
+not the target of this report.
+\item \textbf{Scene content.} The 315 applies (35 direct sites, 24 road segments,
+256 ring segments) define the scene; reducing them changes what is built.
+\item \textbf{\texttt{minSize}, chunk size and the LOD ladder.} Quality knobs.
+\item \textbf{The root-doubling lattice.} C1's exactness proof depends on it;
+it is asserted, not changed.
+\item \textbf{\texttt{apply}'s write lock.} Correctness; C1 and C2 reduce the
+work under it, not the lock.
+\item \textbf{The octree node allocator.} 5.45M allocations are the tree, not
+churn.
+\item \textbf{The packed pool's vertex order.} Not reproducible by design, so
+the gate compares the triangle set, never the byte order
+(\texttt{OctreeTriangles.comp:799--801}).
+\item \textbf{\texttt{runSingleTimeCommands} semantics.} Kept for one-shot
+work; C2 batches around it rather than replacing it.
+\item \textbf{Thread count defaults.} M5 changes pool topology and fork
+granularity, not the configured count.
+\item \textbf{Debug overlay content.} H3 gates collection, not which cubes or
+boxes are drawn.
+\end{itemize}
+
+% =====================================================================
+\section{Implementation Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lp{5.6cm}p{6.0cm}@{}}
+\toprule
+\textbf{Item} & \textbf{Change} & \textbf{Est.\ effect} \\
+\midrule
+C1 & One leaf pass; integer flat corner cache & $-114$M probes ($-48\%$); probe path $\sim$3$\times$ cheaper \\
+C2 & Per-layer batched topology, one arena & 2048 $\rightarrow$ 6 submits/waits; 289\,MB via 3 uploads; 26.6k $\rightarrow$ 13k writes \\
+H3 & Gate debug walks on the settings & $-2.27$M tasks ($-60\%$), $-22$M visits, $-478$\,MB \\
+H4 & Stack brush counts, fixed futures, detached shape tasks & $-15$M maps, $-3.8$M futures/allocs, $-14.9$\,GB ctor traffic \\
+M5 & Shared pool, two-level fork, context recycling & fewer parked/contending threads; cache survives forks \\
+M6 & Write bindings 9--12 once, or push descriptors & $-9.2$k redundant writes \\
+M7 & Setup profiler with last-window rates & per-phase attribution; makes the rest verifiable \\
+L9 & Key headroom & $-8$ full extra walk passes \\
+L8 & Batched notify & $-3.3$M wakeups \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C1--C2 are the structural wins; H3 is the cheapest high-severity item and
+should land first. The measured floor for C2 is the last-window rate
+(4.2\,ms/chunk), so the topology convoy has roughly a 26$\times$ headroom
+before any GPU-side change is needed. C1's instruction share is large but its
+wall-clock share is not yet attributable without M7; the estimate is
+deliberately a range, not a promise. Nothing here changes a rendered pixel or
+a node value.
+
+Explicitly out of scope (carried forward): the rendering items of reports
+20--28, GDAL heightmap load (\texttt{math/HeightMapTif.cpp}), input/events
+(\texttt{events/EventManager.cpp}), and the ImGui widget layer (release-only,
+never profiled).
+
+% =====================================================================
+% Keep the final score section on one page and in source order: the rubric
+% table is set as a non-float so it cannot be flushed above its heading.
+\clearpage
+\section{Overall Score}
+\label{sec:score29}
+% =====================================================================
+
+\subsection{Rubric (Report-29 Scope)}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcp{7.4cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Wt.} & \textbf{Score and justification} \\
+\midrule
+Octree evaluation and cache & 35\% & \textbf{4.5} --- the GPU-resident
+output path and the cache's 86\% hit rate are good; the leaf pass runs twice,
+the key is a 12-byte float vector, and the probe path is a tenth of the
+profile. \\
+Chunk topology build/submit & 30\% & \textbf{4.0} --- device-local keys and
+dedup, span-relative bindings and clean barriers are good; two global fence
+waits per chunk and a 1.02$\times$ parallel efficiency are not. \\
+Load-path memory and allocation & 20\% & \textbf{3.5} --- pools are
+preallocated and the output never round-trips; 478\,MB of dead debug caches,
+289\,MB of host-visible uploads and 26M maps drag it down. \\
+Instrumentation and hygiene & 15\% & \textbf{5.5} --- the setup-diag hooks and
+the topology stats exist; per-phase timing, cache counters and last-window
+rates do not. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Overall: 4.3/10 Scope, 5.8/10 Combined}
+
+\begin{equation}
+0.35(4.5) + 0.30(4.0) + 0.20(3.5) + 0.15(5.5) = \mathbf{4.3}
+\end{equation}
+
+Report~28 scored the combined engine 6.0/10. Re-measuring this scope:
+
+\begin{equation}
+0.90(6.0) + 0.10(4.3) = \mathbf{5.8}
+\end{equation}
+
+The setup path has never had the equivalent of reports~20--28. It is not
+broken --- the GPU-resident topology output is a genuinely good design ---
+but it is unbatched, uninstrumented, and paying for two debug overlays that
+are off. C1--C2--H3 are the items that would move it; the combined score
+rounds down a fifth of a point because the recorded run spent roughly 163\,s
+before a non-stalling frame, and none of that time is currently attributable
+to a phase.
+
+\end{document}
