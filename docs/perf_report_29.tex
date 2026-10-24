@@ -283,19 +283,25 @@ instructions (6.78\% of the program), and the probe path adds
 machinery (roughly 7e9 each). Together the probe path is on the order of a
 tenth of all retired instructions in the unoptimized debug build.
 
-The key can be exact and cheap because every corner lies on the tree's own
-lattice. \texttt{expand} doubles the root until it contains the shape
-(\texttt{Octree.cpp:222--255}), so node lengths are $L_{\mathrm{root}}/2^l$
-and every corner is \texttt{rootMin + n * L\_leaf}, where $L_{\mathrm{leaf}}$
-is the leaf cube length (the largest $L_{\mathrm{root}}/2^l$ not exceeding
-\texttt{minSize}). Both \texttt{p - rootMin} and $L_{\mathrm{leaf}}$ are
-exactly representable floats, and the exact quotient is an integer, so IEEE
-division returns that integer exactly. A packed \texttt{uint64} lattice index
-(21 bits per axis) therefore selects exactly the same entries as the float
-key. A flat open-addressed table of 16-byte entries, reserved to the previous
-apply's peak, replaces the node-based robin map and its per-entry
-allocations. A debug assert that the division is integral guards future
-non-lattice scenes and falls back to the float key if it ever fails.
+The key can be exact and cheap because every corner of the recursion's own
+leaves lies on the tree's lattice. \texttt{expand} doubles the root until it
+contains the shape (\texttt{Octree.cpp:222--255}), so node lengths are
+$L_{\mathrm{root}}/2^l$ and a leaf corner is \texttt{rootMin + n * L\_leaf},
+where $L_{\mathrm{leaf}}$ is the leaf cube length (the first
+$L_{\mathrm{root}}/2^l$ not exceeding \texttt{minSize}); leaf centers are
+half steps of the same lattice. A packed \texttt{uint64} lattice index
+(21 bits per axis) selects exactly the same entries as the float key whenever
+the rounded index reconstructs the queried float bit-for-bit, which
+\texttt{evaluateSDF} checks per query. A flat open-addressed table of 16-byte
+entries, reserved to the previous apply's peak, replaces the node-based robin
+map and its per-entry allocations. Queries that do not reconstruct --
+accumulated subdivision rounding, or cubes finer than $L_{\mathrm{leaf}}$ that
+the recursion follows because the stored tree holds nodes from an earlier
+apply with a smaller \texttt{minSize} -- use the float-keyed fallback, so the
+fast path is never a correctness requirement. (An early debug assert that the
+division was integral was removed after it aborted at runtime: the
+mixed-\texttt{minSize} applies in \texttt{MainSceneLoader} create exactly
+those finer nodes, and they are a legitimate state, not an error.)
 
 \begin{tcolorbox}[promptbox={Prompt --- C1: one leaf pass, integer corner keys}]
 Goal: halve the probes, then make each probe cheap. Steps: (1) at
@@ -303,7 +309,10 @@ Goal: halve the probes, then make each probe cheap. Steps: (1) at
 \texttt{!isLeaf}; add a debug assertion that \texttt{r.shapeSDF} equals a
 freshly evaluated set for leaves; (2) add \texttt{rootMin} and the leaf
 spacing $L_{\mathrm{leaf}}$ to \texttt{ShapeArgs}, key the cache by a packed
-\texttt{uint64} lattice index with a debug integrality assert; (3) replace
+\texttt{uint64} lattice index, and accept a rounded index only when it
+reconstructs the queried float bit-for-bit (\texttt{rootMin} + n*spacing);
+anything else -- off-lattice cubes from stored finer nodes, or subdivision
+rounding -- falls back to the float key; (3) replace
 \texttt{robin\_map<vec3,float>} in \texttt{OctreeThreadContext} with a flat
 open-addressed table reserved per apply; (4) keep the per-task contexts (they
 capture the 86\% reuse) and add hit/miss counters under M7. Files:

@@ -33,11 +33,12 @@ struct ShapeArgs {
     const Simplifier &simplifier;
     float minSize;
 
-    // Shape-cache lattice, set by Octree::apply after expand(). Every shape
-    // query is a corner or center of a tree cube, i.e. cacheOrigin +
-    // n * cacheSpacing. cacheSpacing == 0 disables the lattice fast path;
-    // cacheGeneration is the apply's tag for recycled thread contexts
-    // (0 = no apply, see ShapeSdfCache).
+    // Shape-cache lattice, set by Octree::apply after expand(). Corners and
+    // centers of this apply's leaf cubes sit at cacheOrigin + n*cacheSpacing;
+    // queries off that lattice (stored finer nodes from an earlier apply)
+    // take the cache's float-keyed fallback. cacheSpacing == 0 disables the
+    // lattice fast path; cacheGeneration is the apply's tag for recycled
+    // thread contexts (0 = no apply, see ShapeSdfCache).
     glm::vec3 cacheOrigin{0.0f};
     float cacheSpacing{0.0f};
     uint32_t cacheGeneration{0};

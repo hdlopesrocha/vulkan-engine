@@ -5,7 +5,6 @@
 #include "../math/BrushMode.hpp"
 #include "NodeOperationResult.hpp"
 #include <bit>
-#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -233,22 +232,18 @@ float Octree::evaluateSDF(const ShapeArgs &args, OctreeThreadContext * threadCon
     // Fast path: canonical lattice points. The rounded index is accepted only
     // when it reconstructs p bit-for-bit, which makes the packed key injective
     // on the queried floats: a hit can only return the value that was computed
-    // for exactly these coordinates in this apply. Anything else falls through
-    // to the float-keyed map, so behavior is unchanged for it.
+    // for exactly these coordinates in this apply. Anything else -- a query
+    // off this apply's lattice (the stored tree can hold finer nodes from an
+    // earlier apply with a smaller minSize, and the recursion follows them
+    // below its own leaf length), or a lattice point whose accumulated
+    // subdivision rounding did not reproduce the canonical bits -- falls
+    // through to the float-keyed map, so behavior is unchanged for it.
     if (args.cacheSpacing > 0.0f && args.cacheGeneration != 0) {
         const glm::vec3 rel = (p - args.cacheOrigin) / args.cacheSpacing;
         const float limit = float(ShapeSdfCache::kAxisLimit);
         if (rel.x >= 0.0f && rel.x < limit &&
             rel.y >= 0.0f && rel.y < limit &&
             rel.z >= 0.0f && rel.z < limit) {
-#ifndef NDEBUG
-            // Lattice points must divide exactly; a residual means a future
-            // non-lattice query would take the slow path (release) instead of
-            // tripping this guard.
-            assert(std::fabs(rel.x - std::nearbyint(rel.x)) <= 1e-4f * std::max(1.0f, std::fabs(rel.x)) &&
-                   std::fabs(rel.y - std::nearbyint(rel.y)) <= 1e-4f * std::max(1.0f, std::fabs(rel.y)) &&
-                   std::fabs(rel.z - std::nearbyint(rel.z)) <= 1e-4f * std::max(1.0f, std::fabs(rel.z)));
-#endif
             const int64_t nx = std::llround(rel.x);
             const int64_t ny = std::llround(rel.y);
             const int64_t nz = std::llround(rel.z);
@@ -324,12 +319,15 @@ void Octree::buildResultSDF(const bool isLeaf, const ShapeArgs &args, OctreeNode
 }
 
 void Octree::configureShapeCache(ShapeArgs &args) const {
-    // All shape queries are corners or centers of tree cubes, i.e. points of
-    // the octree's own lattice: origin + n*L_leaf for corners and
-    // origin + n*L_leaf/2 for centers. L_leaf is the length the shape
-    // recursion stops at: the first halving of the (already expanded) root
-    // length that is <= minSize -- the same halving `shape` performs, so the
-    // value is bit-identical to the one the recursion uses.
+    // The cache lattice is this apply's own leaf lattice: corners are
+    // origin + n*L_leaf and centers are its half steps, where L_leaf is the
+    // first halving of the (already expanded) root length that is <= minSize
+    // -- the same halving `shape` performs, so the value is bit-identical to
+    // the one the recursion uses. The recursion can still visit finer cubes
+    // when the stored tree holds nodes from an earlier apply with a smaller
+    // minSize; those queries are off-lattice and take the cache's float-keyed
+    // fallback, so the fast path is an optimization, never a correctness
+    // requirement.
     float leafLength = getLengthX();
     for (int guard = 0; guard < 128 && leafLength > args.minSize && leafLength > 0.0f; ++guard) {
         leafLength *= 0.5f;

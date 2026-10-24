@@ -16,12 +16,16 @@ namespace tsl {
 
 // Per-thread cache for shape SDF values (perf report 29, C1).
 //
-// Every query Octree::shape makes is a corner or the center of an octree cube,
-// so it lies on the tree's own lattice: cacheOrigin + n * spacing, with
-// spacing = L_leaf / 2 (corners are whole L_leaf steps, centers half steps).
-// The lattice index packs into 21 bits per axis, so the fast path is a flat
-// open-addressed table keyed by a uint64: no three-float hash, no node
-// allocation per entry.
+// Shape queries are corners or centers of the cubes the recursion visits.
+// For this apply's own leaf cubes those points lie on its lattice:
+// cacheOrigin + n * spacing, with spacing = L_leaf / 2 (corners are whole
+// L_leaf steps, centers half steps). The stored tree can hold finer nodes than
+// the current leaf (an earlier apply ran with a smaller minSize) and the
+// recursion then visits cubes off this lattice; those queries use the
+// fallback map, exactly like any point whose float bits do not reconstruct
+// from a rounded index. The lattice index packs into 21 bits per axis, so the
+// fast path is a flat open-addressed table keyed by a uint64: no three-float
+// hash, no node allocation per entry.
 //
 // Exactness. The table is only probed for a position that reconstructs from
 // its rounded lattice index bit-for-bit (Octree::evaluateSDF checks this), so a
