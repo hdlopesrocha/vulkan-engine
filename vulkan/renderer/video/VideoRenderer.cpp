@@ -403,7 +403,3 @@ void VideoRenderer::draw(VkCommandBuffer cmd, VulkanApp* app, uint32_t frameInde
     endPass(cmd, app, frameIndex);
 }
 
-void VideoRenderer::clear(VkCommandBuffer cmd, VulkanApp* app, uint32_t frameIndex) {
-    if (!beginPass(cmd, app, frameIndex)) return;
-    endPass(cmd, app, frameIndex);
-}

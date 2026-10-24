@@ -199,11 +199,6 @@ void SceneRenderer::ensureLayerStates(size_t n) {
         layerStates_.push_back(std::make_unique<SceneLayerState>());
 }
 
-size_t SceneRenderer::layerStateCount() const {
-    std::lock_guard<std::mutex> lock(layerStatesMutex_);
-    return layerStates_.size();
-}
-
 std::unordered_map<NodeID, Model3DVersion>& SceneRenderer::layerChunks(Layer layer) {
     ensureLayerStates(static_cast<size_t>(std::max<Layer>(layer + 1, 2)));
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
@@ -326,31 +321,6 @@ void SceneRenderer::removeAllMeshes() {
         std::lock_guard<std::recursive_mutex> plock(proxyMutex_);
         solidProxyData.clear();
         waterProxyData.clear();
-    }
-}
-
-void SceneRenderer::removeAllMeshesSolidOnly() {
-    if (solidRenderer) solidRenderer->getIndirectRenderer().removeAllMeshes();
-    if (videoRenderer) videoRenderer->getIndirectRenderer().removeAllMeshes();
-    std::lock_guard<std::mutex> lock(layerStatesMutex_);
-    for (size_t i = 0; i < layerStates_.size(); ++i) {
-        if (!layerStates_[i]) continue;
-        if (layerRendererType(static_cast<Layer>(i)) != LayerRendererType::Solid) continue;
-        std::lock_guard<std::recursive_mutex> guard(*layerStates_[i]->mutex);
-        layerStates_[i]->chunks.clear();
-        layerStates_[i]->pendingDeletes.clear();
-    }
-}
-
-void SceneRenderer::removeAllMeshesWaterOnly() {
-    if (waterRenderer) waterRenderer->getIndirectRenderer().removeAllMeshes();
-    std::lock_guard<std::mutex> lock(layerStatesMutex_);
-    for (size_t i = 0; i < layerStates_.size(); ++i) {
-        if (!layerStates_[i]) continue;
-        if (layerRendererType(static_cast<Layer>(i)) != LayerRendererType::Water) continue;
-        std::lock_guard<std::recursive_mutex> guard(*layerStates_[i]->mutex);
-        layerStates_[i]->chunks.clear();
-        layerStates_[i]->pendingDeletes.clear();
     }
 }
 

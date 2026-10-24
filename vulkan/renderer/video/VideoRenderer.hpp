@@ -56,9 +56,6 @@ public:
               VkDescriptorSet sceneSet, const glm::mat4& viewProjection,
               const glm::vec3& cameraPos, float lodBias, int maxTargetLod);
 
-    // Clear-only variant (layer disabled / no video materials loaded).
-    void clear(VkCommandBuffer cmd, VulkanApp* app, uint32_t frameIndex);
-
     IndirectRenderer& getIndirectRenderer() { return indirectRenderer; }
 
     VkImageView colorView(uint32_t frameIndex) const {
@@ -66,9 +63,6 @@ public:
     }
     VkImageView depthView(uint32_t frameIndex) const {
         return (frameIndex < VIDEO_FRAMES) ? depthViews[frameIndex] : VK_NULL_HANDLE;
-    }
-    VkImageLayout colorLayout(uint32_t frameIndex) const {
-        return (frameIndex < VIDEO_FRAMES) ? colorLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED;
     }
     VkImageLayout depthLayout(uint32_t frameIndex) const {
         return (frameIndex < VIDEO_FRAMES) ? depthLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED;

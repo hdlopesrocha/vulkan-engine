@@ -402,8 +402,9 @@ which updates the existing set in place. Report~01 already identified the only
 \code{MyApp} call to this setter as a no-op; that call was removed, and the
 setter is now unreachable. The inline \code{setUseGpuPlacement},
 \code{gpuPlacementEnabled}, and \code{isConsolidationDirty}
-(\code{VegetationRenderer.hpp:115,116,163}) are the same kind of vestigial
-switch: no reader, no writer outside the header.
+(\code{VegetationRenderer.hpp:115,116,163}) are vestigial accessors over live
+state: \code{useGpuPlacement} and \code{vegConsolidationDirty} are read and
+written by the render loop, so the accessors go and the members stay.
 
 \textbf{\code{ImpostorCapture}} (4 methods, 115 lines).
 \code{capture} (55 lines, \code{ImpostorCapture.cpp:454--508}),
@@ -690,13 +691,13 @@ Three caveats apply to this table.
     \code{SlotAllocator} helpers and the two size getters, which duplicate
     public capacity fields. The prompt in \S\ref{sec:prompt} takes that
     conservative branch.
-    \item \textbf{State, not just code.} \code{solidGenPoolRef},
-    \code{waterGenPoolRef}, \code{updateCalls}, and the three
-    \code{VegetationRenderer} flags are write-only or never-written state.
-    Deleting the accessor is only half the change; the backing member and its
-    initializer must go too, or the compiler will warn about an unused private
-    field (\code{-Wunused-private-field} is not enabled, so it would survive
-    silently).
+    \item \textbf{State, not just code.} \code{DescriptorUpdateStats::updateCalls}
+    is written by the update path and never read; deleting its accessor is only
+    half the change, and the counter member must go with it. The three
+    \code{VegetationRenderer} accessors are not in that class: the backing
+    members \code{useGpuPlacement} and \code{vegConsolidationDirty} are live
+    (the render loop reads and writes both), so only the accessors are deleted
+    and the members stay.
     \item \textbf{Name collisions.} \code{getSlot} is not
     \code{ChunkManager::getSlotIndex}; \code{textureTypeName} is not
     \code{layerRendererName}. Each was checked with its class qualifier before
@@ -936,8 +937,9 @@ two \code{GenPoolRef} accessors; \code{SdfRenderer::setScene},
 \code{hasScene}; \code{VideoRenderer::clear} and \code{colorLayout};
 \code{WaterBackFaceRenderer::init};
 \code{VegetationRenderer::setBillboardArrayTextures} plus the inline
-\code{setUseGpuPlacement}, \code{gpuPlacementEnabled},
-\code{isConsolidationDirty} and their members;
+\code{setUseGpuPlacement}, \code{gpuPlacementEnabled}, and
+\code{isConsolidationDirty} accessors (the backing members are live; keep
+them);
 \code{ImpostorCapture::capture}, \code{captureAll}, \code{captureAsync}, and
 \code{updateTexDescSet}. Keep \code{captureAllAsync} and its helpers.
 

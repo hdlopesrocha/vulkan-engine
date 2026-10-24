@@ -1000,25 +1000,6 @@ void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr, Vulkan
     });
 }
 
-void VegetationRenderer::setBillboardArrayTextures(VkImageView albedoView, VkImageView normalView, VkImageView opacityView, VkSampler sampler, VulkanApp* app) {
-    billboardAlbedoView   = albedoView;
-    billboardNormalView   = normalView;
-    billboardOpacityView  = opacityView;
-    billboardArraySampler = sampler;
-
-    if (!app || descriptorSetLayout == VK_NULL_HANDLE) return;
-
-    // Stable set: never freed or deferred-destroyed. If a set already exists,
-    // just rewrite its bindings in place (UPDATE_AFTER_BIND layout makes the
-    // update safe while pending command buffers reference it; with descriptor
-    // buffers this is a plain host memory write). No allocation/free needed.
-    if (vegDescriptorSet == VK_NULL_HANDLE) {
-        ensureVegDescriptorSet(app);
-    } else {
-        refreshVegDescriptors(app);
-    }
-}
-
 void VegetationRenderer::onTextureArraysReallocated(VulkanApp* app) {
     std::cerr << "[VEGETATION] onTextureArraysReallocated: refreshing vegDescriptorSet in place" << std::endl;
     if (!app) return;

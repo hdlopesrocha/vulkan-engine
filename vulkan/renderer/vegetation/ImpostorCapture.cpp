@@ -451,112 +451,6 @@ void ImpostorCapture::completeCaptureType(VulkanApp* app, uint32_t billboardType
 }
 
 
-void ImpostorCapture::capture(VulkanApp* app,
-                               VkImageView albedoView, VkImageView normalView,
-                               VkImageView opacityView, VkSampler   sampler,
-                               float billboardScale, uint32_t billboardType) {
-    if (!initDone || !app) return;
-    // Bladed grass capture is procedural (no billboard textures): source
-    // views are ignored (kept in the signature for caller compatibility).
-    (void)albedoView; (void)normalView; (void)opacityView; (void)sampler;
-    if (billboardType >= NUM_BILLBOARD_TYPES) {
-        fprintf(stderr, "[ImpostorCapture] capture: billboardType=%u out of range\n", billboardType);
-        return;
-    }
-
-    // Layer range for this billboard type.
-    const uint32_t layerBase = billboardType * NUM_VIEWS;
-
-    // Old ImGui sets for this type are retired in completeCaptureType() after
-    // the GPU work finishes (inline on the sync path, fence-deferred on the
-    // async path), so a re-capture can never orphan a deferred set.
-
-    // (No texture descriptor update: bladed capture is procedural.)
-
-    // Single centred instance at the origin with the correct blade variant.
-    // The instance buffer holds one slot per billboard type; the draw selects
-    // it with firstInstance, so staged per-type data never aliases and the
-    // instanceData values are identical to the old single-slot upload
-    // (gl_InstanceIndex is unread by every vegetation shader: pixel-identical).
-    {
-        const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(billboardType));
-        std::memcpy(static_cast<uint8_t*>(captureInstMapped) + billboardType * sizeof(inst),
-                    &inst, sizeof(inst));
-    }
-
-    // Camera UBOs + invVP slice for this type's layers (bytes identical to
-    // the previous inline version; factored out so captureAllAsync can stage
-    // all types before one submit).
-    writeCaptureCameraUbos(billboardScale, layerBase);
-
-    // Push constant: no wind, density culling disabled, impostorDistance=0.
-    CapturePC pc{};
-    pc.billboardScale     = billboardScale;
-    pc.windEnabled        = 0.0f;
-    pc.windTime           = 0.0f;
-    pc.impostorDistance   = 0.0f;
-
-    // Async submit of this type's NUM_VIEWS renders (identical command stream;
-    // see recordCaptureViews). The fence wait below preserves the synchronous
-    // contract — the old code blocked inside runSingleTimeCommands — with the
-    // codebase's validation-clean poll wait. Reaping of the transient command
-    // buffer stays on the frame pump (processPendingCommandBuffers), as with
-    // every other runSingleTimeCommandsAsync submitter.
-    VkFence fence = submitCaptureTypesAsync(app, pc, billboardType, 1);
-    VulkanApp::waitFence(app->getDevice(), fence);
-    completeCaptureType(app, billboardType, billboardScale);
-}
-
-void ImpostorCapture::captureAll(VulkanApp* app,
-                                   VkImageView albedoView, VkImageView normalView,
-                                   VkImageView opacityView, VkSampler sampler,
-                                   float billboardScale) {
-    for (uint32_t t = 0; t < NUM_BILLBOARD_TYPES; ++t) {
-        capture(app, albedoView, normalView, opacityView, sampler, billboardScale, t);
-    }
-    fprintf(stderr, "[ImpostorCapture] captureAll complete: %u types × %u views = %u layers\n",
-            NUM_BILLBOARD_TYPES, NUM_VIEWS, TOTAL_LAYERS);
-}
-
-VkFence ImpostorCapture::captureAsync(VulkanApp* app,
-                                       VkImageView albedoView, VkImageView normalView,
-                                       VkImageView opacityView, VkSampler sampler,
-                                       float billboardScale, uint32_t billboardType) {
-    if (!initDone || !app) return VK_NULL_HANDLE;
-    (void)albedoView; (void)normalView; (void)opacityView; (void)sampler;
-    if (billboardType >= NUM_BILLBOARD_TYPES) {
-        fprintf(stderr, "[ImpostorCapture] captureAsync: billboardType=%u out of range\n", billboardType);
-        return VK_NULL_HANDLE;
-    }
-    const uint32_t layerBase = billboardType * NUM_VIEWS;
-
-    // (No texture descriptor update: bladed capture is procedural.)
-
-    {
-        const glm::vec4 inst(0.0f, 0.0f, 0.0f, float(billboardType));
-        std::memcpy(static_cast<uint8_t*>(captureInstMapped) + billboardType * sizeof(inst),
-                    &inst, sizeof(inst));
-    }
-    writeCaptureCameraUbos(billboardScale, layerBase);
-
-    // Push constant: no wind, density culling disabled, impostorDistance=0.
-    CapturePC pc{};
-    pc.billboardScale     = billboardScale;
-    pc.windEnabled        = 0.0f;
-    pc.windTime           = 0.0f;
-    pc.impostorDistance   = 0.0f;
-
-    VkFence fence = submitCaptureTypesAsync(app, pc, billboardType, 1);
-    // Publish after the fence (see completeCaptureType); pumped by
-    // processPendingCommandBuffers. `this`/`app` outlive the fence by
-    // ownership (service/app lifetime), same as the vegetation streaming
-    // publish callbacks.
-    app->deferDestroyUntilFence(fence, [this, app, billboardType, billboardScale]() {
-        completeCaptureType(app, billboardType, billboardScale);
-    });
-    return fence;
-}
-
 VkFence ImpostorCapture::captureAllAsync(VulkanApp* app,
                                           VkImageView albedoView, VkImageView normalView,
                                           VkImageView opacityView, VkSampler sampler,
@@ -1071,21 +965,10 @@ void ImpostorCapture::allocateDescSets(VulkanApp* app) {
         .writeBuffer(uboDescSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
                      uboBuffer, 0, sizeof(CaptureUBO))
         .flush();
-    // Texture descriptor is written in updateTexDescSet() at capture time.
+    // Texture descriptor is written by createImGuiDescSetsForType() when a
+    // capture publishes; the capture path is procedural and needs no source
+    // texture views.
     // Set=2 wind params descriptor is shared with the VegetationRenderer.
-}
-
-void ImpostorCapture::updateTexDescSet(VkDevice device,
-                                       VkImageView albedo, VkImageView normal,
-                                       VkImageView opacity, VkSampler sampler) {
-    DescriptorWriter writer(device);
-    writer.writeImage(texDescSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                      sampler, albedo, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    writer.writeImage(texDescSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                      sampler, normal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    writer.writeImage(texDescSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                      sampler, opacity, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    writer.flush();
 }
 
 void ImpostorCapture::createImGuiDescSetsForType(VulkanApp* app, uint32_t billboardType) {

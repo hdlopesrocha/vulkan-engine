@@ -11,10 +11,6 @@
 WaterBackFaceRenderer::WaterBackFaceRenderer() {}
 WaterBackFaceRenderer::~WaterBackFaceRenderer() {}
 
-void WaterBackFaceRenderer::init(VulkanApp* app) {
-    appPtr = app;
-}
-
 void WaterBackFaceRenderer::createDummyDepthView(VulkanApp* app) {
     if (!app) { return; }
     if (dummyDepthView != VK_NULL_HANDLE) { return; }

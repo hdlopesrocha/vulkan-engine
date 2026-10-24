@@ -42,40 +42,15 @@ public:
     // Destroy all GPU resources.
     void cleanup(VulkanApp* app) override;
 
-    // Capture NUM_VIEWS impostor frames for ONE billboard type into layers
-    // [billboardIndex*NUM_VIEWS .. billboardIndex*NUM_VIEWS+NUM_VIEWS-1].
-    // Synchronous: blocks until the GPU renders complete (fence wait), exactly
-    // like the old runSingleTimeCommands path. Prefer captureAsync off the
-    // frame path.
-    void capture(VulkanApp* app,
-                 VkImageView albedoView, VkImageView normalView,
-                 VkImageView opacityView, VkSampler  sampler,
-                 float billboardScale, uint32_t billboardIndex = 0);
-
-    // H8 (perf report 26): async single-type capture. Records the identical
-    // per-view command stream and submits it to the graphics queue WITHOUT
-    // blocking; returns a fence signaled when all NUM_VIEWS renders have
-    // completed and the layers sit in SHADER_READ_ONLY_OPTIMAL. ImGui sets +
-    // the capturedTypes bit publish in a fence callback (pumped by
-    // processPendingCommandBuffers). Contract: wait the fence before the next
-    // capture*/captureAll* call (shared UBO/instance/descriptor slots) and
-    // before first sampling (setImpostorData / scene use) — frame fences do
-    // NOT cover it. Await with VulkanApp::waitFence. Bit-identical layers.
-    VkFence captureAsync(VulkanApp* app,
-                         VkImageView albedoView, VkImageView normalView,
-                         VkImageView opacityView, VkSampler  sampler,
-                         float billboardScale, uint32_t billboardIndex = 0);
-
-    // Convenience wrapper: capture all NUM_BILLBOARD_TYPES in one call.
-    void captureAll(VulkanApp* app,
-                    VkImageView albedoView, VkImageView normalView,
-                    VkImageView opacityView, VkSampler  sampler,
-                    float billboardScale);
-
     // H8 (perf report 26): async whole-array capture. Stages all three types
     // then issues ONE graphics-queue submit for all 60 views (type order,
     // shared type-independent UBO slots, per-type instance slots selected via
-    // firstInstance); same fence/publish contract as captureAsync.
+    // firstInstance); the fence signals when every render has completed and
+    // the layers sit in SHADER_READ_ONLY_OPTIMAL. ImGui sets + the
+    // capturedTypes bit publish in a fence callback (pumped by
+    // processPendingCommandBuffers). Contract: wait the fence before the next
+    // capture and before first sampling (setImpostorData / scene use) — frame
+    // fences do NOT cover it. Await with VulkanApp::waitFence.
     VkFence captureAllAsync(VulkanApp* app,
                             VkImageView albedoView, VkImageView normalView,
                             VkImageView opacityView, VkSampler sampler,
@@ -211,9 +186,6 @@ private:
     void createCaptureInvVPBuffer(VulkanApp* app);
     void createSceneSampler(VulkanApp* app);
     void allocateDescSets(VulkanApp* app);
-    void updateTexDescSet(VkDevice device,
-                          VkImageView albedo, VkImageView normal,
-                          VkImageView opacity, VkSampler sampler);
     void createImGuiDescSetsForType(VulkanApp* app, uint32_t billboardType);
     // H8 async-capture internals (see ImpostorCapture.cpp): shared camera-UBO
     // upload, per-view recorder (caller-agnostic command stream), async submit

@@ -66,7 +66,6 @@ public:
     static constexpr uint32_t SDF_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
     void createRenderTargets(VulkanApp* app, uint32_t width, uint32_t height);
     void destroyRenderTargets(VulkanApp* app);
-    void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);
 
     VkImageView getSdfColorView(uint32_t frameIndex) const { return (frameIndex < SDF_FRAMES) ? sdfColorImageViews[frameIndex] : VK_NULL_HANDLE; }
     VkImageView getSdfDepthView(uint32_t frameIndex) const { return (frameIndex < SDF_FRAMES) ? sdfDepthImageViews[frameIndex] : VK_NULL_HANDLE; }
@@ -78,19 +77,13 @@ public:
     void setSdfDepthLayout(uint32_t frameIndex, VkImageLayout l) { if (frameIndex < SDF_FRAMES) sdfDepthImageLayouts[frameIndex] = l; }
 
     // ── Scene input ──
-    // setScene copies the CPU mirror and flags the GPU upload dirty. Call from
-    // the render thread (or load path), NOT from a worker while prepareCull /
-    // render for the same frame is recording.
-    void setScene(const sdf_gpu::SdfScene& scene);    // Re-extract GPU mirrors from the pending scene if dirty (CPU only).
     // Read-only CPU mirror of the merged effect scene (lava flames, smoke)
     // for the Blender exporter. Call from the render thread; the scene
     // is refreshed by the regular render path.
     const sdf_gpu::SdfScene& exportScene() const { return pendingScene_; }
-    // Returns true when a re-upload was staged.
+    // Returns true when a re-upload was staged; the upload itself happens in
+    // prepareCull on the render thread.
     bool rebuildGridIfDirty();
-    // Convenience: rebuildGridIfDirty() now (upload itself happens in
-    // prepareCull on the render thread).
-    void updateScene();
 
     // ── Lava-anchored fire (brushIndex 4) ────────────────────────────────
     // Flame anchors are derived from the SOLID shape of lava terrain chunks
@@ -143,18 +136,12 @@ public:
     // main SDF pass clears its targets without drawing. Lock-free: written
     // from the frame thread, read from the async SDF/shadow tasks.
     void setRayMarchingEnabled(bool on) { rayMarchingEnabled_.store(on, std::memory_order_relaxed); }
-    bool isRayMarchingEnabled() const { return rayMarchingEnabled_.load(std::memory_order_relaxed); }
     // M10 (report 25): screen-space overlap gate for the solid-depth preload
     // copy. The frame thread stores the current view-projection each frame;
     // render() skips the full-screen copy when no container projects onto
     // the screen. Validation-neutral: only removes a copy + transitions,
     // end-state layouts are unchanged.
     void setOcclusionViewProj(const glm::mat4& vp);
-    // C2 (report 25): smoke container sizing. true (default) keeps the
-    // legacy 3700 m XZ pad (A/B baseline, zero behavior change); false fits
-    // the container to the smoke ball + live bullet flights (quantized refit).
-    void setSmokeWideContainer(bool wide);
-
     // ── Smoke bomb + bullets (second generic consumer) ──────────────────
     // A static-topology smoke scene (1 Smoke-sphere def/mat/container/
     // instance) merged with the lava scene on every rebuild. Growth, noise,
@@ -229,8 +216,6 @@ public:
     void refreshFrameBindings(uint32_t frameIdx);
     void setRenderMode(RenderMode mode);
     void setDebugFlags(uint32_t flags);
-    void setMarchParams(float maxSteps, float epsilon);
-    void setMarchRange(float minStep, float maxStep, float earlyTermThreshold);
     // March-tier setters (perf report 25 M12, Settings::sdfMaxSteps /
     // sdfSmokeSamples). Each dedupes unchanged values and marks all params
     // slots dirty, so the per-frame MyApp wiring is cheap. No idle, no
@@ -238,7 +223,6 @@ public:
     // C1 texture tier, which needs a device idle + full re-upload).
     void setMaxSteps(int steps);
     void setSmokeSamples(int n);
-    void setMarchTiers(int maxSteps, int smokeSamples);
     // External scene depth (main depth buffer view) used for occlusion.
     // May be called every frame; the descriptor is rewritten only when the
     // view handle actually changes (per frame slot), never blindly per frame.
@@ -275,7 +259,6 @@ public:
 
     const SdfStats& getStats() const { return stats_; }
     uint32_t getContainerCount() const { return stats_.containerCount; }
-    bool hasScene() const { return stats_.containerCount > 0; }
     // GPU march counters (set=1 binding 10). readProfile copies the slot's last
     // completed counters into stats_ — call on the frame thread: the slot's
     // previous use is fenced before reuse, so the mapped read never races the

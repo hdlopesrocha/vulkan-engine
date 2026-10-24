@@ -319,12 +319,6 @@ void SdfRenderer::repackDebugMode() {
     params_.debugFlags = debugFlags_;
 }
 
-void SdfRenderer::setScene(const sdf_gpu::SdfScene& scene) {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    lavaScene_ = scene;
-    refreshMergedLocked();
-}
-
 void SdfRenderer::refreshMergedLocked() {
     // pendingScene_ is always the merge: independent emitters (lava fire,
     // smoke shapes, future effects) share one GPU upload and one march. It
@@ -477,14 +471,6 @@ void SdfRenderer::ensureSmokeScene() {
     }
 }
 
-void SdfRenderer::setSmokeWideContainer(bool wide) {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    if (wide == smokeWideContainer_) return;
-    smokeWideContainer_ = wide;
-    ensureSmokeScene();
-    refreshMergedLocked();
-}
-
 void SdfRenderer::setOcclusionViewProj(const glm::mat4& vp) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     occlusionViewProj_ = vp;
@@ -633,10 +619,6 @@ bool SdfRenderer::rebuildGridIfDirty() {
     return false;
 }
 
-void SdfRenderer::updateScene() {
-    rebuildGridIfDirty();
-}
-
 void SdfRenderer::updateParams(float timeSec, uint32_t frameIndex) {
     setFrame(frameIndex);
     std::lock_guard<std::mutex> lock(sceneMutex);
@@ -676,21 +658,6 @@ void SdfRenderer::setSmokeDebug(uint32_t v) {
 }
 
 
-void SdfRenderer::setMarchParams(float maxSteps, float epsilon) {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    params_.maxSteps = maxSteps;
-    params_.epsilon = epsilon;
-    paramsDirtySlots_.fill(true);
-}
-
-void SdfRenderer::setMarchRange(float minStep, float maxStep, float earlyTermThreshold) {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    params_.minStep = minStep;
-    params_.maxStep = maxStep;
-    params_.earlyTerm = earlyTermThreshold;
-    paramsDirtySlots_.fill(true);
-}
-
 // March-tier setters (perf report 25 M12). Clamp to the shader-meaningful
 // ranges (16..256 steps: the frag hard-caps at SDF_MAX_STEPS_HARD = 256;
 // 4..12 smoke samples: the phase-B loop keeps trip count 12 with a break).
@@ -709,16 +676,6 @@ void SdfRenderer::setSmokeSamples(int n) {
     if (v == params_.smokeSamples) return;
     params_.smokeSamples = v;
     paramsDirtySlots_.fill(true);
-}
-
-void SdfRenderer::setMarchTiers(int maxSteps, int smokeSamples) {
-    std::lock_guard<std::mutex> lock(sceneMutex);
-    const float vs = static_cast<float>(std::clamp(maxSteps, 16, 256));
-    const float vn = static_cast<float>(std::clamp(smokeSamples, 4, 12));
-    bool changed = false;
-    if (vs != params_.maxSteps) { params_.maxSteps = vs; changed = true; }
-    if (vn != params_.smokeSamples) { params_.smokeSamples = vn; changed = true; }
-    if (changed) paramsDirtySlots_.fill(true);
 }
 
 void SdfRenderer::setSceneDepth(VkImageView view, VkImageLayout layout,
@@ -2137,12 +2094,6 @@ void SdfRenderer::destroyRenderTargets(VulkanApp* app) {
         boundDepthViews_[i] = VK_NULL_HANDLE;
         boundWaterDepthViews_[i] = VK_NULL_HANDLE;
     }
-}
-
-void SdfRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height) {
-    // Call only when no frame in flight references the old targets (same
-    // constraint as every other offscreen renderer). Rebuilds at the new size.
-    createRenderTargets(app, width, height);
 }
 
 void SdfRenderer::cleanup(VulkanApp* app) {

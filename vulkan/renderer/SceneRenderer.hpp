@@ -172,7 +172,6 @@ public:
     // ensureLayerStates grows the vector to at least n entries (creating
     // generation pools on demand). All accessors auto-grow.
     void ensureLayerStates(size_t n);
-    size_t layerStateCount() const;
     std::unordered_map<NodeID, Model3DVersion>& layerChunks(Layer layer);
     std::recursive_mutex& layerMutex(Layer layer);
     std::unordered_map<NodeID, PendingDeleteEntry>& layerPendingDeletes(Layer layer);
@@ -197,11 +196,6 @@ public:
     void removeAllLayerMeshes(Layer layer);
     // Remove every layer's meshes (clears both IRs).
     void removeAllMeshes();
-    // Back-compat wrappers:
-    void removeAllRegisteredMeshes() { removeAllMeshesSolidOnly(); }
-    void removeAllTransparentMeshes() { removeAllMeshesWaterOnly(); }
-    void removeAllMeshesSolidOnly();
-    void removeAllMeshesWaterOnly();
 
     // Pool utilization telemetry (perf report 22 C1): logs used vs committed
     // for every mesh pool plus vegetation/debug streams. Called after scene
@@ -489,11 +483,6 @@ public:
     // for all scene layers.
     mutable std::mutex                          pendingMeshMutex;
     std::unordered_map<NodeID, PendingMeshData> pendingMeshQueue;
-
-    // Back-compat accessors for the first two generation pools (prefer
-    // layerGenPool(layer) for new code).
-    ThreadPool& solidGenPoolRef() { return layerGenPool(LAYER_OPAQUE); }
-    ThreadPool& waterGenPoolRef() { return layerGenPool(LAYER_TRANSPARENT); }
 
     CommandBufferState frameCmdState;
 

@@ -13,7 +13,6 @@ class WaterBackFaceRenderer : public Renderer {
 public:
     WaterBackFaceRenderer();
     ~WaterBackFaceRenderer();
-    void init(VulkanApp* app);
     void cleanup(VulkanApp* app) override;
 
     void createPipelines(VulkanApp* app, VkPipelineLayout pipelineLayout);

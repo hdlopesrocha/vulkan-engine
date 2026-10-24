@@ -3,7 +3,6 @@
 #include "../../core/VulkanApp.hpp"
 #include "../../core/TrackedHandle.hpp"
 #include "../../resources/TextureArrayManager.hpp"
-#include "../../resources/EditableTexture.hpp"
 #include "../../../math/geometry/Vertex.hpp"
 #include "../../../math/geometry/Geometry.hpp"
 #include "../debug/DebugCubeRenderer.hpp"
@@ -71,7 +70,6 @@ public:
     ~VegetationRenderer();
 
     void setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app);
-    void setBillboardArrayTextures(VkImageView albedoView, VkImageView normalView, VkImageView opacityView, VkSampler sampler, VulkanApp* app);
     // Register the SOLID IndirectRenderer whose merged IndirectRenderer.comp dispatch now
     // also emits the blade/impostor commands. VegetationRenderer supplies its
     // per-frame output buffers + per-chunk veg metadata to that renderer.
@@ -110,10 +108,6 @@ public:
     // placement path (processPendingChunksGPU) when available, else the CPU
     // path.
     void processPendingChunks(uint32_t maxChunks);
-    // Force the CPU placement path (server fallback / debugging). Set from the
-    // VULKAN_CPU_VEGETATION env var at init.
-    void setUseGpuPlacement(bool enabled) { useGpuPlacement = enabled; }
-    bool gpuPlacementEnabled() const { return useGpuPlacement; }
     // Number of chunks still waiting in the queue.
     size_t pendingChunkCount() const;
     void clearAllInstances();
@@ -160,7 +154,6 @@ public:
     // The assert inside verifies the never-miss-a-draw invariant.
     static constexpr uint32_t kVegSkipWarmupFrames = 3;
     bool beginVegPass(bool wantDraw, bool hasContent);
-    bool isConsolidationDirty() const { return vegConsolidationDirty; }
 
     // ── Own offscreen framebuffer (decoupled from the solid pass) ──
     // Vegetation is rendered to its own color+depth images so it can be drawn on a
@@ -221,10 +214,9 @@ public:
                          VkImageView depthArray60 = VK_NULL_HANDLE,
                          VkBuffer   captureInvVPBuf = VK_NULL_HANDLE,
                          // M11 (perf report 27): capture fence for the async
-                         // path (captureAsync/captureAllAsync contract: wait
-                         // it before first sampling). VK_NULL_HANDLE on the
-                         // sync path (captureAll/capture fence-waits
-                         // internally before publish).
+                         // path (captureAllAsync contract: wait it before
+                         // first sampling). VK_NULL_HANDLE when no capture is
+                         // in flight.
                          VkFence    captureFence = VK_NULL_HANDLE);
 
     // Distance beyond which vegetation instances are replaced by impostor quads.
@@ -339,8 +331,8 @@ private:
     TrackedHandle<VkDescriptorSet> vegDescriptorSet;
     bool ensureVegDescriptorSet(VulkanApp* app);
     // Rewrite the 3 billboard bindings into the existing set (event-driven
-    // only: setBillboardArrayTextures / onTextureArraysReallocated — never
-    // called from the render loop, so steady state issues 0 updates).
+    // only: onTextureArraysReallocated — never called from the render loop,
+    // so steady state issues 0 updates).
     void refreshVegDescriptors(VulkanApp* app);
     // Listener id returned from TextureArrayManager::addAllocationListener(), -1 if none
     int vegTextureListenerId = -1;
