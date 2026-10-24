@@ -40,9 +40,12 @@ public:
         const OctreeTopologyInput& input,
         const OctreeTopologyTargetProvider& provider) __attribute__((weak));
 
-    // Dedup keys per node: one per (node, triplanar plane) pair. Bounds both
-    // the dedup table and the number of distinct vertices a chunk can produce.
-    static constexpr uint32_t kVertexKeysPerNode = 6;
+    // Dedup keys per node: one. The vertex payload is a pure function of the
+    // emitting node (position, normal, brush, hsv, textureType, mapping data),
+    // so the old per-triplanar-plane split produced identical payloads under
+    // different keys. One key per node bounds both the dedup table and the
+    // number of distinct vertices a chunk can produce.
+    static constexpr uint32_t kVertexKeysPerNode = 1;
 
     VulkanApp* app = nullptr;
     std::mutex mutex;

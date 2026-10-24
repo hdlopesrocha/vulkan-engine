@@ -7,6 +7,6 @@
 // raw (pre-dedup) vertex and its span is reserved from that exact count.
 struct OctreeTopologyDemand {
     uint32_t rawVertexCount = 0;      // 3 per emitted triangle (== index count)
-    uint32_t maxUniqueVertices = 0;   // 6 * nodeCount: the dedup key space
+    uint32_t maxUniqueVertices = 0;   // nodeCount: the dedup key space (one key per node)
     uint32_t suggestedVertexCapacity = 0; // min(rawVertexCount, maxUniqueVertices)
 };
