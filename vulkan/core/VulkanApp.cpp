@@ -1054,11 +1054,17 @@ void VulkanApp::createSingleTimeCmdRing() {
 }
 
 void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn) {
-    // Ring slots are shared; serialize the whole record+submit so parallel
-    // setup threads can never pick the same slot and reset a command buffer
-    // that another thread is still recording.
-    std::lock_guard<std::mutex> singleTimeLock(m_singleTimeMutex);
-    uint32_t idx = singleTimeCmdNext.fetch_add(1) % SINGLE_TIME_CMD_RING_SIZE;
+    // Pick a ring slot first; singleTimeCmdNext is atomic, so any four
+    // consecutive callers get four distinct slots. Each slot owns its command
+    // pool, command buffer and fence, so two threads may record and submit on
+    // different slots at the same time. The per-slot mutex covers the whole
+    // wait/reset/record/submit/wait sequence: two threads can only collide on
+    // the same slot after the ring wraps (more than four in-flight calls), and
+    // then the slot mutex serializes exactly those two. The queue submit mutex
+    // (inside) still serializes vkQueueSubmit2 itself, and the layout-update
+    // locks are unchanged -- neither is held while waiting for the fence.
+    const uint32_t idx = singleTimeCmdNext.fetch_add(1) % SINGLE_TIME_CMD_RING_SIZE;
+    std::lock_guard<std::mutex> singleTimeLock(singleTimeSlotMutexes[idx]);
     VkCommandBuffer cmd = singleTimeCmdBuffers[idx];
     VkFence fence = singleTimeCmdFences[idx];
     // Wait for the previous submission using this ring slot to complete

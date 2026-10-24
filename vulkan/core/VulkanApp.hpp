@@ -14,6 +14,7 @@
 #include <cstring>
 
 #include <vulkan/vulkan.h>
+#include <array>
 #include <mutex>
 #include <cstdint>
 #include <unordered_map>
@@ -695,8 +696,12 @@ public:
         std::vector<MemoryHeapBudget> getMemoryBudgets() const;
         
         // Public utility methods for texture manipulation
-        // Allocate, begin, call `fn` to record commands, end, submit and free the command buffer
-        // This function serializes the entire lifecycle so callers do not need to manage command-pool/thread-safety.
+        // Allocate, begin, call `fn` to record commands, end, submit and wait
+        // for the fence. Each call owns one ring slot (own command pool,
+        // command buffer and fence) for its whole lifecycle, so calls on
+        // different slots run concurrently; the per-slot mutex serializes a
+        // slot against itself. Callers do not need to manage command-pool or
+        // thread safety.
         void runSingleTimeCommands(const std::function<void(VkCommandBuffer)>& fn);
 
         // Image helpers (moved from protected so external helpers can use them)
@@ -797,10 +802,13 @@ public:
         VkCommandBuffer singleTimeCmdBuffers[SINGLE_TIME_CMD_RING_SIZE]{};
         VkFence singleTimeCmdFences[SINGLE_TIME_CMD_RING_SIZE]{};
         std::atomic<uint32_t> singleTimeCmdNext{0};
-        // Serializes whole runSingleTimeCommands calls: the ring slot selection
-        // is atomic, but begin/record/end on one slot must not overlap another
-        // thread that wrapped onto the same slot (parallel renderer setup).
-        std::mutex m_singleTimeMutex;
+        // One mutex per ring slot. Each slot owns its own command pool, command
+        // buffer and fence, so distinct slots can record/submit concurrently;
+        // the per-slot lock only serializes a slot against itself (the ring
+        // wraps onto an in-use slot after four in-flight calls). This replaces
+        // the old single global mutex, which also serialized the fence waits of
+        // independent setup workers. See runSingleTimeCommands().
+        std::array<std::mutex, SINGLE_TIME_CMD_RING_SIZE> singleTimeSlotMutexes;
         void createSingleTimeCmdRing();
 
         // Cache: shader file path → VkShaderModule, created on first use and kept for app lifetime.
