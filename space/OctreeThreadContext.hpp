@@ -13,10 +13,13 @@ namespace tsl {
 #endif
 #include "../math/geometry/BoundingCube.hpp"
 #include "OctreeNodeLevel.hpp"
+#include "ShapeSdfCache.hpp"
 
 class OctreeThreadContext {
 public:
-    tsl::robin_map<glm::vec3, float> shapeSdfCache;
+    // Shape-SDF value cache (integer lattice keys, generation-tagged). See
+    // ShapeSdfCache for the exactness and lifetime rules.
+    ShapeSdfCache shapeSdfCache;
     tsl::robin_map<glm::vec4, OctreeNodeLevel> nodeCache;
     // child node -> (parent node, child index within parent). Populated by the
     // tree traversal (IteratorHandler), seeded with the world-root path to the

@@ -4,7 +4,16 @@
 #include <thread>
 #include "../math/BrushMode.hpp"
 #include "NodeOperationResult.hpp"
+#include <bit>
+#include <cassert>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <exception>
+#include <iostream>
+#include <latch>
+#include <optional>
 #include <vector>
 #include <cstdint>
 #include <algorithm>
@@ -254,24 +263,89 @@ void Octree::expand(const ShapeArgs &args) {
     }
 }
 
-float Octree::evaluateSDF(const ShapeArgs &args, tsl::robin_map<glm::vec3, float> *cache, glm::vec3 p) const {
-    auto it = cache->find(p);
-    if (it != cache->end())
-        return it->second;
+// Bit-exact float3 comparison (not operator==: -0.0f and +0.0f must not share
+// a cache entry, since the SDF could in principle see the sign).
+static inline bool sameFloatBits(const glm::vec3 &a, const glm::vec3 &b) {
+    return std::bit_cast<uint32_t>(a.x) == std::bit_cast<uint32_t>(b.x)
+        && std::bit_cast<uint32_t>(a.y) == std::bit_cast<uint32_t>(b.y)
+        && std::bit_cast<uint32_t>(a.z) == std::bit_cast<uint32_t>(b.z);
+}
 
+// One generation per Octree::apply, process-wide: a recycled (thread_local)
+// context can serve different Octrees, so the tag must not be per-tree.
+static uint32_t nextShapeCacheGeneration() {
+    static std::atomic<uint32_t> generation{0};
+    uint32_t next = generation.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (next == 0) {
+        // 2^32 applies; skip the reserved "no generation" value.
+        next = generation.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+    return next;
+}
+
+float Octree::evaluateSDF(const ShapeArgs &args, OctreeThreadContext * threadContext, glm::vec3 p) const {
+    ShapeSdfCache &cache = threadContext->shapeSdfCache;
+    cache.beginGeneration(args.cacheGeneration);
+
+    // Fast path: canonical lattice points. The rounded index is accepted only
+    // when it reconstructs p bit-for-bit, which makes the packed key injective
+    // on the queried floats: a hit can only return the value that was computed
+    // for exactly these coordinates in this apply. Anything else falls through
+    // to the float-keyed map, so behavior is unchanged for it.
+    if (args.cacheSpacing > 0.0f && args.cacheGeneration != 0) {
+        const glm::vec3 rel = (p - args.cacheOrigin) / args.cacheSpacing;
+        const float limit = float(ShapeSdfCache::kAxisLimit);
+        if (rel.x >= 0.0f && rel.x < limit &&
+            rel.y >= 0.0f && rel.y < limit &&
+            rel.z >= 0.0f && rel.z < limit) {
+#ifndef NDEBUG
+            // Lattice points must divide exactly; a residual means a future
+            // non-lattice query would take the slow path (release) instead of
+            // tripping this guard.
+            assert(std::fabs(rel.x - std::nearbyint(rel.x)) <= 1e-4f * std::max(1.0f, std::fabs(rel.x)) &&
+                   std::fabs(rel.y - std::nearbyint(rel.y)) <= 1e-4f * std::max(1.0f, std::fabs(rel.y)) &&
+                   std::fabs(rel.z - std::nearbyint(rel.z)) <= 1e-4f * std::max(1.0f, std::fabs(rel.z)));
+#endif
+            const int64_t nx = std::llround(rel.x);
+            const int64_t ny = std::llround(rel.y);
+            const int64_t nz = std::llround(rel.z);
+            const glm::vec3 canonical = args.cacheOrigin
+                + glm::vec3(float(nx), float(ny), float(nz)) * args.cacheSpacing;
+            if (sameFloatBits(canonical, p)) {
+                const uint64_t key = ShapeSdfCache::pack(nx, ny, nz);
+                float cached = 0.0f;
+                if (cache.find(key, cached)) {
+                    if (args.cacheStats) args.cacheStats->hits.fetch_add(1, std::memory_order_relaxed);
+                    return cached;
+                }
+                if (args.cacheStats) args.cacheStats->misses.fetch_add(1, std::memory_order_relaxed);
+                const float d = args.function.distance(p);
+                cache.insert(key, d);
+                return d;
+            }
+        }
+    }
+
+    tsl::robin_map<glm::vec3, float> &fallback = cache.fallback();
+    auto it = fallback.find(p);
+    if (it != fallback.end()) {
+        if (args.cacheStats) args.cacheStats->hits.fetch_add(1, std::memory_order_relaxed);
+        return it->second;
+    }
+
+    if (args.cacheStats) args.cacheStats->misses.fetch_add(1, std::memory_order_relaxed);
     float d = args.function.distance(p);
-    cache->try_emplace(p, d);
+    fallback.try_emplace(p, d);
     return d;
 }
 
 void Octree::buildShapeSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext, bool force) const {
     const glm::vec3 cubeMin = frame.cube.getMin();
     const glm::vec3 cubeLength = frame.cube.getLength();
-    tsl::robin_map<glm::vec3, float> * shapeSdfCache = &threadContext->shapeSdfCache;
 
     if(isLeaf || force) {
         for (uint i = 0; i < 8; ++i) {
-            r.shapeSDF[i] = evaluateSDF(args, shapeSdfCache, cubeMin + cubeLength * Octree::getShift(i));
+            r.shapeSDF[i] = evaluateSDF(args, threadContext, cubeMin + cubeLength * Octree::getShift(i));
         }
         r.shapeType = SDF::eval(r.shapeSDF);
     } else {
@@ -306,6 +380,25 @@ void Octree::buildResultSDF(const bool isLeaf, const ShapeArgs &args, OctreeNode
     }
 }
 
+void Octree::configureShapeCache(ShapeArgs &args) const {
+    // All shape queries are corners or centers of tree cubes, i.e. points of
+    // the octree's own lattice: origin + n*L_leaf for corners and
+    // origin + n*L_leaf/2 for centers. L_leaf is the length the shape
+    // recursion stops at: the first halving of the (already expanded) root
+    // length that is <= minSize -- the same halving `shape` performs, so the
+    // value is bit-identical to the one the recursion uses.
+    float leafLength = getLengthX();
+    for (int guard = 0; guard < 128 && leafLength > args.minSize && leafLength > 0.0f; ++guard) {
+        leafLength *= 0.5f;
+    }
+    const float spacing = leafLength * 0.5f;
+    if (args.minSize > 0.0f && spacing > 0.0f && std::isfinite(spacing)) {
+        args.cacheOrigin = getMin();
+        args.cacheSpacing = spacing;
+    }
+    args.cacheGeneration = nextShapeCacheGeneration();
+}
+
 void Octree::apply(
         const SignedDistanceOperation &operation,
         const SignedDistanceFunction &function,
@@ -321,10 +414,39 @@ void Octree::apply(
 
     ShapeArgs args = ShapeArgs(operation, function, painter, coordPainter, model, simplifier, minSize);	
     expand(args);
+    // Must run after expand(): the root cube (and therefore the lattice
+    // origin, leaf length and packed index range) is final then.
+    configureShapeCache(args);
+
+#ifndef NDEBUG
+    // Perf report 29 M7: one line per apply under VULKAN_SETUP_DIAG. The
+    // environment is read once; with the variable unset the counters stay
+    // nullptr and only the branch in evaluateSDF remains.
+    static const bool setupDiag = std::getenv("VULKAN_SETUP_DIAG") != nullptr;
+    static std::atomic<uint64_t> applyIndex{0};
+    ShapeCacheStats cacheStats;
+    const uint64_t thisApply = setupDiag ? applyIndex.fetch_add(1, std::memory_order_relaxed) : 0;
+    const auto applyStart = setupDiag ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+    if (setupDiag) args.cacheStats = &cacheStats;
+#endif
+
     OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, root ? root->getType() : SpaceType::Empty, 0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
     OctreeThreadContext localChunkContext;
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext, updateHandler, deleteHandler);
+
+#ifndef NDEBUG
+    if (setupDiag) {
+        const double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - applyStart).count();
+        const uint64_t hits = cacheStats.hits.load(std::memory_order_relaxed);
+        const uint64_t misses = cacheStats.misses.load(std::memory_order_relaxed);
+        const uint64_t probes = hits + misses;
+        const double rate = probes > 0 ? (100.0 * double(hits) / double(probes)) : 0.0;
+        std::cout << "[octree-diag] apply " << thisApply << ": " << ms << " ms, cache hits "
+                  << hits << ", misses " << misses << ", hit rate " << rate << "%" << std::endl;
+    }
+#endif
 }
 
 int Octree::heightRootToChunk(int lod, float minSize) const {
@@ -341,7 +463,25 @@ bool Octree::isChunkNode(float nodeLength) const {
 }
 
 bool Octree::isThreadNode(float nodeLength, float minSize, int threadSize) const {
-    return minSize*threadSize*0.5f < nodeLength && nodeLength <= minSize*threadSize;
+    // Fork band, chosen as (minSize*threadSize/4, minSize*threadSize] with
+    // threadSize = 16: a 16*minSize node forks eight 8*minSize children and
+    // each of those forks eight 4*minSize grandchildren, for up to 64 tasks
+    // per fork (perf report 29, M5). The 4*minSize nodes are below the band
+    // and do not fork again, which keeps the fork depth at two levels. Only
+    // granularity changes: every value is a pure function of its position, so
+    // which thread computes a node cannot affect the result.
+    return minSize*threadSize*0.25f < nodeLength && nodeLength <= minSize*threadSize;
+}
+
+// Detached shape tasks have no future to carry an exception, and an escaping
+// exception would terminate the pool worker. The old code never called
+// future.get(), so child exceptions were already discarded; keep that behavior
+// but report the first one so a failure is not invisible.
+static void reportShapeTaskError(const char *what) {
+    static std::atomic<bool> reported{false};
+    if (!reported.exchange(true, std::memory_order_relaxed)) {
+        std::fprintf(stderr, "[Octree::shape] child task failed: %s\n", what);
+    }
 }
 
 void Octree::shapeChildren(
@@ -354,7 +494,6 @@ void Octree::shapeChildren(
     float childLength = frame.cube.getLengthX()*0.5f;
     bool isChildThread = isThreadNode(childLength, args.minSize, 16);
     bool isChildChunk = isChunkNode(childLength);
-    std::vector<std::future<void>> futures;
 
     OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
     OctreeNode * node = frame.node;
@@ -368,12 +507,45 @@ void Octree::shapeChildren(
     }
     glm::vec3 hsv = node ? node->hsv : frame.hsv;
 
+    // Per-child records for the detached fork tasks. They live in this frame,
+    // which stays blocked in the latch wait below until every task has
+    // counted down, so the pointers cannot dangle. The whole fork state is
+    // only built when this level actually forks, so the sequential path (the
+    // vast majority of nodes) pays nothing for it.
+    struct ForkTask {
+        const OctreeNodeFrame * frame = nullptr;
+        NodeOperationResult * result = nullptr;
+        const ShapeArgs * args = nullptr;
+        OctreeNodeDataHandler * update = nullptr;
+        OctreeNodeDataHandler * deleteHandler = nullptr;
+        Octree * tree = nullptr;
+        std::latch * done = nullptr;
+    };
+    struct ForkState {
+        ForkTask tasks[8];
+        std::latch done{8};
+        std::exception_ptr enqueueError;
+    };
+    std::optional<ForkState> fork;
+    if (isChildThread) fork.emplace();
+    // Child frames are stored in place (optional::emplace) rather than copied
+    // into an array: OctreeNodeFrame has no assignment operator.
+    std::optional<OctreeNodeFrame> childFrames[8];
+
+    // Validate the child links before anything is enqueued: a detached task
+    // references this frame, so throwing mid-fork would destroy it while a
+    // task still holds pointers into it.
+    if(node != NULL) {
+        for (uint i = 0; i < 8; ++i) {
+            if(children[i] == node) {
+                throw std::runtime_error("Infinite loop " + std::to_string((long)children[i]) + " " + std::to_string((long)node));
+            }
+        }
+    }
+
     // Iterate nodes and submit threaded children to the pool
     for (uint i = 0; i < 8; ++i) {
         OctreeNode * child = children[i];
-        if(node!=NULL && child == node) {
-            throw std::runtime_error("Infinite loop " + std::to_string((long)child) + " " + std::to_string((long)node));
-        }
 
         float childSDF[8] = {INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY,INFINITY};
         int childBrushIndex = child ? child->brushIndex : brushIndex;
@@ -388,7 +560,7 @@ void Octree::shapeChildren(
             SDF::getChildSDF(frame.sdf, i, childSDF);
         }
         BoundingCube childCube = frame.cube.getChild(i);
-        OctreeNodeFrame childFrame = OctreeNodeFrame(
+        childFrames[i].emplace(
             child,
             child ? frame.iteratedNode : frame.node,
             childCube,
@@ -398,25 +570,71 @@ void Octree::shapeChildren(
             childBrushIndex,
             isChildChunk ? childCube : frame.chunkCube
         );
-        childFrame.hsv = childHsv;
+        childFrames[i]->hsv = childHsv;
 
     
         if(isChildThread) {
-            NodeOperationResult * result = &childResult[i];
+            ForkTask &task = fork->tasks[i];
+            task.frame = &childFrames[i].value();
+            task.result = &childResult[i];
+            task.args = &args;
+            task.update = &updateHandler;
+            task.deleteHandler = &deleteHandler;
+            task.tree = this;
+            task.done = &fork->done;
+            ForkTask *taskPtr = &task;
             inFlightShapeOps.fetch_add(1);
-            futures.push_back(threadPool.enqueue([this, childFrame, args, result, &updateHandler, &deleteHandler]() {
-                OctreeThreadContext localOctreeThreadContext;
-                shape(*result, childFrame, args, &localOctreeThreadContext, updateHandler, deleteHandler);
+            try {
+                // No notify per task: the whole fork is woken once below.
+                threadPool.enqueueDetachedNoNotify([taskPtr] {
+                    // The context lives in the worker thread and is reused by
+                    // later tasks; args.cacheGeneration invalidates its caches
+                    // when a new apply starts. Nothing captured here outlives
+                    // this frame, which is blocked in the latch wait.
+                    thread_local OctreeThreadContext workerContext;
+                    try {
+                        taskPtr->tree->shape(*taskPtr->result, *taskPtr->frame, *taskPtr->args,
+                                             &workerContext, *taskPtr->update, *taskPtr->deleteHandler);
+                    } catch (const std::exception &e) {
+                        reportShapeTaskError(e.what());
+                    } catch (...) {
+                        reportShapeTaskError("unknown exception");
+                    }
+                    taskPtr->tree->inFlightShapeOps.fetch_sub(1);
+                    taskPtr->done->count_down();
+                });
+            } catch (...) {
+                // The pool is stopping. Account for the task that was not
+                // enqueued so the wait below cannot hang, and rethrow once the
+                // other children have finished.
                 inFlightShapeOps.fetch_sub(1);
-            }));
+                fork->done.count_down();
+                if (!fork->enqueueError) fork->enqueueError = std::current_exception();
+            }
         } else {
-            shape(childResult[i], childFrame, args, threadContext, updateHandler, deleteHandler);
+            shape(childResult[i], childFrames[i].value(), args, threadContext, updateHandler, deleteHandler);
         }
     
     }
     if(isChildThread) {
-        for(auto &f : futures) {
-            f.wait();
+        // One wakeup for the eight enqueues (perf report 29, L8). The queue
+        // mutex is already released by enqueueDetachedNoNotify().
+        threadPool.notifyAll();
+        // Cooperative wait: help drain the pool while the children run. A
+        // worker blocked here would otherwise hold its slot while its own
+        // children sit in the queue, and with a two-level fork band enough
+        // workers can block at once to starve the pool. Same rationale as
+        // ThreadPool::getCooperative.
+        while (!fork->done.try_wait()) {
+            if (!threadPool.runOneTask()) {
+                // Nothing left to help with: the remaining children are
+                // running on other workers. Sleep instead of spinning so a
+                // blocked parent does not burn a core.
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
+            }
+        }
+        if (fork->enqueueError) {
+            std::rethrow_exception(fork->enqueueError);
         }
     }
 }
@@ -456,7 +674,7 @@ void Octree::shape(
     buildShapeSDF(isLeaf, args, frame, r, children, threadContext, true);
 
     const glm::vec3 center = frame.cube.getCenter();
-    float shapeSdfCenter = evaluateSDF(args, &threadContext->shapeSdfCache, center);
+    float shapeSdfCenter = evaluateSDF(args, threadContext, center);
 
     bool process = true;
     bool processed = false;
@@ -593,9 +811,17 @@ void Octree::shape(
         }
     }
 
-    if(isLeaf || (process && !processed && !isLeaf)) {
-        buildShapeSDF(isLeaf, args, frame, r, children, threadContext, false);
-        buildResultSDF(isLeaf, args, frame, r, children, threadContext);
+    if(isLeaf) {
+        // The forced buildShapeSDF() at the top of this function already
+        // filled r.shapeSDF with these eight corners: for a leaf it takes the
+        // same `isLeaf || force` branch with the same cubeMin/cubeLength, and
+        // nothing below touches r.shapeSDF on the leaf path. buildResultSDF
+        // only reads those values, so the second corner pass is redundant
+        // (perf report 29, C1).
+        buildResultSDF(true, args, frame, r, children, threadContext);
+    } else if(process && !processed) {
+        buildShapeSDF(false, args, frame, r, children, threadContext, false);
+        buildResultSDF(false, args, frame, r, children, threadContext);
     }
 
     bool interpolatedSurface = (frame.node == NULL)
@@ -676,7 +902,16 @@ void Octree::shape(
         for(uint i =0 ; i < 8 ; ++i) {
             NodeOperationResult &child = children[i];
             OctreeNode * childNode = child.node;
-            std::unordered_map<int, int> brushCounts;
+            // Brush tally. The original std::unordered_map was declared here,
+            // inside the per-child loop, so it never held more than one entry:
+            // every surface child with a valid brush won with count 1 and the
+            // last one's mapping state stayed on the parent. The tally is kept
+            // per child (reset here) to preserve that exact result; hoisting it
+            // across the eight children would turn it into a majority vote and
+            // change r.brushIndex/hsv/textureType/data, hence the mesh.
+            struct BrushTally { int brush; int count; };
+            BrushTally brushCounts[8];
+            int brushCountSize = 0;
             int bestCount = 0;
             if(childNode != NULL && childNode->getType() == SpaceType::Surface) {
                 const uint8_t childLod = childNode->getLod();
@@ -691,7 +926,16 @@ void Octree::shape(
                 }
                 const int childBrush = childNode->getBrush();
                 if(childBrush > DISCARD_BRUSH_INDEX) {
-                    const int count = ++brushCounts[childBrush];
+                    // Linear scan over at most eight entries (perf report 29,
+                    // H4): no hash table construction per child.
+                    int slot = 0;
+                    while(slot < brushCountSize && brushCounts[slot].brush != childBrush) {
+                        ++slot;
+                    }
+                    if(slot == brushCountSize) {
+                        brushCounts[brushCountSize++] = BrushTally{childBrush, 0};
+                    }
+                    const int count = ++brushCounts[slot].count;
                     if(count > bestCount) {
                         bestCount = count;
                         r.brushIndex = childBrush;

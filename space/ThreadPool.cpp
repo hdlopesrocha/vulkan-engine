@@ -58,6 +58,18 @@ void ThreadPool::stop()
 	}
 }
 
+// Wake one/all workers. Kept separate from the enqueue path so a batch of
+// enqueueDetachedNoNotify() tasks costs a single wakeup (perf report 29, L8).
+void ThreadPool::notifyOne()
+{
+	condition.notify_one();
+}
+
+void ThreadPool::notifyAll()
+{
+	condition.notify_all();
+}
+
 // Pop and run one queued task. Mirrors the worker loop's dequeue, minus the
 // condition-variable wait: cooperative waiters call this in a loop, so they
 // stay productive while there is queued work that would unblock them.
