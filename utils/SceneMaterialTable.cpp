@@ -52,8 +52,8 @@ std::vector<SceneMixerDesc> sceneMixerDescs() {
 std::vector<MaterialProperties> sceneMaterialProperties(size_t materialCount) {
     std::vector<MaterialProperties> materials(materialCount, MaterialProperties{});
 
-    // Table-driven overrides: every entry shares the same mapping/triplanar/
-    // invert defaults and only the listed values differ. Kept index-identical
+    // Table-driven overrides: every entry shares the same mapping/invert
+    // defaults and only the listed values differ. Kept index-identical
     // to MyApp::setupTextures (this is the same table the GPU upload uses).
     struct MaterialInit {
         uint32_t index;

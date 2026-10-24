@@ -337,8 +337,6 @@ def blender_vector(nb, engine_vec):
 
 DEFAULT_LAYER = {
     "triplanar": True,
-    "triplanarScaleU": 0.01,
-    "triplanarScaleV": 0.01,
     "normalFlipY": False,
     "normalSwapXZ": False,
     "roughnessFactor": 1.0,
@@ -365,8 +363,6 @@ MATERIAL_PARAMS = [
     ("useAO", "USEAO", 1.0),
     ("shininess", "SHINE", 32.0),
     ("specularStrength", "SPEC", 0.5),
-    ("triplanarScaleU", "SCALEU", 0.01),
-    ("triplanarScaleV", "SCALEV", 0.01),
 ]
 
 
@@ -541,11 +537,14 @@ def build_terrain_material(name, cfg, tiles, used_layers, constants):
         return nb.attr("_%s_%d" % (key, slot))
 
     def slot_uvs(slot):
-        scale_u = param("SCALEU", slot)
-        scale_v = param("SCALEV", slot)
         tri = param("TRIPLANAR", slot)
         index = nb.math("ROUND", nb.attr("_TEXINDEX_%d" % slot))
-        scale = nb.xyz(scale_u, scale_v, 1.0)
+        # TEXCOORD_0 is the per-vertex mapping data painted by the engine's
+        # TextureCoordPainter: the (scaleU, scaleV) for the GPU projection
+        # techniques, or the authored UV for Custom. There is no per-material
+        # triplanar scale to apply.
+        uv_u, uv_v, _ = nb.sep(vertex_uv.outputs["UV"])
+        scale = nb.xyz(uv_u, uv_v, 1.0)
         tri_uvs = [tiles_uv(nb.vmath("MULTIPLY", uv, scale), index)
                    for uv in (uvx, uvy, uvz)]
         flat_uv = tiles_uv(vertex_uv.outputs["UV"], index)

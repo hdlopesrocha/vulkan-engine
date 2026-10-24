@@ -11,8 +11,9 @@
 // Shared MaterialProperties editor. Used identically by the Textures, Texture
 // Mixer and Video widgets so all three define materials the same way. The image
 // a material/brush samples is selected by the brush map (Brush mapper), not
-// here; this component edits the material's kind, Angular origin, UV scale and
-// blend mode.
+// here; this component edits the material's kind, Angular origin and blend
+// mode. UV scale is not a material property: it is painted per vertex by the
+// scene's TextureCoordPainter.
 namespace MaterialEditor {
 
 // Renders the material's shader parameters. `videoSlotNames` (may be empty)
