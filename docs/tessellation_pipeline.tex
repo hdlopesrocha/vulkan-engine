@@ -905,7 +905,7 @@ If \code{reverse} is true, \code{Geometry::addTriangle} receives \((v_0,v_1,v_2)
 \end{tabular}
 \end{center}
 
-The mapping is scaled by \code{triplanarScale = 0.1f}. Tangents are not stored in \code{Vertex}; shader code computes tangent information for triplanar mapping.
+The projection is scaled by the per-vertex UV scale painted by \code{TextureCoordPainter} (\code{Vertex::texCoord}); there is no per-material triplanar scale. Tangents are not stored in \code{Vertex}; shader code computes tangent information for triplanar mapping.
 
 \subsection{Indexed Geometry}
 

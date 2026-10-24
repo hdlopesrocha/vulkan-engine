@@ -67,10 +67,14 @@ The export uses the engine's own CPU walker
 (`space/OctreeTriangleTessellator.cpp` + `space/Tesselator.cpp`) — the reference
 implementation that the GPU topology pass mirrors. Every **chunk cell**
 (`Octree::isChunkNode`) whose frontier rung is present (`chunkLod == 1`) is
-tessellated exactly like the server's chunk meshes, including the
-`finestSurfaceLod` fallback. No GPU readback is involved: the exporter
-re-tessellates the SDFs on the CPU, which reproduces the GPU geometry (the
-topology self-check in the renderer proves the two agree).
+tessellated, including the `finestSurfaceLod` fallback.
+
+This is the **only** host path allowed to solve SDF cells into Cartesian
+surface points (`SDF::getPosition` / `SDF::getNormalFromPosition`): the exporter
+has no GPU. The engine runtime never calls those functions, never tessellates a
+chunk on the CPU, and never reads chunk vertices back from the GPU — the
+server is SDF-only and the app's vertices are written by
+`shaders/computation/octree/OctreeTriangles.comp`.
 
 Notes:
 
@@ -93,7 +97,7 @@ Notes:
 
 | glTF attribute | Type | Meaning |
 |---|---|---|
-| `POSITION`, `NORMAL`, `TEXCOORD_0` | float | world-space mesh data (UVs are the CPU planar triplanar UVs) |
+| `POSITION`, `NORMAL`, `TEXCOORD_0` | float | world-space mesh data (`TEXCOORD_0` is the per-vertex mapping data painted by `TextureCoordPainter`: UV scale for projection techniques, authored UV for Custom) |
 | `_OCTREE_MAT` (terrain) | vec4 float | `(texture index, hsv.x, hsv.y, hsv.z)` |
 | `_VEG` (grass points) | vec4 float | `(variant, rotation fraction, height scale, 0)` |
 
@@ -109,8 +113,8 @@ tessellation-control/emission-shader behaviour on the imported mesh:
 - per face it compresses the three corner texture indices into up to three
   unique slots (`u0`, `u1`, `u2`, first-seen order, `-1` dropped);
 - it bakes one-hot per-corner weights, the flat face normal, and the
-  per-face material parameters that differ between layers (triplanar scales in
-  the default table) as **face-corner** attributes;
+  per-face material parameters that differ between layers as **face-corner**
+  attributes;
 - Blender interpolates those corner attributes with barycentric weights, which
   is exactly what the TES does with `fragTexWeights`.
 
@@ -127,7 +131,8 @@ The terrain material is a port of:
 
 Reproduced equations:
 
-- world-space triplanar UVs with the per-material `triplanarScaleU/V` and the
+- world-space triplanar UVs scaled by the per-vertex `TEXCOORD_0` (painted by
+  the scene's TextureCoordPainter; there is no per-material UV scale) and the
   shader's sign rules; per-layer tile selection via UDIM (`tile = 1001 + i%10 +
   10*(i/10)`);
 - albedo: `sum_slot weight * sum_proj triW * albedo` (up to 3 materials, 3

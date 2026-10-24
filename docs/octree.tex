@@ -1167,8 +1167,9 @@ The UV coordinates for each plane are:
 \end{tabular}
 \end{center}
 All three vertices use the same plane (determined by $v_0$), ensuring
-there are no seams within a single triangle.  The UV is then scaled by
-\lstinline{triplanarScale = 0.1f} to control texture tiling density.
+there are no seams within a single triangle.  The projection is scaled by the
+per-vertex \lstinline{Vertex::texCoord} painted by \code{TextureCoordPainter};
+there is no per-material triplanar scale.
 
 \paragraph{Winding passthrough.}
 The Tesselator no longer reorders vertices: the correct winding was

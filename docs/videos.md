@@ -110,7 +110,8 @@ its `SimpleBrush` painting `Angular` coordinates centered on the cube and
 `Screen` blending.
 
 The Materials widget (Textures panel) edits the material kind, the video slot,
-the Angular center/radius, the UV scale and the blend mode.
+the Angular center/radius and the blend mode. UV scale is not a material
+property: it is painted per vertex by the scene's TextureCoordPainter.
 
 ### Per-frame material maps
 
