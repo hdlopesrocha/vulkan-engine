@@ -134,36 +134,6 @@ void OctreeTopologyCompute::init(VulkanApp* vkApp) {
     vkApp->resources.addDescriptorSet(descSet, "OctreeTopologyCompute: descSet");
 }
 
-void OctreeTopologyCompute::destroy(VulkanApp* vkApp) {
-    if (globalInstance == this) globalInstance = nullptr;
-    // Final VULKAN_SETUP_DIAG table (no-op when the profiler is off or no
-    // chunk completed). Printed before the buffers go away; the counters are
-    // plain host values.
-    printProfileSummary();
-    if (vkApp != nullptr) {
-        vkApp->destroyBuffer(bSdf0);
-        vkApp->destroyBuffer(bSdf1);
-        vkApp->destroyBuffer(bCube);
-        vkApp->destroyBuffer(bMeta);
-        vkApp->destroyBuffer(bHsv);
-        vkApp->destroyBuffer(bChild03);
-        vkApp->destroyBuffer(bChild47);
-        vkApp->destroyBuffer(bCells);
-        vkApp->destroyBuffer(bCounter);
-        vkApp->destroyBuffer(bRawKeys);
-        vkApp->destroyBuffer(bDedupTable);
-    }
-    nodeCap = cellCap = keyCap = tableCap = 0;
-    // The descriptor set still points at the destroyed buffers: force the next
-    // writeDescriptors() (on a re-init) to rewrite every binding.
-    ++bufferGeneration;
-    lastWrittenGeneration = ~0ull;
-    pipeline = VK_NULL_HANDLE;
-    layout = VK_NULL_HANDLE;
-    descLayout = VK_NULL_HANDLE;
-    descPool = VK_NULL_HANDLE;
-}
-
 void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount,
                                            size_t keyCount) {
     const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -780,14 +750,3 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
     return res;
 }
 
-OctreeTopologyStats OctreeTopologyCompute::stats() {
-    std::lock_guard<std::mutex> lock(mutex);
-    OctreeTopologyStats s;
-    s.calls = statCalls;
-    s.avgMsLast = statMsLast;
-    s.avgMs = statCalls ? statMs / double(statCalls) : 0.0;
-    s.avgCells = statCalls ? statCells / double(statCalls) : 0.0;
-    s.avgNodes = statCalls ? statNodes / double(statCalls) : 0.0;
-    s.avgTriangles = statCalls ? statTriangles / double(statCalls) : 0.0;
-    return s;
-}

@@ -38,11 +38,6 @@ void AudioAnalyzer::setBeatSensitivity(float threshold) {
     beatThreshold_ = std::clamp(threshold, 1.05f, 3.0f);
 }
 
-void AudioAnalyzer::setBandEdges(float bassUpperHz, float midUpperHz) {
-    bassUpperHz_ = std::max(40.0f, bassUpperHz);
-    midUpperHz_ = std::max(bassUpperHz_ + 100.0f, midUpperHz);
-}
-
 void AudioAnalyzer::rebuildBuffers() {
     const int n = fftSize_;
 

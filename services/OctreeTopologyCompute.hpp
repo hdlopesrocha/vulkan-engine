@@ -4,7 +4,6 @@
 #include <functional>
 #include <mutex>
 #include "OctreeTopologyTypes.hpp"
-#include "OctreeTopologyStats.hpp"
 #include "OctreeTopologyTarget.hpp"
 #include "OctreeTopologyDemand.hpp"
 #include "OctreeTopologyResidentResult.hpp"
@@ -31,7 +30,6 @@ public:
     OctreeTopologyCompute();
     ~OctreeTopologyCompute();
     void init(VulkanApp* app);
-    void destroy(VulkanApp* app);
 
     // Synchronous, worker-thread safe (serialized). Runs the walk, asks
     // `provider` for a span sized from the walk's actual raw vertex count and
@@ -45,8 +43,6 @@ public:
     // Dedup keys per node: one per (node, triplanar plane) pair. Bounds both
     // the dedup table and the number of distinct vertices a chunk can produce.
     static constexpr uint32_t kVertexKeysPerNode = 6;
-
-    OctreeTopologyStats stats() __attribute__((weak));
 
     VulkanApp* app = nullptr;
     std::mutex mutex;

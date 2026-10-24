@@ -114,19 +114,11 @@ public:
     VideoTextureService(const VideoTextureService&) = delete;
     VideoTextureService& operator=(const VideoTextureService&) = delete;
 
-    // True when the build includes the FFmpeg backend (HAVE_FFMPEG).
-    static bool backendCompiledIn();
-
     // Whether name ends in a supported video container extension.
     static bool isVideoFile(const std::string& path);
 
     // Sorted list of video files in `directory` (empty when missing).
     static std::vector<std::string> listVideoFiles(const std::string& directory);
-
-    // Locate a video asset directory: bin/videos/<base|extra>/ holds the
-    // converted clips, ../videos/<base|extra>/ the sources. Returns "" when
-    // nothing is found.
-    static std::string findAssetDirectory();
 
     // Discover loadable clips from videos/base and videos/extra; with the app
     // started from bin/ the same relative paths resolve to the converted clips
@@ -153,16 +145,12 @@ public:
     // empty slot.
     void unloadVideo(uint32_t slot);
 
-    bool isSlotLoaded(uint32_t slot) const;
     uint32_t slotCapacity() const;
 
     // Video array accessors for the video layer renderer (sampler2DArray).
-    VkImage videoArrayImage() const;
     VkImageView videoArrayView() const;
     VkSampler videoArraySampler() const;
-    uint32_t videoArrayMips() const;
     uint32_t videoArrayWidth() const;
-    uint32_t videoArrayHeight() const;
 
     // Derived per-frame material maps (same slots): RG = tangent-space normal
     // XY, B = bump/height, A = roughness. Used by the video layer shading and
@@ -187,8 +175,6 @@ public:
     VideoState state(size_t index) const;
     std::vector<VideoState> states() const;
 
-    uint32_t slotOf(size_t index) const;
-
     // Per-frame pump: advances the clocks, issues/cancels decode requests,
     // submits finished frames. Never blocks on decoding.
     void update(float dt);
@@ -200,7 +186,6 @@ public:
 
     // ── playback control ──
     void setPlaying(size_t index, bool playing);
-    void togglePlaying(size_t index);
     void setPlayingAll(bool playing);
     void setLooping(size_t index, bool looping);
     void setRate(size_t index, float rate);

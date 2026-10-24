@@ -1408,14 +1408,6 @@ VideoTextureService::VideoTextureService() : impl_(std::make_shared<Impl>()) {}
 
 VideoTextureService::~VideoTextureService() { shutdown(); }
 
-bool VideoTextureService::backendCompiledIn() {
-#ifdef HAVE_FFMPEG
-    return true;
-#else
-    return false;
-#endif
-}
-
 bool VideoTextureService::isVideoFile(const std::string& path) {
     const std::string ext = lowerExtension(path);
     return ext == ".mp4" || ext == ".mov" || ext == ".mkv" || ext == ".webm" || ext == ".m4v" || ext == ".avi";
@@ -1432,24 +1424,6 @@ std::vector<std::string> VideoTextureService::listVideoFiles(const std::string& 
     }
     std::sort(files.begin(), files.end());
     return files;
-}
-
-std::string VideoTextureService::findAssetDirectory() {
-    // The working directory is bin/: videos/<category> holds the clips staged
-    // by the build (converted by scripts/convert_videos.sh), while
-    // ../videos/<category> holds the converted clips committed in the
-    // repository. Both contain converted clips only; raw masters live in
-    // videos/raw/ and are never scanned. Staged folders are checked first.
-    static const char* candidates[] = {
-        "videos/base", "videos/extra", "../videos/base", "../videos/extra",
-    };
-    std::error_code ec;
-    for (const char* candidate : candidates) {
-        if (std::filesystem::is_directory(candidate, ec)) {
-            if (!listVideoFiles(candidate).empty()) return candidate;
-        }
-    }
-    return std::string();
 }
 
 std::vector<VideoTextureService::AvailableVideo> VideoTextureService::listAvailableVideos() {
@@ -1630,22 +1604,11 @@ bool VideoTextureService::empty() const { return impl_->videos.empty(); }
 
 uint32_t VideoTextureService::slotCapacity() const { return impl_->slotCount; }
 
-bool VideoTextureService::isSlotLoaded(uint32_t slot) const {
-    for (const auto& video : impl_->videos) {
-        if (video && video->slot == slot) return true;
-    }
-    return false;
-}
-
-VkImage VideoTextureService::videoArrayImage() const { return impl_->videoArray.image; }
 VkImageView VideoTextureService::videoArrayView() const { return impl_->videoArray.view; }
 VkSampler VideoTextureService::videoArraySampler() const { return impl_->videoSampler; }
 VkImageView VideoTextureService::videoDerivedArrayView() const { return impl_->derivedArray.view; }
 VkSampler VideoTextureService::videoDerivedArraySampler() const { return impl_->videoSampler; }
-uint32_t VideoTextureService::videoArrayMips() const { return impl_->videoMips; }
 uint32_t VideoTextureService::videoArrayWidth() const { return impl_->videoWidth; }
-uint32_t VideoTextureService::videoArrayHeight() const { return impl_->videoHeight; }
-
 ImTextureID VideoTextureService::previewTexture(uint32_t slot) {
     Impl& impl = *impl_;
     if (!impl.initialized || slot >= impl.slotCount) return 0;
@@ -1739,12 +1702,6 @@ std::vector<VideoTextureService::VideoState> VideoTextureService::states() const
     return out;
 }
 
-uint32_t VideoTextureService::slotOf(size_t index) const {
-    Impl& impl = *impl_;
-    if (index >= impl.videos.size()) return 0;
-    return impl.videos[index]->slot;
-}
-
 void VideoTextureService::update(float dt) {
     Impl& impl = *impl_;
     if (!impl.initialized || impl.videos.empty()) return;
@@ -1791,18 +1748,6 @@ void VideoTextureService::setPlaying(size_t index, bool playing) {
     std::lock_guard<std::mutex> lk(v.mutex);
     v.st.playing = playing;
     if (playing) v.requestCv.notify_all();
-}
-
-void VideoTextureService::togglePlaying(size_t index) {
-    Impl& impl = *impl_;
-    if (index >= impl.videos.size()) return;
-    bool playing = false;
-    {
-        Video& v = *impl.videos[index];
-        std::lock_guard<std::mutex> lk(v.mutex);
-        playing = v.st.playing;
-    }
-    setPlaying(index, !playing);
 }
 
 void VideoTextureService::setPlayingAll(bool playing) {
@@ -1952,16 +1897,12 @@ bool VideoTextureService::initialize(VulkanApp*, TextureArrayManager*, uint32_t)
 
 int VideoTextureService::loadVideo(const std::string&, const std::string&) { return -1; }
 void VideoTextureService::unloadVideo(uint32_t) {}
-bool VideoTextureService::isSlotLoaded(uint32_t) const { return false; }
 uint32_t VideoTextureService::slotCapacity() const { return 0; }
-VkImage VideoTextureService::videoArrayImage() const { return VK_NULL_HANDLE; }
 VkImageView VideoTextureService::videoArrayView() const { return VK_NULL_HANDLE; }
 VkSampler VideoTextureService::videoArraySampler() const { return VK_NULL_HANDLE; }
 VkImageView VideoTextureService::videoDerivedArrayView() const { return VK_NULL_HANDLE; }
 VkSampler VideoTextureService::videoDerivedArraySampler() const { return VK_NULL_HANDLE; }
-uint32_t VideoTextureService::videoArrayMips() const { return 1; }
 uint32_t VideoTextureService::videoArrayWidth() const { return 0; }
-uint32_t VideoTextureService::videoArrayHeight() const { return 0; }
 ImTextureID VideoTextureService::previewTexture(uint32_t) { return 0; }
 ImTextureID VideoTextureService::derivedPreviewTexture(uint32_t, uint32_t) { return 0; }
 void VideoTextureService::invalidatePreviews() {}
@@ -1970,11 +1911,9 @@ size_t VideoTextureService::count() const { return 0; }
 bool VideoTextureService::empty() const { return true; }
 VideoTextureService::VideoState VideoTextureService::state(size_t) const { return {}; }
 std::vector<VideoTextureService::VideoState> VideoTextureService::states() const { return {}; }
-uint32_t VideoTextureService::slotOf(size_t) const { return 0; }
 void VideoTextureService::update(float) {}
 void VideoTextureService::onArraysRecreated() {}
 void VideoTextureService::setPlaying(size_t, bool) {}
-void VideoTextureService::togglePlaying(size_t) {}
 void VideoTextureService::setPlayingAll(bool) {}
 void VideoTextureService::setLooping(size_t, bool) {}
 void VideoTextureService::setRate(size_t, float) {}

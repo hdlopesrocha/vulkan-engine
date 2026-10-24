@@ -25,8 +25,7 @@ public:
     static constexpr int kDefaultFftSize = 2048;
     static constexpr int kWaveformCapacity = 4096;
 
-    // Frequency-band defaults (Hz). Kept configurable via setBandEdges()
-    // instead of hard-coded at the call sites.
+    // Frequency-band defaults (Hz).
     static constexpr float kDefaultBassUpperHz = 250.0f;
     static constexpr float kDefaultMidUpperHz = 4000.0f;
     static constexpr float kBassLowerHz = 20.0f;
@@ -56,8 +55,6 @@ public:
     // (typical range 1.1 .. 2.5, default 1.4).
     void setBeatSensitivity(float threshold);
     float beatSensitivity() const { return beatThreshold_; }
-
-    void setBandEdges(float bassUpperHz, float midUpperHz);
 
     // Analyse one mono window of exactly fftSize() samples at sampleRate Hz.
     // Updates features, smoothed spectrum and the waveform ring.

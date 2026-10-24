@@ -27,16 +27,10 @@ uint32_t TextureMixer::getLayerHeight() const {
 
 TextureMixer::TextureMixer() {}
 
-// Global instance pointer (set in init)
-static TextureMixer* g_texture_mixer_instance = nullptr;
-TextureMixer* TextureMixer::getGlobalInstance() { return g_texture_mixer_instance; }
-
 void TextureMixer::init(VulkanApp* app, TextureArrayManager* texArrMgr) {
 	this->textureArrayManager = texArrMgr;
 	this->width = texArrMgr->width;
 	this->height = textureArrayManager->height;
-	// Register global instance so other systems can query/wait on layer generations
-	g_texture_mixer_instance = this;
 
 	// Create compute pipeline and descriptor sets so we can generate textures on demand
 	createComputePipeline(app);
@@ -152,44 +146,6 @@ size_t TextureMixer::getPendingGenerationCount() {
 	std::lock_guard<std::mutex> lk1(pendingRequestsMutex);
 	std::lock_guard<std::mutex> lk2(pendingFencesMutex);
 	return pendingRequests.size() + pendingFences.size();
-}
-
-bool TextureMixer::isLayerGenerationPending(uint32_t layer) {
-	std::lock_guard<std::mutex> lk(pendingFencesMutex);
-	for (auto &t : pendingFences) {
-		if (std::get<1>(t) == layer) return true;
-	}
-	return false;
-}
-
-bool TextureMixer::waitForLayerGeneration(VulkanApp* app, uint32_t layer, uint64_t timeoutNs) {
-	TextureMixer* g = getGlobalInstance();
-	if (!g || !app) return false;
-	std::vector<VkFence> fences;
-	{
-		std::lock_guard<std::mutex> lk(pendingFencesMutex);
-		for (auto &t : pendingFences) {
-			if (std::get<1>(t) == layer) fences.push_back(std::get<0>(t));
-		}
-	}
-	if (fences.empty()) return false;
-	// Poll each fence via VulkanApp::waitFence instead of vkWaitForFences: the
-	// validation layer's vkWaitForFences performs an internal state-tracking wait
-	// with a finite timeout that spuriously reports INTERNAL-ERROR-VkFence-state-timeout
-	// (most likely a validation bug) and aborts the app. Polling vkGetFenceStatus
-	// is spec-valid and validation-clean.
-	VkResult r = VK_SUCCESS;
-	for (VkFence f : fences) {
-		VkResult fr = VulkanApp::waitFence(app->getDevice(), f, timeoutNs);
-		if (fr != VK_SUCCESS) r = fr;
-	}
-	if (r == VK_SUCCESS) {
-		// process pending generations so state advances
-		if (app) app->processPendingCommandBuffers();
-		g->pollPendingGenerations(app);
-		return true;
-	}
-	return false;
 }
 
 

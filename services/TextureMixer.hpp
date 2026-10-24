@@ -76,14 +76,6 @@ private:
     std::vector<std::tuple<VkFence, uint32_t>> completed;
 
 public:
-    // Query whether a layer currently has an in-flight generation
-    bool isLayerGenerationPending(uint32_t layer);
-    // Block until generation for a specific layer completes (returns true if waited)
-    // This uses Vulkan fences and will block until the generation fence signals.
-    bool waitForLayerGeneration(VulkanApp* app, uint32_t layer, uint64_t timeoutNs = UINT64_MAX);
-
-    // Global instance accessor (set on init) so external systems can wait for generations
-    static TextureMixer* getGlobalInstance();
     // Return an ImGui descriptor for previewing the requested map at a specific array layer
     VkDescriptorSet getPreviewDescriptor(int map, uint32_t layer);
     // Return a descriptor which samples only the alpha channel of the specified layer

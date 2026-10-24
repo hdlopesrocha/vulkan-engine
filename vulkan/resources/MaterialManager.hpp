@@ -29,9 +29,6 @@ public:
     Buffer& getBrushMapBuffer() { return brushMapBuffer; }
     size_t brushMapEntryCount() const { return brushMapCount; }
 
-    // Release GPU resources.
-    void destroy(VulkanApp* app);
-
     // CPU-side mirror strength of a material [0..1]. Used when packing the RT
     // scene-geometry meta so reflection rays can decide whether a hit surface
     // is itself reflective (multi-bounce reflections).

@@ -92,16 +92,3 @@ void MaterialManager::updateBrushMap(size_t index, const BrushImage& image, Vulk
     memcpy(brushMapBuffer.map(offset), &entry, sizeof(glm::uvec2));
 }
 
-void MaterialManager::destroy(VulkanApp* app) {
-    if (!app) return;
-    // Defer destruction/freeing to VulkanResourceManager; clear local handles
-    materialBuffer.buffer = VK_NULL_HANDLE;
-    materialBuffer.memory = VK_NULL_HANDLE;
-    materialCount = 0;
-    materialBufferSize = 0;
-    cpuCache.clear();
-    brushMapBuffer.buffer = VK_NULL_HANDLE;
-    brushMapBuffer.memory = VK_NULL_HANDLE;
-    brushMapCount = 0;
-    brushMapByteSize = 0;
-}
