@@ -43,18 +43,14 @@ public:
     int fftSize() const { return fftSize_; }
 
     void setWindowType(AudioWindowType type);
-    AudioWindowType windowType() const { return windowType_; }
 
     // 0.0 = fully responsive .. 0.95 = very smooth.
     void setSpectrumSmoothing(float s) { spectrumSmoothing_ = clamp01(s); }
     void setAmplitudeSmoothing(float s) { amplitudeSmoothing_ = clamp01(s); }
-    float spectrumSmoothing() const { return spectrumSmoothing_; }
-    float amplitudeSmoothing() const { return amplitudeSmoothing_; }
 
     // Onset threshold as a multiple of the slow energy follower
     // (typical range 1.1 .. 2.5, default 1.4).
     void setBeatSensitivity(float threshold);
-    float beatSensitivity() const { return beatThreshold_; }
 
     // Analyse one mono window of exactly fftSize() samples at sampleRate Hz.
     // Updates features, smoothed spectrum and the waveform ring.
@@ -69,11 +65,6 @@ public:
 
     const AudioFeatures& features() const { return features_; }
 
-    // Smoothed linear magnitude spectrum, bins [0, fftSize()/2].
-    // Normalized so a full-scale sine reads ~0.5 at its peak bin.
-    const float* spectrumData() const { return smoothedMag_.data(); }
-    int spectrumBins() const { return fftSize_ / 2 + 1; }
-
     // Display-ready bars (count entries, each 0..1 with gentle compression
     // for readability). Log mapping spreads the bass region; linear is
     // uniform in Hz. Backed by a reusable buffer (resized only when count
@@ -84,7 +75,6 @@ public:
     // read with waveformOffset() wrap, matching ImGui::PlotLines offset).
     const float* waveformData() const { return waveform_.data(); }
     int waveformSize() const { return waveformFill_; }
-    int waveformCapacity() const { return static_cast<int>(waveform_.size()); }
     int waveformOffset() const { return waveformPos_; }
 
 private:

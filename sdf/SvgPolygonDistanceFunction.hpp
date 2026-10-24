@@ -31,7 +31,6 @@ public:
     BoundingSphere getSphere(const Transformation &model, float bias) const override;
 
     const std::shared_ptr<const SvgShape> &shape() const { return m_shape; }
-    glm::vec3 halfExtents() const { return m_half; }
     glm::vec3 localPoint(const glm::vec3 &p) const;
 
 private:

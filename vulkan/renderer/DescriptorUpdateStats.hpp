@@ -16,8 +16,5 @@ struct DescriptorUpdateStats {
     static void noteUpdate(uint64_t n = 1) {
         s_updateCalls.fetch_add(n, std::memory_order_relaxed);
     }
-    static uint64_t updateCalls() {
-        return s_updateCalls.load(std::memory_order_relaxed);
-    }
     static void reset() { s_updateCalls.store(0, std::memory_order_relaxed); }
 };

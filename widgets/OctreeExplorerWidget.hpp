@@ -17,10 +17,6 @@ class OctreeExplorerWidget : public Widget {
 public:
     explicit OctreeExplorerWidget(Scene* scene, Camera* camera = nullptr);
     void setScene(Scene* s) { scene = s; }
-    // "Export to Blender (.glb)" button callback (opens the file picker in the app).
-    void setExportBlenderCallback(std::function<void()> callback) {
-        exportBlenderCallback_ = std::move(callback);
-    }
     void render() override;
     bool getShowDebugCubes() const { return showDebugCubes; }
 

@@ -80,10 +80,6 @@ public:
     // Grid placement of the catalogue entries: 4 per row along X, rows along
     // Z, and a new Y layer every 16 entries. `size` is the full object extent;
     // `margin` is the gap between grid cells.
-    float shapeIndex(TestShape shape) {
-        return static_cast<float>(static_cast<int>(shape));
-    }
-
     glm::vec3 getCenter(TestShape shape, const glm::vec3& testObjectOrigin, const glm::vec3& size, const glm::vec3& margin) {
         // Arrange the catalogue on a cubic grid: `elementsPerRow` cells per
         // edge, filling X fastest, then Z, then stacking the layers along Y.

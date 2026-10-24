@@ -31,12 +31,6 @@ struct CommandBufferState {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     }
 
-    void bindComputePipeline(VkCommandBuffer cmd, VkPipeline pipeline) {
-        if (pipeline == lastComputePipeline) return;
-        lastComputePipeline = pipeline;
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    }
-
     void bindGraphicsDescriptorSets(VkCommandBuffer cmd, VkPipelineLayout layout,
                                      uint32_t firstSet, uint32_t setCount,
                                      const VkDescriptorSet* sets,
@@ -53,11 +47,6 @@ struct CommandBufferState {
                                     const uint32_t* dynamicOffsets = nullptr) {
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout,
                                 firstSet, setCount, sets, dynamicOffsetCount, dynamicOffsets);
-    }
-
-    void bindGraphicsPipelineUnchecked(VkCommandBuffer cmd, VkPipeline pipeline) {
-        lastGraphicsPipeline = pipeline;
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     }
 
     void bindComputePipelineUnchecked(VkCommandBuffer cmd, VkPipeline pipeline) {

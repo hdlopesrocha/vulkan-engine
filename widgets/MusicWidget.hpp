@@ -41,7 +41,6 @@ public:
     const AudioFeatures& audioFeatures() const { return analyzer_.features(); }
     // True when the widget currently produces live music-reactive output.
     bool musicReactiveActive() const;
-    bool isPlaying() const { return playbackState == PlaybackState::Playing; }
 
 private:
     enum class PlaybackState {

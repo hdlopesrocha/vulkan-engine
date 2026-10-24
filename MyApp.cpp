@@ -1282,8 +1282,6 @@ public:
     void resetSceneState();
     // Replay the deduplicated scene change events into the renderer handlers
     // (replaces UniqueOctreeChangeHandler::handleEvents).
-    void dispatchSolidEvents();
-    void dispatchLiquidEvents();
     void dispatchLayerEvents(Layer layer);
     void dispatchAllEvents();
     // Rebuild collectors + renderer handlers for the active scene's current
@@ -5190,19 +5188,6 @@ void MyApp::dispatchAllEvents() {
     }
     for (size_t i = 0; i < n; ++i)
         dispatchLayerEvents(static_cast<Layer>(i));
-}
-
-void MyApp::dispatchSolidEvents() {
-    dispatchLayerEvents(LAYER_OPAQUE);
-}
-
-void MyApp::dispatchLiquidEvents() {
-    size_t n = 0;
-    {
-        std::lock_guard<std::mutex> lock(layersSyncMutex_);
-        n = collectors.size();
-    }
-    if (n > 1) dispatchLayerEvents(LAYER_TRANSPARENT);
 }
 
 void MyApp::ensureLayerHandlers() {

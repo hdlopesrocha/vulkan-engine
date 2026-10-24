@@ -25,7 +25,6 @@ public:
     VkQueue getVegetationQueue() const { return vegetationQueue; }
     VkQueue getSdfQueue() const { return sdfQueue; }
     VkQueue getBoundingBoxQueue() const { return bboxQueue; }
-    VkQueue getGeometryQueue() const { return geometryQueue; }
     VkQueue getBrushQueue() const { return brushQueue; }
     VkQueue getSolidQueue() const { return solidQueue; }
     VkQueue getWaterQueue() const { return waterQueue; }

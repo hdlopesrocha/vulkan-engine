@@ -30,19 +30,6 @@ public:
     }
     size_t size() const { return size_; }
 
-    // Binding byte offset inside a descriptor-buffer layout. Falls back to a
-    // packed running offset (caller-provided) when the offset query entry point
-    // is unavailable — keeps the fallback path functional on old drivers.
-    VkDeviceSize bindingOffset(VkDescriptorSetLayout layout, uint32_t binding,
-                               VkDeviceSize fallback) const {
-        if (fpOffset_ && layout != VK_NULL_HANDLE) {
-            VkDeviceSize off = 0;
-            fpOffset_(device_, layout, binding, &off);
-            return off;
-        }
-        return fallback;
-    }
-
     bool writeBuffer(VkDeviceSize dstOffset, size_t dataSize, VkDescriptorType type,
                      VkBuffer srcBuffer, VkDeviceSize srcOffset, VkDeviceSize range) {
         void* dst = at(static_cast<size_t>(dstOffset));

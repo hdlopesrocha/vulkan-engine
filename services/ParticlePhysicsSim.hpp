@@ -104,7 +104,6 @@ public:
     Probe probeParticles();
 
     bool ready() const { return initialized_ && !nodes_.empty(); }
-    size_t regionNodeCount() const { return nodes_.size(); }
     VkBuffer stateBuffer() const { return state_.buffer; }
 
 private:

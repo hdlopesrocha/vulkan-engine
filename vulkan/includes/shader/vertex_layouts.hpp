@@ -11,17 +11,6 @@
 
 namespace vk_layouts {
 
-inline std::vector<VkVertexInputBindingDescription> defaultBindings() {
-    return { VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX } };
-}
-
-inline std::vector<VkVertexInputBindingDescription> vertexAndInstanceBindings(uint32_t instanceStride) {
-    return {
-        VkVertexInputBindingDescription{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX },
-        VkVertexInputBindingDescription{ 1, instanceStride, VK_VERTEX_INPUT_RATE_INSTANCE }
-    };
-}
-
 inline std::vector<VkVertexInputAttributeDescription> defaultAttributes() {
     return {
         VkVertexInputAttributeDescription{ ATTR_POS, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
@@ -32,12 +21,6 @@ inline std::vector<VkVertexInputAttributeDescription> defaultAttributes() {
         VkVertexInputAttributeDescription{ ATTR_TEXTURE_TYPE, 0, VK_FORMAT_R32_SINT, offsetof(Vertex, textureType) },
         VkVertexInputAttributeDescription{ ATTR_HSV, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, hsv) }
     };
-}
-
-inline std::vector<VkVertexInputAttributeDescription> defaultAttributesWithInstance() {
-    auto attrs = defaultAttributes();
-    attrs.push_back(VkVertexInputAttributeDescription{ ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 });
-    return attrs;
 }
 
 // Subset of defaultAttributes() keeping only the given attribute locations.

@@ -19,8 +19,6 @@ public:
 
     bool visible() const { return m_visible; }
 
-    bool* openPtr() const { return m_popen; }
-
 private:
     bool* m_popen;
     bool m_visible;

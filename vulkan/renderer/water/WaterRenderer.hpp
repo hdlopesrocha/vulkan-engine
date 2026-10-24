@@ -150,7 +150,6 @@ public:
     // per-material water layer flags). Recreating pipelines is avoided: both
     // variants are built at init and swapped per draw.
     void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
-    bool rtShadingEnabled() const { return rtShadingEnabled_; }
 
     // Runtime body/column (final-pass blur) gate (H4, perf report 19): true
     // when at least one water layer has enableBlur && blurRadius > 0, i.e.
@@ -186,7 +185,6 @@ public:
     // when the device supports VK_KHR_shader_clock). Opt-in: the instrumented
     // shaders carry atomics + device-clock reads.
     void setRtProfilingEnabled(bool enabled) { rtProfilingEnabled_ = enabled; }
-    bool rtProfilingEnabled() const { return rtProfilingEnabled_; }
 
     // Global feature gates (from Settings) forwarded to the water shader via
     // the water render UBO so they apply in BOTH fragment variants (the non-RT

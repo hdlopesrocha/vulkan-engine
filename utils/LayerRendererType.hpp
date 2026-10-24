@@ -11,11 +11,3 @@ enum class LayerRendererType : uint8_t {
     Water = 1,
     Video = 2
 };
-
-inline const char* layerRendererName(LayerRendererType r) {
-    switch (r) {
-        case LayerRendererType::Water: return "Water";
-        case LayerRendererType::Video: return "Video";
-        default: return "Solid";
-    }
-}

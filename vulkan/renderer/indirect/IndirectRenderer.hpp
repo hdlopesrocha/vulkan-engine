@@ -476,8 +476,6 @@ public:
     }
     VkBuffer getVertexBufferHandle() const { return vertexBuffer.buffer; }
     VkBuffer getIndexBufferHandle() const { return indexBuffer.buffer; }
-    VkDeviceSize getVertexBufferSize() const { return VkDeviceSize(vertexCapacity) * sizeof(Vertex); }
-    VkDeviceSize getIndexBufferSize() const { return VkDeviceSize(indexCapacity) * sizeof(uint32_t); }
 
 private:
     // Real ladder depth of the tree (set via setMaxLodLevel from

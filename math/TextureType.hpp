@@ -21,14 +21,3 @@ enum class TextureType : uint32_t {
     Angular = 4,     // spherical/angular coordinates around mappingOrigin (GPU)
     Custom = 5,      // painter-authored per-vertex UVs
 };
-
-inline const char* textureTypeName(TextureType type) {
-    switch (type) {
-        case TextureType::ProjectionX: return "Projection X";
-        case TextureType::ProjectionY: return "Projection Y";
-        case TextureType::ProjectionZ: return "Projection Z";
-        case TextureType::Angular: return "Angular";
-        case TextureType::Custom: return "Custom (UV)";
-        default: return "Triplanar";
-    }
-}

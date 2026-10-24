@@ -155,7 +155,6 @@ public:
     VkImageView getReflectionView() const { return reflectView_; }
     VkImageView getRefractionView() const { return refractView_; }
     VkSampler getLinearSampler() const { return linearSampler_; }
-    VkDescriptorSetLayout getRTSetLayout() const { return rtSetLayout_; }
 
     // Timings (CPU wall for builds — infrequent; GPU dispatch time via
     // caller's query pool). For the debug overlay.

@@ -86,15 +86,9 @@ public:
 
 private:
     
-    // Active solid color pipeline variant (profiling RT fragment while RT
+    // Active deferred color pipeline variant (profiling RT fragment while RT
     // profiling is on; otherwise the RT variant while RT shading is on and it
     // exists; otherwise the non-RT variant).
-    VkPipeline activeGraphicsPipeline() const {
-        if (rtShadingEnabled_ && rtProfilingEnabled_ && graphicsPipelineRtProf != VK_NULL_HANDLE)
-            return graphicsPipelineRtProf.handle;
-        return (rtShadingEnabled_ && graphicsPipelineRt != VK_NULL_HANDLE)
-            ? graphicsPipelineRt.handle : graphicsPipeline.handle;
-    }
     VkPipeline activeDeferredColorPipeline() const {
         if (rtShadingEnabled_ && rtProfilingEnabled_ && deferredColorPipelineRtProf != VK_NULL_HANDLE)
             return deferredColorPipelineRtProf.handle;

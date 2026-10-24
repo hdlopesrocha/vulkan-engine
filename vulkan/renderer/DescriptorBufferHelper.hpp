@@ -19,15 +19,6 @@ struct DescriptorBufferHelper {
         return vkGetBufferDeviceAddress(device, &info);
     }
 
-    static VkDescriptorBufferBindingInfoEXT bindingInfo(VkDeviceAddress address,
-                                                        VkBufferUsageFlags usage) {
-        VkDescriptorBufferBindingInfoEXT info{};
-        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-        info.address = address;
-        info.usage = usage;
-        return info;
-    }
-
     // Write one buffer descriptor (uniform / storage) into dst[0, dataSize).
     static bool writeBufferDescriptor(VkDevice device, PFN_vkGetDescriptorEXT fpGetDescriptor,
                                       void* dst, size_t dataSize,

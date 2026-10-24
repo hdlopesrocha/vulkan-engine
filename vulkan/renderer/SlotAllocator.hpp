@@ -111,28 +111,6 @@ public:
         freeSlots_.push_back(slotIdx);
     }
 
-    // Update the vertex/index counts for an active slot.
-    void updateCounts(uint32_t slotIdx, uint32_t vertexCount_, uint32_t indexCount_) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (slotIdx >= slots_.size()) return;
-
-        auto& s = slots_[slotIdx];
-        assert(s.active);
-        assert(vertexCount_ <= s.vertexCapacity);
-        assert(indexCount_  <= s.indexCapacity);
-        s.vertexCount = vertexCount_;
-        s.indexCount  = indexCount_;
-    }
-
-    // Access a slot (thread-safe copy).
-    Slot getSlot(uint32_t slotIdx) const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (slotIdx < slots_.size()) {
-            return slots_[slotIdx];
-        }
-        return Slot{};
-    }
-
     // Number of active (allocated) slots.
     uint32_t activeCount() const {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -143,16 +121,6 @@ public:
     uint32_t capacity() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return static_cast<uint32_t>(slots_.size());
-    }
-
-    // Total vertex elements across allocated + free slots.
-    uint32_t totalVertexCapacity() const {
-        return capacity() * vertexCapacityPerSlot_;
-    }
-
-    // Total index elements across allocated + free slots.
-    uint32_t totalIndexCapacity() const {
-        return capacity() * indexCapacityPerSlot_;
     }
 
     // Visit every active slot with a visitor function.

@@ -971,13 +971,24 @@ size_t)}; \code{WebServer::textureRoot}; \code{SvgShape::rgbToHsvDegrees} and
 
 Group 6 --- application and widgets. Delete \code{MyApp::dispatchSolidEvents}
 and \code{dispatchLiquidEvents}; \code{RenderTargetsWidget::cleanup} (keep the
-destructor and \code{destroyLinearTargets}); \code{MusicWidget::isPlaying};
-\code{OctreeExplorerWidget::setExportBlenderCallback};
-\code{ImGuiHelpers::openPtr}; \code{SlotAllocator::updateCounts},
-\code{getSlot}, \code{totalVertexCapacity}, \code{totalIndexCapacity};
-\code{IndirectRenderer::getVertexBufferSize} and \code{getIndexBufferSize}.
-Do \emph{not} delete the other \code{IndirectRenderer} getters or
-\code{bindSet0ForFrame}; see \S7 of the report.
+destructor and \code{destroyLinearTargets}); and every remaining inline
+accessor in \S5 except the kept \code{IndirectRenderer} family: the seven
+\code{AudioAnalyzer} getters, \code{ParticlePhysicsSim::regionNodeCount},
+\code{SvgPolygonDistanceFunction::halfExtents},
+\code{MainSceneLoader::shapeIndex}, \code{layerRendererName},
+\code{textureTypeName}, \code{MusicWidget::isPlaying},
+\code{OctreeExplorerWidget::setExportBlenderCallback},
+\code{ImGuiHelpers::openPtr}, \code{DescriptorUpdateStats::updateCalls},
+\code{SlotAllocator}'s four helpers, \code{SceneQueues::getGeometryQueue},
+\code{CommandBufferState::bindComputePipeline} and
+\code{bindGraphicsPipelineUnchecked}, \code{DescriptorBuffer::bindingOffset},
+\code{DescriptorBufferHelper::bindingInfo},
+\code{SolidRenderer::activeGraphicsPipeline},
+\code{RayTracingResources::getRTSetLayout}, the two \code{WaterRenderer}
+selectors, \code{IndirectRenderer}'s two size getters, and the three
+\code{vk_layouts} helpers. Do \emph{not} delete the other
+\code{IndirectRenderer} getters or \code{bindSet0ForFrame}; see \S7 of the
+report.
 
 Group 7 --- perf-fix residue. Delete \code{ThreadPool::enqueueDetached} and
 \code{notifyOne} (their callers moved to

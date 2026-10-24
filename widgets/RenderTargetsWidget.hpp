@@ -164,7 +164,6 @@ public:
     void destroyLinearTargets();
     void render() override;
     void updateDescriptors(uint32_t frameIndex);
-    void cleanup();
     // Called after ImGui is re-initialized (new DSL). Frees all owned ImGui AddTexture DS
     // (created with the old DSL) and resets them to VK_NULL_HANDLE so they are re-created
     // with the new DSL on the next frame.
