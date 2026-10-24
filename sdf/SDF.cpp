@@ -1,15 +1,8 @@
 #include "SDF.hpp"
 #include "../math/Math.hpp"
-#include <iostream>
+#include <cmath>
 #include <cstring>
-#include <stb/stb_perlin.h>
 
-// ── Blender-export-only cell solve ──────────────────────────────────────────
-// The engine runtime never calls these two functions. Its Cartesian chunk
-// vertices are produced by shaders/computation/octree/OctreeTriangles.comp and
-// never read back; the CPU octree stores/combines corner SDF samples only. The
-// offline Blender exporter (utils/BlenderExport.cpp) is the sole caller,
-// because it has no GPU to run the shader. Do not add other call sites.
 glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
     SpaceType eval = SDF::eval(sdf);
     if(eval != SpaceType::Surface) {
@@ -170,348 +163,6 @@ glm::vec3 SDF::getNormalFromPosition(float sdf[8], const BoundingCube& cube, con
     return normal / nl;
 }
 
-
-float SDF::opUnion(float d1, float d2) {
-    return glm::min(d1,d2);
-}
-
-float SDF::opSubtraction(float d1, float d2) {
-    return glm::max(d1,-d2);
-}
-
-float SDF::opIntersection(float d1, float d2) {
-    return glm::max(d1,d2);
-}
-
-float SDF::opPaint(float d1, float d2) {
-    return opUnion(d1, opIntersection(d1, d2));
-}
-
-float SDF::box(const glm::vec3 &p, const glm::vec3 len) {
-    glm::vec3 q = abs(p) - len;
-    return glm::length(glm::max(q, glm::vec3(0.0))) + glm::min(glm::max(q.x,glm::max(q.y,q.z)),0.0f);
-}
-
-float SDF::cylinder(const glm::vec3 &p, float r, float h) {
-    glm::vec2 d = glm::vec2(glm::length(glm::vec2(p.x, p.z)) - r, glm::abs(p.y) - h);
-    return glm::min(glm::max(d.x, d.y), 0.0f) + glm::length(glm::max(d, 0.0f));
-}
-
-float SDF::taperedCylinder(const glm::vec3 &p, float r1, float r2, float h) {
-    // Capped cone / tapered cylinder: bottom radius r1, top radius r2, half-height h.
-    // Extends from y=-h (r1) to y=+h (r2).
-    glm::vec2 q = glm::vec2(glm::length(glm::vec2(p.x, p.z)), p.y);
-    glm::vec2 k1 = glm::vec2(r2, h);
-    glm::vec2 k2 = glm::vec2(r2 - r1, 2.0f * h);
-    glm::vec2 ca = glm::vec2(q.x - glm::min(q.x, (q.y < 0.0f) ? r1 : r2), glm::abs(q.y) - h);
-    glm::vec2 cb = q - k1 + k2 * glm::clamp(glm::dot(k1 - q, k2) / glm::dot(k2, k2), 0.0f, 1.0f);
-    float s = (cb.x < 0.0f && ca.y < 0.0f) ? -1.0f : 1.0f;
-    return s * glm::sqrt(glm::min(glm::dot(ca, ca), glm::dot(cb, cb)));
-}
-
-float SDF::capsule(const glm::vec3 &p, glm::vec3 a, glm::vec3 b, float r ) {
-    glm::vec3 pa = p - a, ba = b - a;
-    float h = glm::clamp( glm::dot(pa,ba)/glm::dot(ba,ba), 0.0f, 1.0f );
-    return glm::length( pa - ba*h ) - r;
-}
-
-float SDF::taperedCapsule(const glm::vec3 &p, glm::vec3 a, glm::vec3 b, float r1, float r2) {
-    glm::vec3 pa = p - a, ba = b - a;
-    float h = glm::clamp(glm::dot(pa, ba) / glm::dot(ba, ba), 0.0f, 1.0f);
-    float r = glm::mix(r1, r2, h);
-    return glm::length(pa - ba * h) - r;
-}
-
-float SDF::torus(const glm::vec3 &p, glm::vec2 t ) {
-  glm::vec2 q = glm::vec2(glm::length(glm::vec2(p.x,p.z))-t.x,p.y);
-  return glm::length(q)-t.y;
-}
-
-static float distToSegment(const glm::vec3 &p, const glm::vec3 &a, const glm::vec3 &b) {
-    glm::vec3 ab = b - a;
-    glm::vec3 ap = p - a;
-    float t = glm::clamp(glm::dot(ap, ab) / glm::dot(ab, ab), 0.0f, 1.0f);
-    return glm::length(ap - ab * t);
-}
-
-static float distToTriangle(const glm::vec3 &p, const glm::vec3 &a, const glm::vec3 &b, const glm::vec3 &c, float halfThick) {
-    glm::vec3 n = glm::cross(b - a, c - a);
-    float nLen = glm::length(n);
-    if (nLen < 1e-10f)
-        return distToSegment(p, a, b) - halfThick;
-    n /= nLen;
-    float planeDist = glm::dot(p - a, n);
-    glm::vec3 proj = p - planeDist * n;
-    glm::vec3 v0 = glm::cross(b - a, proj - a);
-    glm::vec3 v1 = glm::cross(c - b, proj - b);
-    glm::vec3 v2 = glm::cross(a - c, proj - c);
-    float d0 = glm::dot(v0, n), d1 = glm::dot(v1, n), d2 = glm::dot(v2, n);
-    bool inside = (d0 >= 0.0f && d1 >= 0.0f && d2 >= 0.0f) ||
-                  (d0 <= 0.0f && d1 <= 0.0f && d2 <= 0.0f);
-    if (inside)
-        return glm::abs(planeDist) - halfThick;
-    float dEdge = glm::min(distToSegment(proj, a, b),
-                  glm::min(distToSegment(proj, b, c), distToSegment(proj, c, a)));
-    float dPlane = glm::max(glm::abs(planeDist) - halfThick, 0.0f);
-    return glm::sqrt(dEdge * dEdge + dPlane * dPlane);
-}
-
-float SDF::triangleStrip(const glm::vec3 &p,
-    const glm::vec3 &v0, const glm::vec3 &v1,
-    const glm::vec3 &v2, const glm::vec3 &v3, float halfThick)
-{
-    float d0 = distToTriangle(p, v0, v1, v2, halfThick);
-    float d1 = distToTriangle(p, v1, v2, v3, halfThick);
-    return glm::min(d0, d1);
-}
-
-float SDF::octahedron(const glm::vec3 &p, float s ) {
-  glm::vec3 p2 = abs(p);
-  float m = p2.x+p2.y+p2.z-s;
-  glm::vec3 q;
-       if( 3.0*p2.x < m ) q = glm::vec3(p2.x, p2.y, p2.z);
-  else if( 3.0*p2.y < m ) q = glm::vec3(p2.y, p2.z, p2.x);
-  else if( 3.0*p2.z < m ) q = glm::vec3(p2.z, p2.x, p2.y);
-  else return m*0.57735027;
-    
-  float k = glm::clamp(0.5f*(q.z-q.y+s),0.0f,s); 
-  return glm::length(glm::vec3(q.x,q.y-s+k,q.z-k)); 
-}
-
-// Deterministic pseudo-random [0,1] from integer coords
-inline float randFromPerlin(const glm::ivec3& cell, float seed = 0.0f) {
-    float n = stb_perlin_noise3(
-        cell.x * 0.123f,
-        cell.y * 0.456f,
-        cell.z * 0.789f + seed,0,0,0
-    );
-    return 0.5f * (n + 1.0f); // map [-1,1] -> [0,1]
-}
-
-// Safe Voronoi 3D with adjustable cell size
-float SDF::voronoi3D(const glm::vec3& p, float cellSize = 1.0f, float seed = 0.0f) {
-    if (cellSize <= 0.0f) {
-        return 0.0f; // safe fallback
-    }
-
-    // Work in normalized lattice space
-    glm::vec3 q = p / cellSize;
-
-    // Domain warp to break grid artifacts
-    q += 0.3f * glm::vec3(
-        stb_perlin_noise3(q.x, q.y, q.z, 0,0,0),
-        stb_perlin_noise3(q.y, q.z, q.x, 0,0,0),
-        stb_perlin_noise3(q.z, q.x, q.y, 0,0,0)
-    );
-
-    glm::ivec3 baseCell = glm::floor(q);
-    float minDist = 1e10f;
-
-    // Check neighbors (27 cells)
-    for (int k = -1; k <= 1; k++) {
-        for (int j = -1; j <= 1; j++) {
-            for (int i = -1; i <= 1; i++) {
-                glm::ivec3 neighbor = baseCell + glm::ivec3(i, j, k);
-
-                float ox = randFromPerlin(neighbor, seed);
-                float oy = randFromPerlin(neighbor + glm::ivec3(7, 3, 5), seed + 17.0f);
-                float oz = randFromPerlin(neighbor + glm::ivec3(11, 19, 23), seed + 37.0f);
-
-                glm::vec3 cellSeed = glm::vec3(neighbor) + glm::vec3(ox, oy, oz);
-
-                float d = glm::length(q - cellSeed);
-                minDist = glm::min(minDist, d);
-            }
-        }
-    }
-
-    // Normalize: [0, sqrt(3)] → [0,1]
-    return minDist / sqrtf(3.0f);
-}
-
-
-// distance to segment AB
-inline float sdSegment(const glm::vec3 &p, const glm::vec3 &a, const glm::vec3 &b) {
-    glm::vec3 pa = p - a;
-    glm::vec3 ba = b - a;
-    float t = glm::clamp(glm::dot(pa, ba) / glm::dot(ba, ba), 0.0f, 1.0f);
-    return glm::length(pa - ba * t);
-}
-
-// exact distance to triangle ABC (Euclidean)
-inline float sdTriangle(const glm::vec3 &p, const glm::vec3 &a, const glm::vec3 &b, const glm::vec3 &c) {
-    // plane normal
-    glm::vec3 ab = b - a;
-    glm::vec3 ac = c - a;
-    glm::vec3 n = glm::cross(ab, ac);
-    float nlen2 = glm::dot(n, n);
-    if (nlen2 < 1e-12f) {
-        // degenerate triangle -> fallback to segment distances
-        return std::min({ sdSegment(p, a, b), sdSegment(p, b, c), sdSegment(p, c, a) });
-    }
-    glm::vec3 nn = n / glm::sqrt(nlen2);
-    float distPlane = glm::dot(p - a, nn);
-    glm::vec3 proj = p - distPlane * nn;
-
-    // inside-triangle test (same-side)
-    glm::vec3 ap = proj - a;
-    glm::vec3 bp = proj - b;
-    glm::vec3 cp = proj - c;
-    if (glm::dot(glm::cross(ab, ap), n) >= 0.0f &&
-        glm::dot(glm::cross(c - b, bp), n) >= 0.0f &&
-        glm::dot(glm::cross(a - c, cp), n) >= 0.0f) {
-        return std::abs(distPlane); // perpendicular hits inside triangle
-    }
-
-    // otherwise distance to triangle edges
-    return std::min({ sdSegment(p, a, b), sdSegment(p, b, c), sdSegment(p, c, a) });
-}
-
-// Apply model (4x4) to vec3
-inline glm::vec3 transformPos(const glm::mat4 &M, const glm::vec3 &v) {
-    glm::vec4 t = M * glm::vec4(v, 1.0f);
-    return glm::vec3(t) / t.w;
-}
-
-// Exact SDF for an affine-transformed pyramid (square base)
-// - p: query point in world space
-// - h: original pyramid height (apex at (0,h,0), base at y=0)
-// - a: half base size (base corners at +/-a, y=0)
-// - model: 4x4 model matrix (scaling, rotation, translation). If you only want non-uniform scale use glm::scale(...)
-float SDF::pyramid(const glm::vec3 &p, float h, float a) {
-      // Vértices locais
-    glm::vec3 apex(0.0f, h, 0.0f);
-    glm::vec3 v0(-a, 0.0f, -a);
-    glm::vec3 v1( a, 0.0f, -a);
-    glm::vec3 v2( a, 0.0f,  a);
-    glm::vec3 v3(-a, 0.0f,  a);
-
-    // mesmo cálculo de distâncias (sem model matrix!)
-    glm::vec3 centroid = (apex + v0 + v1 + v2 + v3) / 5.0f;
-
-    float d0 = sdTriangle(p, apex, v0, v1);
-    float d1 = sdTriangle(p, apex, v1, v2);
-    float d2 = sdTriangle(p, apex, v2, v3);
-    float d3 = sdTriangle(p, apex, v3, v0);
-    float db0 = sdTriangle(p, v0, v1, v2);
-    float db1 = sdTriangle(p, v2, v3, v0);
-
-    float dist = std::min({d0, d1, d2, d3, db0, db1});
-
-    auto faceOutward = [&](const glm::vec3 &a_, const glm::vec3 &b_, const glm::vec3 &c_) {
-        glm::vec3 n = glm::normalize(glm::cross(b_ - a_, c_ - a_));
-        if (glm::dot(n, centroid - a_) > 0.0f) n = -n;
-        return n;
-    };
-
-    glm::vec3 n0 = faceOutward(apex, v0, v1);
-    glm::vec3 n1 = faceOutward(apex, v1, v2);
-    glm::vec3 n2 = faceOutward(apex, v2, v3);
-    glm::vec3 n3 = faceOutward(apex, v3, v0);
-    glm::vec3 nb0 = faceOutward(v0, v1, v2);
-    glm::vec3 nb1 = faceOutward(v2, v3, v0);
-
-    bool inside =
-        (glm::dot(p - apex, n0) <= 0.0f) &&
-        (glm::dot(p - apex, n1) <= 0.0f) &&
-        (glm::dot(p - apex, n2) <= 0.0f) &&
-        (glm::dot(p - apex, n3) <= 0.0f) &&
-        (glm::dot(p - v0, nb0) <= 0.0f) &&
-        (glm::dot(p - v2, nb1) <= 0.0f);
-
-    return inside ? -dist : dist;
-}
-
-
-float SDF::cone(const glm::vec3 &p) {
-    // Unit cone: apex at origin, base radius = height = 1
-    // q vector derived from Inigo Quilez's formula
-    const glm::vec2 q(1.0f, -1.0f);
-
-    // Convert 3D point to 2D (radius in XZ plane, height in Y)
-    glm::vec2 w(glm::length(glm::vec2(p.x, p.z)), p.y);
-
-    // Project onto cone sides
-    glm::vec2 a = w - q * glm::clamp(glm::dot(w, q) / glm::dot(q, q), 0.0f, 1.0f);
-    glm::vec2 b = w - q * glm::vec2(glm::clamp(w.x / q.x, 0.0f, 1.0f), 1.0f);
-
-    // Sign helper
-    float k = glm::sign(q.y);
-    float d = glm::min(glm::dot(a, a), glm::dot(b, b));
-    float s = glm::max(k * (w.x * q.y - w.y * q.x), k * (w.y - q.y));
-
-    return glm::sqrt(d) * glm::sign(s);
-}
-
-glm::vec3 SDF::distortPerlinFractal(const glm::vec3 &p, float frequency, int octaves, float lacunarity = 2.0f, float gain = 0.5f) {
-    glm::vec3 totalNoise(0.0f);
-    float freq = frequency;
-    float amp = 1.0f;
-
-    // For each axis, use different offsets to decorrelate noise
-    glm::vec3 offsetX = glm::vec3(0.0f, 0.0f, 0.0f);
-    glm::vec3 offsetY = glm::vec3(100.0f, 100.0f, 100.0f);
-    glm::vec3 offsetZ = glm::vec3(200.0f, 200.0f, 200.0f);
-
-    for (int i = 0; i < octaves; ++i) {
-        float nx = stb_perlin_noise3(
-            p.x * freq + offsetX.x,
-            p.y * freq + offsetX.y,
-            p.z * freq + offsetX.z,
-            0,0,0
-        );
-        float ny = stb_perlin_noise3(
-            p.x * freq + offsetY.x,
-            p.y * freq + offsetY.y,
-            p.z * freq + offsetY.z,
-            0,0,0
-        );
-        float nz = stb_perlin_noise3(
-            p.x * freq + offsetZ.x,
-            p.y * freq + offsetZ.y,
-            p.z * freq + offsetZ.z,
-            0,0,0
-        );
-
-        totalNoise += amp * glm::vec3(nx, ny, nz);
-
-        freq *= lacunarity; // increase frequency
-        amp *= gain;        // decrease amplitude
-    }
-
-    return totalNoise;
-}
-
-float SDF::distortedCarveFractalSDF(const glm::vec3 &p, 
-                                    float threshold, 
-                                    float frequency, 
-                                    int octaves = 4, 
-                                    float lacunarity = 2.0f, 
-                                    float gain = 0.5f) {
-
-    float noiseValue = 0.0f;
-    float freq = frequency;
-    float amp = 1.0f;
-    float d = 0.0f;
-
-    for (int i = 0; i < octaves; ++i) {
-        noiseValue += amp * stb_perlin_noise3(
-            p.x * freq, 
-            p.y * freq, 
-            p.z * freq, 
-            0, 0, 0
-        );
-        freq *= lacunarity;
-        amp *= gain;
-    }
-
-    if (noiseValue > threshold) {
-        d += (noiseValue - threshold);
-    }
-
-    return d;
-}
-
 // Safe trilinear lerp for SDF fields that may carry INFINITY sentinels (corners
 // with no data / outside the known domain). glm::mix(a, b, t) evaluates
 // a*(1-t) + b*t, which is NaN when one operand is INFINITY and the other factor
@@ -564,7 +215,7 @@ float SDF::interpolate(const float sdf[8], const glm::vec3 &position, const Boun
     return lerpSDF(v00, v10, x);
 }
 
-void SDF::getChildSDF(const float sdf[8], uint i , float result[8]) {
+void SDF::getChildSDF(const float sdf[8], unsigned int i, float result[8]) {
     BoundingCube canonicalCube = BoundingCube(glm::vec3(0.0f), 1.0f);
     BoundingCube cube = canonicalCube.getChild(i);
     // Interpolate each child corner from the parent field instead of flood-filling
@@ -572,7 +223,7 @@ void SDF::getChildSDF(const float sdf[8], uint i , float result[8]) {
     // unknown corner must only poison the child corners that actually depend on it;
     // the rest of the child keeps the correctly interpolated (finite) field, so
     // shape() can descend and materialize real geometry instead of dropping it.
-    for (uint j = 0; j < 8; ++j) {
+    for (unsigned int j = 0; j < 8; ++j) {
         glm::vec3 corner = cube.getCorner(j);
         result[j] = interpolate(sdf, corner, canonicalCube);
     }
@@ -585,7 +236,7 @@ void SDF::copySDF(const float src[8], float dst[8]) {
 SpaceType SDF::eval(const float sdf[8]) {
     bool hasPositive = false;
     bool hasNegative = false;
-    for (int i = 0; i < 8; ++i) {  
+    for (int i = 0; i < 8; ++i) {
         if(sdf[i] == INFINITY) {
             continue;  // skip untouched corners
         } else if (sdf[i] >= 0.0f) {
