@@ -264,9 +264,12 @@ public:
     // back. Returns true when this function took ownership of the node
     // (published or deliberately skipped); false when the GPU pass is
     // unavailable, in which case the chunk is skipped (no CPU fallback).
+    // `published` is set when the revision is settled (geometry installed, or
+    // legitimately empty); it stays false on a failed build so the caller does
+    // not mark the version up-to-date and a later re-emit retries.
     bool buildChunkResident(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData,
                             uint8_t chunkLod, uint32_t version, OctreeTopologyInput& topoInput,
-                            IndirectRenderer& ir, GeometryHandler onGeometry);
+                            IndirectRenderer& ir, GeometryHandler onGeometry, bool& published);
 
     // ── Slotted-mode chunk processing ────────────────────────────────────────
     // Initialize the slotted rendering pipeline for solid and water layers.

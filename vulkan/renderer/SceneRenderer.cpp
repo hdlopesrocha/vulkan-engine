@@ -76,10 +76,18 @@ constexpr uint32_t kMaxSolidChunkSlots = 1536;   // main solid (opaque) pool
 // old per-chunk budget: with 192 entries the last rungs of the ladder could
 // never reserve a span (logged as "no free draw block") and were skipped.
 constexpr uint32_t kMaxWaterChunkSlots = 512;
-// Element-pool byte budget stays at the old per-chunk-ceiling factor
-// (192 x per-chunk bytes): the packed allocator shares those bytes between the
-// extra rungs, so the larger entry pool costs no GPU memory.
+// Element-pool byte budgets. The GPU topology pass writes one index per raw
+// vertex key and dedups the vertex side, so the index stream is much larger
+// than the vertex stream for detailed layers: the transparent fire-ring chunks
+// (minSize 4) run ~21 indices per unique vertex. Sizing water at the solid
+// layer's 4:1 vertex-heavy ratio exhausted its 24 MB index pool after 127
+// chunks (usedIdx 5.9M/6.29M) and permanently skipped the remaining 81.
+// Give water equal vertex/index byte budgets instead: the reference scene's
+// water stream (terrain + fire ring + spheres) needs ~13M indices and ~1M
+// vertices, so 192 x 512 KB each (96 MB + 96 MB) leaves ~1.8x headroom.
 constexpr uint32_t kWaterPoolBudgetSlots = 192;
+constexpr uint32_t kWaterVertexBytesPerChunk = 1u << 19;  // 512 KB per chunk
+constexpr uint32_t kWaterIndexBytesPerChunk  = 1u << 19;  // 512 KB per chunk
 
 // Per-chunk (per-slot) geometry ceilings used to size the TOTAL packed pools
 // (total = chunkCount * perChunk). Allocation is packed/variable-size, so a chunk
@@ -2008,8 +2016,8 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
 
     const uint64_t solidVertBytes = static_cast<uint64_t>(maxSolidChunks) * vertexBytesPerChunk;
     const uint64_t solidIdxBytes  = static_cast<uint64_t>(maxSolidChunks) * indexBytesPerChunk;
-    const uint64_t waterVertBytes = static_cast<uint64_t>(kWaterPoolBudgetSlots) * vertexBytesPerChunk;
-    const uint64_t waterIdxBytes  = static_cast<uint64_t>(kWaterPoolBudgetSlots) * indexBytesPerChunk;
+    const uint64_t waterVertBytes = static_cast<uint64_t>(kWaterPoolBudgetSlots) * kWaterVertexBytesPerChunk;
+    const uint64_t waterIdxBytes  = static_cast<uint64_t>(kWaterPoolBudgetSlots) * kWaterIndexBytesPerChunk;
 
     solidRenderer->getIndirectRenderer().initSlots(app, maxSolidChunks,
                                                        static_cast<uint32_t>(solidVertBytes),
@@ -2084,7 +2092,9 @@ void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                                        OctreeNodeData& nodeData, uint8_t chunkLod,
                                        uint32_t version, OctreeTopologyInput& topoInput,
-                                       IndirectRenderer& ir, GeometryHandler onGeometry) {
+                                       IndirectRenderer& ir, GeometryHandler onGeometry,
+                                       bool& published) {
+    published = false;
     OctreeTopologyCompute* topo = OctreeTopologyCompute::getGlobal();
     if (topo == nullptr || topo->app == nullptr) return false;
 
@@ -2154,6 +2164,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
         streamStats_.residentEmpty.fetch_add(1, std::memory_order_relaxed);
         if (res.slotIndex != UINT32_MAX) ir.releaseGpuMeshSpan(res.slotIndex);
         if (world_ && frontier) world_->chunkManager().cancelRebuild(static_cast<ChunkManager::ChunkId>(chunkId));
+        published = true;
         return true;
     }
 
@@ -2176,6 +2187,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     lm.brushIndex = nodeData.node ? nodeData.node->brushIndex : 0;
     lm.textureType = nodeData.node ? nodeData.node->textureType : 0;
     onGeometry(layer, nid, lm);
+    published = true;
     return true;
 }
 
@@ -2206,9 +2218,15 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
             handled = true; // this revision is already live on the GPU
         } else if (status == Scene::ChunkTopologyStatus::Ready) {
             streamStats_.topologyReady.fetch_add(1, std::memory_order_relaxed);
+            bool published = false;
             handled = buildChunkResident(scene, layer, nid, nodeData, chunkLod, version,
-                                         topoInput, *ir, onGeometry);
-            if (handled) scene.commitChunkTopology(layer, reinterpret_cast<uintptr_t>(nodeData.node), version);
+                                         topoInput, *ir, onGeometry, published);
+            // Only settle the revision when geometry was actually installed
+            // (or the chunk is legitimately empty). A failed build (pool
+            // exhausted, walk overflow) must not be recorded as up-to-date:
+            // that turned a transient failure into a permanently missing chunk.
+            if (handled && published)
+                scene.commitChunkTopology(layer, reinterpret_cast<uintptr_t>(nodeData.node), version);
         } else {
             streamStats_.topologyUnavailable.fetch_add(1, std::memory_order_relaxed);
         }
