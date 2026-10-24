@@ -4,18 +4,8 @@
 #include <string>
 #include <vector>
 
-struct SubPage
-{
-    std::string label;      // icon symbol (displayed in sector)
-    std::string textLabel;  // text (displayed in center circle)
-};
-
-struct Page
-{
-    std::string label;      // icon symbol (displayed in sector)
-    std::string textLabel;  // text (displayed in center circle)
-    std::vector<SubPage> subPages;
-};
+#include "Page.hpp"
+#include "RingType.hpp"
 
 class RadialMenu
 {
@@ -50,7 +40,6 @@ public:
     int GetStackDepth() const;
 
     // Query the active (top) ring
-    enum class RingType { NONE, SUBPAGE, TEXTURE, LABEL, HSV_SLIDER };
     RingType GetActiveRingType() const;
 
     // Get the page index from the first SUBPAGE ring in the stack (-1 if none)

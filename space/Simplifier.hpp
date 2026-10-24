@@ -1,19 +1,10 @@
 #pragma once
 #include "../math/geometry/BoundingCube.hpp"
+#include "SimplificationResult.hpp"
 #include <glm/glm.hpp>
 #include <utility>
 
 struct NodeOperationResult;
-
-// Result of attempting to simplify eight child nodes into their parent.
-// `isSimplified` indicates whether simplification succeeded.
-// `brushIndex` is the brush/material index to assign when simplified.
-struct SimplificationResult {
-    uint8_t isSimplified;
-    SimplificationResult(uint8_t simplified)
-        : isSimplified(simplified) {
-    }
-};
 
 class Simplifier {
     float angle;

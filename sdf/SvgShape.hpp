@@ -5,6 +5,8 @@
 
 #include <glm/glm.hpp>
 
+#include "SvgContour.hpp"
+
 // Minimal dependency-free SVG loader for the SVG brush
 // (sdf/SvgPolygonDistanceFunction + utils/SvgBrush).
 //
@@ -19,12 +21,6 @@
 // Coordinates are normalized into [-1,1]^2 using the viewBox (or width/height):
 // SVG +x maps to local +x and SVG +y maps to local -z, so a drawing appears
 // upright when looked at from +Y in the model's local frame.
-struct SvgContour {
-    std::vector<glm::vec2> points;  // normalized [-1,1] range (may exceed for open paths)
-    glm::vec3 rgb = glm::vec3(1.0f); // parsed fill colour
-    bool closed = true;
-};
-
 class SvgShape {
 public:
     std::vector<SvgContour> contours;

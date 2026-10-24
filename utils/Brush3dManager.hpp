@@ -6,30 +6,9 @@
 
 // Active brush control mode. The radial menu and Brush3dWidget both use this
 // to keep the selected mode in sync.
-enum class BrushControlMode {
-    TRANSLATE,
-    AIM,
-    SCALE,
-    TEXTURE,
-    ATTRIBUTE,
-    COLOR,
-    MODE_COUNT
-};
-
-// Active brush paint mode (Add / Remove / Paint).
-enum class BrushPaintMode {
-    ADD,
-    REMOVE,
-    PAINT,
-    MODE_COUNT
-};
-
-// Brush interaction mode (Drag vs Click).
-enum class BrushDragMode {
-    DRAG,
-    CLICK,
-    MODE_COUNT
-};
+#include "BrushControlMode.hpp"
+#include "BrushPaintMode.hpp"
+#include "BrushDragMode.hpp"
 
 class Brush3dManager {
 public:

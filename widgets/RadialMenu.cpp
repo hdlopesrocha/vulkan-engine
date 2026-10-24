@@ -84,7 +84,7 @@ void RadialMenu::SetSelectedIndex(int index)
 
 int RadialMenu::GetStackDepth() const { return static_cast<int>(stack.size()); }
 
-RadialMenu::RingType RadialMenu::GetActiveRingType() const
+RingType RadialMenu::GetActiveRingType() const
 {
     return stack.empty() ? RingType::NONE : stack.back().type;
 }

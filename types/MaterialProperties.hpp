@@ -1,74 +1,12 @@
 #pragma once
 
 #include <cstdint>
+
 #include <glm/glm.hpp>
+
 #include "../math/TextureType.hpp"
-
-// What a material samples: a layer of the scene texture arrays, one slot of the
-// video texture array, or the water params palette. Materials of kind Video are
-// shaded by the video layer renderer (rendered after solid and water so the
-// per-material blend mode can be applied against the composed scene color).
-enum class MaterialKind : uint32_t {
-    Texture = 0,
-    Video = 1,
-    Water = 2,
-};
-
-// Photoshop-style blend modes applied per material by the video layer composite
-// (shaders/includes/BlendModes.glsl). Normal keeps the plain source-over result.
-enum class MaterialBlendMode : uint32_t {
-    Normal = 0,
-    Darken,
-    Multiply,
-    ColorBurn,
-    LinearBurn,
-    DarkerColor,
-    Lighten,
-    Screen,
-    ColorDodge,
-    LighterColor,
-    Overlay,
-    Difference,
-    Exclusion,
-    Subtract,
-    Divide,
-    Hue,
-    Saturation,
-    Color,
-    Luminosity,
-};
-
-inline const char* materialKindName(MaterialKind kind) {
-    switch (kind) {
-        case MaterialKind::Video: return "Video";
-        case MaterialKind::Water: return "Water";
-        default: return "Textures";
-    }
-}
-
-inline const char* materialBlendModeName(MaterialBlendMode mode) {
-    switch (mode) {
-        case MaterialBlendMode::Darken: return "Darken";
-        case MaterialBlendMode::Multiply: return "Multiply";
-        case MaterialBlendMode::ColorBurn: return "Color Burn";
-        case MaterialBlendMode::LinearBurn: return "Linear Burn";
-        case MaterialBlendMode::DarkerColor: return "Darker Color";
-        case MaterialBlendMode::Lighten: return "Lighten";
-        case MaterialBlendMode::Screen: return "Screen";
-        case MaterialBlendMode::ColorDodge: return "Color Dodge";
-        case MaterialBlendMode::LighterColor: return "Lighter Color";
-        case MaterialBlendMode::Overlay: return "Overlay";
-        case MaterialBlendMode::Difference: return "Difference";
-        case MaterialBlendMode::Exclusion: return "Exclusion";
-        case MaterialBlendMode::Subtract: return "Subtract";
-        case MaterialBlendMode::Divide: return "Divide";
-        case MaterialBlendMode::Hue: return "Hue";
-        case MaterialBlendMode::Saturation: return "Saturation";
-        case MaterialBlendMode::Color: return "Color";
-        case MaterialBlendMode::Luminosity: return "Luminosity";
-        default: return "Normal";
-    }
-}
+#include "MaterialKind.hpp"
+#include "MaterialBlendMode.hpp"
 
 // Material properties per texture (extracted from TextureManager.hpp)
 struct MaterialProperties {

@@ -124,9 +124,9 @@ void RadialMenuHandler::feedInputVector() {
     auto getScale = [&]() {
         float scale = 120.0f;
         auto activeType = menu_->GetActiveRingType();
-        if (activeType == RadialMenu::RingType::TEXTURE || activeType == RadialMenu::RingType::LABEL)
+        if (activeType == RingType::TEXTURE || activeType == RingType::LABEL)
             scale = 170.0f;
-        else if (activeType == RadialMenu::RingType::HSV_SLIDER)
+        else if (activeType == RingType::HSV_SLIDER)
             scale = 250.0f;
         return scale;
     };
@@ -204,7 +204,7 @@ bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
         auto activeType = menu_->GetActiveRingType();
 
         // --- Active ring handling ---
-        if (activeType == RadialMenu::RingType::TEXTURE) {
+        if (activeType == RingType::TEXTURE) {
             textureScratch_.clear();
             for (uint32_t i = 0; i < loadedTextureLayers; ++i) {
                 textureScratch_.push_back(texArray_->getImTexture(i, 0));
@@ -222,7 +222,7 @@ bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
                     menu_->SetTexturePage(menu_->GetTexturePage() + 1);
                 }
             }
-        } else if (activeType == RadialMenu::RingType::LABEL) {
+        } else if (activeType == RingType::LABEL) {
             int hl = menu_->GetHoveredLabel();
             if (hl >= 0 && selectEdge) {
                 menu_->SetSelectedIndex(hl);
@@ -257,7 +257,7 @@ bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
                     menu_->PopRing();
                 }
             }
-        } else if (activeType == RadialMenu::RingType::HSV_SLIDER) {
+        } else if (activeType == RingType::HSV_SLIDER) {
             float val = menu_->GetHSVSliderValue();
             std::string comp = menu_->GetHSVSliderName();
             if (comp == "Azimuth" || comp == "Elevation") {
@@ -268,11 +268,11 @@ bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
             if (selectEdge) {
                 menu_->PopRing();
             }
-        } else if (activeType == RadialMenu::RingType::NONE) {
+        } else if (activeType == RingType::NONE) {
             if (selectEdge && hp >= 0 && hp < static_cast<int>(pages_.size())) {
                 menu_->PushSubpageRing(hp);
             }
-        } else if (activeType == RadialMenu::RingType::SUBPAGE) {
+        } else if (activeType == RingType::SUBPAGE) {
             int stackPage = menu_->GetStackPageIndex();
             if (selectEdge && stackPage >= 0 && hs >= 0
                 && stackPage < static_cast<int>(pages_.size()))

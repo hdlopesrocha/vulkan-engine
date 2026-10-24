@@ -6,57 +6,10 @@
 #include <cstdint>
 
 // Identifies which physical controller a context belongs to.
-enum class ControllerId { KEYBOARD, MOUSE, GAMEPAD, WIIMOTE };
-
-// Top-level category of control. The active category decides whether an input
-// acts on the camera or on the selected SDF brush.
-enum class PageCategory { CAMERA, BRUSH, LIGHT };
-
-// Sub-control selected inside a category. This is what a given input axis /
-// button maps to for the active category. UI pages are non-propagating: the
-// publisher must not emit application events while on them so that ImGui /
-// other UI can consume the raw input without interference.
-enum class PageControl {
-    TRANSLATE,   // move position (camera or brush)
-    ROTATE,      // change orientation (yaw/pitch/roll)
-    SCALE,       // change size
-    TEXTURE,     // change material / texture
-    ATTRIBUTE,   // change SDF-specific attributes
-    AIM,         // wiimote M+ orient -> ray octree intersection -> snap brush pos
-    COLOR,       // wiimote rotation -> HSV tint on brush
-    CONTROL,     // opens outer ring to select Translate/Aim/Scale
-    UI,          // non-propagating passthrough (ImGui / UI)
-    AZIMUTH,     // light horizontal angle
-    ELEVATION    // light vertical angle
-};
-
-// A node in the controller page tree. The tree is two levels deep:
-//   root -> [category pages] -> [control subpages]
-// Each controller owns its own tree so every controller can be on a different
-// page / subpage independently.
-struct ControllerPage {
-    std::string name;
-    PageCategory category = PageCategory::CAMERA;
-    PageControl control = PageControl::TRANSLATE;
-    // When false the publisher must NOT emit application events for this page.
-    bool propagate = true;
-    std::vector<std::shared_ptr<ControllerPage>> children;
-
-    std::shared_ptr<ControllerPage> addChild(const std::string &name_, PageControl ctrl, bool propagate_ = true) {
-        auto c = std::make_shared<ControllerPage>();
-        c->name = name_;
-        c->control = ctrl;
-        c->category = category; // subpage inherits the parent category
-        c->propagate = propagate_;
-        children.push_back(c);
-        return c;
-    }
-    int childCount() const { return static_cast<int>(children.size()); }
-    const ControllerPage *child(int i) const {
-        if (i < 0 || i >= static_cast<int>(children.size())) return nullptr;
-        return children[i].get();
-    }
-};
+#include "ControllerId.hpp"
+#include "PageCategory.hpp"
+#include "PageControl.hpp"
+#include "ControllerPage.hpp"
 
 // Holds the page tree for a single controller and tracks the active path
 // (active top-level page + active subpage). The page tree and the navigation
