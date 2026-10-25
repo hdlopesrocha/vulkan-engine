@@ -515,54 +515,53 @@ public:
         float fireTileSize = tileSize * 0.125f;
 
         if (hasTransparent) {
-            int numSegs = 256;
+            int numSegs = 24;
             float angleStep = 2.0f * glm::pi<float>() / numSegs;
             float overlap = 0.05f;
             float unitInner = 1.00f - 512.0f / 1024.0f;
             float unitOuter = 1.00f;
             float unitHalfThick = 64.0f / 1024.0f;
             float worldScale = 1024.0f;
-            for (int ringIdx = 0; ringIdx < 1; ++ringIdx) {
-                std::cout << "\ttransparentLayer.add(triangleStrip " << ringIdx << ")" << std::endl;
-                Transformation tsModel = Transformation(glm::vec3(worldScale),
-                    ringPosition, 0, 0, 0);
-                for (int i = 0; i < numSegs; ++i) {
-                    float a0 = i * angleStep;
-                    float a1 = (i + 1) * angleStep;
 
-                    glm::vec3 v0(unitInner * glm::cos(a0), 0.0f, unitInner * glm::sin(a0));
-                    glm::vec3 v1(unitOuter * glm::cos(a0), 0.0f, unitOuter * glm::sin(a0));
-                    glm::vec3 v2(unitInner * glm::cos(a1), 0.0f, unitInner * glm::sin(a1));
-                    glm::vec3 v3(unitOuter * glm::cos(a1), 0.0f, unitOuter * glm::sin(a1));
+            Transformation tsModel = Transformation(glm::vec3(worldScale),
+                ringPosition, 0, 0, 0);
+            for (int i = 0; i < numSegs; ++i) {
+                std::cout << "\ttransparentLayer.add(triangleStrip " << i << ")" << std::endl;
+                float a0 = i * angleStep;
+                float a1 = (i + 1) * angleStep;
 
-                    float aMin = a0 - overlap * angleStep;
-                    float aMax = a1 + overlap * angleStep;
-                    float hh = unitHalfThick * worldScale;
-                    float y = ringPosition.y;
-                    BoundingBox aabb;
-                    aabb.setMin(glm::vec3(std::numeric_limits<float>::max()));
-                    aabb.setMax(glm::vec3(std::numeric_limits<float>::lowest()));
-                    int samples = 4;
-                    for (int j = 0; j <= samples; ++j) {
-                        float a = aMin + (aMax - aMin) * ((float)j / (float)samples);
-                        float rInner = unitInner * worldScale;
-                        float rOuter = unitOuter * worldScale;
-                        glm::vec3 inner(rInner * glm::cos(a), y - hh, rInner * glm::sin(a));
-                        glm::vec3 outer(rOuter * glm::cos(a), y + hh, rOuter * glm::sin(a));
-                        aabb.setMin(glm::min(aabb.getMin(), inner));
-                        aabb.setMin(glm::min(aabb.getMin(), outer));
-                        aabb.setMax(glm::max(aabb.getMax(), inner));
-                        aabb.setMax(glm::max(aabb.getMax(), outer));
-                    }
-                    glm::vec3 segCenter = aabb.getCenter();
-                    float segRadius = glm::length(aabb.getLength()) * 0.5f;
+                glm::vec3 v0(unitInner * glm::cos(a0), 0.0f, unitInner * glm::sin(a0));
+                glm::vec3 v1(unitOuter * glm::cos(a0), 0.0f, unitOuter * glm::sin(a0));
+                glm::vec3 v2(unitInner * glm::cos(a1), 0.0f, unitInner * glm::sin(a1));
+                glm::vec3 v3(unitOuter * glm::cos(a1), 0.0f, unitOuter * glm::sin(a1));
 
-                    TriangleStripDistanceFunction tsFunc(v0, v1, v2, v3, unitHalfThick,
-                                                         segCenter, segRadius, tsModel, tileSize);
-                    transparentLayer.apply(AddSignedDistanceOperation(), tsFunc, tsModel,
-                                      SimpleBrush(0), TriplanarMappingPainter(),
-                                      fireTileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
+                float aMin = a0 - overlap * angleStep;
+                float aMax = a1 + overlap * angleStep;
+                float hh = unitHalfThick * worldScale;
+                float y = ringPosition.y;
+                BoundingBox aabb;
+                aabb.setMin(glm::vec3(std::numeric_limits<float>::max()));
+                aabb.setMax(glm::vec3(std::numeric_limits<float>::lowest()));
+                int samples = 4;
+                for (int j = 0; j <= samples; ++j) {
+                    float a = aMin + (aMax - aMin) * ((float)j / (float)samples);
+                    float rInner = unitInner * worldScale;
+                    float rOuter = unitOuter * worldScale;
+                    glm::vec3 inner(rInner * glm::cos(a), y - hh, rInner * glm::sin(a));
+                    glm::vec3 outer(rOuter * glm::cos(a), y + hh, rOuter * glm::sin(a));
+                    aabb.setMin(glm::min(aabb.getMin(), inner));
+                    aabb.setMin(glm::min(aabb.getMin(), outer));
+                    aabb.setMax(glm::max(aabb.getMax(), inner));
+                    aabb.setMax(glm::max(aabb.getMax(), outer));
                 }
+                glm::vec3 segCenter = aabb.getCenter();
+                float segRadius = glm::length(aabb.getLength()) * 0.5f;
+
+                TriangleStripDistanceFunction tsFunc(v0, v1, v2, v3, unitHalfThick,
+                                                        segCenter, segRadius, tsModel, tileSize);
+                transparentLayer.apply(AddSignedDistanceOperation(), tsFunc, tsModel,
+                                    SimpleBrush(0), TriplanarMappingPainter(),
+                                    fireTileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
             }
         }
 
