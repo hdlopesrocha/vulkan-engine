@@ -401,7 +401,7 @@ void OctreeTopologyCompute::recordProfile(const ProfileSample& s) {
         a.nodes += b.nodes;
         a.cells += b.cells;
         a.rawVertices += b.rawVertices;
-        a.uniqueVertices += b.uniqueVertices;
+        a.activeVertices += b.activeVertices;
         a.uploadedBytes += b.uploadedBytes;
         a.descriptorWrites += b.descriptorWrites;
         a.retries += b.retries;
@@ -433,7 +433,7 @@ void OctreeTopologyCompute::recordProfile(const ProfileSample& s) {
               << " avg/chunk: nodes=" << (double(profTotal.nodes) * inv)
               << " cells=" << (double(profTotal.cells) * inv)
               << " raw=" << (double(profTotal.rawVertices) * inv)
-              << " unique=" << (double(profTotal.uniqueVertices) * inv)
+              << " activeVerts=" << (double(profTotal.activeVertices) * inv)
               << " bytes=" << (double(profTotal.uploadedBytes) * inv)
               << " descWrites=" << (double(profTotal.descriptorWrites) * inv)
               << " keyCap=" << (double(profTotal.keyCapacity) * inv)
@@ -465,7 +465,7 @@ void OctreeTopologyCompute::printProfileSummary() {
               << " | totals: nodes=" << profTotal.nodes
               << " cells=" << profTotal.cells
               << " raw=" << profTotal.rawVertices
-              << " unique=" << profTotal.uniqueVertices
+              << " activeVerts=" << profTotal.activeVertices
               << " uploadedMB=" << (double(profTotal.uploadedBytes) / (1024.0 * 1024.0))
               << " descWrites=" << profTotal.descriptorWrites
               << " retries=" << profTotal.retries
@@ -730,7 +730,7 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
         s.nodes = nodeCount;
         s.cells = cellCount;
         s.rawVertices = rawCount;
-        s.uniqueVertices = activeVerts;
+        s.activeVertices = activeVerts;
         s.uploadedBytes = uint64_t(nodeCount) * 128u; // 7 input tables, 128 B/node
         s.descriptorWrites = statDescriptorWrites - descWritesAtStart;
         s.retries = attempts > 0 ? attempts - 1 : 0;

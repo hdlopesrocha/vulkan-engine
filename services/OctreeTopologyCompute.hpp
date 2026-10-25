@@ -66,7 +66,7 @@ private:
         uint64_t cells = 0;
         uint64_t chunks = 0;
         uint64_t rawVertices = 0;
-        uint64_t uniqueVertices = 0; // active surface-node slots written
+        uint64_t activeVertices = 0; // active surface-node slots written
         uint64_t uploadedBytes = 0;
         uint64_t descriptorWrites = 0;
         uint64_t retries = 0;
