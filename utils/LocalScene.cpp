@@ -75,6 +75,10 @@ struct GpuTopologyBuilder {
     // possible neighbour cell (collectBreaks samples a non-surface neighbour's
     // cube faces too), so deriving it from the compacted list would be wrong.
     float maxScanCellSize = 0.0f;
+    // All targetLod cells (before compaction). The walk's key-space hint was
+    // calibrated per all-cell, so it must keep using this count even though the
+    // dispatch only scans the straddling subset.
+    uint32_t allScanCells = 0;
     std::unordered_map<OctreeNode*, uint32_t> ids;
 
     GpuTopologyBuilder(const Octree& t, OctreeTopologyInput& o, int lod)
@@ -124,6 +128,7 @@ struct GpuTopologyBuilder {
         if (lod == targetLod) {
             // Discovery/compaction: only cells with a zero crossing can emit.
             maxScanCellSize = std::max(maxScanCellSize, cube.getLengthX());
+            ++allScanCells;
             if (cellStraddlesSurface(n)) out.cells.push_back(addNode(n, cube));
         } else if (lod > targetLod) {
             OctreeNode* children[8] = {};
@@ -171,10 +176,25 @@ bool buildGpuTopologyInput(const Octree& tree, OctreeNode* chunk, const Bounding
     builder.collectCells(chunk, chunkCube);
 
     out.targetLod = targetLod;
-    out.fromId = builder.addNode(chunk, chunkCube);
+    // Descent anchor: the root descent stops at the first node on this path
+    // whose stored lod <= targetLod. Starting there is bit-identical for every
+    // sample inside its cube; if no ancestor stops earlier, the chunk itself is
+    // the safe start (all its ancestors are strictly above the stop level).
+    // Starting below that node would skip the stop and return a finer cell.
+    OctreeNode* startNode = chunk;
+    BoundingCube startCube = chunkCube;
+    for (const auto& link : chain) {
+        if (link.first->getLod() <= targetLod) {
+            startNode = link.first;
+            startCube = link.second;
+            break;
+        }
+    }
+    out.fromId = builder.addNode(startNode, startCube);
     out.fromBrush = chunk->brushIndex;
     out.rootMin = tree.getMin();
     out.rootSize = tree.getLengthX();
+    out.scanCellCount = builder.allScanCells;
 
     // No surface cell at this rung: this is a valid empty chunk, not a
     // flattening failure. computeResident() reports ok with zero geometry and
@@ -197,6 +217,20 @@ bool buildGpuTopologyInput(const Octree& tree, OctreeNode* chunk, const Bounding
     // domain. (The shader anchors individual lookups at the chunk node when the
     // sample is inside it and falls back to this root otherwise.)
     builder.descend(rootId, chain[0].first, chain[0].second);
+
+    // Vertex generation: assign one dense slot to every surface node in the
+    // flattened table (the only nodes that can become triangle corners). The
+    // slot is packed into flags bits 1..31 (bit 0 stays the leaf flag) and
+    // decoded by the shader as (flags >> 1) - 1. Table order makes the pool's
+    // vertex order deterministic; the count is the exact vertex-span size.
+    uint32_t vertexSlot = 0;
+    for (OctreeGpuNode& n : out.nodes) {
+        if (n.type == static_cast<int32_t>(SpaceType::Surface)) {
+            n.flags |= static_cast<int32_t>((vertexSlot + 1u) << 1);
+            ++vertexSlot;
+        }
+    }
+    out.activeVertexCount = vertexSlot;
     return true;
 }
 }

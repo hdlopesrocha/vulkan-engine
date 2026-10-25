@@ -27,9 +27,9 @@
 
 namespace {
 // Chunk geometry is GPU-only: LocalScene flattens the chunk's SDF
-// neighborhood and OctreeTopologyCompute writes the deduped Cartesian
-// vertices + index stream straight into the renderer's packed pools. There is
-// no CPU walker, no host-side vertex stream and no GPU->CPU vertex readback.
+// neighborhood and OctreeTopologyCompute writes the Cartesian vertices +
+// index stream straight into the renderer's packed pools. There is no CPU
+// walker, no host-side vertex stream and no GPU->CPU vertex readback.
 
 // Stable-slot pool capacities (pre-allocated GPU buffers, never reallocated).
 //
@@ -1644,10 +1644,11 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 // called from the main (render) thread each frame.
 //
 // Every entry was built by the GPU topology pass, which wrote the chunk's
-// deduped vertices and index stream straight into its span of the renderer's
-// packed pools (PackedSpaceAllocator — see IndirectRenderer::initSlots). The
-// host only publishes the draw entry and consumes the pending-delete record;
-// no Cartesian vertex is uploaded or read back.
+// surface-node vertices and index stream straight into its span of the
+// renderer's packed pools (PackedSpaceAllocator — see
+// IndirectRenderer::initSlots). The host only publishes the draw entry and
+// consumes the pending-delete record; no Cartesian vertex is uploaded or read
+// back.
 size_t SceneRenderer::publishPendingMeshes(
     VulkanApp* app,
     std::deque<PendingMeshData>& batch,
@@ -2083,12 +2084,12 @@ void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 
 // ── GPU-resident chunk build ────────────────────────────────────────────────
 // The app's only chunk path: the octree neighborhood is flattened (LocalScene),
-// the compute pass writes the chunk's deduped vertices and index stream straight
-// into the renderer's packed pools, and the publisher receives a LoDMesh whose
-// geometry is already resident (gpuSlot/gpuVertexCount/gpuIndexCount). No
-// vertex data is ever uploaded or read back. Returns false only when the
-// resident pipeline is unavailable; once a GPU build starts, a failure means
-// the chunk is skipped with a log — there is no CPU fallback.
+// the compute pass writes the chunk's surface-node vertices and index stream
+// straight into the renderer's packed pools, and the publisher receives a
+// LoDMesh whose geometry is already resident (gpuSlot/gpuVertexCount/
+// gpuIndexCount). No vertex data is ever uploaded or read back. Returns false
+// only when the resident pipeline is unavailable; once a GPU build starts, a
+// failure means the chunk is skipped with a log — there is no CPU fallback.
 bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                                        OctreeNodeData& nodeData, uint8_t chunkLod,
                                        uint32_t version, OctreeTopologyInput& topoInput,

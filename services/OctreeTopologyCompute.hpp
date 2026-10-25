@@ -12,7 +12,7 @@
 class VulkanApp;
 
 // Reserves the packed span for one chunk. Called on the caller's thread
-// between the walk and the dedup/index passes; returning an undersized or
+// between the walk and the finalize pass; returning an undersized or
 // invalid target makes computeResident() fail (the caller then releases it).
 using OctreeTopologyTargetProvider =
     std::function<OctreeTopologyTarget(const OctreeTopologyDemand&)>;
@@ -20,7 +20,7 @@ using OctreeTopologyTargetProvider =
 // GPU triangle-topology service: dispatches
 // shaders/computation/octree/OctreeTriangles.comp (the exact port of the
 // adaptive surface-nets walker) over a flattened octree neighborhood and
-// dedups/writes straight into the renderer's packed pools. There is no arena,
+// writes straight into the renderer's packed pools. There is no arena,
 // no host-side vertex stream and no CPU fallback.
 class OctreeTopologyCompute {
 public:
@@ -32,20 +32,14 @@ public:
     void init(VulkanApp* app);
 
     // Synchronous, worker-thread safe (serialized). Runs the walk, asks
-    // `provider` for a span sized from the walk's actual raw vertex count and
-    // then dedups straight into the renderer's packed pools. `result.ok` is
-    // false when the walk could not be represented (key capacity or span
+    // `provider` for a span sized from the walk's actual raw vertex count (and
+    // the host's surface-node slot count), then writes indices and vertices
+    // straight into the renderer's packed pools. `result.ok` is false when the
+    // walk could not be represented (key capacity, fixed-array or span
     // overflow): the caller drops the chunk — there is no CPU fallback.
     OctreeTopologyResidentResult computeResident(
         const OctreeTopologyInput& input,
         const OctreeTopologyTargetProvider& provider) __attribute__((weak));
-
-    // Dedup keys per node: one. The vertex payload is a pure function of the
-    // emitting node (position, normal, brush, hsv, textureType, mapping data),
-    // so the old per-triplanar-plane split produced identical payloads under
-    // different keys. One key per node bounds both the dedup table and the
-    // number of distinct vertices a chunk can produce.
-    static constexpr uint32_t kVertexKeysPerNode = 1;
 
     VulkanApp* app = nullptr;
     std::mutex mutex;
@@ -67,16 +61,18 @@ private:
         double descriptorMs = 0.0; // both writeDescriptors calls
         double walkMs = 0.0;       // walk submission + fence
         double providerMs = 0.0;
-        double phase2Ms = 0.0;     // fill/dedup/index dispatches + barriers + fence
+        double phase2Ms = 0.0;     // finalize (index + vertex) dispatch + fence
         uint64_t nodes = 0;
         uint64_t cells = 0;
         uint64_t chunks = 0;
         uint64_t rawVertices = 0;
-        uint64_t uniqueVertices = 0;
+        uint64_t uniqueVertices = 0; // active surface-node slots written
         uint64_t uploadedBytes = 0;
         uint64_t descriptorWrites = 0;
         uint64_t retries = 0;
         uint64_t keyCapacity = 0;
+        uint64_t findCellCalls = 0;  // findCellAt descents (diag only)
+        uint64_t reuseHits = 0;      // quadrant lookups avoided by AABB reuse (diag only)
     };
     void recordProfile(const ProfileSample& s);
     void printProfileSummary();
@@ -90,8 +86,8 @@ private:
     uint64_t statDescriptorWrites = 0; // actual bindings written (M6)
 
     // Bumped by ensureCapacity() whenever an input buffer is recreated; the
-    // descriptor path rewrites bindings 0-10 only when it changes (M6).
-    // lastWrittenGeneration starts "impossible" so the first call writes all 13.
+    // descriptor path rewrites bindings 0-9 only when it changes (M6).
+    // lastWrittenGeneration starts "impossible" so the first call writes all 12.
     uint64_t bufferGeneration = 1;
     uint64_t lastWrittenGeneration = ~0ull;
 
@@ -111,8 +107,7 @@ private:
     size_t nodeCap = 0;
     size_t cellCap = 0;
     size_t keyCap = 0;
-    size_t tableCap = 0;
     Buffer bSdf0{}, bSdf1{}, bCube{}, bMeta{}, bHsv{}, bChild03{}, bChild47{};
     Buffer bCells{}, bCounter{};
-    Buffer bRawKeys{}, bDedupTable{};
+    Buffer bRawKeys{};
 };

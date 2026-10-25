@@ -4,9 +4,9 @@
 #include <cstdint>
 
 // Destination of the GPU topology path: the renderer's packed element pools.
-// The compute passes write this chunk's deduped vertices into
+// The finalize pass writes one vertex per host-assigned surface-node slot into
 // `vertexBuffer[baseVertex .. baseVertex+vertexCapacity)` in the renderer's
-// 64-byte Vertex layout and its chunk-local index stream into
+// 64-byte Vertex layout and the chunk-local index stream into
 // `indexBuffer[firstIndex .. firstIndex+indexCapacity)`. The host never
 // uploads or reads vertex data — it only reserves the span and publishes the
 // draw entry (indexCount = index stream length, vertexOffset = baseVertex).

@@ -39,23 +39,25 @@ layout(set = 0, binding = 7,  scalar) readonly buffer InCells { uint cellIds[]; 
 layout(set = 0, binding = 8, scalar) buffer Counters {
     uint vertexCount;      // raw (per-triangle) vertices emitted by the walk
     uint overflowCount;    // fixed-capacity recursion buffer overflowed (chunk invalid)
-    uint uniqueVertexCount;// deduped vertices written into the resident pool
-    uint droppedCount;     // resident pool writes dropped (span full)
+    uint unusedDedupCount; // historical deduped-vertex count; no dedup pass now
+    uint droppedCount;     // output writes dropped (key/vertex/index span full)
+    uint findCellCalls;    // findCellAt descents (VULKAN_SETUP_DIAG only)
+    uint reuseHits;        // quadrant lookups avoided by AABB reuse (diag only)
 };
 
 // ── GPU-resident output ──────────────────────────────────────────────────
-// The walk emits three dedup keys per triangle; a second pass dedups them into
-// the renderer's packed Vertex pool and a third pass rewrites the chunk-local
-// index stream that references it. The pool element is the renderer's 64-byte
-// Vertex (see math/Vertex.hpp):
+// Stage 0 (walk) emits one raw node key per triangle corner. Stage 1
+// (finalize) rewrites the chunk-local index stream from those keys, pointing
+// each corner at the host-assigned slot of its emitting surface node, and
+// writes the vertex payload for every slot. The pool element is the renderer's
+// 64-byte Vertex (see math/Vertex.hpp):
 //   vec4[0] position.xyz | color.x
 //   vec4[1] color.yz | texCoord.xy
 //   vec4[2] normal.xyz | brushIndex bits
 //   vec4[3] textureType | hsv
-layout(set = 0, binding = 9, scalar) buffer RawKeys     { uint rawKeys[]; };     // per raw vertex: emitting node index
-layout(set = 0, binding = 10, scalar) buffer DedupTable { uint dedupTable[]; };  // nodeIndex -> slot + 1 (0 = free)
-layout(set = 0, binding = 11, scalar) writeonly buffer OutVerts { vec4 poolVerts[]; };
-layout(set = 0, binding = 12, scalar) writeonly buffer OutIdx   { uint poolIdx[]; };
+layout(set = 0, binding = 9, scalar) buffer RawKeys { uint rawKeys[]; };  // per raw vertex: emitting node index
+layout(set = 0, binding = 10, scalar) writeonly buffer OutVerts { vec4 poolVerts[]; };
+layout(set = 0, binding = 11, scalar) writeonly buffer OutIdx   { uint poolIdx[]; };
 
 // Per-invocation fixed-capacity overflow flag. The CPU reference uses unbounded
 // vectors for the break lists and recursion, so a GPU cap hit means the result
@@ -68,6 +70,11 @@ void noteOverflow() {
     atomicAdd(overflowCount, 1u);
 }
 
+// VULKAN_SETUP_DIAG per-invocation traversal counters: accumulated locally and
+// published with one atomic pair per scan cell (no per-call atomics).
+int gFindCellCalls = 0;
+int gReuseHits = 0;
+
 layout(push_constant) uniform PC {
     uint cellCount;
     int targetLod;
@@ -79,14 +86,17 @@ layout(push_constant) uniform PC {
     // (3 per emitted triangle). The chunk-local index stream has exactly one
     // entry per raw vertex, so this is also the index-span bound.
     uint keyCapacity;
-    // pass 0 = walk (keys only), 1 = dedup + pool vertex write,
-    // 2 = index write.
+    // pass 0 = walk (emits raw node keys), 1 = finalize (index stream + one
+    // vertex per host-assigned surface-node slot).
     uint pass;
     uint vertexBase;      // span-relative base inside the bound pool window
                           // (0 unless the descriptor offset needed padding)
     uint vertexCapacity;  // pool elements reserved for this chunk
     uint indexBase;       // span-relative base inside the bound index window
     uint indexCapacity;   // index pool elements reserved for this chunk
+    uint indexCount;      // finalize: raw vertices in the index stream
+    uint nodeCount;       // finalize: node-table entries (vertex-tail bound)
+    uint diag;            // 1 = accumulate findCellAt/reuse counters
 } pc;
 
 const int TYPE_EMPTY = 0;
@@ -146,6 +156,9 @@ int nodeLod(uint id) { return meta[id].x; }
 int nodeType(uint id) { return meta[id].y; }
 int nodeBrush(uint id) { return meta[id].z; }
 bool nodeIsLeaf(uint id) { return (meta[id].w & 1) != 0; }
+// Vertex slot assigned by the host during surface-cell compaction, packed as
+// (slot + 1) << 1 in flags bits 1..31; -1 means "not a surface node".
+int nodeSlot(uint id) { return int(meta[id].w >> 1) - 1; }
 vec3 nodeMin(uint id) { return cubeMinSize[id].xyz; }
 float nodeSize(uint id) { return cubeMinSize[id].w; }
 vec3 nodeHsvOf(uint id) { return nodeHsv[id * 2u].xyz; }
@@ -296,12 +309,13 @@ bool worldContains(vec3 pos) {
 // Octree::iterateTriangles::findCellAt — plain root descent (the CPU's hint
 // cache is only an optimisation: it is required to be bit-identical to this).
 //
-// GPU anchor (mirrors the CPU Walk::hint): the chunk node `pc.fromId` is on the
-// root path of every sample inside its cube, and its lod is >= targetLod for
-// every published rung, so descending from it is bit-identical to descending
-// from the root. Samples in the one-cell margin outside the chunk fall back to
-// the root (the anchor is not on their path).
+// GPU anchor (mirrors the CPU Walk::hint): the host passes the first node on
+// the chunk path whose stored lod <= targetLod (or the chunk itself when no
+// ancestor stops earlier). Starting at that node is bit-identical to a root
+// descent for every sample inside its cube; samples in the one-cell margin
+// outside it fall back to the root.
 Cell findCellAt(vec3 pos) {
+    if (pc.diag != 0u) ++gFindCellCalls;
     Cell none;
     none.id = INVALID_ID;
     none.mn = vec3(0.0);
@@ -317,9 +331,12 @@ Cell findCellAt(vec3 pos) {
         const uint anchor = uint(pc.fromId);
         const vec3 amn = nodeMin(anchor);
         const vec3 amax = amn + vec3(nodeSize(anchor));
+        // Strict lod comparison: with anchor.lod == targetLod the root descent
+        // can stop at an ancestor whose lod is also <= targetLod, so only a
+        // strictly coarser-than-stop anchor is guaranteed to be on the path.
         // Strict max: a point exactly on the anchor's upper face follows the
         // sibling branch of the root descent, so it must not start here.
-        if (nodeLod(anchor) >= pc.targetLod &&
+        if (nodeLod(anchor) > pc.targetLod &&
             all(greaterThanEqual(pos, amn)) && all(lessThan(pos, amax))) {
             idx = anchor;
         }
@@ -467,6 +484,7 @@ void sampleQuadrants(EdgeSpan edge, float mid, out Cell cells[4]) {
             all(greaterThanEqual(p, cells[0].mn)) &&
             all(lessThan(p, cells[0].mn + vec3(cells[0].sz)))) {
             cells[q] = cells[0];
+            if (pc.diag != 0u) ++gReuseHits;
         } else {
             cells[q] = findCellAt(p);
         }
@@ -497,7 +515,7 @@ void emitTriangle(Cell c0, Cell c1, Cell c2, float eps) {
     if (b2 <= DISCARD_BRUSH) b2 = pc.fromBrush;
     if (b0 <= DISCARD_BRUSH || b1 <= DISCARD_BRUSH || b2 <= DISCARD_BRUSH) return;
 
-    // One dedup key per triangle corner. `base` is always consumed linearly
+    // One raw node key per triangle corner. `base` is always consumed linearly
     // (the triangle keeps its three consecutive slots), so a triangle that
     // cannot be represented is reported through droppedCount and the chunk is
     // skipped by the host instead of leaving a hole in the stream.
@@ -507,11 +525,10 @@ void emitTriangle(Cell c0, Cell c1, Cell c2, float eps) {
         return;
     }
 
-    // Tag each emitted vertex with its dedup key: the emitting node. The
-    // vertex payload is a pure function of the node (position, normal, brush,
-    // hsv, textureType, mapping data), so the old (node, triplanar plane) key
-    // was redundant: the plane is derived from the same cell normal and is not
-    // stored in the vertex. One key per node also shrinks the dedup table 6x.
+    // Tag each emitted vertex with its emitting node. The finalize pass maps
+    // the key to the host-assigned slot; the payload is a pure function of the
+    // node (position, normal, brush, hsv, textureType, mapping data), so one
+    // key per node is exact.
     rawKeys[base + 0u] = c0.id;
     rawKeys[base + 1u] = c1.id;
     rawKeys[base + 2u] = c2.id;
@@ -819,24 +836,25 @@ void scanCell(uint cellId) {
     }
 }
 
-// ------------------------------------------------------- resident pipeline
+// ------------------------------------------------------- compute stages
 //
-// Pass 0 (walk) wrote one dedup key per raw vertex into rawKeys[]: the
-// emitting node. Pass 1 claims the first raw vertex of every key
-// (atomicCompSwap on the direct-mapped table indexed by the key), writes that
-// representative into the renderer's packed Vertex pool and publishes the slot
-// in the table. Pass 2 rewrites the chunk-local index stream: index i belongs
-// to raw vertex i (triangles are emitted as three consecutive vertices) and
-// points at the deduped slot of its key.
+// Stage 0 (walk, pc.pass == 0): one invocation per compacted scan cell. Emits
+// one raw node key per triangle corner into rawKeys[]; the host reads the raw
+// count and reserves the chunk's vertex/index spans.
 //
-// The representative's payload is REBUILT from the key (node): the walker's
-// vertex payload is by construction a pure function of the emitting node's
-// SDF/cube/hsv/brush/mapping state. Nothing is read back to the host — the
-// packed pools are device-local and only the integer counters return.
+// Stage 1 (finalize, pc.pass == 1): the first pc.indexCount invocations write
+// the chunk-local index stream (index i belongs to raw vertex i and points at
+// the host-assigned slot of its emitting surface node); the remaining
+// pc.nodeCount invocations write one vertex payload per surface-node slot.
 //
-// Note the vertex SLOT a key receives depends on which invocation wins the
-// claim, so the pool's vertex order is not reproducible run to run. The
-// triangle SET — and therefore the rendered surface — is unaffected.
+// The payload is REBUILT from the node id: the walker's vertex payload is by
+// construction a pure function of the emitting node's SDF/cube/hsv/brush/
+// mapping state. Nothing is read back to the host — the packed pools are
+// device-local and only the integer counters return.
+//
+// The host assigns slots in node-table order, so the pool's vertex order is
+// deterministic. The triangle SET — and therefore the rendered surface — is
+// unchanged.
 
 void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int type, vec2 nodeDataIn) {
     // LandBrush only marks its vertices with a sentinel on the CPU; classify the
@@ -864,25 +882,14 @@ void residentWriteVertex(uint slot, vec3 p, vec3 n, int brush, vec3 h, int type,
     poolVerts[o + 3u] = c3;
 }
 
-void residentDedup(uint i) {
-    const uint key = rawKeys[i];
-    const uint old = atomicCompSwap(dedupTable[key], 0u, i + 1u);
-    if (old != 0u) return; // another invocation claimed this vertex first
-
-    const uint slot = atomicAdd(uniqueVertexCount, 1u);
-    if (slot >= pc.vertexCapacity) {
-        // The span is sized from the key space (unique <= key count), so this
-        // only happens on a sizing bug; the host sees droppedCount and skips
-        // the chunk rather than drawing a corrupt mesh.
+// Stage 1: write the vertex payload for one host-assigned surface-node slot.
+void writeVertexForNode(uint node) {
+    const int slot = nodeSlot(node);
+    if (slot < 0) return; // not a surface node: no slot, never referenced
+    if (uint(slot) >= pc.vertexCapacity) {
         atomicAdd(droppedCount, 1u);
-        dedupTable[key] = 1u; // slot 0, harmless: the chunk will not be drawn
         return;
     }
-    dedupTable[key] = slot + 1u;
-
-    // Rebuild the representative from the key (its node); the per-vertex UV and
-    // texture type come from the painted node metadata.
-    const uint node = key;
     Cell c;
     c.id = node;
     c.mn = nodeMin(node);
@@ -892,38 +899,53 @@ void residentDedup(uint i) {
     vec3 n = cellNormal(c, p);
     int brush = nodeBrush(node);
     if (brush <= DISCARD_BRUSH) brush = pc.fromBrush;
-    residentWriteVertex(slot, p, n, brush, nodeHsvOf(node), nodeTextureType(node), nodeData(node));
+    residentWriteVertex(uint(slot), p, n, brush, nodeHsvOf(node), nodeTextureType(node), nodeData(node));
 }
 
-void residentIndex(uint i) {
-    const uint slot = dedupTable[rawKeys[i]] - 1u;
-    poolIdx[pc.indexBase + i] = slot;
+// Stage 1: index stream entry for one raw vertex.
+void writeIndex(uint i) {
+    if (i >= pc.indexCapacity) {
+        atomicAdd(droppedCount, 1u);
+        return;
+    }
+    const int slot = nodeSlot(rawKeys[i]);
+    if (slot < 0) {
+        // A corner whose node has no slot means the host compaction and the
+        // walk disagree; fail the chunk instead of writing slot 0.
+        atomicAdd(droppedCount, 1u);
+        return;
+    }
+    poolIdx[pc.indexBase + i] = uint(slot);
+}
+
+// Stage 0: one compacted scan cell. The diag counters are accumulated locally
+// and published once per invocation (only under VULKAN_SETUP_DIAG).
+void walkStage() {
+    const uint gi = gl_GlobalInvocationID.x;
+    if (gi >= pc.cellCount) return;
+    scanCell(cellIds[gi]);
+    if (pc.diag != 0u) {
+        if (gFindCellCalls > 0) atomicAdd(findCellCalls, uint(gFindCellCalls));
+        if (gReuseHits > 0) atomicAdd(reuseHits, uint(gReuseHits));
+    }
+}
+
+// Stage 1: indices [0, indexCount) then vertices [0, nodeCount).
+void finalizeStage() {
+    const uint gi = gl_GlobalInvocationID.x;
+    if (gi < pc.indexCount) {
+        writeIndex(gi);
+        return;
+    }
+    const uint node = gi - pc.indexCount;
+    if (node >= pc.nodeCount) return;
+    writeVertexForNode(node);
 }
 
 void main() {
-    uint gi = gl_GlobalInvocationID.x;
-    // Passes 1/2 are bounded by the raw vertex count AND by the key capacity:
-    // the walk can overshoot keyCapacity by the corners of a dropped triangle,
-    // and those trailing slots must not be read.
-    if (pc.pass != 0u) {
-        const uint live = min(vertexCount, pc.keyCapacity);
-        if (pc.pass == 2u) {
-            if (gi < live) {
-                // `indexBase` is this chunk's span-relative base inside the
-                // bound descriptor window and `indexCapacity` is the span's
-                // LENGTH: the bound is checked stream-relative (the host
-                // already proved indexCapacity >= raw vertex count).
-                if (gi >= pc.indexCapacity) {
-                    atomicAdd(droppedCount, 1u);
-                    return;
-                }
-                residentIndex(gi);
-            }
-            return;
-        }
-        if (gi < live) residentDedup(gi);
+    if (pc.pass == 0u) {
+        walkStage();
         return;
     }
-    if (gi >= pc.cellCount) return;
-    scanCell(cellIds[gi]);
+    finalizeStage();
 }

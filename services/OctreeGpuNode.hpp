@@ -16,7 +16,9 @@ struct OctreeGpuNode {
     int32_t lod;         // stored, +1-shifted ladder level (0 = unset)
     int32_t type;        // 0 = Empty, 1 = Surface, 2 = Solid (SpaceType)
     int32_t brushIndex;
-    int32_t flags;       // bit0 = leaf (no children block)
+    int32_t flags;       // bit0 = leaf (no children block); bits1+ = vertexSlot + 1
+                         // (0 = node has no vertex slot; assigned by LocalScene
+                         // during surface-cell compaction)
     // Per-vertex mapping painted by the TexturePositionPainter (TextureType + Custom UV).
     int32_t textureType;
     glm::vec2 data;
