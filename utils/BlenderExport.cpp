@@ -26,7 +26,6 @@
 #include "../space/Octree.hpp"
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeTriangleTessellator.hpp"
-#include "../space/OctreeThreadContext.hpp"
 #include "../space/Tesselator.hpp"
 #include "../sdf/SDF.hpp"
 #include "Scene.hpp"
@@ -385,9 +384,8 @@ bool tessellateChunk(const Octree& tree, const ChunkRef& chunk, Geometry& geomet
 
     long triCount = 0;
     Tesselator tess(&triCount);
-    OctreeThreadContext ctx;
     OctreeTriangleTessellator(tree).iterateTriangles(
-        chunk.node, chunk.cube, chunk.level, tess, &ctx, chunkLod, kExportVertexFn);
+        chunk.node, chunk.cube, tess, chunkLod, kExportVertexFn);
     if (!tess.geometry.indices.empty()) {
         geometry = std::move(tess.geometry);
         return true;
@@ -397,9 +395,8 @@ bool tessellateChunk(const Octree& tree, const ChunkRef& chunk, Geometry& geomet
     if (fine > 0 && fine != chunkLod) {
         long triCount2 = 0;
         Tesselator tess2(&triCount2);
-        OctreeThreadContext ctx2;
         OctreeTriangleTessellator(tree).iterateTriangles(
-            chunk.node, chunk.cube, chunk.level, tess2, &ctx2, fine, kExportVertexFn);
+            chunk.node, chunk.cube, tess2, fine, kExportVertexFn);
         if (!tess2.geometry.indices.empty()) {
             geometry = std::move(tess2.geometry);
             return true;

@@ -51,8 +51,6 @@ public:
     void getFromIndices(T * nodes[8], uint indices[8]);
 
     void reset();
-
-    uint allocateIndex();
 };
 
 #include "Allocator.tpp"

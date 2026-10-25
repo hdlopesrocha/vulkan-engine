@@ -6,9 +6,9 @@
 #include <mutex>
 #include <condition_variable>
 #include <future>
-#include <functional>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 #include "SmallFunction.hpp"
 
 class ThreadPool {
@@ -35,9 +35,8 @@ public:
     // blocked waiting on its own subtasks, the queued subtasks never run and
     // the waits never resolve (fork-join starvation deadlock). Running queued
     // tasks while waiting guarantees progress because the task graph is a
-    // finite tree. Safe to call from any thread; task lifetimes are sound
-    // because a task's captured references live in a frame that is itself
-    // blocked in this wait and cannot return before the task completes.
+    // finite tree; once the queue is empty the future's task is running on
+    // another worker and an event-driven fut.wait() is safe.
     template<typename T>
     T getCooperative(std::future<T>& fut);
 
@@ -63,6 +62,10 @@ private:
     std::mutex queue_mutex;
     std::condition_variable condition;
     bool stopping;
+    // Makes stop() idempotent and, importantly, makes concurrent callers wait
+    // for the join: a second caller must not return while the first is still
+    // joining workers that may access the pool's owner.
+    std::once_flag stopOnce;
 };
 
 // Constructor: launch worker threads

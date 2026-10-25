@@ -1,12 +1,10 @@
 #pragma once
-#include <cstddef>
 #include <functional>
 #include "../math/geometry/BoundingCube.hpp"
 #include "OctreeNodeTriangleHandler.hpp"
 
 class Octree;
 class OctreeNode;
-class OctreeThreadContext;
 
 // CPU triangle topology for the octree ("the adaptive walker").
 //
@@ -22,14 +20,13 @@ class OctreeThreadContext;
 // Keep the topology rules in sync with the compute shader when either changes.
 //
 // Cube/level identity: cubes are rebuilt root-consistently by replaying the
-// parent-index chain (never the cached/drifting per-node cubes), and `parentOf`
-// links (seeded by the tree traversal in IteratorHandler) are the only source
-// of the chain. Both properties are load-bearing for bit-exact output.
+// parent-index chain from the world root (never cached/drifting per-node
+// cubes), which is what keeps every lookup bit-identical to a root descent.
 //
 // Owns one walk over a tree: construct it with the octree and call
 // iterateTriangles() for each subtree to tessellate, e.g.
 //   OctreeTriangleTessellator(tree).iterateTriangles(node, cube, level,
-//                                                    handler, context, lod, vertexFn);
+//                                                    handler, lod, vertexFn);
 // The walk holds the tree's shared lock for its duration and nests safely
 // (see OctreeSharedLock). The walk's cell and cube-edge types live in
 // space/EdgeCell.hpp and space/EdgeSpan.hpp.
@@ -48,17 +45,15 @@ public:
     //              Cartesian vertex.
     void iterateTriangles(OctreeNode * from,
                           const BoundingCube &fromCube,
-                          int fromLevel,
                           OctreeNodeTriangleHandler &func,
-                          OctreeThreadContext * context,
                           int targetLod,
                           const std::function<CellVertex(OctreeNode*, const BoundingCube&)>& vertexFn);
 
 private:
-    // One walk over the tree: its fixed inputs, the per-call state (anchor,
-    // caches) and the steps of the walk, defined in the .cpp. iterateTriangles()
-    // builds one per call. The steps are members rather than lambdas, so a call
-    // no longer constructs them and the recursive steps (collectBreaks,
-    // walkLadder) need no std::function.
+    // One walk over the tree: its fixed inputs, the per-call cell cache and the
+    // steps of the walk, defined in the .cpp. iterateTriangles() builds one per
+    // call. The steps are members rather than lambdas, so a call no longer
+    // constructs them and the recursive steps (collectBreaks, walkLadder) need
+    // no std::function.
     struct Walk;
 };

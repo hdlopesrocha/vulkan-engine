@@ -1,23 +1,18 @@
 #pragma once
-#include "Simplifier.hpp"
 #include "ThreadPool.hpp"
-#include <unordered_set>
 #include "OctreeThreadContext.hpp"
 #include "OctreeNodeFrame.hpp"
-#include "OctreeNodeLevel.hpp"
 #include "OctreeAllocator.hpp"
-#include "../math/geometry/Vertex.hpp"
 #include <functional>
 #include "ShapeArgs.hpp"
-#include "../sdf/SignedDistanceFunction.hpp"
-#include <functional>
 #include <shared_mutex>
 #include "../math/geometry/BoundingCube.hpp"
-#include "../math/geometry/Ray.hpp"
-#include <string>
+#include <cstdint>
 // Node identifier used by change handlers/collectors to key per-node state
 // (previously defined in the removed OctreeChangeHandler.hpp).
 typedef uintptr_t NodeID;
+
+class Ray;
 
 
 
@@ -30,14 +25,12 @@ class Octree: public BoundingCube {
     OctreeNode * root;
     typedef unsigned int uint;
 
-    using IterateBorderHandler = std::function<void(const BoundingCube&, const float[8], uint)>;
     using OctreeNodeDataHandler = std::function<void(const OctreeNodeData&)>;
     using IterateHandler = std::function<bool(const Octree&, OctreeNodeData&)>;
     using IterateOrderHandler = std::function<void(const Octree&, OctreeNodeData&, uint8_t[8])>;
     using IterateThreadedHandler = std::function<bool(const Octree&, OctreeNodeData&)>;
 
     OctreeAllocator * allocator;
-    std::atomic<int> inFlightShapeOps{0};
     ThreadPool threadPool = ThreadPool(std::thread::hardware_concurrency());
     // Read/write guard for tree structure + node data. iterate* take a shared
     // (read) lock; apply takes a unique (write) lock so traversal threads never
@@ -87,7 +80,7 @@ class Octree: public BoundingCube {
     bool isChunkNode(float nodeLength) const;
     bool isThreadNode(float nodeLength, float minSize, int threadSize) const;
 private:
-    void buildShapeSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext, bool force) const;
+    void buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext, bool leafPass) const;
     void buildResultSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext) const;
     float evaluateSDF(const ShapeArgs &args, OctreeThreadContext * threadContext, glm::vec3 p) const;
     // Fills the per-apply lattice fields of args (see ShapeArgs/ShapeSdfCache).

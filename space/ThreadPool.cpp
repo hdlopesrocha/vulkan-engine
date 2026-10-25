@@ -31,31 +31,32 @@ ThreadPool::~ThreadPool()
 }
 
 // Explicit stop: signal workers to finish and drain remaining tasks.
-// Safe to call multiple times and from any thread.
+// Idempotent; concurrent callers block until the single join completes.
 void ThreadPool::stop()
 {
-	{
-		std::unique_lock<std::mutex> lock(queue_mutex);
-		if (stopping) return;
-		stopping = true;
-	}
-	condition.notify_all();
-	for(size_t i = 0; i < workers.size(); ++i) {
-		auto &worker = workers[i];
-		if(worker.joinable()) {
-			try {
-				worker.join();
-			} catch (const std::system_error& e) {
-				// Never let a failed join escape: stop() runs from the
-				// noexcept destructor, so any exception here is an
-				// immediate std::terminate. Log and continue tearing down
-				// the remaining workers instead (seen once as ESRCH /
-				// "No such process" during TerrainStreamer pool replacement).
-				fprintf(stderr, "[ThreadPool::stop] worker %zu join failed: %s\n",
-				        i, e.what());
+	std::call_once(stopOnce, [this] {
+		{
+			std::unique_lock<std::mutex> lock(queue_mutex);
+			stopping = true;
+		}
+		condition.notify_all();
+		for(size_t i = 0; i < workers.size(); ++i) {
+			auto &worker = workers[i];
+			if(worker.joinable()) {
+				try {
+					worker.join();
+				} catch (const std::system_error& e) {
+					// Never let a failed join escape: stop() runs from the
+					// noexcept destructor, so any exception here is an
+					// immediate std::terminate. Log and continue tearing down
+					// the remaining workers instead (seen once as ESRCH /
+					// "No such process" during TerrainStreamer pool replacement).
+					fprintf(stderr, "[ThreadPool::stop] worker %zu join failed: %s\n",
+							i, e.what());
+				}
 			}
 		}
-	}
+	});
 }
 
 // Wake all workers. Kept separate from the enqueue path so a batch of

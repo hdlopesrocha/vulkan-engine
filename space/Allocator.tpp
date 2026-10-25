@@ -158,9 +158,3 @@ void Allocator<T>::reset() {
     }
 }
 
-template <typename T>
-uint Allocator<T>::allocateIndex() {
-    T* ptr = allocate();
-    return getIndex(ptr);
-}
-

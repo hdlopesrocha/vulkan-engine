@@ -28,48 +28,22 @@ struct OctreeTriangleTessellator::Walk {
     OctreeNode *from = NULL;
     const BoundingCube &fromCube;
     OctreeNodeTriangleHandler &func;
-    OctreeThreadContext *context = NULL;
     int targetLod = 0;
     const std::function<CellVertex(OctreeNode*, const BoundingCube&)> &vertexFn;
 
-    // Per-call state.
-    // Anchor for the upper-traversal cache: findCellAt climbs from a cached
-    // ancestor of this cell (via context->parentOf) instead of the root. The
-    // parent links (and their child indices) are registered/seeded by the tree
-    // traversal (IteratorHandler), so they are NOT stored inside the nodes.
-    EdgeCell hint;
-
-    // Cache for the parent-chain rebuild below. The chain (and therefore its
-    // reversed node/index arrays) depends ONLY on hint.node, never on the
-    // queried position, so we rebuild it at most once per distinct anchor and
-    // reuse it across findCellAt calls. This avoids O(depth) repeated
-    // parentOf hash-map lookups on every findCellAt invocation.
-    static constexpr int MAX_CHAIN = 64;
-    OctreeNode *cachedChainNode = NULL;
-    OctreeNode *cachedChainNodes[MAX_CHAIN] = {};
-    int cachedChainIndices[MAX_CHAIN] = {};
-    int cachedChainLen = 0;
-    bool cachedChainOk = false;
-
-    // Per-node cache for findCellAt. The 12 edges and their segments repeatedly
+    // Per-call memo for findCellAt. The 12 edges and their segments repeatedly
     // query identical quadrant/face sample positions (the same edge midpoint is
     // sampled by both collectBreaks and emitSegment, and adjacent edges share
     // corners), so memoizing avoids repeated O(depth) descents. findCellAt is a
-    // pure function of pos (the octree/context are constant during this call),
-    // so cached results are reusable and bit-identical to a fresh lookup.
+    // pure function of pos during the walk, so cached results are bit-identical
+    // to a fresh lookup.
     tsl::robin_map<glm::vec3, EdgeCell> cellCache;
 
     Walk(const Octree &tree_, OctreeNode *from_, const BoundingCube &fromCube_,
-         OctreeNodeTriangleHandler &func_, OctreeThreadContext *context_, int targetLod_,
+         OctreeNodeTriangleHandler &func_, int targetLod_,
          const std::function<CellVertex(OctreeNode*, const BoundingCube&)>& vertexFn_)
         : tree(tree_), from(from_), fromCube(fromCube_), func(func_),
-          context(context_), targetLod(targetLod_), vertexFn(vertexFn_) {
-        // Anchor the cache on `from`: its ancestor chain (seeded by the
-        // traversal, rooted at the world root) is already in context->parentOf,
-        // so neighbor lookups climb from a cached parent instead of the root.
-        hint.node = from;
-        hint.cube = fromCube;
-    }
+          targetLod(targetLod_), vertexFn(vertexFn_) {}
 
     static bool samePosition(const glm::vec3 &a, const glm::vec3 &b, float eps) {
         glm::vec3 d = a - b;
@@ -83,8 +57,9 @@ struct OctreeTriangleTessellator::Walk {
         return vertexFn(n, c);
     }
 
-    // Descends to the cell containing pos, starting from the cached anchor
-    // when context->parentOf can rebuild the parent chain, and memoizes it.
+    // Descends from the world root to the cell containing pos and memoizes
+    // the result. Cubes are replayed root-consistently, so the result is
+    // bit-identical to the GPU's root descent.
     EdgeCell findCellAt(const glm::vec3 &pos) {
         auto cacheHit = cellCache.find(pos);
         if(cacheHit != cellCache.end()) {
@@ -96,68 +71,8 @@ struct OctreeTriangleTessellator::Walk {
             return result;
         }
 
-        // Default to the original root descent; the cache below only shortens it.
-        OctreeNode *startNode = tree.root;
-        BoundingCube startCube = static_cast<const BoundingCube&>(tree);
-
-        if(context != NULL && hint.node != NULL) {
-            // Rebuild root-consistent cubes by replaying the parent-index chain
-            // stored in context->parentOf. This is essential: the cached cubes
-            // (fromCube / data.cube) drift from the root-descended cubes by
-            // floating-point error, and at a chunk-boundary face that drift
-            // flips getNodeIndex, sending descent into the wrong (cross-chunk)
-            // cell and leaving holes. Rebuilding from *this keeps every cube
-            // bit-identical to a root descent, so the result matches HEAD.
-            // Rebuild root-consistent cubes without any heap allocation: the
-            // parent chain is a single path from root, so we store it in fixed
-            // stack arrays and pick the deepest ancestor whose cube still
-            // contains pos. (Depth is bounded; MAX_CHAIN is a generous upper
-            // bound. If exceeded we simply fall through to the default root
-            // descent below — correct, just less optimal.)
-            // The chain is cached in cachedChain* and only rebuilt when the
-            // anchor (hint.node) changes; it is independent of pos.
-            if(hint.node != cachedChainNode) {
-                cachedChainNode = hint.node;
-                cachedChainLen = 0;
-                cachedChainOk = true;
-                OctreeNode *n = hint.node;
-                while(n != NULL && n != tree.root) {
-                    auto it = context->parentOf.find(n);
-                    if(it == context->parentOf.end()) { cachedChainOk = false; break; }
-                    if(cachedChainLen >= MAX_CHAIN) { cachedChainOk = false; break; }
-                    cachedChainNodes[cachedChainLen] = n;
-                    cachedChainIndices[cachedChainLen] = it->second.second;
-                    ++cachedChainLen;
-                    n = it->second.first;
-                }
-                if(!(cachedChainOk && n == tree.root && cachedChainLen > 0)) {
-                    cachedChainOk = false;
-                } else {
-                    for(int i = 0; i < cachedChainLen / 2; ++i) {
-                        std::swap(cachedChainNodes[i], cachedChainNodes[cachedChainLen - 1 - i]);
-                        std::swap(cachedChainIndices[i], cachedChainIndices[cachedChainLen - 1 - i]);
-                    }
-                }
-            }
-            if(cachedChainOk) {
-                BoundingCube c = static_cast<const BoundingCube&>(tree);
-                int chosen = -1;
-                for(int i = 0; i < cachedChainLen; ++i) {
-                    c = c.getChild(cachedChainIndices[i]);
-                    if(c.contains(pos)) chosen = i;
-                    else break;
-                }
-                if(chosen >= 0) {
-                    BoundingCube cc = static_cast<const BoundingCube&>(tree);
-                    for(int i = 0; i <= chosen; ++i) cc = cc.getChild(cachedChainIndices[i]);
-                    startNode = cachedChainNodes[chosen];
-                    startCube = cc;
-                }
-            }
-        }
-
-        OctreeNode *node = startNode;
-        BoundingCube cube = startCube;
+        OctreeNode *node = tree.root;
+        BoundingCube cube = static_cast<const BoundingCube&>(tree);
 
         while(node != NULL && !node->isLeaf() &&
               (node->getLod() > targetLod)) {
@@ -181,9 +96,6 @@ struct OctreeTriangleTessellator::Walk {
         if(node != NULL) {
             result.node = node;
             result.cube = cube;
-        }
-        if(result.node != NULL) {
-            hint = result;
         }
         cellCache[pos] = result;
         return result;
@@ -558,7 +470,7 @@ struct OctreeTriangleTessellator::Walk {
         // internal ancestor (simplification 0 but developed > 0). Reject only
         // non-ladder leaves (stored lod 0).
         if(from == NULL || from->getType() != SpaceType::Surface ||
-           (from->getLod() == 0u && from->getLod() == 0)) {
+           from->getLod() == 0u) {
             return;
         }
 
@@ -569,14 +481,12 @@ struct OctreeTriangleTessellator::Walk {
 void OctreeTriangleTessellator::iterateTriangles(
         OctreeNode * from,
         const BoundingCube &fromCube,
-        int fromLevel,
         OctreeNodeTriangleHandler &func,
-        OctreeThreadContext * context,
         int targetLod,
         const std::function<CellVertex(OctreeNode*, const BoundingCube&)>& vertexFn) {
     if (!vertexFn) return; // no solver -> no Cartesian output (Blender-only path)
     OctreeSharedLock lock(tree.treeMutex);
 
-    Walk walk(tree, from, fromCube, func, context, targetLod, vertexFn);
+    Walk walk(tree, from, fromCube, func, targetLod, vertexFn);
     walk.run();
 }

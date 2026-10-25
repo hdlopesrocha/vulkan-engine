@@ -1,13 +1,11 @@
 #include "Octree.hpp"
-#include <memory>
 #include <atomic>
-#include <thread>
+#include <string>
 #include "../math/BrushMode.hpp"
 #include "NodeOperationResult.hpp"
 #include <bit>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -16,16 +14,11 @@
 #include <vector>
 #include <cstdint>
 #include <algorithm>
-#include <unordered_map>
-#include <limits>
-#include <set>
-#include <array>
 #include "OctreeAllocator.hpp"
 #include "OctreeNode.hpp"
 #include "OctreeNodeData.hpp"
-#include "OctreeSharedLock.hpp"
 #include "../sdf/SDF.hpp"
-#include "../math/BrushMode.hpp"
+#include "../math/geometry/Ray.hpp"
 
 
 //      6-----7
@@ -85,6 +78,7 @@ bool Octree::intersect(const Ray& ray, glm::vec3& outPos) const {
 
     struct Entry { OctreeNode* node; BoundingCube cube; float tNear; };
     std::vector<Entry> stack;
+    stack.reserve(64); // one allocation per pick instead of one per level
     stack.push_back({root, *this, tNear});
 
     float bestT = tFar;
@@ -110,24 +104,23 @@ bool Octree::intersect(const Ray& ray, glm::vec3& outPos) const {
         ChildBlock* block = e.node->getBlock(*allocator);
         if (!block) continue;
 
-        struct ChildE { int idx; float tNear; };
-        std::vector<ChildE> children;
+        struct ChildE { OctreeNode* node; int idx; float tNear; };
+        ChildE children[8];
+        int childCount = 0;
         for (int i = 0; i < 8; ++i) {
             OctreeNode* child = block->get(i, *allocator);
             if (!child) continue;
             BoundingCube childCube = e.cube.getChild(i);
             float tn, tf;
             if (ray.intersects(childCube, &tn, &tf) && tf >= 0.0f && tn < bestT) {
-                children.push_back({i, tn});
+                children[childCount++] = {child, i, tn};
             }
         }
 
-        std::sort(children.begin(), children.end(),
+        std::sort(children, children + childCount,
                   [](const ChildE& a, const ChildE& b) { return a.tNear < b.tNear; });
-        for (int i = static_cast<int>(children.size()) - 1; i >= 0; --i) {
-            int idx = children[i].idx;
-            OctreeNode* child = block->get(idx, *allocator);
-            stack.push_back({child, e.cube.getChild(idx), children[i].tNear});
+        for (int i = childCount - 1; i >= 0; --i) {
+            stack.push_back({children[i].node, e.cube.getChild(children[i].idx), children[i].tNear});
         }
     }
 
@@ -277,11 +270,11 @@ float Octree::evaluateSDF(const ShapeArgs &args, OctreeThreadContext * threadCon
     return d;
 }
 
-void Octree::buildShapeSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext, bool force) const {
+void Octree::buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext, bool leafPass) const {
     const glm::vec3 cubeMin = frame.cube.getMin();
     const glm::vec3 cubeLength = frame.cube.getLength();
 
-    if(isLeaf || force) {
+    if(leafPass) {
         for (uint i = 0; i < 8; ++i) {
             r.shapeSDF[i] = evaluateSDF(args, threadContext, cubeMin + cubeLength * Octree::getShift(i));
         }
@@ -414,16 +407,9 @@ bool Octree::isThreadNode(float nodeLength, float minSize, int threadSize) const
     return minSize*threadSize*0.25f < nodeLength && nodeLength <= minSize*threadSize;
 }
 
-// Detached shape tasks have no future to carry an exception, and an escaping
-// exception would terminate the pool worker. The old code never called
-// future.get(), so child exceptions were already discarded; keep that behavior
-// but report the first one so a failure is not invisible.
-static void reportShapeTaskError(const char *what) {
-    static std::atomic<bool> reported{false};
-    if (!reported.exchange(true, std::memory_order_relaxed)) {
-        std::fprintf(stderr, "[Octree::shape] child task failed: %s\n", what);
-    }
-}
+// Detached shape tasks carry their exception back to the parent's ForkState
+// (the parent waits on the latch before reading it), so a failed child cannot
+// silently leave a partially written result that the parent commits.
 
 void Octree::shapeChildren(
     const OctreeNodeFrame &frame, 
@@ -453,6 +439,7 @@ void Octree::shapeChildren(
     // counted down, so the pointers cannot dangle. The whole fork state is
     // only built when this level actually forks, so the sequential path (the
     // vast majority of nodes) pays nothing for it.
+    struct ForkState;
     struct ForkTask {
         const OctreeNodeFrame * frame = nullptr;
         NodeOperationResult * result = nullptr;
@@ -461,11 +448,16 @@ void Octree::shapeChildren(
         OctreeNodeDataHandler * deleteHandler = nullptr;
         Octree * tree = nullptr;
         std::latch * done = nullptr;
+        ForkState * fork = nullptr;
     };
     struct ForkState {
         ForkTask tasks[8];
         std::latch done{8};
         std::exception_ptr enqueueError;
+        // First child exception. Tasks write under the mutex; the parent reads
+        // after the latch wait (which provides the happens-before edge).
+        std::mutex errorMutex;
+        std::exception_ptr taskError;
     };
     std::optional<ForkState> fork;
     if (isChildThread) fork.emplace();
@@ -523,32 +515,36 @@ void Octree::shapeChildren(
             task.deleteHandler = &deleteHandler;
             task.tree = this;
             task.done = &fork->done;
+            task.fork = &*fork;
             ForkTask *taskPtr = &task;
-            inFlightShapeOps.fetch_add(1);
             try {
                 // No notify per task: the whole fork is woken once below.
                 threadPool.enqueueDetachedNoNotify([taskPtr] {
-                    // The context lives in the worker thread and is reused by
-                    // later tasks; args.cacheGeneration invalidates its caches
-                    // when a new apply starts. Nothing captured here outlives
-                    // this frame, which is blocked in the latch wait.
-                    thread_local OctreeThreadContext workerContext;
+                    // Bookkeeping runs exactly once even if the task throws,
+                    // including during the thread-local context construction.
+                    struct Completion {
+                        std::latch *done;
+                        ~Completion() { done->count_down(); }
+                    } completion{taskPtr->done};
                     try {
+                        // The context lives in the worker thread and is reused
+                        // by later tasks; args.cacheGeneration invalidates its
+                        // caches when a new apply starts. Nothing captured here
+                        // outlives this frame, which is blocked in the latch
+                        // wait.
+                        thread_local OctreeThreadContext workerContext;
                         taskPtr->tree->shape(*taskPtr->result, *taskPtr->frame, *taskPtr->args,
                                              &workerContext, *taskPtr->update, *taskPtr->deleteHandler);
-                    } catch (const std::exception &e) {
-                        reportShapeTaskError(e.what());
                     } catch (...) {
-                        reportShapeTaskError("unknown exception");
+                        std::lock_guard<std::mutex> lock(taskPtr->fork->errorMutex);
+                        if (!taskPtr->fork->taskError)
+                            taskPtr->fork->taskError = std::current_exception();
                     }
-                    taskPtr->tree->inFlightShapeOps.fetch_sub(1);
-                    taskPtr->done->count_down();
                 });
             } catch (...) {
                 // The pool is stopping. Account for the task that was not
                 // enqueued so the wait below cannot hang, and rethrow once the
                 // other children have finished.
-                inFlightShapeOps.fetch_sub(1);
                 fork->done.count_down();
                 if (!fork->enqueueError) fork->enqueueError = std::current_exception();
             }
@@ -561,22 +557,19 @@ void Octree::shapeChildren(
         // One wakeup for the eight enqueues (perf report 29, L8). The queue
         // mutex is already released by enqueueDetachedNoNotify().
         threadPool.notifyAll();
-        // Cooperative wait: help drain the pool while the children run. A
-        // worker blocked here would otherwise hold its slot while its own
-        // children sit in the queue, and with a two-level fork band enough
-        // workers can block at once to starve the pool. Same rationale as
-        // ThreadPool::getCooperative.
+        // Help drain the pool, then block on the latch. Once runOneTask() sees
+        // an empty queue, every child still outstanding is already running on
+        // another worker: the two-level fork band ends at 4*minSize, so a
+        // second-level task never enqueues more work. Blocking on the latch
+        // therefore cannot starve the pool, and no polling is needed.
         while (!fork->done.try_wait()) {
-            if (!threadPool.runOneTask()) {
-                // Nothing left to help with: the remaining children are
-                // running on other workers. Sleep instead of spinning so a
-                // blocked parent does not burn a core.
-                std::this_thread::sleep_for(std::chrono::microseconds(50));
-            }
+            if (!threadPool.runOneTask())
+                fork->done.wait();
         }
-        if (fork->enqueueError) {
-            std::rethrow_exception(fork->enqueueError);
-        }
+        // All children have finished. A child failure means its result may be
+        // partially written, so fail the apply instead of committing it.
+        if (fork->taskError) std::rethrow_exception(fork->taskError);
+        if (fork->enqueueError) std::rethrow_exception(fork->enqueueError);
     }
 }
 
@@ -591,7 +584,7 @@ void Octree::shapeChildren(
 static void reportDeletedSubtree(OctreeNode* node, const BoundingCube &cube, uint level,
                                  OctreeAllocator &allocator,
                                  const Octree::OctreeNodeDataHandler &deleteHandler) {
-    if (node == nullptr || !deleteHandler) return;
+    if (node == nullptr) return;
     if (node->getChunkLod() > 0) {
         deleteHandler(OctreeNodeData(level, node, cube, nullptr));
     }
@@ -635,7 +628,7 @@ void Octree::shape(
         NodeOperationResult(), NodeOperationResult() 
     };
 
-    buildShapeSDF(isLeaf, args, frame, r, children, threadContext, true);
+    buildShapeSDF(args, frame, r, children, threadContext, true);
 
     const glm::vec3 center = frame.cube.getCenter();
     float shapeSdfCenter = evaluateSDF(args, threadContext, center);
@@ -776,7 +769,7 @@ void Octree::shape(
     }
 
     if(isLeaf) {
-        // The forced buildShapeSDF() at the top of this function already
+        // The leafPass buildShapeSDF() at the top of this function already
         // filled r.shapeSDF with these eight corners: for a leaf it takes the
         // same `isLeaf || force` branch with the same cubeMin/cubeLength, and
         // nothing below touches r.shapeSDF on the leaf path. buildResultSDF
@@ -784,7 +777,7 @@ void Octree::shape(
         // (perf report 29, C1).
         buildResultSDF(true, args, frame, r, children, threadContext);
     } else if(process && !processed) {
-        buildShapeSDF(false, args, frame, r, children, threadContext, false);
+        buildShapeSDF(args, frame, r, children, threadContext, false);
         buildResultSDF(false, args, frame, r, children, threadContext);
     }
 
@@ -925,7 +918,8 @@ void Octree::shape(
             // to be recycled: report the whole subtree deleted first so the
             // scene drops its pending add / tessellation dedupe records for
             // these addresses.
-            reportDeletedSubtree(r.node, frame.cube, frame.level, *allocator, deleteHandler);
+            if (deleteHandler)
+                reportDeletedSubtree(r.node, frame.cube, frame.level, *allocator, deleteHandler);
             r.node->clear(*allocator, NULL);
         }
         r.node->setType(r.resultType);
@@ -953,17 +947,18 @@ void Octree::shape(
 }
 
 Octree::~Octree() {
-    while (inFlightShapeOps.load() > 0) {
-        std::this_thread::yield();
-    }
+    // stop() drains the queue and joins every worker, so no task can still
+    // reference the tree or allocator. apply() is synchronous (every fork
+    // waits for its children before returning), so no separate in-flight
+    // counter is needed.
     threadPool.stop();
     delete allocator;
 }
 
 void Octree::reset() {
-    while (inFlightShapeOps.load() > 0) {
-        std::this_thread::yield();
-    }
+    // The caller serializes against apply() (the undo path holds treeMutex;
+    // scene resets join the tessellation thread first). apply() joins all of
+    // its fork tasks before returning, so none can be using the allocator.
     if(root != NULL) {
         allocator->childAllocator.reset();
         allocator->nodeAllocator.reset();

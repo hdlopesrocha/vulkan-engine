@@ -4,6 +4,9 @@
 #include <cstdint>
 #include <vector>
 #include <glm/glm.hpp>
+// Provides the std::hash<glm::vec3> specialization used by the fallback map;
+// it must precede the robin_map instantiation.
+#include "../math/geometry/Vertex.hpp"
 #if __has_include(<tsl/robin_map.h>)
 #include <tsl/robin_map.h>
 #else
@@ -64,8 +67,6 @@ public:
 
     // Slow path for positions that are not canonical lattice points.
     tsl::robin_map<glm::vec3, float> &fallback() { return fallback_; }
-
-    size_t capacity() const { return entries_.size(); }
 
 private:
     struct Entry {
