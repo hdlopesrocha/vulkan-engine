@@ -23,6 +23,8 @@ struct LoDMesh {
     uint32_t gpuSlot = UINT32_MAX;   // packed-pool slot holding the mesh
     uint32_t gpuVertexCount = 0;     // deduped vertices written into the span
     uint32_t gpuIndexCount = 0;      // index stream length (== draw index count)
+    uint32_t gpuBaseVertex = 0;      // first vertex-pool element of the span
+    uint32_t gpuFirstIndex = 0;      // first index-pool element of the span
     int32_t brushIndex = 0;          // node material (metadata only)
     int32_t textureType = 0;         // node mapping mode (metadata only)
 };

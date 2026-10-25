@@ -103,6 +103,15 @@ public:
     // With no grass triangles the
     // chunk's previous instance data is cleared instead.
     void generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom);
+    // GPU-resident chunk publish: the chunk's Cartesian mesh already lives in
+    // the solid renderer's packed pools, written by OctreeTriangles.comp. The
+    // placement dispatch reads that span directly and writes the instance
+    // records into a fresh device-local buffer; only the resulting count comes
+    // back (after the dispatch fence) to publish the chunk.
+    void generateForGpuChunk(VulkanApp* app, NodeID nid,
+                             uint32_t baseVertex, uint32_t vertexCount,
+                             uint32_t firstIndex, uint32_t indexCount,
+                             const glm::vec3& boundsMin, const glm::vec3& boundsMax);
     // Drain up to maxChunks from the pending queue.  Call every frame from
     // draw() so chunks trickle in at a controlled rate. Dispatches to the GPU
     // placement path (processPendingChunksGPU) when available, else the CPU
@@ -254,12 +263,27 @@ public:
     static constexpr VkDeviceSize kInstanceStride = sizeof(glm::vec4) * 2;
     // Worst-case vegetation capacities, sized ONCE at startup so no runtime
     // vmaCreateBuffer calls occur after the first frame. 4096 matches the
-    // solid slotted-mode chunk ceiling (SceneRenderer: every veg chunk keys
-    // off a solid chunk id); per-chunk instances are bounded by the chunk
-    // mesh size (1 instance per grass triangle, ≤ ~2k tris for the 512 KB
-    // per-chunk vertex budget).
+    // solid slotted-mode chunk ceiling (every veg chunk keys off a solid chunk
+    // id). The instance figure is the TOTAL concatenated budget divided
+    // evenly across chunks; an individual coarse rung can carry more tufts
+    // (placement sizes each persistent buffer from its measured count).
     static constexpr uint32_t kMaxVegChunks = 4096;
     static constexpr uint32_t kMaxVegInstancesPerChunk = 2048;
+    // GPU placement scratch: the dispatch writes into a generously sized slice
+    // of one shared ring buffer, then the exact per-chunk instance buffer is
+    // allocated from the measured count and the slice is copied into it. This
+    // keeps the persistent per-chunk buffers exactly sized while the output
+    // capacity (chunk area x density, potentially thousands of tufts) is only
+    // bounded by the scratch slice. Coarse ancestor rungs can reach ~1e5 tufts
+    // in a wide terrain; 131k leaves headroom without a per-chunk reservation.
+    static constexpr uint32_t kPlacementBatchMax = 10;
+    static constexpr uint32_t kPlacementScratchPerChunk = 131072;
+    static constexpr uint32_t kPlacementScratchCount = 2;
+    struct PlacementScratch {
+        Buffer buffer;
+        std::atomic<bool> inUse{false};
+    };
+    std::array<PlacementScratch, kPlacementScratchCount> placementScratch;
     static constexpr VkDeviceSize kMaxVegInstances =
         static_cast<VkDeviceSize>(kMaxVegChunks) * kMaxVegInstancesPerChunk;
     // Pre-allocate ALL culling buffers to worst-case capacity in a single
@@ -367,6 +391,16 @@ private:
         glm::vec3 chunkCenter;
         uint32_t instancesPerTriangle;
         uint32_t seed;
+        glm::vec3 boundsMin{0.0f};
+        glm::vec3 boundsMax{0.0f};
+        // GPU-resident publish (generateForGpuChunk): the mesh already lives in
+        // the solid renderer's packed pools at these spans, so the vectors
+        // above stay empty and processPendingChunksGPU reads the pools.
+        bool gpuResident = false;
+        uint32_t baseVertex = 0;
+        uint32_t vertexCount = 0;
+        uint32_t firstIndex = 0;
+        uint32_t indexCount = 0;
     };
     std::deque<PendingChunk> pendingChunks;
     mutable std::mutex pendingChunksMutex;

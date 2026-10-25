@@ -1765,14 +1765,16 @@ size_t SceneRenderer::publishPendingMeshes(
                 solidProxyData[nid] = pd;
         }
 
-        // CPU effect consumers (grass placement, lava anchors) need Cartesian
-        // surface vertices, which no longer cross back to the host. Clear any
-        // stale per-chunk state; the GPU-driven replacements are a follow-up.
-        if (layerRendererType(layer) == LayerRendererType::Solid && vegetationRenderer) {
-            static std::atomic<bool> loggedCpuEffects{false};
-            if (!loggedCpuEffects.exchange(true)) {
-                std::cerr << "[SceneRenderer] grass/lava CPU placement disabled: chunk vertices are "
-                             "GPU-only and never read back\n";
+        // GPU effect consumers. Vegetation placement now reads this chunk's
+        // span of the solid packed pools directly (the CPU never sees a
+        // Cartesian vertex), and the SDF lava anchors still go through the
+        // empty-geometry callback until their GPU path follows.
+        if (layerRendererType(layer) == LayerRendererType::Solid) {
+            if (vegetationRenderer) {
+                vegetationRenderer->generateForGpuChunk(app, nid,
+                    lod.gpuBaseVertex, lod.gpuVertexCount,
+                    lod.gpuFirstIndex, lod.gpuIndexCount,
+                    cubeMin, cubeMax);
             }
             const Geometry empty;
             onFinestPublished(nid, empty, lod.lod);
@@ -1889,12 +1891,12 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // layer routes it to the right IndirectRenderer (via the Scene's
     // LayerRendererType), ChunkManager tracking and deferred-slot source.
     [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch,
-        // onFinestPublished: grass chunks drive vegetation from their finest
-        // geometry; lava chunks (finest rung only) drive the generic SDF
-        // fire volumes. Ancestors nest over the same surface, so coarser
-        // rungs would stack duplicate anchors floating off the true surface.
-        [this, app](NodeID nid, const Geometry& geom, uint8_t lod) {
-            if (this->vegetationRenderer) this->vegetationRenderer->generateForChunk(app, nid, geom);
+        // onFinestPublished: the SDF lava anchors consume whatever host
+        // geometry a publish carries (empty on the GPU-resident path, so lava
+        // anchors stay on their legacy path for now). Vegetation is driven
+        // directly from the published GPU span below, not through this
+        // callback.
+        [this](NodeID nid, const Geometry& geom, uint8_t lod) {
             if (lod == 0 && this->sdfRenderer) {
                 this->sdfRenderer->ingestLavaChunk(static_cast<uintptr_t>(nid), geom);
             }
@@ -2185,6 +2187,8 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     lm.gpuSlot = res.slotIndex;
     lm.gpuVertexCount = res.poolVertexCount;
     lm.gpuIndexCount = res.indexCount;
+    lm.gpuBaseVertex = res.baseVertex;
+    lm.gpuFirstIndex = res.firstIndex;
     lm.brushIndex = nodeData.node ? nodeData.node->brushIndex : 0;
     lm.textureType = nodeData.node ? nodeData.node->textureType : 0;
     onGeometry(layer, nid, lm);

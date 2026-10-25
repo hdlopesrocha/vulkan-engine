@@ -8,5 +8,7 @@ struct OctreeTopologyResidentResult {
     uint32_t poolVertexCount = 0; // surface-node slots written into the pool span
     uint32_t indexCount = 0;      // index stream length (== raw vertex count)
     uint32_t slotIndex = UINT32_MAX;
+    uint32_t baseVertex = 0;      // pool element index of the first span vertex
+    uint32_t firstIndex = 0;      // pool element index of the first span index
     bool ok = false;              // pool span fully written: safe to draw
 };

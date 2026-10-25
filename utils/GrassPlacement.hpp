@@ -7,14 +7,16 @@
 
 #include "../math/geometry/Geometry.hpp"
 
-// Deterministic grass placement shared by VegetationRenderer (CPU placement
-// path) and the offline exporters. Vulkan-free on purpose: the Blender export
+// Deterministic grass placement shared by VegetationRenderer's CPU fallback
+// path and the offline exporters. Vulkan-free on purpose: the Blender export
 // runs headless and must reproduce the renderer's tufts without a device.
 //
-// The algorithms (slot selection, hashes, PRNG, biome gate, dominant-vertex
-// brush test) are the CPU twins of
-// shaders/computation/vegetation/VegetationPlacement.comp; keep them in sync with
-// the shader and with each other.
+// The per-instance math (hashes, PRNG, biome gate, dominant-vertex brush test)
+// is the CPU twin of shaders/computation/vegetation/VegetationPlacement.comp;
+// keep them in sync. The runtime GPU path expands the chunk mesh into
+// area-weighted slots with a deterministic per-triangle hash instead of this
+// file's mt19937/shuffle, so the exact slot set can differ; the tuft placement
+// rule itself is identical.
 
 namespace grass {
 

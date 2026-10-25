@@ -1483,10 +1483,10 @@ public:
             }
         }
 
-        // Drain the CPU vegetation-generation queue so chunkBuffers is
-        // populated before preRenderPass records read barriers.  Must
-        // happen here because barriers cannot be emitted inside dynamic
-        // rendering, and draw() runs inside beginPass/endPass.
+        // Drain the vegetation placement queue so chunkBuffers is populated
+        // before preRenderPass records read barriers.  Must happen here
+        // because barriers cannot be emitted inside dynamic rendering, and
+        // draw() runs inside beginPass/endPass.
         if (sceneRenderer && sceneRenderer->vegetationRenderer) {
             sceneRenderer->vegetationRenderer->processPendingChunks(10);
         }

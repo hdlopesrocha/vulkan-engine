@@ -626,6 +626,8 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
     OctreeTopologyTarget target;
     timed(providerMs, [&] { target = provider(demand); });
     res.slotIndex = target.slotIndex;
+    res.baseVertex = target.baseVertex;
+    res.firstIndex = target.firstIndex;
     const bool targetValid = target.vertexBuffer != VK_NULL_HANDLE &&
                              target.indexBuffer != VK_NULL_HANDLE;
     if (!targetValid || target.vertexCapacity < demand.suggestedVertexCapacity ||
