@@ -491,7 +491,13 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
     OctreeTopologyResidentResult res;
     const size_t nodeCount = input.nodes.size();
     const size_t cellCount = input.cells.size();
-    if (app == nullptr || nodeCount == 0 || cellCount == 0 || !provider) return res;
+    if (app == nullptr || nodeCount == 0) return res;
+    if (cellCount == 0) {
+        // Valid empty chunk: no scan cell at this rung straddles the surface.
+        res.ok = true;
+        return res;
+    }
+    if (!provider) return res;
     if (pipeline == VK_NULL_HANDLE) init(app);
 
     const auto t0 = std::chrono::steady_clock::now();
@@ -558,7 +564,12 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
 
         const uint32_t* counters = (const uint32_t*)bCounter.mappedData;
         const uint32_t emitted = counters[0];
+        const uint32_t walkOverflow = counters[1];
         const uint32_t walkDropped = counters[3];
+        // A fixed-capacity recursion buffer overflow means the GPU walk could
+        // differ from the CPU reference; more key space cannot fix it, so fail
+        // the chunk instead of retrying or drawing truncated geometry.
+        if (walkOverflow != 0) break;
         if (walkDropped == 0 && emitted <= keys) {
             rawCount = std::min<uint32_t>(emitted, (uint32_t)keys);
             rawCount -= rawCount % 3u;
@@ -578,9 +589,12 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
 
     if (!walkOk) {
         static std::atomic<int> logged{0};
-        if (logged.fetch_add(1) < 8)
-            std::cerr << "[OctreeTopology] chunk walk overflowed the key capacity (cap="
-                      << keys << " cells=" << cellCount << "): skipped\n";
+        if (logged.fetch_add(1) < 8) {
+            const uint32_t* finalCounters = (const uint32_t*)bCounter.mappedData;
+            std::cerr << "[OctreeTopology] chunk walk failed (cap=" << keys
+                      << " cells=" << cellCount << " overflow=" << finalCounters[1]
+                      << "): skipped\n";
+        }
         return res; // ok == false
     }
 

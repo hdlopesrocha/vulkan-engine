@@ -38,7 +38,7 @@ layout(set = 0, binding = 7,  scalar) readonly buffer InCells { uint cellIds[]; 
 // Counters are the only values read back by the host.
 layout(set = 0, binding = 8, scalar) buffer Counters {
     uint vertexCount;      // raw (per-triangle) vertices emitted by the walk
-    uint overflowCount;    // reserved (historical arena overflow counter)
+    uint overflowCount;    // fixed-capacity recursion buffer overflowed (chunk invalid)
     uint uniqueVertexCount;// deduped vertices written into the resident pool
     uint droppedCount;     // resident pool writes dropped (span full)
 };
@@ -56,6 +56,17 @@ layout(set = 0, binding = 9, scalar) buffer RawKeys     { uint rawKeys[]; };    
 layout(set = 0, binding = 10, scalar) buffer DedupTable { uint dedupTable[]; };  // nodeIndex -> slot + 1 (0 = free)
 layout(set = 0, binding = 11, scalar) writeonly buffer OutVerts { vec4 poolVerts[]; };
 layout(set = 0, binding = 12, scalar) writeonly buffer OutIdx   { uint poolIdx[]; };
+
+// Per-invocation fixed-capacity overflow flag. The CPU reference uses unbounded
+// vectors for the break lists and recursion, so a GPU cap hit means the result
+// could differ from the reference: record it once and let the host fail (and
+// retry) the chunk instead of drawing silently truncated geometry.
+bool gOverflow = false;
+void noteOverflow() {
+    if (gOverflow) return;
+    gOverflow = true;
+    atomicAdd(overflowCount, 1u);
+}
 
 layout(push_constant) uniform PC {
     uint cellCount;
@@ -284,6 +295,12 @@ bool worldContains(vec3 pos) {
 
 // Octree::iterateTriangles::findCellAt — plain root descent (the CPU's hint
 // cache is only an optimisation: it is required to be bit-identical to this).
+//
+// GPU anchor (mirrors the CPU Walk::hint): the chunk node `pc.fromId` is on the
+// root path of every sample inside its cube, and its lod is >= targetLod for
+// every published rung, so descending from it is bit-identical to descending
+// from the root. Samples in the one-cell margin outside the chunk fall back to
+// the root (the anchor is not on their path).
 Cell findCellAt(vec3 pos) {
     Cell none;
     none.id = INVALID_ID;
@@ -295,7 +312,18 @@ Cell findCellAt(vec3 pos) {
         return none;
     }
 
-    uint idx = 0u; // node table entry 0 is the descent anchor (topmost stop node)
+    uint idx = 0u; // node table entry 0 is the world root
+    if (pc.fromId >= 0) {
+        const uint anchor = uint(pc.fromId);
+        const vec3 amn = nodeMin(anchor);
+        const vec3 amax = amn + vec3(nodeSize(anchor));
+        // Strict max: a point exactly on the anchor's upper face follows the
+        // sibling branch of the root descent, so it must not start here.
+        if (nodeLod(anchor) >= pc.targetLod &&
+            all(greaterThanEqual(pos, amn)) && all(lessThan(pos, amax))) {
+            idx = anchor;
+        }
+    }
     while (!nodeIsLeaf(idx) && nodeLod(idx) > pc.targetLod) {
         vec3 mn = nodeMin(idx);
         float half_ = nodeSize(idx) * 0.5;
@@ -424,6 +452,27 @@ EdgeSpan makeEdgeSpan(int edgeIndex, Cell c) {
     return edge;
 }
 
+// Resolve the four quadrant cells around an edge midpoint. The samples differ
+// only by a one-ulp nudge in the edge's two fixed axes, so they usually land in
+// the same cell. Resolve the first and reuse it for any sample still inside its
+// cube: findCellAt is a pure function of pos, and a point in [mn, mn+sz)
+// follows the same child choices and stops at the same node. Points on/outside
+// a face (the exact-boundary cases the nudges exist for) take a full descent.
+// This is bit-identical to four independent findCellAt calls.
+void sampleQuadrants(EdgeSpan edge, float mid, out Cell cells[4]) {
+    cells[0] = findCellAt(edgeSamplePoint(edge, mid, 0));
+    for (int q = 1; q < 4; ++q) {
+        const vec3 p = edgeSamplePoint(edge, mid, q);
+        if (cells[0].valid &&
+            all(greaterThanEqual(p, cells[0].mn)) &&
+            all(lessThan(p, cells[0].mn + vec3(cells[0].sz)))) {
+            cells[q] = cells[0];
+        } else {
+            cells[q] = findCellAt(p);
+        }
+    }
+}
+
 // ---------------------------------------------------------------- emission
 
 bool samePosition(vec3 a, vec3 b, float eps) {
@@ -483,7 +532,10 @@ float gTaskEnd[TASK_STACK];
 int gTaskTop;
 
 void pushTask(float start, float end) {
-    if (gTaskTop >= TASK_STACK) return; // truncated stack: matches a capped buffer
+    if (gTaskTop >= TASK_STACK) {
+        noteOverflow(); // the CPU recursion has no such cap; do not truncate
+        return;
+    }
     gTaskStart[gTaskTop] = start;
     gTaskEnd[gTaskTop] = end;
     ++gTaskTop;
@@ -497,6 +549,8 @@ void addBreakGlobal(float value, float start, float end, float eps) {
     }
     if (gBreakCount < BREAK_CAP) {
         gBreaks[gBreakCount++] = value;
+    } else {
+        noteOverflow();
     }
 }
 
@@ -508,6 +562,8 @@ void addBreakLocal(float value, float start, float end, float eps) {
     }
     if (gLocalCount < LOCAL_BREAK_CAP) {
         gLocal[gLocalCount++] = value;
+    } else {
+        noteOverflow();
     }
 }
 
@@ -561,6 +617,7 @@ void collectBreaks(EdgeSpan edge, float start, float end) {
     gTaskTop = 0;
     pushTask(start, end);
     while (gTaskTop > 0) {
+        if (gOverflow) return;
         --gTaskTop;
         float a = gTaskStart[gTaskTop];
         float b = gTaskEnd[gTaskTop];
@@ -573,13 +630,14 @@ void collectBreaks(EdgeSpan edge, float start, float end) {
         gLocal[gLocalCount++] = a;
         gLocal[gLocalCount++] = b;
 
+        Cell qcells[4];
+        sampleQuadrants(edge, mid, qcells);
         for (int q = 0; q < 4; ++q) {
-            Cell cell = findCellAt(edgeSamplePoint(edge, mid, q));
-            if (!cell.valid) {
+            if (!qcells[q].valid) {
                 continue;
             }
-            addBreakLocal(cell.mn[edge.axis], a, b, edge.eps);
-            addBreakLocal(cell.mn[edge.axis] + cell.sz, a, b, edge.eps);
+            addBreakLocal(qcells[q].mn[edge.axis], a, b, edge.eps);
+            addBreakLocal(qcells[q].mn[edge.axis] + qcells[q].sz, a, b, edge.eps);
         }
 
         sortUniqueLocal(edge.eps);
@@ -601,9 +659,7 @@ void collectBreaks(EdgeSpan edge, float start, float end) {
 void emitSegment(EdgeSpan edge, float start, float end, bool sign0, bool sign1) {
     float mid = start + (end - start) * 0.5;
     Cell cells[4];
-    for (int q = 0; q < 4; ++q) {
-        cells[q] = findCellAt(edgeSamplePoint(edge, mid, q));
-    }
+    sampleQuadrants(edge, mid, cells);
 
     Cell owner;
     bool ownerValid = false;
@@ -728,10 +784,17 @@ void scanCell(uint cellId) {
     cell.sz = nodeSize(cellId);
     cell.valid = true;
 
+    // Load the eight stored corners once: the 12 edges reuse them (24 reads
+    // collapse to 8) and the compiler cannot always CSE across the accessor
+    // calls.
+    float cornerSdf[8];
+    for (int i = 0; i < 8; ++i) cornerSdf[i] = nodeSdf(cellId, i);
+
     for (int edgeIndex = 0; edgeIndex < 12; ++edgeIndex) {
+        if (gOverflow) return;
         ivec2 ec = EDGES[edgeIndex];
-        bool sign0 = nodeSdf(cellId, ec.x) < 0.0;
-        bool sign1 = nodeSdf(cellId, ec.y) < 0.0;
+        bool sign0 = cornerSdf[ec.x] < 0.0;
+        bool sign1 = cornerSdf[ec.y] < 0.0;
         if (sign0 == sign1) {
             continue;
         }
@@ -745,6 +808,7 @@ void scanCell(uint cellId) {
         gBreaks[1] = edge.end;
         gBreakCount = 2;
         collectBreaks(edge, edge.start, edge.end);
+        if (gOverflow) return;
         sortUniqueGlobal(edge.eps);
 
         for (int i = 1; i < gBreakCount; ++i) {

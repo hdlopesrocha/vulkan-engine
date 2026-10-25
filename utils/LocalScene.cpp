@@ -41,6 +41,24 @@ bool cubeIntersectsCube(const glm::vec3& aMin, const glm::vec3& aMax, const glm:
     return true;
 }
 
+// Surface-cell discovery/compaction: a scan cell can emit a segment only when
+// at least one of its 12 cube edges has corners on both sides of the surface.
+// The cube edge graph is connected, so that is exactly "at least one negative
+// corner and at least one non-negative corner". INFINITY is a non-negative
+// sentinel: SDF::eval skips it when classifying the node, so the stored type
+// alone is not a safe filter (a negative+INFINITY node is typed Solid yet the
+// shader still emits its crossing edges). Dropping the other cells from the
+// scan list is therefore exact and shrinks the walk dispatch.
+static bool cellStraddlesSurface(const OctreeNode* n) {
+    bool hasNegative = false;
+    bool hasNonNegative = false;
+    for (int i = 0; i < 8; ++i) {
+        if (n->sdf[i] < 0.0f) hasNegative = true;
+        else hasNonNegative = true;
+    }
+    return hasNegative && hasNonNegative;
+}
+
 // Flattens the octree neighborhood the GPU topology walker needs for one
 // chunk: the anchor's ancestor path (root-consistent cubes), the node table
 // reachable by the neighbour descent (nodes coarser than targetLod inside the
@@ -52,6 +70,11 @@ struct GpuTopologyBuilder {
     int targetLod;
     glm::vec3 domainMin;
     glm::vec3 domainMax;
+    // Largest cell at targetLod in the subtree, INCLUDING cells filtered out
+    // of the scan list. The search-domain margin must cover the largest
+    // possible neighbour cell (collectBreaks samples a non-surface neighbour's
+    // cube faces too), so deriving it from the compacted list would be wrong.
+    float maxScanCellSize = 0.0f;
     std::unordered_map<OctreeNode*, uint32_t> ids;
 
     GpuTopologyBuilder(const Octree& t, OctreeTopologyInput& o, int lod)
@@ -99,7 +122,9 @@ struct GpuTopologyBuilder {
         if (n == nullptr) return;
         const int lod = static_cast<int>(n->getLod());
         if (lod == targetLod) {
-            out.cells.push_back(addNode(n, cube));
+            // Discovery/compaction: only cells with a zero crossing can emit.
+            maxScanCellSize = std::max(maxScanCellSize, cube.getLengthX());
+            if (cellStraddlesSurface(n)) out.cells.push_back(addNode(n, cube));
         } else if (lod > targetLod) {
             OctreeNode* children[8] = {};
             n->getChildren(*tree.allocator, children);
@@ -144,28 +169,34 @@ bool buildGpuTopologyInput(const Octree& tree, OctreeNode* chunk, const Bounding
     // descent there (mirroring the CPU walker). Claim it before any other node.
     const uint32_t rootId = builder.addNode(chain[0].first, chain[0].second);
     builder.collectCells(chunk, chunkCube);
-    if (out.cells.empty()) return false;
-
-    // Sample points are cell corners nudged outward by one ulp, so one cell of
-    // margin covers everything collectBreaks can query.
-    float cellSize = 0.0f;
-    for (uint32_t id : out.cells) cellSize = std::max(cellSize, out.nodes[id].cubeSize);
-    const glm::vec3 chunkMin = chunkCube.getMin();
-    const float chunkLength = chunkCube.getLengthX();
-    builder.domainMin = chunkMin - glm::vec3(cellSize);
-    builder.domainMax = chunkMin + glm::vec3(chunkLength + cellSize);
-
-    // Start the descent at the world root, exactly like the CPU walker:
-    // anchor-the-chunk tricks are wrong because sample points nudged across the
-    // chunk boundary follow the sibling's path, so only the root is guaranteed
-    // to be on every descent path.
-    builder.descend(rootId, chain[0].first, chain[0].second);
 
     out.targetLod = targetLod;
     out.fromId = builder.addNode(chunk, chunkCube);
     out.fromBrush = chunk->brushIndex;
     out.rootMin = tree.getMin();
     out.rootSize = tree.getLengthX();
+
+    // No surface cell at this rung: this is a valid empty chunk, not a
+    // flattening failure. computeResident() reports ok with zero geometry and
+    // the caller settles the revision as empty.
+    if (out.cells.empty()) return true;
+
+    // Sample points are cell corners nudged outward by one ulp, so one cell of
+    // margin covers everything collectBreaks can query. Use the largest cell at
+    // targetLod, including the non-surface cells compacted out of `cells`: they
+    // are still sampled as neighbours and their cube faces add breaks.
+    const float cellSize = builder.maxScanCellSize;
+    const glm::vec3 chunkMin = chunkCube.getMin();
+    const float chunkLength = chunkCube.getLengthX();
+    builder.domainMin = chunkMin - glm::vec3(cellSize);
+    builder.domainMax = chunkMin + glm::vec3(chunkLength + cellSize);
+
+    // Start the table's descent at the world root, exactly like the CPU walker:
+    // sample points nudged across the chunk boundary follow the sibling's path,
+    // so the table must contain the root-to-cell path for the whole search
+    // domain. (The shader anchors individual lookups at the chunk node when the
+    // sample is inside it and falls back to this root otherwise.)
+    builder.descend(rootId, chain[0].first, chain[0].second);
     return true;
 }
 }
