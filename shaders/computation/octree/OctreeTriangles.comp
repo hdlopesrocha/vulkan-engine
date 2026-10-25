@@ -331,13 +331,12 @@ Cell findCellAt(vec3 pos) {
         const uint anchor = uint(pc.fromId);
         const vec3 amn = nodeMin(anchor);
         const vec3 amax = amn + vec3(nodeSize(anchor));
-        // Strict lod comparison: with anchor.lod == targetLod the root descent
-        // can stop at an ancestor whose lod is also <= targetLod, so only a
-        // strictly coarser-than-stop anchor is guaranteed to be on the path.
-        // Strict max: a point exactly on the anchor's upper face follows the
-        // sibling branch of the root descent, so it must not start here.
-        if (nodeLod(anchor) > pc.targetLod &&
-            all(greaterThanEqual(pos, amn)) && all(lessThan(pos, amax))) {
+        // The host passes the first node on the chunk path whose lod <=
+        // targetLod (or the chunk when no ancestor stops earlier), so no
+        // ancestor of the anchor is a stop node: descending from it is exact
+        // for any sample inside its cube. Strict max: a point exactly on the
+        // upper face follows the sibling branch of the root descent.
+        if (all(greaterThanEqual(pos, amn)) && all(lessThan(pos, amax))) {
             idx = anchor;
         }
     }
