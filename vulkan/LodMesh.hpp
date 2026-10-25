@@ -1,8 +1,19 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include <glm/glm.hpp>
+
+// One lava/flame emitter sampled from a brush-4 chunk surface. The chunk
+// vertex stream is GPU-only, so the anchor is resolved from the node's SDF
+// crossing on the CPU during the build (position + normal only); SdfRenderer
+// derives the flame scale/seed from its lava config.
+struct LavaAnchor {
+    glm::vec3 position = glm::vec3(0.0f);
+    glm::vec3 normal = glm::vec3(0.0f, 1.0f, 0.0f);
+    float seed = 0.0f;
+};
 
 // One published chunk mesh as seen by the renderer. Originally nested in
 // Octree; the GPU-resident build writes the actual Cartesian stream into the
@@ -25,6 +36,10 @@ struct LoDMesh {
     uint32_t gpuIndexCount = 0;      // index stream length (== draw index count)
     uint32_t gpuBaseVertex = 0;      // first vertex-pool element of the span
     uint32_t gpuFirstIndex = 0;      // first index-pool element of the span
+    // Brush-4 (lava/fire) surface samples resolved from the chunk's node SDFs
+    // during the GPU build. SdfRenderer turns these into flame anchors; the
+    // renderer never sees the Cartesian vertex stream.
+    std::vector<LavaAnchor> lavaAnchors;
     int32_t brushIndex = 0;          // node material (metadata only)
     int32_t textureType = 0;         // node mapping mode (metadata only)
 };

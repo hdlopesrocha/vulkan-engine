@@ -12,9 +12,12 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <span>
 #include <unordered_map>
 #include <vector>
 #include <glm/glm.hpp>
+
+#include "../../LodMesh.hpp"
 
 class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
 
@@ -99,6 +102,10 @@ public:
     static constexpr size_t kMaxLavaPerChunk = 12;
     static constexpr size_t kMaxLavaAnchors = 2048;
     void ingestLavaChunk(uintptr_t nid, const Geometry& geom);
+    // GPU-build replacement: flame anchors resolved from the chunk's brush-4
+    // surface-node SDFs (no Cartesian vertex stream needed). Same replace
+    // semantics as ingestLavaChunk; an empty span removes the chunk's anchors.
+    void ingestLavaAnchors(uintptr_t nid, std::span<const LavaAnchor> anchors);
     void removeLavaChunk(uintptr_t nid);
     void clearLava();
     // Rebuild the fire scene from collected anchors when dirty (coalesces

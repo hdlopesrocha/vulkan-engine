@@ -1651,8 +1651,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 // back.
 size_t SceneRenderer::publishPendingMeshes(
     VulkanApp* app,
-    std::deque<PendingMeshData>& batch,
-    const std::function<void(NodeID nid, const Geometry& geom, uint8_t lod)>& onFinestPublished)
+    std::deque<PendingMeshData>& batch)
 {
     size_t slotsPublished = 0;
     static std::atomic<int> lvlHist[8] = {};
@@ -1765,10 +1764,10 @@ size_t SceneRenderer::publishPendingMeshes(
                 solidProxyData[nid] = pd;
         }
 
-        // GPU effect consumers. Vegetation placement now reads this chunk's
-        // span of the solid packed pools directly (the CPU never sees a
-        // Cartesian vertex), and the SDF lava anchors still go through the
-        // empty-geometry callback until their GPU path follows.
+        // GPU effect consumers. Vegetation placement reads this chunk's span
+        // of the solid packed pools directly; the SDF lava anchors were
+        // resolved from the chunk's brush-4 surface nodes during the build
+        // (the CPU never sees a Cartesian vertex in either case).
         if (layerRendererType(layer) == LayerRendererType::Solid) {
             if (vegetationRenderer) {
                 vegetationRenderer->generateForGpuChunk(app, nid,
@@ -1776,8 +1775,12 @@ size_t SceneRenderer::publishPendingMeshes(
                     lod.gpuFirstIndex, lod.gpuIndexCount,
                     cubeMin, cubeMax);
             }
-            const Geometry empty;
-            onFinestPublished(nid, empty, lod.lod);
+            if (sdfRenderer) {
+                if (!lod.lavaAnchors.empty())
+                    sdfRenderer->ingestLavaAnchors(static_cast<uintptr_t>(nid), lod.lavaAnchors);
+                else
+                    sdfRenderer->removeLavaChunk(static_cast<uintptr_t>(nid));
+            }
         }
 
         ++slotsPublished;
@@ -1890,17 +1893,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // Every scene layer flows through the same publish core; each entry's
     // layer routes it to the right IndirectRenderer (via the Scene's
     // LayerRendererType), ChunkManager tracking and deferred-slot source.
-    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch,
-        // onFinestPublished: the SDF lava anchors consume whatever host
-        // geometry a publish carries (empty on the GPU-resident path, so lava
-        // anchors stay on their legacy path for now). Vegetation is driven
-        // directly from the published GPU span below, not through this
-        // callback.
-        [this](NodeID nid, const Geometry& geom, uint8_t lod) {
-            if (lod == 0 && this->sdfRenderer) {
-                this->sdfRenderer->ingestLavaChunk(static_cast<uintptr_t>(nid), geom);
-            }
-        });
+    [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch);
 
     // Main stream: age out pending-delete entries that have been waiting longer
     // than MAX_FRAMES_IN_FLIGHT. The octree node is reused with
@@ -2092,6 +2085,73 @@ void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
 // gpuIndexCount). No vertex data is ever uploaded or read back. Returns false
 // only when the resident pipeline is unavailable; once a GPU build starts, a
 // failure means the chunk is skipped with a log — there is no CPU fallback.
+namespace {
+
+// Trilinear SDF value inside a node cube (local coordinates 0..1).
+float sdfTrilinear(const OctreeGpuNode& n, const glm::vec3& u) {
+    auto c = [&n](int i) { return n.sdf[i]; };
+    const float x = u.x, y = u.y, z = u.z;
+    const float c00 = c(0) * (1.0f - x) + c(4) * x; // z=0, y=0
+    const float c01 = c(1) * (1.0f - x) + c(5) * x; // z=1, y=0
+    const float c10 = c(2) * (1.0f - x) + c(6) * x; // z=0, y=1
+    const float c11 = c(3) * (1.0f - x) + c(7) * x; // z=1, y=1
+    const float c0 = c00 * (1.0f - y) + c10 * y;
+    const float c1 = c01 * (1.0f - y) + c11 * y;
+    return c0 * (1.0f - z) + c1 * z;
+}
+
+// Resolve one flame anchor from a brush-4 surface node: one Newton step from
+// the cube centre along the SDF gradient lands on the zero crossing. The
+// chunk's Cartesian vertices are GPU-only; this is the CPU equivalent used
+// only for the (few, capped) lava emitters, not for rendered geometry.
+bool lavaAnchorFromNode(const OctreeGpuNode& n, LavaAnchor& out) {
+    for (int i = 0; i < 8; ++i) {
+        if (!std::isfinite(n.sdf[i])) return false; // no reliable gradient
+    }
+    if (!(n.cubeSize > 0.0f)) return false;
+    const glm::vec3 center = n.cubeMin + glm::vec3(0.5f * n.cubeSize);
+    const float f = sdfTrilinear(n, glm::vec3(0.5f));
+    const float e = 0.05f; // local unit step
+    const float inv = 1.0f / (2.0f * e * n.cubeSize);
+    const glm::vec3 g(
+        (sdfTrilinear(n, glm::vec3(0.5f + e, 0.5f, 0.5f)) - sdfTrilinear(n, glm::vec3(0.5f - e, 0.5f, 0.5f))) * inv,
+        (sdfTrilinear(n, glm::vec3(0.5f, 0.5f + e, 0.5f)) - sdfTrilinear(n, glm::vec3(0.5f, 0.5f - e, 0.5f))) * inv,
+        (sdfTrilinear(n, glm::vec3(0.5f, 0.5f, 0.5f + e)) - sdfTrilinear(n, glm::vec3(0.5f, 0.5f, 0.5f - e))) * inv);
+    const float g2 = glm::dot(g, g);
+    if (!(g2 > 1e-12f)) return false;
+    glm::vec3 p = center - g * (f / g2);
+    const float margin = 0.02f * n.cubeSize;
+    p = glm::clamp(p, n.cubeMin + glm::vec3(margin),
+                   n.cubeMin + glm::vec3(n.cubeSize - margin));
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return false;
+    out.position = p;
+    out.normal = g * glm::inversesqrt(g2);
+    return true;
+}
+
+// Brush-4 surface nodes that belong to this chunk (assigned a vertex slot by
+// the host-side compaction) produce one anchor each, capped per chunk.
+void collectLavaAnchors(const OctreeTopologyInput& input, NodeID nid,
+                        std::vector<LavaAnchor>& out) {
+    constexpr int kLavaBrush = 4;
+    constexpr size_t kMaxPerChunk = 12;
+    out.clear();
+    for (size_t i = 0; i < input.nodes.size() && out.size() < kMaxPerChunk; ++i) {
+        const OctreeGpuNode& n = input.nodes[i];
+        if (n.brushIndex != kLavaBrush) continue;
+        if (n.type != 1) continue;              // Surface only
+        if ((n.flags >> 1) == 0) continue;      // no vertex slot -> not this chunk's surface
+        LavaAnchor a;
+        if (!lavaAnchorFromNode(n, a)) continue;
+        uint32_t h = static_cast<uint32_t>(nid ^ (nid >> 32)) ^
+                     (static_cast<uint32_t>(i) * 2654435761u);
+        a.seed = static_cast<float>(h & 0xFFFFu) * (100.0f / 65536.0f);
+        out.push_back(a);
+    }
+}
+
+} // anonymous namespace
+
 bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                                        OctreeNodeData& nodeData, uint8_t chunkLod,
                                        uint32_t version, OctreeTopologyInput& topoInput,
@@ -2191,6 +2251,8 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     lm.gpuFirstIndex = res.firstIndex;
     lm.brushIndex = nodeData.node ? nodeData.node->brushIndex : 0;
     lm.textureType = nodeData.node ? nodeData.node->textureType : 0;
+    if (sdfRenderer)
+        collectLavaAnchors(topoInput, nid, lm.lavaAnchors);
     onGeometry(layer, nid, lm);
     published = true;
     return true;

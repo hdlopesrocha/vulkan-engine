@@ -12,6 +12,7 @@
 #include <cstring>
 #include <iostream>
 #include <random>
+#include <set>
 
 // Shape ids shared with SdfSmokeConfig + the shaders: 0 cloud, 1 sphere,
 // 2 cube, 3 fire (one generic flame instance on the volumetric fire path).
@@ -831,6 +832,48 @@ void SdfRenderer::ingestLavaChunk(uintptr_t nid, const Geometry& geom) {
     lavaDirty_ = true;
 }
 
+void SdfRenderer::ingestLavaAnchors(uintptr_t nid, std::span<const LavaAnchor> anchors) {
+    std::lock_guard<std::mutex> lock(sceneMutex);
+    auto it = lavaByChunk_.find(nid);
+    const bool had = (it != lavaByChunk_.end());
+    lavaByChunk_.erase(nid);
+    if (anchors.empty() || config_.lava.density <= 0.0f) {
+        if (had) lavaDirty_ = true;
+        return;
+    }
+
+    std::vector<sdf_gpu::SdfScene::FlameAnchor> out;
+    out.reserve(std::min(anchors.size(), kMaxLavaPerChunk));
+    size_t total = 0;
+    for (const auto& kv : lavaByChunk_) total += kv.second.size();
+    std::mt19937 rng(static_cast<uint32_t>(nid ^ (nid >> 32)) ^ 0x9e3779b9u);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    for (const LavaAnchor& a : anchors) {
+        if (out.size() >= kMaxLavaPerChunk) break;
+        if (total + out.size() >= kMaxLavaAnchors) break;
+        glm::vec3 nrm = a.normal;
+        const float n2 = glm::dot(nrm, nrm);
+        nrm = (n2 > 1e-8f) ? nrm * (1.0f / std::sqrt(n2)) : glm::vec3(0.0f, 1.0f, 0.0f);
+        const float scale = config_.lava.scale * (0.7f + 0.6f * unit(rng));
+        sdf_gpu::SdfScene::FlameAnchor fa;
+        // Plant the flame base on the surface: the tapered flame starts at
+        // the anchor (local y=0) and rises +Y.
+        fa.pos = a.position + nrm * (0.3f * scale);
+        fa.euler = sdf_gpu::SdfScene::eulerAlignYToNormal(nrm);
+        fa.scale = scale;
+        fa.heightScale = 0.8f + 0.6f * unit(rng);
+        fa.seed = (a.seed != 0.0f) ? a.seed : unit(rng) * 100.0f;
+        fa.intensity = 1.0f;
+        out.push_back(fa);
+    }
+    if (out.empty()) {
+        if (had) lavaDirty_ = true;
+        return;
+    }
+    lavaByChunk_[nid] = std::move(out);
+    lavaDirty_ = true;
+}
+
 void SdfRenderer::removeLavaChunk(uintptr_t nid) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     if (lavaByChunk_.erase(nid) > 0) lavaDirty_ = true;
@@ -856,6 +899,24 @@ bool SdfRenderer::rebuildLavaIfDirty() {
     // concatenation only, no field-by-field conversion.
     for (const auto& kv : lavaByChunk_) {
         all.insert(all.end(), kv.second.begin(), kv.second.end());
+    }
+    // Nested LoD rungs cover the same lava region at different resolutions,
+    // so the same patch can emit several near-coincident anchors. Keep one per
+    // 8 m cell; far-field flames are much larger than that, and the SDF scene
+    // cap stays bounded.
+    if (all.size() > 1) {
+        std::set<std::array<int, 3>> seen;
+        std::vector<sdf_gpu::SdfScene::FlameAnchor> unique;
+        unique.reserve(all.size());
+        for (auto& a : all) {
+            const std::array<int, 3> key = {
+                static_cast<int>(std::lround(a.pos.x * 0.125f)),
+                static_cast<int>(std::lround(a.pos.y * 0.125f)),
+                static_cast<int>(std::lround(a.pos.z * 0.125f))
+            };
+            if (seen.insert(key).second) unique.push_back(a);
+        }
+        all.swap(unique);
     }
     pendingScene_ = [&] {
         sdf_gpu::SdfScene::FlameShape shape;

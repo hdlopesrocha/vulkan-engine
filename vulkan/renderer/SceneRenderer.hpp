@@ -411,14 +411,11 @@ private:
     //
     // The core selects, per-entry, by the Scene's LayerRendererType, which
     // IndirectRenderer and per-layer slot bookkeeping apply. Each chunk's
-    // build state runs through the ChunkManager.
-    //
-    //  onFinestPublished: notified with the level-0 (finest) geometry of
-    //                    solid chunks so they can drive vegetation.
+    // build state runs through the ChunkManager. Solid chunks also drive the
+    // GPU-resident effect consumers (vegetation placement span + lava anchors).
     size_t publishPendingMeshes(
         VulkanApp* app,
-        std::deque<PendingMeshData>& batch,
-        const std::function<void(NodeID nid, const Geometry& geom, uint8_t lod)>& onFinestPublished);
+        std::deque<PendingMeshData>& batch);
 
     // Age out pending-delete slots older than MAX_FRAMES_IN_FLIGHT
     // (genuine deletions with no replacement chunk). Routes each layer's
