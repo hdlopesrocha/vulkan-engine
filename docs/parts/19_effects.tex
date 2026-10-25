@@ -1,0 +1,113 @@
+\section{GPU-resident effects: grass and fire}
+\label{sec:effects}
+
+\subsection{The shared span}
+
+Vegetation and fire both need information from the chunk's surface, but
+neither needs a CPU copy of the triangle mesh.  They consume the same
+published span:
+\begin{itemize}
+\item vegetation reads the vertex and index pools directly;
+\item fire reads the node SDFs on the host build and emits anchors.
+\end{itemize}
+Both are keyed by chunk id and both participate in the chunk's lifecycle:
+a republish replaces the old data, a delete tombstones it, and a rebuild
+creates a new version.
+
+\subsection{Vegetation placement}
+
+The placement shader \code{VegetationPlacement.comp} reads the chunk's
+vertex span, treats every triangle as a potential grass emitter, and:
+\begin{enumerate}
+\item rejects triangles with no grass-brush vertex;
+\item computes the triangle area;
+\item expands a stochastic number of virtual slots proportional to area;
+\item samples a barycentric point;
+\item applies the dominant-vertex brush test;
+\item applies the biome noise gate;
+\item selects a blade variant and a rotation fraction by position hash;
+\item writes a 32-byte instance record.
+\end{enumerate}
+The placement output goes into a scratch ring.  The host reads the accepted
+count, allocates an exact persistent buffer, copies the scratch slice, and
+publishes the chunk.  No instance byte reaches the host.  A coarse rung
+with thousands of tufts is capped at \code{kPlacementScratchPerChunk} to
+bound the far-field draw; the cap is a deliberate density reduction, not a
+silent overflow.
+
+\subsection{Why not one instance per triangle?}
+
+The old CPU code expanded slots on the CPU, one per area-weighted sample.
+The GPU port does the same expansion in the shader: each invocation is one
+triangle and loops over its stochastic slot count.  This avoids a
+prefix-sum pass and a second dispatch.  The trade-off is that the output
+order is non-deterministic; the instance record itself is deterministic
+because every random draw is seeded by the chunk, triangle, and slot.
+
+\subsection{The vegetation draw}
+
+The cull emits a blade-tuft command with
+\code{indexCount=36} (12 blades, one triangle each) and an impostor command
+with \code{indexCount=6}.  The instance count and first instance come from
+the per-chunk table.  The vegetation vertex shader reads the instance
+record:
+\begin{itemize}
+\item position,
+\item normal,
+\item variant and rotation,
+\item baked height,
+\end{itemize}
+and expands the procedural blade geometry.  The impostor path samples the
+captured blade atlas and reconstructs depth from the captured depth array.
+
+\subsection{Lava/fire anchors}
+
+The SDF fire effect is driven by brush-4 surfaces.  The old collector
+sampled the CPU mesh; after the GPU-only change it received an empty
+geometry.  The replacement resolves anchors during the chunk build:
+\begin{enumerate}
+\item for every brush-4 surface node that owns a vertex slot, evaluate the
+  node's trilinear SDF and gradient at its centre;
+\item take one Newton step to the zero crossing;
+\item clamp to the node cube;
+\item emit a position, normal, and seed.
+\end{enumerate}
+The anchors are carried on \code{LoDMesh} to the main thread and ingested
+by \code{SdfRenderer}.  The renderer caps the number per chunk, deduplicates
+nested LoD rungs on an 8 m grid, builds a flame instance list, and stages
+the SDF scene.  The volumetric fire path then renders the flames through
+the same generic SDF scene as smoke and bullets.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[io] (V) {vertex/index span};
+  \node[gpu,below=of V] (veg) {placement compute};
+  \node[gpu,right=of veg] (sdf) {node SDF $\to$ anchor};
+  \node[io,below=of veg] (scratch) {scratch ring};
+  \node[io,right=of scratch] (anchors) {anchor list};
+  \node[cpu,below=of scratch] (copy) {exact buffer copy\\+ publish};
+  \node[io,below=of copy] (draw) {grass draws};
+  \node[gpu,below=of anchors] (fire) {volumetric fire};
+  \draw[arrow] (V)--(veg); \draw[arrow] (veg)--(scratch);
+  \draw[arrow] (scratch)--(copy); \draw[arrow] (copy)--(draw);
+  \draw[arrow] (V)--(sdf); \draw[arrow] (sdf)--(anchors);
+  \draw[arrow] (anchors)--(fire);
+\end{tikzpicture}
+\caption{Two GPU-resident effects sharing the chunk span.  Vegetation
+writes instances and copies them to an exact persistent buffer; fire
+resolves anchors during the build and hands them to the SDF renderer.}
+\label{fig:effects}
+\end{figure}
+
+\subsection{Ownership and cleanup}
+
+Both effects register with the chunk lifecycle:
+\begin{itemize}
+\item a republish replaces the chunk's instance buffer/anchor entry;
+\item an empty chunk tombstones the old entry;
+\item a chunk delete removes the entry and defers the buffer destroy until
+  all pending submissions complete;
+\item app shutdown stops the worker pools before the device idle wait.
+\end{itemize}
+The effect data is therefore never left pointing at a freed span.

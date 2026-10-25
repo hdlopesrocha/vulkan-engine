@@ -1,0 +1,238 @@
+%% ============================================================
+%%  docs/gpu_octree_meshing.tex
+%%  From CPU SDF shape construction to GPU-resident Surface Nets
+%%  meshing and rendering.
+%% ============================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,left=2.2cm,right=2.2cm,top=2.5cm,bottom=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs,longtable,array}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{multicol}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc,
+  decorations.pathreplacing,backgrounds,patterns.meta,chains}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+\definecolor{ink}{RGB}{26,34,48}
+\definecolor{accent}{RGB}{24,92,168}
+\definecolor{accent2}{RGB}{196,86,30}
+\definecolor{soft}{RGB}{238,242,247}
+\definecolor{good}{RGB}{28,120,74}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=accent,
+  citecolor=accent2,
+  urlcolor=accent,
+  pdftitle={From CPU SDF Shapes to GPU-Resident Surface Nets Meshing},
+  pdfauthor={Vulkan Engine Technical Report}
+}
+
+\captionsetup{font=small,labelfont=bf,justification=raggedright,
+  singlelinecheck=false}
+\setlist{nosep,leftmargin=1.5em}
+\setlength{\parskip}{2.5pt}
+\setlength{\emergencystretch}{3.5em}
+\setlength{\parindent}{0pt}
+\linespread{1.06}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small CPU SDF Octree $\rightarrow$ GPU Surface Nets}
+\fancyhead[R]{\small Technical Report}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\sdf}{\operatorname{SDF}}
+\newcommand{\interp}{\operatorname{interp}}
+\newcommand{\clip}{\operatorname{clamp}}
+\newcommand{\argmin}{\operatorname*{arg\,min}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\V}{\mathcal{V}}
+\newcommand{\T}{\mathcal{T}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\Oh}{\mathcal{O}}
+\newcommand{\dd}{\,\mathrm{d}}
+
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{invariant}{Invariant}
+\newtheorem{remark}{Remark}
+
+\tikzset{
+  box/.style={draw=ink!55,fill=soft,rounded corners=2pt,
+    align=center,font=\small,inner sep=5pt,minimum height=8mm},
+  cpu/.style={box,fill=blue!8,draw=accent!65},
+  gpu/.style={box,fill=orange!9,draw=accent2!70},
+  io/.style={box,fill=green!8,draw=good!60},
+  arrow/.style={-{Latex[length=2.2mm]},thick,draw=ink!70},
+  darrow/.style={-{Latex[length=2.2mm]},thick,dashed,draw=ink!55},
+  note/.style={font=\scriptsize,text=ink!80,align=center},
+  grid/.style={draw=ink!18,line width=0.35pt}
+}
+
+\lstdefinestyle{cpp}{
+  language=C++,
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{accent!85!black}\bfseries,
+  commentstyle=\color{gray!65},
+  stringstyle=\color{accent2!80!black},
+  numberstyle=\tiny\color{gray},
+  numbers=left,numbersep=5pt,
+  breaklines=true,tabsize=2,showstringspaces=false,
+  frame=single,rulecolor=\color{ink!18},
+  backgroundcolor=\color{ink!2},
+  captionpos=b,
+  columns=fullflexible,keepspaces=true
+}
+\lstdefinestyle{glsl}{
+  language=C,
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{accent!85!black}\bfseries,
+  commentstyle=\color{gray!65},
+  numberstyle=\tiny\color{gray},
+  numbers=left,numbersep=5pt,
+  breaklines=true,tabsize=2,showstringspaces=false,
+  frame=single,rulecolor=\color{ink!18},
+  backgroundcolor=\color{ink!2},
+  captionpos=b,
+  columns=fullflexible,keepspaces=true
+}
+\lstset{style=cpp}
+
+\newtcolorbox{keybox}[1][]{
+  colback=soft,colframe=accent!55,boxrule=0.6pt,arc=2pt,
+  left=6pt,right=6pt,top=4pt,bottom=4pt,
+  fonttitle=\bfseries\small,title={#1}
+}
+
+\title{%
+  \vspace{-1.2cm}
+  \textbf{From CPU SDF Shapes to GPU-Resident Surface Nets Meshing}\\[4pt]
+  {\large A Detailed Account of Adaptive Octree Construction,\\
+  GPU Topology Extraction, and Real-Time Rendering}\\[8pt]
+  {\normalsize Vulkan Engine Technical Report}
+}
+\author{Henrique Rocha}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+This report describes, end to end, how the engine turns an implicit
+signed-distance-model (SDF) scene into a rendered, crack-free, adaptive
+triangle mesh.  The construction is deliberately split between two
+processors.  The CPU owns the \emph{semantic} structure: it evaluates the
+model's distance field, builds and edits an adaptive octree of corner
+samples, chooses the level-of-detail (LoD) ladder, and publishes chunk
+metadata.  The GPU owns every \emph{Cartesian} operation: it flattens a
+chunk's octree neighbourhood into compact tables, walks the twelve cube
+edges, stitches LoD discontinuities, solves one dual vertex per surface
+cell, emits the triangle stream, and writes the final 64-byte vertex and
+index payloads directly into the renderer's device-local packed pools.
+No runtime vertex is read back to the host.
+
+The document is organised as a sequence of algorithms with the data
+structures and invariants that make them correct.  It covers the SDF and
+CSG foundations, octree storage and threading, the CPU shape recursion,
+simplification and the chunk ladder, the CPU reference walker used by the
+offline exporter, the exact GPU port in \code{OctreeTriangles.comp}, the
+two-submission host orchestration, packed-pool span binding and alignment,
+GPU culling with a hole-free hierarchical LoD gate, shadows and ray
+tracing, GPU-side vegetation and lava effects, and the synchronization and
+validation rules that keep the pipeline clean.  It closes with measured
+costs, memory budgets, failure modes, and a set of correctness invariants
+that a future change must preserve.
+\end{abstract}
+
+\vspace{0.5em}
+\noindent\textbf{Keywords:} signed distance functions; adaptive octree;
+Surface Nets; dual contouring; GPU meshing; compute shaders; level of
+detail; crack-free stitching; Vulkan; indirect rendering.
+
+\tableofcontents
+\listoffigures
+\listoftables
+\listofalgorithms
+
+\newpage
+\section*{Notation and conventions}
+\addcontentsline{toc}{section}{Notation and conventions}
+
+\begin{longtable}{@{}p{0.22\linewidth}p{0.70\linewidth}@{}}
+\toprule
+Symbol & Meaning\\
+\midrule
+$f(\mathbf{x})$ & signed distance field; negative inside the solid\\
+$\V$ & an adaptive octree node/cell\\
+$\mathbf{c}$ & a cube minimum corner $\mathbf{c}\in\R^3$\\
+$L$ & cube edge length\\
+$C_i$ & cube corner $i$; bits $(x,y,z)$ with bit 2 $=x$, bit 1 $=y$, bit 0 $=z$\\
+$d_i$ & stored SDF sample at corner $i$; $+\infty$ means ``no data''\\
+$\T$ & a triangle (three corners / three dual vertices)\\
+$s$ & a surface-node slot index assigned on the host\\
+$\N$ & a flattened node table uploaded for one chunk\\
+$\mathcal{P}_v,\mathcal{P}_i$ & packed vertex and index pools\\
+$b_v,b_i$ & pool element base of a reserved chunk span\\
+$\Delta$ & one chunk's cube edge (the chunk boundary)\\
+$r$ & LoD rung index; $r=0$ is the finest published rung\\
+$\tau$ & a threshold (simplification error, break epsilon, etc.)\\
+\bottomrule
+\end{longtable}
+
+\noindent
+The reader is assumed to know Vulkan at the level of command buffers,
+descriptor sets, compute dispatches, and pipeline barriers.  The report
+does not repeat the Vulkan specification; it explains why each operation
+is placed where it is and which synchronization argument makes it legal.
+
+\input{parts/01_intro}
+\input{parts/02_foundations}
+\input{parts/03_sdf}
+\input{parts/04_octree_data}
+\input{parts/05_cpu_shape}
+\input{parts/06_lod}
+\input{parts/07_cpu_walk}
+\input{parts/08_gpu_design}
+\input{parts/09_flatten}
+\input{parts/10_walk}
+\input{parts/11_stitch}
+\input{parts/12_polygon}
+\input{parts/13_qef}
+\input{parts/14_finalize}
+\input{parts/15_orchestration}
+\input{parts/16_sync}
+\input{parts/17_render}
+\input{parts/18_cull}
+\input{parts/19_effects}
+\input{parts/20_performance}
+\input{parts/21_validation}
+\input{parts/22_discussion}
+\input{parts/23_conclusion}
+\input{parts/90_appendix}
+\input{parts/91_bibliography}
+
+\end{document}

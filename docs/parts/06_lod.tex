@@ -1,0 +1,138 @@
+\section{Simplification and the LoD ladder}
+\label{sec:lod}
+
+\subsection{What simplification means here}
+
+The octree's leaf lattice is the finest representation the shape pass ever
+produces.  A coarser representation is obtained by removing all children of
+a node and treating its eight interpolated corners as the node's SDF.  The
+node then becomes a leaf at a coarser level and its dual vertex is solved
+from the coarser eight samples.  The mesh is still a valid dual mesh; it
+simply has fewer, larger cells.
+
+Simplification is not a decimation of an existing triangle mesh.  It is a
+decision made during the shape recursion, before any triangle exists.  This
+is why the GPU can rebuild a chunk at any rung without a separate
+simplification pass: the tree already stores the chosen level.
+
+\subsection{The error criterion}
+
+For a candidate parent cube and its eight child results, the simplifier
+tests each surface child.  For every corner of the child cube it computes
+the parent field's trilinear value and compares it with the child's stored
+corner value:
+\begin{equation}
+  e = \max_{i\in\text{surface children}}\;
+      \max_{j=0}^{7}
+      \left| \operatorname{interp}(\mathbf{d}_{\text{parent}},
+      C_{i,j}) - d_{i,j} \right|.
+\end{equation}
+The parent may collapse only when $e \le \tau L$, where $L$ is the parent
+edge and $\tau$ a user tolerance.  A flat surface has small error and
+collapses; a cliff, a thin wall, or a sharp CSG seam has large error and
+stays subdivided.
+
+\begin{lstlisting}[caption={The simplifier's core checks (abridged).},label={lst:simplify}]
+SimplificationResult Simplifier::simplify(cube, sdf, children, chunkCube) {
+    // 1. material consistency (texturing mode):
+    //    all surface children must share one brush and be leaves
+    // 2. chunk-border guard:
+    //    never simplify a direct child of a chunk root
+    // 3. re-interpolation error:
+    //    for each surface child corner, |parent interp - child value|
+    //    must be <= cube.getLengthX() * distance
+    return result;
+}
+\end{lstlisting}
+
+\subsection{The material and chain guards}
+
+Two non-geometric guards are essential:
+
+\begin{enumerate}
+\item \textbf{Material boundary.}  If two surface children have different
+  brushes, collapsing them would force one material onto the other.  The
+  simplifier refuses.  This keeps a grass/rock boundary sharp even when the
+  geometric error is small.
+\item \textbf{Simplification chain.}  A child may be collapsed only if it is
+  itself a leaf.  If a child still has children, collapsing the parent
+  would skip a level of the ladder and break the hierarchy's monotonicity.
+\end{enumerate}
+
+\subsection{The chunk-border guard}
+
+A chunk root's direct children have length $\Delta/2$.  They are the
+boundary cells between two chunks.  If one chunk simplified such a cell and
+its neighbour did not, the two dual meshes would choose different edge
+vertices at the same boundary.  The stitching algorithm can handle
+different cell sizes in the \emph{interior} of the adaptive walk, but the
+chunk boundary is special: the two chunks are flattened independently and
+never share a node table.  The guard therefore forbids simplifying the
+direct children of a chunk root.  Coarser simplification is allowed only
+deeper in the subtree, where both sides of a boundary see the same
+neighbourhood and the break collector can stitch.
+
+\subsection{Level propagation}
+
+Each node's stored level is the minimum over its surface children plus one:
+\begin{equation}
+  lod(v) =
+  \begin{cases}
+    1, & v \text{ is a leaf at the frontier},\\
+    0, & v \text{ is not a surface node},\\
+    \min_{c\in\text{children}(v)} lod(c) + 1, & \text{otherwise}.
+  \end{cases}
+\end{equation}
+The renderer uses the level as the rung index.  The chunk's own level is
+propagated the same way but only along the chunk ladder:
+\begin{equation}
+  chunkLod(v) =
+  \begin{cases}
+    1, & v \text{ is a chunk root},\\
+    \min_{c} chunkLod(c)+1, & \text{otherwise}.
+  \end{cases}
+\end{equation}
+The published entry stores the 0-based \code{lod} (the shader/indirect gate
+subtracts one implicitly).  A node with \code{chunkLod>0} and
+\code{resultType==Surface} gets a version bump and is published.
+
+\subsection{Why every rung is published}
+
+It is tempting to publish only the finest rung and let the renderer collapse
+it.  That fails for two reasons:
+
+\begin{itemize}
+\item \textbf{The tree is sparse.}  A coarse region may have no fine leaf at
+  all; the only representation is the coarse node's eight samples.
+\item \textbf{The dual mesh is not a simple triangle subset.}  A coarse cell
+  produces a different dual vertex and a different ring than its eight
+  fine children.  Decimating the fine mesh is not equivalent to solving the
+  coarse dual mesh.
+\end{itemize}
+
+Publishing every rung gives the GPU gate a complete ladder.  The gate then
+selects exactly one rung per region, so the extra rungs cost memory but not
+draw calls.  The memory is bounded by the number of chunk-bearing nodes
+(about one per $(\Delta/2,\Delta]$ cell) and is preallocated.
+
+\subsection{Chunk versions and rebuilds}
+
+Every published chunk carries a version.  The scene layer records the
+version it has already emitted; a publish with the same version is
+\code{UpToDate} and is skipped.  An edit bumps the version of the affected
+chunk roots and their ancestors.  The renderer's pending queue then
+contains a new entry for each affected rung.  The old span remains in the
+pool until the new span is published, so no frame ever sees a hole.
+
+\subsection{Cost model}
+
+Let $C$ be the number of surface cells at the finest lattice, $N$ the
+number of nodes in the tree, and $R$ the number of ladder rungs.  The
+simplifier is linear in the number of surface children and corner tests:
+\begin{equation}
+  T_{\text{simplify}} = \Oh(N R \, 8 \cdot 8)
+\end{equation}
+in the worst case, but in practice most nodes fail the first material or
+chain guard and do not reach the corner loop.  The dominant cost of a
+shape apply is the field evaluation, not the simplifier.  The cache makes
+repeated corner evaluations across neighbouring cubes cheap.

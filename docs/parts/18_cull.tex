@@ -1,0 +1,122 @@
+\section{GPU culling and the hole-free LoD gate}
+\label{sec:cull}
+
+\subsection{One dispatch, many streams}
+
+The solid \code{IndirectRenderer} owns a single compute dispatch
+(\code{IndirectRenderer.comp}) that culls:
+\begin{itemize}
+\item solid terrain chunks;
+\item SDF debug cubes;
+\item mesh bounding boxes;
+\item main-view vegetation (blade tufts and impostors);
+\item three shadow cascades for solid and vegetation.
+\end{itemize}
+The different streams are appended in the same dispatch and written to
+separate outputs.  This avoids one dispatch per stream and keeps the
+per-frame CPU cost constant.
+
+\subsection{Frustum test}
+
+The view-projection matrix is a push constant.  The shader extracts six
+normalized planes once per workgroup and tests an AABB by its most positive
+vertex.  The test is conservative: it can keep a box that is just outside,
+but it never rejects a box that intersects the frustum.
+
+\subsection{The hierarchical rung gate}
+
+The LoD gate is the most delicate part of the renderer.  Each published
+chunk is a cell of a dyadic ladder.  The goal is to draw exactly one rung
+per region, with no holes and no overlaps.  A naive distance-to-centre band
+fails because the centres of parent and child are not nested at the same
+position; it can reject every rung of a column.
+
+The engine uses the per-entry form of the classic CDLOD recursion.  For an
+entry at level $r$ with cell size $L$:
+\begin{align}
+  L_{\text{base}} &= L/2^r,\\
+  R_{\text{self}} &= L_{\text{base}}\cdot\text{bias}\cdot r,\\
+  \text{recurseSelf} &= (r>0)\land
+    \operatorname{dist}_{\text{AABB}}(\mathbf{c},L) < R_{\text{self}}.
+\end{align}
+The parent cell is the aligned double-size cube containing the entry.
+The parent range is $L_{\text{base}}\cdot\text{bias}\cdot(r+1)$.  The entry
+is selected when
+\begin{equation}
+  \text{recurseParent} \land \lnot\text{recurseSelf},
+\end{equation}
+with the coarsest rung selected when it does not recurse, and the finest
+rung selected whenever its parent recursed (there is nothing finer to
+clamp to).  Both distance and range are monotone along the chain, so
+exactly one level satisfies the transition for every camera position.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.9]
+  \foreach \x/\y/\s/\lab/\col in {
+    0/0/4/root/accent!12,
+    0/0/2/child/accent!22,
+    0/0/1/leaf/accent2!25,
+    2/0/2/sibling/accent!18,
+    4/0/2/sibling/accent!18} {
+    \fill[\col] (\x,\y) rectangle ++(\s,\s);
+    \draw (\x,\y) rectangle ++(\s,\s);
+  }
+  \node[font=\scriptsize] at (2,2.2) {root $r{=}0$};
+  \node[font=\scriptsize] at (0.5,0.5) {leaf $r{=}2$};
+  \node[font=\scriptsize] at (3,1) {sibling};
+  \node[font=\scriptsize] at (5,1) {sibling};
+  \draw[accent2,thick,-{Latex[length=2mm]}] (2,-0.4) -- (2,2.4);
+  \node[below,font=\scriptsize] at (2,-0.45) {camera distance};
+  \draw[decorate,decoration={brace,mirror,amplitude=4pt},good]
+    (0,-0.9)--(2,-0.9) node[midway,below=4pt,font=\scriptsize]{select leaf};
+  \draw[decorate,decoration={brace,mirror,amplitude=4pt},good]
+    (2,-0.9)--(6,-0.9) node[midway,below=4pt,font=\scriptsize]{select sibling rung};
+\end{tikzpicture}
+\caption{The hierarchical gate selects one rung per region.  The leaf is
+selected near the camera; the sibling rung is selected farther away.  A
+region can never lose all rungs because the parent/child ranges are
+monotone along the chain.}
+\label{fig:gate}
+\end{figure}
+
+\subsection{The visible-LoD stamp}
+
+The gate's decision is written into \code{visibleLods[s]} as
+\begin{equation}
+  \text{stamp} =
+  \begin{cases}
+    r, & \text{kept},\\
+    \texttt{0xFFFFFFFE}, & \text{rejected LoD entry},\\
+    \texttt{0xFFFFFFFF}, & \text{no LoD data (legacy)}.
+  \end{cases}
+\end{equation}
+The shadow cascade cull reads this stamp instead of re-deriving the
+selection with a stale camera position.  This fixes the old bug where far
+chunks cast finest-mesh shadows for a mesh the main pass never drew.
+
+\subsection{Vegetation follows the chunk}
+
+Vegetation is not a separate culling stream.  The per-solid-entry
+vegetation table holds the instance count and first instance for the
+chunk.  When the solid entry survives the frustum and rung gate, the same
+dispatch emits a blade-tuft command and an impostor command for the chunk.
+The vegetation bounding box is the chunk AABB, so it is culled exactly with
+the terrain.  A chunk with no vegetation has \code{instanceCount=0} and is
+skipped.
+
+\subsection{Water pin}
+
+The water stream uses the same gate but pins the finest rung
+($r=0$) at every distance.  Small floating water volumes (mirror spheres)
+are sub-cell features past rung 2--3; the coarse rungs mesh to nothing and
+would leave a hole.  There are few water draws, so finest-always is
+affordable.  The shadow, backface, and RT passes follow the same stamp.
+
+\subsection{Indirect count}
+
+The cull writes a compacted command array and a count.  The draw uses the
+indirect-count command with the count buffer.  The count is
+read back asynchronously for the stats overlay; the draw itself never
+waits on the CPU.  The count buffer is reset by \code{vkCmdFillBuffer}
+before the dispatch.

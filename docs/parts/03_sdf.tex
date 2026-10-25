@@ -1,0 +1,204 @@
+\section{The SDF model and its discretisation}
+\label{sec:sdf}
+
+\subsection{Primitives and transformations}
+
+A scene is a list of operations applied to an initially empty field.  Each
+operation carries a distance function, a transformation, a brush, and an
+optional painter.  The distance functions are evaluated in the primitive's
+local space; the transformation maps the query point into that space and
+the result is scaled back when the field is not unit-speed.  The engine's
+primitive catalogue includes spheres, boxes, capsules, cylinders, cones,
+tori, tapered primitives, height maps, road splines, swept polygons, and
+extruded SVG polygons.  The exact primitive is irrelevant to the mesher:
+every primitive reduces to a function
+\begin{equation}
+  d = f_{\text{primitive}}(\mathbf{x}_{\text{local}}),
+\end{equation}
+and every CSG operation reduces to a scalar combination of two such
+values.
+
+Brushes carry the material identity that eventually becomes the vertex's
+\code{brushIndex}; painters write the per-node HSV tint and the mapping
+mode/UV scale.  The mesher never interprets either: it copies the node's
+brush and mapping state into the vertex payload in stage 1.
+
+\subsection{Corner sampling}
+
+The octree stores a field value only at the eight corners of each cube.
+For a cube with minimum $\mathbf{c}$ and edge $L$, corner $i$ is
+\begin{equation}
+  C_i = \mathbf{c} + L\,\mathbf{s}_i,
+  \qquad
+  \mathbf{s}_i = \bigl((i\gg2)\&1,\;(i\gg1)\&1,\;i\&1\bigr),
+  \label{eq:corner}
+\end{equation}
+with bit 2 selecting $x$, bit 1 selecting $y$, and bit 0 selecting $z$.
+The stored array is
+\begin{equation}
+  \mathbf{d} = (d_0,\ldots,d_7), \qquad d_i = f(C_i).
+\end{equation}
+A corner with no data is stored as $+\infty$.  This sentinel is important:
+a value of $+\infty$ means ``unknown'', not ``very far outside''.  The
+classifier skips it, and the QEF skips any edge with a non-finite
+endpoint.  Treating it as a finite positive value would place vertices at
+the corner with a wild normal, creating the familiar ``spike through the
+terrain'' artefact.
+
+\subsection{Classification}
+
+The node type is computed from the signs of the finite corners:
+\begin{equation}
+  \operatorname{type}(\mathbf{d}) =
+  \begin{cases}
+    \text{Empty}, & \text{no finite negative corner},\\
+    \text{Solid}, & \text{finite corners are all negative},\\
+    \text{Surface}, & \text{both signs are present}.
+  \end{cases}
+  \label{eq:type}
+\end{equation}
+The implementation is careful to skip $+\infty$ and to treat $0$ as
+non-negative.  A cell with a negative corner and an $+\infty$ corner is
+classified \emph{Solid} by the stored type yet can still emit a crossing
+edge; therefore the GPU scan list is filtered by an explicit
+``straddles the surface'' test, not by the stored type alone.  This
+distinction is one of the subtle correctness points of the flattening.
+
+\subsection{Trilinear reconstruction and its gradient}
+
+Inside a cube, write the local coordinate
+\begin{equation}
+  \mathbf{u} = \frac{\mathbf{x}-\mathbf{c}}{L}\in[0,1]^3.
+\end{equation}
+The trilinear interpolant is
+\begin{align}
+  f(\mathbf{u}) &=
+    (1-u_x)(1-u_y)(1-u_z)d_0
+  + (1-u_x)(1-u_y)u_z d_1 \nonumber\\
+  &\quad + (1-u_x)u_y(1-u_z)d_2
+  + (1-u_x)u_y u_z d_3 \nonumber\\
+  &\quad + u_x(1-u_y)(1-u_z)d_4
+  + u_x(1-u_y)u_z d_5 \nonumber\\
+  &\quad + u_x u_y(1-u_z)d_6
+  + u_x u_y u_z d_7 .
+\end{align}
+The analytic gradient is used for normals:
+\begin{align}
+  \frac{\partial f}{\partial x} &=
+    (1-u_y)(1-u_z)(d_4-d_0)
+  + (1-u_y)u_z(d_5-d_1) \nonumber\\
+  &\quad + u_y(1-u_z)(d_6-d_2)
+  + u_y u_z(d_7-d_3),\\
+  \frac{\partial f}{\partial y} &=
+    (1-u_x)(1-u_z)(d_2-d_0)
+  + u_x(1-u_z)(d_3-d_1) \nonumber\\
+  &\quad + (1-u_x)u_z(d_6-d_4)
+  + u_x u_z(d_7-d_5),\\
+  \frac{\partial f}{\partial z} &=
+    (1-u_x)(1-u_y)(d_1-d_0)
+  + (1-u_x)u_y(d_3-d_2) \nonumber\\
+  &\quad + u_x(1-u_y)(d_5-d_4)
+  + u_x u_y(d_7-d_6).
+\end{align}
+The world-space gradient is $\nabla_{\mathbf{x}} f =
+(\partial_x f,\partial_y f,\partial_z f)/L$.  The normal is the normalized
+gradient.  If the gradient is degenerate, the shader falls back to
+$(0,1,0)$; this is preferable to a NaN vertex.
+
+\subsection{The trilinear lerp with sentinels}
+
+A naive \code{mix(a,b,t)} evaluates $a(1-t)+bt$.  If one endpoint is
+$+\infty$ and the corresponding weight is exactly zero, the product is
+$0\cdot\infty=\mathrm{NaN}$.  The engine uses a guarded lerp:
+\begin{equation}
+  \operatorname{lerp}(a,b,t) =
+  \begin{cases}
+    a, & t\le 0,\\
+    b, & t\ge 1,\\
+    +\infty, & a=+\infty \text{ or } b=+\infty,\\
+    a+(b-a)t, & \text{otherwise}.
+  \end{cases}
+  \label{eq:lerp}
+\end{equation}
+This keeps the sentinel semantics through interpolation and is used by the
+CPU reference, the GPU shader, and the simplifier.  It is also why the
+shader marks the sensitive expressions \code{precise}: reassociation can
+change the sign of an expression that is exactly zero at a corner.
+
+\subsection{The QEF vertex}
+
+For each finite sign-changing edge $e=(i,j)$, let
+\begin{equation}
+  \mathbf{p}_e = (1-t_e)\mathbf{p}_i + t_e\mathbf{p}_j,
+  \qquad
+  t_e = \clip\!\left(\frac{d_i}{d_i-d_j},0,1\right).
+\end{equation}
+The edge normal is the interpolation of the two corner normals,
+normalized.  The QEF is
+\begin{equation}
+  E(\mathbf{x}) = \sum_e \left(\mathbf{n}_e\cdot
+  (\mathbf{x}-\mathbf{p}_e)\right)^2 .
+\end{equation}
+Its normal equations are
+\begin{equation}
+  \Bigl(\sum_e \mathbf{n}_e\mathbf{n}_e^{T}\Bigr)\mathbf{x}
+  = \sum_e \mathbf{n}_e\,(\mathbf{n}_e\cdot\mathbf{p}_e),
+  \label{eq:qef}
+\end{equation}
+solved by Cramer's rule.  Two regularizers are essential:
+\begin{enumerate}
+\item the matrix is shifted by $\epsilon I$ with $\epsilon=10^{-2}$;
+\item the right-hand side is shifted by $\epsilon\,\bar{\mathbf{p}}$
+  where $\bar{\mathbf{p}}$ is the average edge crossing.
+\end{enumerate}
+Without them, a cell with one crossing edge has a rank-one matrix and the
+solution can shoot arbitrarily far away.  The result is clamped to the
+cell cube, so a dual vertex can never leave its cell.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.25]
+  \draw[grid] (0,0) rectangle (3,3);
+  \foreach \x in {0,1,2,3} \foreach \y in {0,1,2,3}
+    \fill[ink!60] (\x,\y) circle (0.6pt);
+  % a slice
+  \draw[accent,thick] (0.2,2.35) .. controls (1.0,1.9) and (2.1,1.7) .. (2.8,1.2);
+  \fill[accent2!12] (0.2,2.35) -- (2.8,1.2) -- (2.8,3) -- (0.2,3) -- cycle;
+  % crossings and normals
+  \foreach \x/\y/\nx/\ny in {0.55/2.25/-0.15/0.99, 1.45/1.88/-0.15/0.99, 2.35/1.43/-0.15/0.99} {
+    \fill[accent2] (\x,\y) circle (2pt);
+    \draw[accent2,-{Latex[length=1.8mm]}] (\x,\y) -- ++(\nx*0.55,\ny*0.55);
+  }
+  \node[accent2,font=\small] at (2.55,2.55) {$d>0$};
+  \node[accent,font=\small] at (0.55,1.25) {$d<0$};
+  \draw[decorate,decoration={brace,amplitude=4pt},ink!70]
+    (3.12,1.43) -- (3.12,2.25) node[midway,right=5pt,font=\scriptsize]{edge crossings};
+\end{tikzpicture}
+\caption{A surface cell in two dimensions.  The shaded region is the
+inside ($d<0$).  Sign changes on cube edges give crossing points and
+normals; the QEF fits a dual vertex to those planes.  In three dimensions
+there are twelve cube edges, and the vertex is clamped inside the cube.}
+\label{fig:qef2d}
+\end{figure}
+
+\subsection{Brushes, painters, and mapping state}
+
+The node stores the brush index, an HSV tint, the texture-mapping mode, and
+two generic data values.  The brush is painted at the shape leaf; internal
+nodes inherit the dominant painted child.  The GPU vertex payload packs:
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Word & Components & Source\\
+\midrule
+0 & position.xyz, color.x & QEF position; color is 1\\
+1 & color.yz, texCoord.xy & texCoord = node data (UV scale)\\
+2 & normal.xyz, brushIndex bits & normalized SDF gradient; brush\\
+3 & textureType bits, hsv & mapping mode; HSV tint\\
+\bottomrule
+\end{tabular}
+\end{center}
+The renderer treats the 64-byte record as the canonical \code{Vertex}; the
+same record is used by the raster path, the ray-tracing BLAS, and the
+offline exporter.  This is why the finalize stage does not need a
+conversion pass.

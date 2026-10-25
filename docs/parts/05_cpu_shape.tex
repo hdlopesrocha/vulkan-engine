@@ -1,0 +1,201 @@
+\section{CPU shape construction: \code{Octree::apply}}
+\label{sec:cpushape}
+
+\subsection{Entry point and root expansion}
+
+An edit is expressed as
+\begin{lstlisting}[caption={The public shape entry point (simplified).},label={lst:apply}]
+void Octree::apply(operation, function, model, painter, coordPainter,
+                   minSize, simplifier, updateHandler, deleteHandler) {
+    unique_lock treeLock(treeMutex);
+    ShapeArgs args = ...;       // operation, function, model, painter, simplifier
+    expand(args);               // grow the root if the new shape lies outside
+    configureShapeCache(args);  // lattice origin/spacing for this apply
+    OctreeNodeFrame frame(root, nullptr, *this, ...);
+    NodeOperationResult r;
+    shape(r, frame, args, &localContext, updateHandler, deleteHandler);
+}
+\end{lstlisting}
+
+\code{expand} grows the root by powers of two until the new primitive is
+fully contained.  It computes the child index of the primitive's centre in
+the current root cube and places the old root as that child of a new,
+doubled root.  This is the only operation that changes the world cube; the
+existing subtree is preserved bit-for-bit.  The lattice origin and leaf
+length used by the SDF cache are computed \emph{after} expansion.
+
+\subsection{The recursive \code{shape} call}
+
+For a cube of length $L$ and a target leaf size $m$, the recursion has
+three regimes:
+\begin{enumerate}
+\item \textbf{Leaf:} $L\le m$ and the node is a leaf.  Sample the eight
+  corners of the shape field, combine them with the existing field, and
+  classify the result.
+\item \textbf{Interior with early out:} the node is not a leaf, but the
+  shape field's centre value and bounding-volume test prove that the
+  primitive cannot affect this cube.  Copy the existing field and stop.
+\item \textbf{Interior descend:} recurse into the eight children, join the
+  results, classify the parent from the children, and optionally simplify.
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=6mm and 8mm,font=\small]
+  \node[box] (enter) {enter \code{shape}(cube, frame)};
+  \node[box,below=of enter] (leaf) {$L\le m$ and node leaf?};
+  \node[box,right=of leaf] (sample) {sample 8 shape corners\\combine with existing field\\classify result};
+  \node[box,below=of leaf] (outside) {shape centre outside\\expanded cube?};
+  \node[box,right=of outside] (copy) {copy existing field\\no child work};
+  \node[box,below=of outside] (children) {recurse 8 children\\(parallel fork band)};
+  \node[box,below=of children] (parent) {parent SDF from children\\classify result};
+  \node[box,below=of parent] (simp) {simplify?\\set \code{selectedLod}};
+  \node[box,below=of simp] (paint) {paint leaf / dominant child\\write node fields};
+  \node[box,below=of paint] (publish) {if \code{chunkLod>0} and Surface:\\bump version, call update handler};
+  \draw[arrow] (enter)--(leaf);
+  \draw[arrow] (leaf)--node[right,note]{yes}(sample);
+  \draw[arrow] (leaf)--node[left,note]{no}(outside);
+  \draw[arrow] (outside)--node[right,note]{yes}(copy);
+  \draw[arrow] (outside)--node[left,note]{no}(children);
+  \draw[arrow] (children)--(parent);
+  \draw[arrow] (parent)--(simp);
+  \draw[arrow] (simp)--(paint);
+  \draw[arrow] (paint)--(publish);
+  \draw[arrow,dashed] (sample) |- (paint);
+  \draw[arrow,dashed] (copy) |- (publish);
+\end{tikzpicture}
+\caption{The shape recursion.  A leaf samples the new field; an unaffected
+interior copies the old field; an affected interior recurses, classifies
+the parent from its children, simplifies, paints, and (for surface chunk
+roots) publishes a new version.}
+\label{fig:shapeflow}
+\end{figure}
+
+\subsection{Sampling and caching}
+
+The shape field is sampled at cube corners with \code{evaluateSDF}.  A
+naive implementation calls the primitive's distance function once per
+query.  The engine uses a per-apply cache keyed on the apply's leaf lattice:
+\begin{equation}
+  \mathbf{x} = \mathbf{o} + \mathbf{n}\,h,
+\end{equation}
+where $\mathbf{o}$ is the lattice origin and $h$ the half leaf length.
+An integer lattice key is accepted only when the reconstructed float is
+bit-identical to the query.  Anything off-lattice (a stored tree from an
+earlier apply with a smaller leaf size) falls back to a float-keyed map.
+The cache is a pure optimisation: the returned value is the value the
+primitive would produce.  The cache is per-thread, generation-tagged, and
+reset when the generation changes.  This avoids both a global lock and
+stale values across applies.
+
+\subsection{The three early-out rules}
+
+The recursion has three important early outs.  They are necessary for
+performance and for correctness at the field's infinity regions.
+
+\paragraph{All-infinity node.}
+If no corner of the existing field has data, the node is untouched.  The
+operation may propagate from infinity (a union with a finite shape) or not
+(a subtraction whose negative operand is undefined).  If the shape's
+centre is more than the cube's half-diagonal away from the solid, the
+whole cube is classified Solid or Empty without descending.
+
+\paragraph{Solid-preserving operation.}
+If the existing cube is Solid, all its corners finite, and the operation
+preserves solidity, the result is still Solid.  The operation only needs
+to combine the existing and shape corner values; no child descent is
+needed.  This is the common case for a union of overlapping solids.
+
+\paragraph{Solid cube and centre test.}
+If the existing cube is Solid and the combined centre is more than the
+cube's half-diagonal inside the surface, the whole cube is Solid.  This
+avoids descending into regions the new shape cannot reach.  The test uses
+the half diagonal $L\sqrt{3}/2$, not the half edge: a sphere can enter
+through a corner.
+
+If none of the early outs applies, the function's \code{check(cube)} test
+is consulted.  A \code{Disjoint} result skips the children; a
+\code{Contains} result can be handled by the same solid/empty rules.
+Finally, if the node is a new surface node with no existing children, the
+recursion is forced to descend even if the centre is outside, because the
+surface may still cross a corner.
+
+\subsection{Result composition}
+
+For a non-leaf node, each child returns eight result SDF values.  The
+parent's result array is the concatenation of the children's corner arrays
+in child order.  The parent's type is:
+\begin{equation}
+  \operatorname{parentType} =
+  \begin{cases}
+    \text{Empty}, & \text{all children Empty},\\
+    \text{Solid}, & \text{all children Solid},\\
+    \text{Surface}, & \text{otherwise}.
+  \end{cases}
+\end{equation}
+This is exact because the child corner arrays share the parent's corners
+on their common faces.  The parent does not need to re-evaluate the field.
+
+\subsection{Painting}
+
+Painting happens at the shape leaf, where the node's material is decided.
+Brushes can be constant (a material index), procedural (terrain
+classification from height and slope), or position-dependent (the
+\code{LandBrush} classifier).  The painter writes:
+\begin{itemize}
+\item \code{brushIndex} (material),
+\item \code{hsv} (tint),
+\item \code{textureType} (mapping technique),
+\item \code{data} (UV scale or authored UV).
+\end{itemize}
+Internal nodes inherit the dominant painted child's state.  The exact
+dominance rule is intentionally simple: the last surface child with a
+valid brush that wins the per-child tally sets the parent.  The tally is
+kept per child (not across all eight) so the historical result is
+preserved; changing it would change the mesh's material assignment and UV
+scale.
+
+\subsection{Node publishing and versions}
+
+A node that is both a surface and a chunk root (\code{chunkLod>0}) is a
+published chunk.  At the end of its recursion, the engine:
+\begin{enumerate}
+\item sets its type, SDF, chunk flag, levels, brush, mapping state;
+\item increments \code{version};
+\item calls the update handler with \code{(level, node, cube)}.
+\end{enumerate}
+The handler queues a \code{PendingMeshData}.  The renderer later flattens
+the neighbourhood, dispatches the GPU walk, and publishes the span.  A
+version is the only identity the renderer trusts: the same node address may
+be reused by the allocator, so pointer identity alone is not a revision.
+
+\subsection{Threading}
+
+The recursion forks when the child cube length lies in
+\begin{equation}
+  \left(\frac{m\cdot 16}{4},\;m\cdot 16\right],
+\end{equation}
+where $m$ is the target leaf size.  A forked node enqueues eight tasks into
+the octree's thread pool; each task owns a copy of its frame and the shape
+arguments and writes into a shared result block.  The parent joins all
+eight futures before reading the block.  The fork band is two levels deep:
+a $16m$ node forks eight $8m$ children and each of those forks eight $4m$
+grandchildren; the $4m$ nodes do not fork again.  This bounds the number of
+tasks per fork to 64 and avoids a thundering herd at the leaf level.
+
+The join loop is careful about pool starvation.  Instead of blocking on a
+future while the pool is idle, it calls \code{runOneTask()} to execute
+queued work on the waiting thread; only when the queue is empty does it
+block.  This is what keeps a nested fork from deadlocking on a pool with
+fewer threads than the fan-out.
+
+\subsection{Why the CPU never solves a vertex}
+
+The current shape path deliberately avoids \code{SDF::getPosition} and
+\code{getNormalFromPosition}.  The only host callers are the offline
+Blender exporter.  This is not just a performance choice: it is a
+correctness boundary.  If the runtime computed a vertex on the host and the
+GPU computed another, the two would differ in the last bits and the
+renderer's mesh would not match the exporter's.  By making the GPU the sole
+Cartesian producer, the runtime has one answer and the exporter has a
+reference implementation that can be compared offline.

@@ -1,0 +1,167 @@
+\section{Foundations and related work}
+\label{sec:foundations}
+
+\subsection{Implicit surfaces and signed distance fields}
+
+A signed distance field assigns to every point $\mathbf{x}\in\R^3$ the
+signed Euclidean distance to the boundary $\partial\Omega$ of a solid
+$\Omega$:
+\begin{equation}
+  f(\mathbf{x}) =
+  \begin{cases}
+    +\operatorname{dist}(\mathbf{x},\partial\Omega), & \mathbf{x}\notin\Omega,\\[2pt]
+    -\operatorname{dist}(\mathbf{x},\partial\Omega), & \mathbf{x}\in\Omega.
+  \end{cases}
+  \label{eq:sdf}
+\end{equation}
+The surface is the zero set $f^{-1}(0)$.  The gradient of a true distance
+field has unit length and points away from the solid, so the unit normal is
+\begin{equation}
+  \mathbf{n}(\mathbf{x}) = \frac{\nabla f(\mathbf{x})}{\|\nabla f(\mathbf{x})\|}.
+  \label{eq:normal}
+\end{equation}
+The engine stores only eight corner samples per octree cell and
+reconstructs $f$ inside the cell by trilinear interpolation.  This is a
+deliberate approximation: it makes the field cheap to evaluate, cheap to
+cache, and identical between the CPU reference and the GPU shader.
+
+\subsection{CSG operations}
+
+A CSG operation combines two distance fields.  The engine supports union,
+subtraction, intersection, and a generic user operation.  For two fields
+$f_1,f_2$ the common rules are
+\begin{align}
+  \text{union}:&\quad \min(f_1,f_2), \label{eq:union}\\
+  \text{intersection}:&\quad \max(f_1,f_2), \label{eq:intersection}\\
+  \text{subtraction}:&\quad \max(f_1,-f_2). \label{eq:subtraction}
+\end{align}
+The exact expressions are not distance fields in the strict sense after
+subtraction (the result can be negative in the subtracted volume), but they
+preserve the zero set and the sign, which is all the mesher needs.  The
+engine also supports smooth minima and custom effects; those change the
+field values but not the extraction algorithm.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.0]
+  \foreach \dx/\lab in {0/Union, 4.2/Intersection, 8.4/Subtraction, 12.6/Flip} {
+    \begin{scope}[shift={(\dx,0)}]
+      \draw[grid] (0,0) grid[step=0.5] (3,2.2);
+      \fill[blue!12] (0.3,0.3) circle (0.75);
+      \fill[blue!12] (1.8,1.1) circle (0.75);
+      \ifdim\dx pt=0pt
+        \draw[accent,thick] (0.3,0.3) circle (0.75);
+        \draw[accent,thick] (1.8,1.1) circle (0.75);
+      \fi
+      \ifdim\dx pt=4.2pt
+        \begin{scope}
+          \clip (0.3,0.3) circle (0.75);
+          \fill[accent2!25] (1.8,1.1) circle (0.75);
+          \draw[accent!60,thick] (0.3,0.3) circle (0.75);
+          \draw[accent2,thick] (1.8,1.1) circle (0.75);
+        \end{scope}
+      \fi
+      \ifdim\dx pt=8.4pt
+        \begin{scope}
+          \clip (1.8,1.1) circle (0.75);
+          \fill[white] (0.3,0.3) circle (0.75);
+          \draw[accent!60,thick] (0.3,0.3) circle (0.75);
+          \draw[accent2,thick] (1.8,1.1) circle (0.75);
+        \end{scope}
+      \fi
+      \ifdim\dx pt=12.6pt
+        \draw[accent,thick] (0.3,0.3) circle (0.75);
+        \draw[accent2,thick,decorate,
+          decoration={snake,amplitude=0.7mm,segment length=2mm}] (1.8,1.1) circle (0.75);
+      \fi
+      \node[below,font=\small] at (1.5,-0.15) {\lab};
+    \end{scope}
+  }
+\end{tikzpicture}
+\caption{Two-dimensional cross-sections of the CSG rules.  Blue is the
+solid; a subtraction removes the second field from the first; the rightmost
+panel illustrates a non-distance-preserving effect whose zero set and sign
+are still well defined.}
+\label{fig:csg}
+\end{figure}
+
+\subsection{Dual contouring and Surface Nets}
+
+Marching Cubes places one vertex on each sign-changing cube edge and
+connects them inside the cube.  Dual methods instead place \emph{one}
+vertex per surface cell and connect the vertices of cells that share an
+edge.  The resulting mesh is the dual of the cell complex.  Surface Nets
+use an average of edge crossings; Dual Contouring solves a quadratic error
+function (QEF) to place a vertex that fits the sampled Hermite data
+(position and normal on each crossing edge).
+
+The engine uses a QEF solve (with a mass-point regularizer) to place one
+vertex per surface cell, then extracts triangles by scanning the twelve
+edges of each scan cell.  The method is often called ``dual contouring'',
+but the extraction rule is the Surface Nets ring rule: for each active
+edge, collect the four cells around the edge, keep the surface cells,
+order them around the edge, and triangulate the resulting three- or
+four-gon.  The QEF is what makes the vertex position smooth; the ring rule
+is what makes the connectivity exact and crack-free.
+
+\subsection{Adaptive octrees and LoD}
+
+A uniform dual grid at the finest resolution is wasteful: terrain near the
+camera needs centimetres, while a distant ridge needs tens of metres.
+An adaptive octree stores a cell only where the field crosses its cube and
+subdivides cells near the surface.  Each cell has a ``level''; a cell is
+allowed to be a leaf (no children) when its cube is small enough or when
+its eight children can be collapsed without exceeding an error threshold.
+
+Adaptive dual meshing introduces two problems:
+
+\begin{enumerate}
+\item \textbf{The dual vertex of a cell can be far from its cube.}  A QEF
+  vertex is clamped inside its cell, but the four cells around an edge can
+  have different sizes.
+\item \textbf{Two neighbouring chunks can choose different levels.}  A
+  coarse cell on one side of a boundary and a fine cell on the other do
+  not share the same edge vertices, so a naive fan leaves a crack.
+\end{enumerate}
+
+The engine solves both with the same idea: for every active edge, sample
+the four quadrant cells at the edge midpoint and recursively collect
+\emph{all} cell-boundary coordinates along the edge.  The edge is split at
+those coordinates, and each sub-segment is emitted by its owner cell.  A
+neighbouring chunk resolves the same edge with the same owner and the same
+sub-segment list, so the two sides agree bit-for-bit.
+
+\subsection{Why two processors?}
+
+The split used here is not a generic ``CPU authoring, GPU rendering''
+division.  It is driven by the representation:
+
+\begin{itemize}
+\item \textbf{The octree is a mutable, shared, pointer-rich structure.}
+  It is edited by brushes, resampled by shape operations, versioned,
+  simplified, and guarded by a read/write lock.  This is natural on the CPU
+  and hostile to a GPU.
+\item \textbf{The triangle extraction is data-parallel and pure.}  Given a
+  cell's eight SDF samples and the four quadrant cells of an edge, the
+  output is a deterministic function.  This is ideal for a compute shader.
+\item \textbf{The renderer wants device-local buffers.}  A CPU mesher
+  produces a host array, which must be copied; a GPU mesher can write the
+  renderer's buffers directly.
+\end{itemize}
+
+The cost is a flattening step.  The host must traverse the octree
+neighbourhood and produce a table small enough to upload per chunk.  The
+flattening is exact: it replays the same root-to-cell descent and the same
+child-index arithmetic the shader will use, so the GPU sees a
+\emph{serialisable snapshot} of the tree, not a lossy approximation.
+
+\subsection{Position in the literature}
+
+The meshing rule descends from Gibson's Surface Nets and Ju et al.'s Dual
+Contouring.  The adaptive stitching rule is related to the dual-cell
+``edge split'' methods used in transvoxel-like terrain engines, but it is
+derived here directly from the CPU walker's break collection rather than
+from a fixed stitching table.  The GPU port follows the same arithmetic
+order as the CPU reference (including the QEF's Cramer solve and the
+guarded trilinear lerp) so the two can be compared and the offline exporter
+can reproduce the runtime mesh.

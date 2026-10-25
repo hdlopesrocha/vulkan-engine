@@ -1,0 +1,104 @@
+\section{Synchronization, queues, and lifetime}
+\label{sec:sync}
+
+\subsection{Queues in use}
+
+The engine has a main graphics queue and, when available, a distinct
+graphics-family queue for geometry/upload work.  The topology compute
+pass is submitted on the graphics queue with a single-time command buffer
+and a fence, because its descriptor set and staging buffers are serialized
+by a global mutex.  The finalize pass writes the renderer's packed pools;
+the cull, raster, shadow, and ray-tracing passes then read them on the same
+queue or after the documented cross-queue wait.
+
+\subsection{The two barriers inside the topology submission}
+
+Each topology submission ends with a compute$\rightarrow$host barrier:
+\begin{lstlisting}[style=glsl,caption={Counter readback barrier.},label={lst:hostbarrier}]
+VkMemoryBarrier2 b{};
+b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+b.dstStageMask  = VK_PIPELINE_STAGE_2_HOST_BIT;
+b.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+vkCmdPipelineBarrier2(cmd, &dep);
+\end{lstlisting}
+This makes the integer counters visible to the host-mapped memory.  The
+vertex/index writes are not read by the host, so they do not need a host
+barrier.  The finalize pass ends with a pool barrier:
+\begin{lstlisting}[style=glsl,caption={Pool visibility barrier.},label={lst:poolbarrier}]
+b.srcStageMask  = COMPUTE_SHADER;
+b.srcAccessMask = SHADER_WRITE;
+b.dstStageMask  = VERTEX_INPUT | INDEX_INPUT | DRAW_INDIRECT |
+                  COMPUTE_SHADER | ACCELERATION_STRUCTURE_BUILD;
+b.dstAccessMask = VERTEX_ATTRIBUTE_READ | INDEX_READ |
+                  SHADER_READ | ACCELERATION_STRUCTURE_READ;
+\end{lstlisting}
+This is deliberately broad: the same pool range feeds the raster draw, the
+GPU cull, the shadow cascade, and the ray-tracing BLAS.  The barrier runs
+once per chunk, not once per consumer.
+
+\subsection{The fence and the deferred release}
+
+The topology submission uses a fence.  The host waits on the fence before
+reading the counters.  The old span is released through a staged free
+queue; the actual free happens two cull frames later.  This is necessary
+because the previous frame's cull or draw command buffers may still be in
+flight and still reference the old span.  The renderer does not wait for
+the whole device; it tracks the cull frame slot.
+
+\subsection{Consolidation}
+
+The vegetation instance buffers and the SDF flame anchors follow a similar
+pattern.  A per-chunk placement dispatch writes into a scratch ring; the
+host reads the accepted instance count, allocates an exact persistent
+buffer, and copies the scratch slice on the GPU.  The copy is submitted on
+the main thread after the placement fence, so no queue submission happens
+inside a deferred callback.  The consolidated instance buffer is
+double-buffered; the active pair is read by the vegetation pass while the
+inactive pair is filled by the copy.
+
+\subsection{The queue-submission mutex}
+
+All Vulkan submissions go through a single global mutex keyed by
+\code{VkQueue}.  This is intentionally coarse: the engine exposes several
+queue handles that can alias the same physical queue, and the microseconds
+saved by per-queue locking are not worth a submission race.  The mutex
+covers:
+\begin{itemize}
+\item frame submit and present;
+\item \code{runSingleTimeCommands} and its async variant;
+\item upload-manager jobs;
+\item topology submissions;
+\item the vegetation exact-copy submission.
+\end{itemize}
+\code{vkDeviceWaitIdle} also takes the mutex.  The earlier validation
+failure ``\code{vkQueueSubmit2}: VkQueue is simultaneously used'' came from
+calling \code{vkDeviceWaitIdle} without it while a worker was submitting.
+The fix is in \code{VulkanApp::deviceWaitIdle}, and cleanup now stops the
+CPU thread pools before the first idle wait.
+
+\subsection{Deferred destruction order}
+
+At shutdown the engine:
+\begin{enumerate}
+\item stops background threads (no new submissions);
+\item waits for the device idle under the submission mutex;
+\item drains pending command buffers;
+\item runs deferred-destruction callbacks;
+\item calls \code{clean()} on the app;
+\item destroys tracked resources;
+\item destroys the device.
+\end{enumerate}
+The order matters because deferred callbacks capture renderer state.  If
+the renderer were destroyed first, a callback that accesses
+\code{chunkBuffers} would read freed memory.  The cleanup comment in
+\code{VulkanApp::cleanup} documents this exact hazard.
+
+\subsection{Why no host-side mesh wait}
+
+The host waits on the topology fence to read counters, not to read
+vertices.  The wait is short (one dispatch), and it is per chunk on a
+worker thread, not on the render thread.  The render thread only sees
+already-published draw entries.  This is the difference between a
+GPU-resident pipeline and a GPU-assisted CPU pipeline: the host still
+synchronizes, but it synchronizes on integers, not on megabytes.

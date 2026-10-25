@@ -1,0 +1,136 @@
+\section{Introduction}
+\label{sec:intro}
+
+\subsection{The problem}
+
+A modern terrain and solid-geometry engine must satisfy four requirements
+at the same time:
+
+\begin{enumerate}[label=\textbf{R\arabic*.},leftmargin=2.2em]
+\item \textbf{Authoring freedom.}  Designers describe geometry with
+  implicit primitives, Boolean operations, noise, and material painters,
+  not with a fixed triangle list.
+\item \textbf{Adaptive detail.}  Near geometry must be finely tessellated;
+  the same region observed from a kilometre away must collapse to a coarse
+  representation without cracks or holes.
+\item \textbf{Low host traffic.}  A terrain that streams hundreds of
+  chunks per second cannot afford a GPU$\rightarrow$CPU$\rightarrow$GPU
+  round trip for every vertex.
+\item \textbf{Real-time rendering.}  The result must feed frustum culling,
+  shadow cascades, ray tracing, vegetation placement, and volumetric
+  effects without a second geometry representation.
+\end{enumerate}
+
+The engine answers with a split pipeline.  The CPU evaluates the scene's
+signed distance field (SDF) and maintains an adaptive octree of corner
+samples.  It never stores a triangle mesh.  The GPU receives a flattened
+subset of that octree for one chunk, performs the full adaptive Surface
+Nets walk, solves one dual vertex per surface cell, and writes the
+resulting vertices and indices directly into the renderer's persistent
+packed pools.  The host sees integer counters, not positions.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[x=1cm,y=1cm,font=\small,every node/.append style={text width=3.55cm}]
+  \node[io]  (author)  at (0.0,3.1) {SDF scene\\primitives, CSG, brushes};
+  \node[cpu] (apply)   at (4.2,3.1) {CPU shape apply\\corner sampling};
+  \node[cpu] (tree)    at (8.4,3.1) {Adaptive octree\\+ SDF[8]};
+  \node[cpu] (flat)    at (12.6,3.1) {Flatten chunk\\neighbourhood};
+  \node[gpu] (walk)    at (12.6,1.2) {GPU walk\\stage 0};
+  \node[gpu] (final)   at (8.4,1.2) {GPU finalize\\stage 1};
+  \node[io]  (pools)   at (4.2,1.2) {Packed vertex/\\index pools};
+  \node[gpu] (cull)    at (0.0,1.2) {GPU cull + LoD gate};
+  \node[io]  (frame)   at (0.0,-0.7) {Indirect draws,\\shadows, RT};
+  \draw[arrow] (author)--(apply);
+  \draw[arrow] (apply)--(tree);
+  \draw[arrow] (tree)--(flat);
+  \draw[arrow] (flat)--(walk);
+  \draw[arrow] (walk)--(final);
+  \draw[arrow] (final)--(pools);
+  \draw[arrow] (pools)--(cull);
+  \draw[arrow] (cull)--(frame);
+\end{tikzpicture}}
+\caption{End-to-end pipeline.  Blue nodes execute on the CPU; orange nodes
+execute on the GPU.  The only data crossing from GPU to CPU are integer
+counters used for span sizing and statistics.  Chunk geometry itself never
+returns to the host.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{Why not mesh on the CPU?}
+
+The original engine did exactly that.  \code{Octree::iterateTriangles}
+walked the tree, solved QEF vertices, and appended triangles to a
+\code{Geometry} object; a staging copy then uploaded the vertex and index
+arrays.  The CPU path is still present as
+\code{OctreeTriangleTessellator}, but it now serves only the offline
+Blender exporter.  Moving the same walk to a compute shader produced three
+concrete benefits:
+
+\begin{itemize}
+\item \textbf{The host never touches the vertex stream.}  A chunk's
+  topology is written into a device-local span.  The host reserves the
+  span, publishes a draw command, and never reads a position.
+\item \textbf{The adaptive walk parallelises trivially.}  One invocation
+  owns one scan cell.  All per-cell state (break lists, QEF memo, recursion
+  stack) is private, so no atomics are needed except for the output
+  counters and the raw-key append.
+\item \textbf{The renderer and the mesher share one memory layout.}  The
+  compute pass writes the renderer's exact 64-byte \code{Vertex} format
+  and chunk-local index values.  There is no conversion, compaction, or
+  intermediate mesh object.
+\end{itemize}
+
+The cost is that the GPU must see exactly the octree neighbourhood the CPU
+walker would have traversed: coarser neighbours for edge stitching, finer
+children for the descent, the world-root path, and a deterministic
+assignment of vertex slots.  The bulk of this report is about making that
+flattening exact and about the two-stage GPU walk that consumes it.
+
+\subsection{Contributions}
+
+This report makes the following contributions, all implemented in the
+current engine:
+
+\begin{enumerate}[label=\textbf{C\arabic*.},leftmargin=2.2em]
+\item A precise description of the CPU octree as a \emph{corner-sample
+  store}, including its +1-shifted LoD representation, block allocator,
+  quadratic-error simplification, and threaded \code{apply} recursion.
+\item A root-consistent flattening algorithm that turns a chunk's octree
+  neighbourhood into eight compact storage buffers and a scan-cell list,
+  with host-assigned vertex slots packed into node flags.
+\item A two-submission GPU topology pass: a walk stage that emits one raw
+  node key per triangle corner, and a finalize stage that rewrites the
+  chunk-local index stream and writes one vertex payload per surface node.
+\item An exact GPU port of the adaptive edge stitching algorithm
+  (per-edge break collection at LoD boundaries), including its fixed
+  capacities, overflow policy, and deterministic ordering.
+\item A packed-pool span protocol that binds only a chunk's slice of a
+  large pool, respects \code{maxStorageBufferRange}, handles alignment
+  padding, and publishes the draw entry only when the fence signals.
+\item A hole-free hierarchical LoD gate used by the raster, shadow,
+  bounding-box, and water streams, plus the GPU-resident effect consumers
+  (vegetation instances and lava/fire anchors) that read the same chunk
+  metadata.
+\item A validation-oriented account of the synchronization, lifetime, and
+  determinism rules that keep the path clean across asynchronous compute,
+  graphics, and transfer queues.
+\end{enumerate}
+
+\subsection{Reading guide}
+
+\Cref{sec:foundations}--\ref{sec:cpuwalk} cover the CPU side:
+SDF mathematics, octree storage, the shape recursion, simplification, and
+the reference walker.  \Cref{sec:gpudesign}--\ref{sec:finalize} cover the
+GPU meshing pass in increasing detail.  \Cref{sec:orch}--\ref{sec:sync}
+cover host orchestration and synchronization.  \Cref{sec:render}--
+\ref{sec:effects} follow the mesh into rendering and effects.
+\Cref{sec:perf}--\ref{sec:validation} give measured costs and correctness
+invariants.  Appendices contain the exact tables and storage layouts.
+
+\begin{keybox}[The one-sentence summary]
+The CPU decides \emph{what the surface is}; the GPU decides \emph{where
+its vertices are} and writes them once, directly into the buffers the
+renderer already owns.
+\end{keybox}

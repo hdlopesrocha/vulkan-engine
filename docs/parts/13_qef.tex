@@ -1,0 +1,121 @@
+\section{Step-by-step QEF vertex solve and payload}
+\label{sec:qef}
+
+\subsection{Why a QEF instead of an average}
+
+A Surface Nets vertex is often placed at the average of the edge
+crossings.  That is cheap but smooths sharp features: a box corner becomes
+a rounded blob.  A QEF fits a point to the tangent planes of the crossings,
+which preserves sharp edges better while still producing one vertex per
+cell.  The engine regularizes the QEF toward the mass point so an
+underconstrained cell does not explode.
+
+\subsection{The twelve crossings}
+
+For each edge $(i,j)$ with finite endpoints and opposite signs:
+\begin{equation}
+  t = \clip\left(\frac{d_i}{d_i-d_j},0,1\right),
+  \quad
+  \mathbf{p} = (1-t)\mathbf{p}_i + t\mathbf{p}_j,
+  \quad
+  \mathbf{n} = \operatorname{normalize}\bigl((1-t)\mathbf{n}_i+t\mathbf{n}_j\bigr).
+\end{equation}
+The corner normals $\mathbf{n}_i$ are the analytic gradients of the
+trilinear field at the corner.  The edge normal is the interpolation of
+the two corner normals, not the normalized edge direction.  This is what
+makes the QEF preserve the smooth surface normal.
+
+\subsection{Accumulation}
+
+The normal equations are accumulated:
+\begin{align}
+  A &= \sum_e \mathbf{n}_e\mathbf{n}_e^{T} + \epsilon I,\\
+  \mathbf{b} &= \sum_e \mathbf{n}_e(\mathbf{n}_e\cdot\mathbf{p}_e)
+             + \epsilon\bar{\mathbf{p}}.
+\end{align}
+where $\bar{\mathbf{p}}$ is the average crossing and $\epsilon=10^{-2}$.
+The matrix is symmetric positive semidefinite; the shift makes it
+invertible.  Cramer's rule is used because it is branch-free and matches
+the CPU's GLM evaluation order.  A determinant below $10^{-6}$ returns zero
+and the caller falls back to the mass point.
+
+\subsection{Corner snap}
+
+If any corner SDF is exactly zero, the vertex is snapped to that corner:
+\begin{equation}
+  \mathbf{x} = C_i.
+\end{equation}
+Why?  Neighbouring cells sharing the corner would otherwise solve slightly
+different QEF systems (their normals and crossings differ in the low bits)
+and their vertices would drift apart, splitting the shared edge into two
+one-sided edges.  Snapping to the exact corner makes every incident cell
+produce the same bits.  This is a classic dual-contouring robustness fix
+and it is essential for watertight terrain.
+
+\subsection{Sentinel handling}
+
+An edge with an infinite endpoint is skipped.  If no usable edge remains
+but there are finite sign-changing edges blocked by a sentinel, the shader
+averages the finite crossings instead of returning the cell centre.  The
+fallback keeps the vertex on the real surface segment rather than floating
+in the middle of the cell.
+
+\subsection{Clamping}
+
+The result is clamped to the cell:
+\begin{equation}
+  \mathbf{x} = \clip(\mathbf{x}, \mathbf{c}, \mathbf{c}+L).
+\end{equation}
+A QEF solution outside the cell would make the dual mesh non-manifold and
+could place a vertex inside a neighbouring solid.  The clamp is the last
+line of defence after regularization.
+
+\subsection{Memoization}
+
+The shader memoizes up to eight QEF positions per invocation.  A single
+edge segment queries the same cells several times (owner selection, dedup,
+rotation, fan).  The memo is a linear scan over eight entries; it is
+value-identical to recomputing because the QEF is a pure function of the
+node's eight corners and cube.  If the memo is full, the slot is chosen by
+\code{id mod 8}; a collision simply evicts an older entry.
+
+\subsection{The payload}
+
+Stage 1 writes the final vertex from the node id:
+\begin{lstlisting}[style=glsl,caption={Vertex payload layout.},label={lst:payload}]
+uint o = (pc.vertexBase + slot) * 4u;
+poolVerts[o+0] = vec4(p, 1.0);
+poolVerts[o+1] = vec4(1.0, 1.0, data);
+poolVerts[o+2] = vec4(n, uintBitsToFloat(uint(brush)));
+poolVerts[o+3] = vec4(uintBitsToFloat(uint(type)), h);
+\end{lstlisting}
+The vertex is 64 bytes:
+\begin{center}
+\begin{tabular}{@{}c|l@{}}
+\toprule
+Word & Bytes\\
+\midrule
+0 & position.xyz (12) + color.x (4)\\
+1 & color.yz (8) + texCoord.xy (8)\\
+2 & normal.xyz (12) + brushIndex bits (4)\\
+3 & textureType bits (4) + hsv (12)\\
+\bottomrule
+\end{tabular}
+\end{center}
+The \code{textureType} is stored as integer bits, not as a float value.
+The vertex input attribute is \code{R32\_SINT}, and the ray-tracing path
+uses \code{floatBitsToInt}; writing a numeric float would decode to a
+garbage mapping mode and drop every non-triplanar vertex.
+
+\subsection{One vertex per node}
+
+Every surface node in the flattened table gets a vertex, including nodes
+that the index stream never references.  This is intentional:
+\begin{itemize}
+\item it makes slot assignment a simple table order;
+\item it makes the span size known from the host count;
+\item it lets the finalize pass write one vertex per invocation without a
+  compaction pass.
+\end{itemize}
+The wasted bytes are bounded by the number of surface nodes in the
+neighbourhood and are small compared with the triangle stream.

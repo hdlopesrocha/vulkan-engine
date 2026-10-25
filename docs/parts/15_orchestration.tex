@@ -1,0 +1,164 @@
+\section{Host orchestration: two submissions per chunk}
+\label{sec:orch}
+
+\subsection{The driver}
+
+\code{OctreeTopologyCompute::computeResident} is the only entry point.  It
+is called by \code{SceneRenderer::buildChunkResident} on a scene worker
+thread.  The method holds a mutex for the whole chunk, so two workers never
+share the staging buffers or the descriptor set.  The two submissions are:
+
+\begin{enumerate}
+\item \textbf{walk:} upload the flattened input, dispatch one invocation
+  per scan cell, read the raw vertex count;
+\item \textbf{finalize:} reserve the exact index span, write the index
+  stream and vertex payload, read the drop counters.
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \draw[->,thick] (0,0) -- (13.2,0) node[right]{time};
+  \node[above] at (1.2,0) {CPU};
+  \node[above] at (1.2,-1.2) {GPU};
+  \draw[dashed] (1.2,-1.4)--(1.2,0.6);
+  % CPU work
+  \fill[cpu,draw=accent] (0.2,0.15) rectangle (2.2,0.65) node[midway,font=\scriptsize]{flatten+upload};
+  \fill[cpu,draw=accent] (3.2,0.15) rectangle (4.4,0.65) node[midway,font=\scriptsize]{read count};
+  \fill[cpu,draw=accent] (5.6,0.15) rectangle (7.4,0.65) node[midway,font=\scriptsize]{reserve span};
+  \fill[cpu,draw=accent] (8.6,0.15) rectangle (10.4,0.65) node[midway,font=\scriptsize]{read drops};
+  \fill[cpu,draw=accent] (11.2,0.15) rectangle (12.6,0.65) node[midway,font=\scriptsize]{publish};
+  % GPU work
+  \fill[gpu,draw=accent2] (2.4,-1.0) rectangle (5.2,-0.5) node[midway,font=\scriptsize]{pass 0: walk};
+  \fill[gpu,draw=accent2] (7.6,-1.0) rectangle (10.2,-0.5) node[midway,font=\scriptsize]{pass 1: finalize};
+  % arrows
+  \draw[arrow] (2.2,0.4)--(2.4,0.4)--(2.4,-0.4);
+  \draw[arrow] (5.2,-0.75)--(5.4,-0.75)--(5.4,0.4)--(5.6,0.4);
+  \draw[arrow] (7.4,0.4)--(7.6,0.4)--(7.6,-0.4);
+  \draw[arrow] (10.2,-0.75)--(10.4,-0.75)--(10.4,0.4)--(10.6,0.4);
+  \draw[arrow] (10.4,0.4)--(11.2,0.4);
+\end{tikzpicture}
+\caption{One chunk's two-submission timeline.  The host reads only integer
+counters between the submissions.  The finalize pass writes the renderer's
+pools directly.}
+\label{fig:timeline}
+\end{figure}
+
+\subsection{The input upload}
+
+The eight input buffers are host-visible and coherent.  \code{uploadInput}
+writes:
+\begin{itemize}
+\item 128 bytes per node for the node table;
+\item 4 bytes per cell for the scan list;
+\item six counters (raw vertices, overflow, dropped, findCell calls, reuse
+  hits);
+\end{itemize}
+and resets the counters.  The upload is not a single \code{memcpy}: the
+node record is split across five arrays so the shader can use scalar
+layout and avoid a 128-byte struct with alignment surprises.
+
+\subsection{Capacity management}
+
+The buffers grow to the largest chunk seen so far:
+\begin{equation}
+  \text{nodeCap}\ge |\N|,\qquad
+  \text{cellCap}\ge |\text{cells}|,\qquad
+  \text{keyCap}\ge \text{keys}.
+\end{equation}
+A grow recreates the buffer and bumps \code{bufferGeneration}.  The
+descriptor writer checks the generation and rewrites bindings 0--9 only
+when it changes.  In steady state, a chunk with the same capacity reuses
+the descriptors and pays zero descriptor writes.  The device-local key
+buffer is recreated only when the key capacity grows; it is not grown per
+chunk.
+
+\subsection{Key sizing and retry}
+
+The host does not know the raw vertex count before the walk.  It starts
+from a per-cell hint:
+\begin{equation}
+  K_0 = \min(25\cdot|\text{cells}|+64,\;2^{23}).
+\end{equation}
+If the walk reports drops and the key count is below the hard limit, the
+host doubles the capacity and re-uploads and re-walks.  A recursion buffer
+overflow is not retryable: it means the fixed stack was too small, so the
+chunk is failed.  The key capacity is the only retryable dimension.
+
+\subsection{The provider callback}
+
+After the walk, the host knows \code{rawCount}.  It asks the renderer to
+reserve a span:
+\begin{lstlisting}[caption={Span reservation callback (shape).},label={lst:provider}]
+GpuMeshSpan span = ir.reserveGpuMeshSpan(chunkId,
+    demand.suggestedVertexCapacity, demand.rawVertexCount,
+    &cubeMin, &cubeMax, level, &cubeMin);
+target.vertexBuffer = span.vertexBuffer;
+target.baseVertex = span.baseVertex;
+target.vertexCapacity = span.vertexCapacity;
+target.indexBuffer = span.indexBuffer;
+target.firstIndex = span.firstIndex;
+target.indexCapacity = span.indexCapacity;
+target.slotIndex = span.slotIndex;
+\end{lstlisting}
+\code{reserveGpuMeshSpan} allocates a stable draw-entry slot and a
+variable-size span in the packed pools.  It records the previous span for
+deferred release.  The span is sized for the worst case:
+\begin{itemize}
+\item vertex capacity = number of surface nodes (every slot is written);
+\item index capacity = raw vertex count (one index per raw vertex).
+\end{itemize}
+
+\subsection{Finalize and publication}
+
+The host binds the span's vertex and index windows and records the finalize
+dispatch.  It then waits for the fence and reads the drop counters.  If the
+chunk is valid:
+\begin{enumerate}
+\item \code{publishGpuMeshSpan(slot, vertexCount, indexCount)} trims the
+  reserved span to the reported counts, frees the tail, and stages the
+  draw command + bounds + LoD meta;
+\item the scene publisher stores a \code{LoDMesh} with the slot, counts,
+  base vertex, first index, bounds, brush, and mapping metadata;
+\item the renderer's indirect cull sees the entry on the next frame.
+\end{enumerate}
+The old span is released only after the new one is published.  The release
+is staged for the cull frame after next, so no in-flight cull or draw can
+reference a freed range.
+
+\subsection{Why the host reads only counters}
+
+The GPU writes three things: raw keys, vertices, indices.  The host reads
+only the counters:
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Counter & Use\\
+\midrule
+\code{vertexCount} & raw key count; index span sizing\\
+\code{overflowCount} & fixed-capacity recursion failure\\
+\code{droppedCount} & key capacity or pool span failure\\
+\code{findCellCalls} & diagnostics only\\
+\code{reuseHits} & diagnostics only\\
+\bottomrule
+\end{tabular}
+\end{center}
+The instance/vertex bytes never cross the bus.  This is the single most
+important property of the design: the host cannot accidentally stall on a
+vertex readback because there is no vertex readback API.
+
+\subsection{Error policy}
+
+A chunk build can fail in four ways:
+\begin{enumerate}
+\item \textbf{flattening unavailable}: the chunk is skipped with a log;
+\item \textbf{walk overflow}: the chunk is failed and retried after the
+  next edit; it is not partially drawn;
+\item \textbf{key capacity exhausted}: retry with a larger key buffer;
+\item \textbf{pool span full}: release the slot and skip; the pool is sized
+  for the worst case and this is a sizing bug, not a normal state.
+\end{enumerate}
+The revision is committed only when the chunk is actually published or
+legitimately empty.  A failed build is not recorded as up-to-date; a
+transient pool failure therefore retries instead of becoming a permanent
+hole.

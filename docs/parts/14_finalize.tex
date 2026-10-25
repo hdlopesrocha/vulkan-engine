@@ -1,0 +1,109 @@
+\section{Stage 1: finalize the index and vertex streams}
+\label{sec:finalize}
+
+\subsection{One dispatch, two tails}
+
+After the host reserves the spans, the finalize dispatch runs with
+\begin{equation}
+  \text{work} = \text{indexCount} + \text{nodeCount}.
+\end{equation}
+The first \code{indexCount} invocations write the index stream; the
+remaining \code{nodeCount} invocations write the vertex payload:
+\begin{lstlisting}[style=glsl,caption={Finalize stage.},label={lst:finalize}]
+void finalizeStage() {
+    uint gi = gl_GlobalInvocationID.x;
+    if (gi < pc.indexCount) { writeIndex(gi); return; }
+    uint node = gi - pc.indexCount;
+    if (node >= pc.nodeCount) return;
+    writeVertexForNode(node);
+}
+\end{lstlisting}
+The index range is first because it is usually much larger than the node
+count.  The two ranges are disjoint, so one dispatch covers both without a
+barrier between them.
+
+\subsection{Index remap}
+
+For index $i$, the raw key is the node id:
+\begin{equation}
+  \text{slot} = \text{nodeSlot}(\text{rawKeys}[i]).
+\end{equation}
+If the slot is negative, the host's slot assignment and the walk disagree.
+The shader increments \code{droppedCount} and fails the chunk rather than
+writing slot 0.  Writing 0 would silently connect the corner to an
+arbitrary vertex and produce a stretched triangle.
+
+\subsection{Vertex reconstruction}
+
+The vertex is rebuilt from the node, not from the walk's temporary cell:
+\begin{enumerate}
+\item QEF position from the node's eight corners and cube;
+\item analytic normal at that position;
+\item brush, falling back to the chunk's \code{fromBrush} when the node's
+   brush is the discard sentinel;
+\item HSV tint, texture type, and mapping data.
+\end{enumerate}
+This is why the raw key is enough.  The CPU walker keeps the cell payload
+in the triangle, but that payload is a pure function of the node.  The GPU
+recomputes it in stage 1, which also means the finalize stage does not need
+to read the walk's scratch arrays.
+
+\subsection{The index base and alignment}
+
+The chunk's index span is bound with an offset.  The offset must be aligned
+to the device's minimum storage-buffer offset alignment.  Since the element size is four
+bytes and the alignment can be 256, the host aligns the descriptor offset
+down and passes \code{relIndexBase} = the number of index elements between
+the aligned offset and the first span element.  The shader writes
+\begin{equation}
+  \text{poolIdx}[\text{relIndexBase} + i] = \text{slot}.
+\end{equation}
+The descriptor range is
+\begin{equation}
+  (\text{relIndexBase} + \text{indexCapacity})\cdot4
+\end{equation}
+bytes, which includes the padding.  Without the extra padding, the last
+elements of the span fall outside the bound range and are never written,
+producing stretched triangles from stale pool data.
+
+\subsection{The vertex base and alignment}
+
+The vertex span is handled the same way with a 64-byte stride.  The offset
+is aligned down; \code{relVertexBase} accounts for the 0--3 element
+padding.  The shader writes
+\begin{equation}
+  \text{poolVerts}[(\text{relVertexBase} + s)\cdot4 + k].
+\end{equation}
+The range is
+\begin{equation}
+  (\text{relVertexBase} + \text{vertexCapacity})\cdot64.
+\end{equation}
+Because 64 is a multiple of 4 and the largest required alignment is 256, a
+span start can be misaligned by at most three vertices.  The padding logic
+is exact and costs at most 192 bytes per chunk.
+
+\subsection{Drop accounting}
+
+Every write that cannot fit increments \code{droppedCount}.  The host reads
+the counter after the fence.  The chunk is considered valid only when
+\begin{equation}
+  \text{droppedCount}=0 \quad\land\quad
+  \text{overflowCount}=0 \quad\land\quad
+  \text{poolVertexCount}\le\text{vertexCapacity}.
+\end{equation}
+If any check fails, the reserved span is released and the chunk is skipped.
+The next edit retries it.  The app never draws a partially written span.
+
+\subsection{The raw-key buffer}
+
+The raw-key buffer is device-local and sized to the key capacity.  It is
+written in stage 0 and read in stage 1.  Its lifetime is one topology
+submission (two dispatches separated by a host read).  The buffer is
+reused across chunks; the host resets the counters before each walk.  The
+key capacity is selected from a per-cell hint:
+\begin{equation}
+  \text{keys} = \min\bigl(\text{cellCount}\cdot25+64,\;2^{23}\bigr).
+\end{equation}
+A walk that exceeds the hint retries with twice the capacity, up to the
+hard limit.  The measured worst chunk is about 3.8 million raw vertices,
+below the 8 million limit.

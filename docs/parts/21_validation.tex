@@ -1,0 +1,138 @@
+\section{Correctness invariants and validation}
+\label{sec:validation}
+
+\subsection{The invariants}
+
+The following invariants must hold after any change to the pipeline.
+
+\begin{invariant}[Single Cartesian producer]
+For a runtime chunk, every Cartesian vertex is written by
+\code{OctreeTriangles.comp} stage 1.  No CPU code writes a chunk vertex.
+The offline exporter is the only exception and is explicitly marked.
+\end{invariant}
+
+\begin{invariant}[Slot determinism]
+The host assigns vertex slots in node-table order.  A rebuild with the same
+octree revision produces the same slot for the same surface node.
+\end{invariant}
+
+\begin{invariant}[Span lifetime]
+A draw entry references a span only after the finalize fence has signaled
+and the drop counters are zero.  The old span is not freed until the cull
+frame that could still reference it has retired.
+\end{invariant}
+
+\begin{invariant}[Index locality]
+Every index written by stage 1 is a chunk-local slot
+$s\in[0,\text{vertexCapacity})$ and is rebased by
+\code{vertexOffset=baseVertex} at draw time.
+\end{invariant}
+
+\begin{invariant}[Owner consistency]
+For a shared edge, both neighbouring chunks select the same owner, sample
+the same four quadrants, and emit the same sub-segment list.  The owner
+key is global (size, min, node index).
+\end{invariant}
+
+\begin{invariant}[Winding oracle]
+Triangle winding is derived from the producing cell's corner signs, not
+from a QEF normal.  A degenerate owner interpolation falls back to the
+producing cell's signs.
+\end{invariant}
+
+\begin{invariant}[No silent truncation]
+A break-list, stack, key-capacity, or span overflow sets a counter and
+fails the chunk.  It never publishes a partial span.
+\end{invariant}
+
+\subsection{Validation layers}
+
+Development builds enable Khronos validation, synchronization validation,
+best-practices validation, and, when requested, GPU-assisted validation.
+The engine treats every validation message as a bug.  The most relevant
+checks for this pipeline are:
+\begin{itemize}
+\item descriptor range and offset alignment;
+\item storage-buffer access outside the bound range;
+\item synchronization hazards between compute writes and vertex/index
+  reads;
+\item queue submission threading;
+\item image layout transitions in the offscreen vegetation/SDF targets.
+\end{itemize}
+
+\subsection{GPU-assisted validation}
+
+GPU-assisted validation instruments shader resource access.  It is
+especially useful here because a wrong \code{relVertexBase} or a stale span
+may not crash: it reads another chunk's vertex and renders a stretched
+triangle.  The GPU-assisted run catches the out-of-range descriptor access
+at draw time.  The pass is slow and is used as a targeted check, not as the
+default.
+
+\subsection{Self-check against the CPU walker}
+
+A diagnostic mode can rebuild a chunk with the CPU walker and compare the
+triangle sets.  The comparison is quantization-tolerant because the GPU
+and CPU may differ in the last bits of a QEF solve.  The check is:
+\begin{itemize}
+\item same triangle count;
+\item same set of quantized triangle centroids;
+\item same material assignment;
+\item vertex deviation below a tolerance.
+\end{itemize}
+A large deviation indicates a flattening error (wrong cell, wrong LoD,
+wrong owner), not a floating-point difference.
+
+\subsection{Determinism tests}
+
+A chunk is built twice from the same revision.  The vertex spans must be
+byte-identical and the index stream must be a permutation of the first.
+The triangle set is compared order-insensitively.  This catches:
+\begin{itemize}
+\item an unstable table order;
+\item a slot assignment that depends on a hash map iteration;
+\item an atomic append that changes the triangle set (it should not).
+\end{itemize}
+
+\subsection{Synchronization validation}
+
+The topology pass is checked for:
+\begin{itemize}
+\item compute$\rightarrow$host visibility before the counter read;
+\item compute$\rightarrow$vertex/index visibility before the draw;
+\item no read of the pool while a finalize dispatch is still writing;
+\item no free of a span still referenced by an in-flight cull.
+\end{itemize}
+The vegetation copy is checked for the same pattern: placement fence
+$\rightarrow$ host read $\rightarrow$ copy submission $\rightarrow$
+publish $\rightarrow$ consolidation copy.
+
+\subsection{The queue-threading bug}
+
+A release run produced
+\begin{quote}\ttfamily\small\raggedright
+vkQueueSubmit2(): THREADING ERROR : object of type VkQueue is\\
+simultaneously used...
+\end{quote}
+The cause was \code{vkDeviceWaitIdle()} running without the submission
+mutex while a worker submitted a topology or upload command.  The fix:
+\begin{itemize}
+\item \code{deviceWaitIdle()} takes the global submit mutex;
+\item cleanup stops the CPU pools before the first idle wait.
+\end{itemize}
+After the fix, a full scene load and shutdown produced no threading or
+validation messages.  This is an example of why the synchronization
+section is part of the algorithm, not an afterthought.
+
+\subsection{Regression checklist}
+
+Any change to the mesher should run:
+\begin{enumerate}
+\item a debug build;
+\item a load of the reference scene with all effects;
+\item a validation scan of \code{logs/run.log};
+\item a GPU-assisted run on a small scene;
+\item a CPU-vs-GPU self-check on a chunk with a LoD boundary;
+\item a rebuild/delete/rebuild cycle on the same chunk id.
+\end{enumerate}
+If any of these fails, the change is not ready.

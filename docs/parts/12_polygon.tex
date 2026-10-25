@@ -1,0 +1,138 @@
+\section{Polygon reconstruction, winding, and triangle emission}
+\label{sec:polygon}
+
+\subsection{From four quadrants to a ring}
+
+For a sub-segment the shader resolves four quadrant cells.  Not all of
+them are surface cells: a coarse cell can have no zero crossing at the
+sample.  The algorithm:
+\begin{enumerate}
+\item iterate quadrants in the fixed order $q_0,\ldots,q_3$;
+\item skip non-surface cells;
+\item compute the cell's dual vertex position with the memoized QEF;
+\item reject a cell if its node id or position duplicates an already
+  collected cell (within the edge epsilon);
+\item stop at four collected cells.
+\end{enumerate}
+The deduplication is not merely an optimization.  A coarse ancestor can
+appear in two opposite quadrants of the ring, especially on world-axis
+cell boundaries where the sample nudge stays inside the same large cell.
+The old code removed only adjacent duplicates and then aborted the whole
+segment if any duplicate remained; that is exactly why triangles were
+missing along the $x=0$, $y=0$, and $z=0$ planes.  Deduplicating against
+all collected cells keeps the remaining 3 or 4 corners and preserves their
+order.
+
+\subsection{Rotating the owner to the front}
+
+The ring is rotated so the owner cell is first:
+\begin{lstlisting}[style=glsl,caption={Owner rotation.},label={lst:rotate}]
+find k with ring[k].id == owner.id or ring[k].pos == owner.pos;
+if (k > 0) rotate ring left by k;
+\end{lstlisting}
+Both chunks on either side of a boundary resolve the same owner (the
+ordering key is global), so their duplicated boundary quads get the same
+rotation.  Without this, the same quad would be triangulated from different
+anchors on the two sides, producing different triplanar planes and
+z-fighting along the seam.
+
+\subsection{Three-ring and four-ring fans}
+
+A three-ring emits one triangle:
+\begin{equation}
+  (r_0,r_1,r_2).
+\end{equation}
+A four-ring emits two:
+\begin{equation}
+  (r_0,r_1,r_2), \quad (r_0,r_2,r_3).
+\end{equation}
+If the owner's start sign is positive (outside), the order is reversed:
+\begin{equation}
+  (r_0,r_2,r_1), \quad (r_0,r_3,r_2).
+\end{equation}
+This is a fan around the owner.  A ring with fewer than three cells emits
+nothing; it is a boundary case where the surface only touches one or two
+quadrants.
+
+\subsection{The winding oracle}
+
+The winding is not derived from the triangle normal.  It is derived from
+the SDF sign at the segment start, evaluated with the owner's trilinear
+field:
+\begin{equation}
+  \text{solidAtStart} = \bigl(d_{\text{owner}}(a) < 0\bigr).
+\end{equation}
+If the owner's interpolation returns $+\infty$, the producing cell's
+endpoint sign is used.  The producing cell is the cell that scanned the
+edge, and it only scans edges whose own corner signs differ; those signs
+are therefore authoritative for existence.
+
+Why not use the QEF normal?  At coarse LoD a cell can have only one or two
+crossing edges, and the QEF normal is poorly constrained.  A triangle
+wound from a noisy normal can flip at a LoD boundary, making the surface
+black or invisible from one side.  The sign oracle is independent of the
+normal and robust across cell sizes.
+
+\subsection{Degenerate triangles}
+
+Before appending, the shader compares the three dual positions:
+\begin{equation}
+  \|p_i-p_j\| \le \epsilon \quad\Rightarrow\quad \text{drop}.
+\end{equation}
+This catches two cases:
+\begin{itemize}
+\item two cells collapsed to the same QEF position (a thin sliver);
+\item a cell with an exact-zero corner snapped to the corner, coinciding
+  with a neighbouring cell's vertex.
+\end{itemize}
+A zero-area triangle would break normals, shadow-map rasterization, and
+ray-triangle intersections.  Dropping it is safer than emitting it.
+
+\subsection{The raw-key append}
+
+The triangle is emitted as three node keys:
+\begin{lstlisting}[style=glsl,caption={Raw key emission.},label={lst:rawkey}]
+uint base = atomicAdd(vertexCount, 3u);
+if (base + 3u > keyCapacity) { atomicAdd(droppedCount, 1u); return; }
+rawKeys[base+0] = c0.id;
+rawKeys[base+1] = c1.id;
+rawKeys[base+2] = c2.id;
+\end{lstlisting}
+The three keys are consecutive, so the finalize pass can map index $i$ to
+\code{rawKeys[i]} independently.  The atomic only reserves the base; the
+three writes are private.  If the key capacity is exhausted, the triangle
+is counted as dropped and the chunk is failed by the host.  The walker
+never writes a partial triangle.
+
+\subsection{Triangle order and visual invariance}
+
+The order of triangles in the index stream is the order in which scan cells
+happen to append.  Different GPUs, workgroup schedules, or occupancy can
+produce a different order.  This is acceptable because:
+\begin{itemize}
+\item the triangle set is identical (each cell's output is independent);
+\item the renderer draws the whole index range, not a prefix;
+\item the shadow map, depth prepass, and ray tracing are order-independent;
+\item the vegetation and fire anchors are keyed by chunk/node, not by
+  triangle index.
+\end{itemize}
+The only place order matters is debugging: a diff of two index streams
+must be order-insensitive.  The engine's self-check compares triangle sets,
+not raw arrays.
+
+\subsection{The boundary quad}
+
+A duplicated boundary quad is emitted by both neighbouring chunks.  Both
+copies must be identical in position, order, and material.  The engine
+guarantees this by:
+\begin{enumerate}
+\item using the same owner ordering key (size, min, node index);
+\item sampling the same four quadrants (the neighbour's node table contains
+  the same cells);
+\item using the same QEF arithmetic and the same edge epsilon;
+\item rotating the owner to the front.
+\end{enumerate}
+The duplicate triangles are not removed at the chunk level; the renderer
+draws both.  They coincide exactly, so the depth test resolves the
+z-fight.  Removing them would require a cross-chunk dedup pass and would
+reintroduce a seam if the dedup key differed.

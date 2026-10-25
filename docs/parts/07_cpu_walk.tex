@@ -1,0 +1,270 @@
+\section{The CPU reference walker}
+\label{sec:cpuwalk}
+
+The CPU walker is \code{OctreeTriangleTessellator::iterateTriangles}.  It is
+no longer used at runtime, but it defines the semantics the GPU shader must
+reproduce and it is the only mesher used by the offline Blender exporter.
+Reading it is the best way to understand the GPU port because the shader is
+a line-by-line translation with an explicit stack instead of C++
+recursion.
+
+\subsection{Frontier and scan cells}
+
+The walk starts at a chunk node and a target LoD $r$.  It descends to the
+cells at that rung:
+\begin{lstlisting}[caption={Frontier descent (conceptual).},label={lst:frontier}]
+void walk(node, cube, targetLod) {
+    if (node.lod == targetLod) {
+        scanCell(node, cube);
+    } else if (node.lod > targetLod) {
+        for (child in node.children) walk(child, cube.child(i), targetLod);
+    }
+}
+\end{lstlisting}
+A \emph{scan cell} is a cube at the target rung.  Only cells that straddle
+the surface need to be scanned.  The GPU flattening compacts the list with
+the same ``has negative and non-negative corner'' test, because a cell with
+no sign change on any of its twelve edges cannot emit a triangle.
+
+\subsection{Twelve edges and edge spans}
+
+For a scan cell with cube minimum $\mathbf{c}$ and size $L$, each of the
+twelve edges is converted to an \code{EdgeSpan}:
+\begin{itemize}
+\item \code{axis}: the edge's varying axis (the one with the largest
+  coordinate difference, which is exact for an axis-aligned cube);
+\item \code{fixedU}, \code{fixedV}: the two constant coordinates;
+\item \code{start}, \code{end}: the varying coordinate interval;
+\item \code{eps}: the geometric epsilon
+  $\max(\text{worldSize}, L)\cdot 10^{-6}$;
+\item \code{sampleOffset}: $L\cdot10^{-3}$, used to nudge boundary samples.
+\end{itemize}
+The span is active only when its two corner SDF values have opposite signs.
+The sign of the endpoint is also remembered; it is the authoritative
+winding oracle.
+
+\subsection{Why one edge can produce many segments}
+
+In a uniform grid, an active edge is shared by exactly four cells, all of
+the same size.  The dual polygon is a quad (or a triangle when one of the
+four cells is not a surface cell).  In an adaptive octree, the four
+quadrant cells around an edge can have different sizes and can be nested.
+The edge can cross several cell boundaries along its length.  The correct
+mesh must split the edge at every such boundary; otherwise one side of the
+boundary would connect to a vertex that the other side does not know.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.9]
+  % coarse cell left, fine right
+  \draw[grid] (0,0) rectangle (3,3);
+  \draw[grid] (3,0) rectangle (6,3);
+  \draw[grid] (3,1.5) -- (6,1.5);
+  \draw[grid] (4.5,0) -- (4.5,1.5);
+  \draw[grid] (4.5,1.5) -- (4.5,3);
+  % edge
+  \draw[accent2,line width=1.2pt] (0,2.2) -- (6,2.2);
+  % cell boundary crossings
+  \foreach \x/\lab in {3.0/coarse|fine, 4.5/fine|fine} {
+    \draw[accent,fill=white] (\x,2.2) circle (2pt);
+  }
+  \node[font=\scriptsize,above] at (3,2.25) {cell boundary};
+  \node[font=\scriptsize,above] at (4.5,2.25) {cell boundary};
+  % subsegments
+  \draw[decorate,decoration={brace,amplitude=4pt},good]
+    (0,1.85) -- (3,1.85) node[midway,below=4pt,font=\scriptsize]{segment A};
+  \draw[decorate,decoration={brace,amplitude=4pt},good]
+    (3,1.85) -- (4.5,1.85) node[midway,below=4pt,font=\scriptsize]{B};
+  \draw[decorate,decoration={brace,amplitude=4pt},good]
+    (4.5,1.85) -- (6,1.85) node[midway,below=4pt,font=\scriptsize]{C};
+  % cell labels
+  \node[font=\scriptsize] at (1.5,0.4) {coarse cell};
+  \node[font=\scriptsize] at (3.75,0.4) {fine};
+  \node[font=\scriptsize] at (5.25,2.7) {fine};
+\end{tikzpicture}
+\caption{An active edge crossing a coarse/fine cell boundary.  The edge is
+split at every cell boundary coordinate; each sub-segment is emitted by its
+owner cell.  Both the coarse and the fine side collect the same set of
+boundaries, so the resulting rings agree along the shared edge.}
+\label{fig:edge-split}
+\end{figure}
+
+\subsection{Collecting breaks}
+
+The break collector is the heart of the adaptive stitching.  Given an edge
+span and an interval $[a,b]$, it samples the four quadrant cells at the
+midpoint.  Each valid cell contributes its cube's minimum and maximum
+coordinate along the edge axis.  If these coordinates lie strictly inside
+$[a,b]$, they become breakpoints.  The interval is then recursively split
+at each breakpoint and the process repeats.  The recursion stops when the
+interval is shorter than $2\epsilon$ or contains no new break.
+
+The crucial detail is that the four quadrant cells are resolved by
+\code{findCellAt}, a root-to-cell descent that mirrors the octree's
+\code{getChildIndex} arithmetic.  A sample is nudged by one ulp in the two
+fixed axes so that a point exactly on a cell face does not land in both
+cells; a small normal offset replaces the ulp when the value is zero (the
+next float is subnormal and may be flushed to zero).  The four samples are:
+\begin{align}
+  (\text{fixedU}-\delta,\;& \text{fixedV}-\delta),\\
+  (\text{fixedU}+\delta,\;& \text{fixedV}-\delta),\\
+  (\text{fixedU}-\delta,\;& \text{fixedV}+\delta),\\
+  (\text{fixedU}+\delta,\;& \text{fixedV}+\delta).
+\end{align}
+The first sample is resolved with a full descent; the other three reuse it
+if they still lie inside its cube, which is exact because \code{findCellAt}
+is a pure function of position.  This is the same optimization in the CPU
+walker and the shader.
+
+\subsection{The break list and the interval stack}
+
+The CPU collector uses recursive calls and a \code{std::vector<float>}
+break list.  The GPU port replaces recursion with an explicit LIFO stack:
+\begin{lstlisting}[style=glsl,caption={The GPU break collector (shape).},label={lst:breaks}]
+void collectBreaks(edge, start, end) {
+    pushTask(start, end);
+    while (top > 0) {
+        pop(a, b);
+        if (b - a <= eps*2) continue;
+        mid = 0.5*(a+b);
+        local = {a,b};
+        cells = sampleQuadrants(edge, mid);
+        for each valid cell:
+            addBreakLocal(cell.min[axis], a, b);
+            addBreakLocal(cell.min[axis]+cell.size, a, b);
+        sortUniqueLocal();
+        for interior local breaks: addBreakGlobal(...);
+        push sub-intervals in reverse order;
+    }
+}
+\end{lstlisting}
+The CPU version appends all interior breaks before recursing into the
+sub-intervals.  The GPU version reproduces that order by pushing the
+sub-intervals in reverse so the LIFO pop visits them left to right.  The
+global break list is therefore identical up to floating-point ordering.
+
+The fixed capacities are part of the contract:
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Buffer & Capacity & Meaning\\
+\midrule
+\code{BREAK\_CAP} & 64 & final breaks per edge span\\
+\code{LOCAL\_BREAK\_CAP} & 32 & breaks inside one interval\\
+\code{TASK\_STACK} & 256 & pending intervals\\
+\code{POS\_MEMO} & 8 & QEF position cache per invocation\\
+\bottomrule
+\end{tabular}
+\end{center}
+A cap overflow does not truncate silently.  \code{noteOverflow()} sets a
+per-invocation flag and increments \code{overflowCount}; the host fails the
+chunk and retries it instead of drawing a hole.
+
+\subsection{Owner selection}
+
+For each sub-segment $[a,b]$, the owner is the surface quadrant with the
+smallest ordering key:
+\begin{enumerate}
+\item smaller cube size first;
+\item then smaller $x$ minimum;
+\item then smaller $y$ minimum;
+\item then smaller $z$ minimum;
+\item then smaller node index (a deterministic stand-in for pointer order).
+\end{enumerate}
+The owner is computed from the four quadrants at the segment midpoint, not
+from the scan cell.  This is what makes two neighbouring chunks agree: both
+see the same four quadrant cells and both choose the same owner.
+
+\subsection{Polygon reconstruction}
+
+The four quadrants are filtered to surface cells and deduplicated by node
+identity and by position (within the edge epsilon).  A coarse ancestor can
+appear in two opposite quadrants of the ring; the old code only removed
+adjacent duplicates and then rejected the whole segment, which produced
+the missing surface along the world axes.  The current code deduplicates
+against every already-collected quadrant.  If the resulting list has three
+or four entries, it is rotated so the owner is first; then it is fanned into
+one or two triangles.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.95]
+  \begin{scope}[shift={(0,0)}]
+    \draw[grid] (0,0) rectangle (3,3);
+    \draw[grid] (1,0)--(1,3); \draw[grid] (2,0)--(2,3);
+    \draw[grid] (0,1)--(3,1); \draw[grid] (0,2)--(3,2);
+    \fill[accent!18] (1,1)--(2,1)--(2,2)--(1,2)--cycle;
+    \node[font=\scriptsize] at (1.5,1.5) {owner};
+    \node[font=\scriptsize] at (0.5,1.5) {A};
+    \node[font=\scriptsize] at (2.5,1.5) {B};
+    \node[font=\scriptsize] at (1.5,2.5) {C};
+    \node[font=\scriptsize] at (1.5,0.5) {D};
+    \draw[accent2,line width=1pt] (0.5,1.5)--(1.5,1.5)--(2.5,1.5);
+    \node[below,font=\scriptsize] at (1.5,-0.2) {edge midpoints};
+  \end{scope}
+  \begin{scope}[shift={(4.6,0)}]
+    \draw[grid] (0,0) rectangle (3,3);
+    \draw[accent2,fill=accent2!15] (1.0,0.8)--(2.2,1.0)--(2.0,2.2)--(0.8,2.0)--cycle;
+    \draw[accent2,thick] (1.0,0.8)--(2.2,1.0)--(2.0,2.2)--(0.8,2.0)--cycle;
+    \node[font=\scriptsize] at (1.5,1.5) {ring};
+    \draw[accent2,thick] (0.8,2.0)--(2.0,2.2);
+    \draw[accent2,thick] (2.0,2.2)--(2.2,1.0);
+    \draw[accent2,thick] (2.2,1.0)--(1.0,0.8);
+    \node[below,font=\scriptsize] at (1.5,-0.2) {winding from SDF sign};
+  \end{scope}
+\end{tikzpicture}
+\caption{Left: the four quadrant cells around an edge.  Right: the dual
+polygon is the ring of their vertices.  The ring is rotated so the owner
+leads, then fanned.  The winding is chosen from the SDF sign at the edge
+start, not from the normals.}
+\label{fig:ring}
+\end{figure}
+
+\subsection{Winding}
+
+The triangle order must be consistent with the SDF sign.  The walker takes
+the interpolated SDF at the segment start using the owner's field.  If the
+owner's interpolation is infinite or degenerates, it falls back to the
+producing cell's endpoint sign.  A solid start means the ring is ordered
+so the outward normal points away from the solid; a positive start means
+the order is reversed.  The sign is an \emph{authoritative oracle}: it is
+independent of the QEF normal, which can degrade at coarse levels and on
+non-planar quads.  This is why the surface does not flip at LoD
+transitions.
+
+\subsection{Triangle fan and duplicate rejection}
+
+A 3-ring produces one triangle; a 4-ring produces two, fanned around the
+owner.  Before emission, the three dual positions are compared; if any two
+are within the edge epsilon, the triangle is dropped.  A degenerate QEF
+vertex (or two cells that collapsed to the same position) must not create a
+zero-area triangle: it would break normals, shadows, and ray tracing.
+
+\subsection{The CPU triangle handler}
+
+The CPU walker passes each triangle to \code{Tesselator::handle}, which:
+\begin{itemize}
+\item resolves the three cell vertices to \code{Vertex} records;
+\item copies brush, HSV, texture type, and mapping data;
+\item computes the triplanar UV plane from the face normal;
+\item appends the triangle to the chunk's \code{Geometry}.
+\end{itemize}
+The GPU port does not have a \code{Tesselator} equivalent.  Stage 1 writes
+the vertex payload directly from the node id and the index stream directly
+from the raw keys.  This is possible because the CPU handler's output is a
+pure function of the node state.
+
+\subsection{Why keep the CPU walker?}
+
+The CPU walker is retained for three reasons:
+\begin{enumerate}
+\item \textbf{Offline export.}  The Blender exporter has no GPU and must
+  produce the same mesh.
+\item \textbf{Reference.}  The GPU shader's arithmetic can be compared
+  chunk-by-chunk with the CPU walker under a self-check flag.
+\item \textbf{Debugging.}  When a GPU mesh is wrong, the CPU walker can
+  generate the expected triangles for a small chunk and the two sets can be
+  diffed.
+\end{enumerate}
+It is not a fallback: the runtime never invokes it.  A chunk that cannot be
+flattened is skipped, not CPU-meshed.

@@ -1,0 +1,139 @@
+\section{Step-by-step adaptive stitching}
+\label{sec:stitch}
+
+\subsection{The exact problem}
+
+Consider an active edge shared by four cells.  In a non-adaptive mesh, the
+four cells all have the same size and the edge contributes one segment.  In
+an adaptive mesh, the four cells can be a mix of coarse and fine cells.
+The edge can cross a boundary between two cells at any coordinate.  The
+correct mesh splits the edge at every such boundary and emits one segment
+per sub-interval.  The two chunks on either side of a chunk boundary must
+produce the same split list; otherwise their rings disagree and a crack
+opens.
+
+\subsection{Why a fixed stitching table is not used}
+
+A transvoxel-style table enumerates the finite set of cell configurations
+and gives a triangulation for each.  That works when the LoD difference
+across a boundary is at most one level and the cell sizes are known.  Here
+the difference can be arbitrary (a coarse root cell next to a fine leaf),
+the tree is sparse, and the cell sizes are continuous.  A table would have
+to enumerate a combinatorial set of nested cells.  The break collector
+instead computes the split from the actual cell boundaries, which is
+configuration-independent.
+
+\subsection{The recursion, formally}
+
+Let $E$ be an edge span and $[a,b]\subseteq E$ an interval.  Define
+\begin{equation}
+  B(a,b) = \{\, c_x \mid \text{quadrant cell } c \text{ at } (a+b)/2
+  \text{ contributes } c_{\min,x} \text{ or } c_{\max,x} \,\}
+\end{equation}
+restricted to values strictly inside $(a,b)$ and not within $\epsilon$ of
+an existing break.  Then:
+\begin{enumerate}
+\item append every interior value of $B(a,b)$ to the global break list;
+\item for each consecutive pair $a=t_0<t_1<\cdots<t_k=b$, recurse on
+  $[t_{i-1},t_i]$ if it is longer than $2\epsilon$.
+\end{enumerate}
+The recursion terminates because each level inserts at least one break, or
+the interval is shorter than $2\epsilon$.  In practice it terminates after
+one or two levels: the cell boundaries are powers of two and the interval
+is the current edge segment.
+
+\subsection{The GPU stack}
+
+The CPU implementation uses recursion.  The shader replaces it with a LIFO
+stack of intervals.  The CPU's exact order is:
+\begin{itemize}
+\item append all interior breaks first;
+\item then recurse into the sub-intervals from left to right.
+\end{itemize}
+The shader reproduces this by pushing sub-intervals in reverse order:
+\begin{lstlisting}[style=glsl,caption={Reverse push preserves the CPU order.},label={lst:push}]
+for (int i = localCount - 1; i >= 1; --i)
+    pushTask(local[i-1], local[i]);
+\end{lstlisting}
+Because the stack pops the last pushed interval first, it visits
+$[t_0,t_1]$ before $[t_1,t_2]$, and fully expands each before the next.
+The global break list is identical to the CPU's.
+
+\subsection{The sample offset}
+
+The quadrant samples are nudged by $\delta$ in the two fixed axes.  The
+nudge is not a random jitter: it is a deterministic one-ulp move toward the
+quadrant.  The two axes are chosen by \code{edgeAxes}: for an $x$-edge the
+fixed axes are $y,z$; for a $y$-edge they are $x,z$; for a $z$-edge they
+are $x,y$.  The four quadrant signs are fixed by the \code{quadrantSigns}
+table:
+\begin{center}
+\begin{tabular}{@{}c|cccc@{}}
+\toprule
+axis & $q_0$ & $q_1$ & $q_2$ & $q_3$\\
+\midrule
+$x$ & $(-1,-1)$ & $(-1,+1)$ & $(+1,+1)$ & $(+1,-1)$\\
+$y$ & $(-1,-1)$ & $(+1,-1)$ & $(+1,+1)$ & $(-1,+1)$\\
+$z$ & $(-1,-1)$ & $(-1,+1)$ & $(+1,+1)$ & $(+1,-1)$\\
+\bottomrule
+\end{tabular}
+\end{center}
+The actual table is flattened as
+\code{QS[axis*8 + quadrant*2 + {0,1}]}; its values are shown above.
+
+\subsection{Break capacities and overflow}
+
+The fixed capacities are a hard contract.  A scan cell with more than 64
+breakpoints, or an interval with more than 32 local breaks, or a recursion
+stack deeper than 256 intervals is not expected for the engine's cell
+sizes, but it is still possible for a pathological SDF.  The shader does
+not truncate:
+\begin{itemize}
+\item \code{noteOverflow()} sets \code{gOverflow};
+\item the cell stops emitting;
+\item \code{overflowCount} is incremented;
+\item the host sees the counter and fails the chunk.
+\end{itemize}
+The host retries the chunk after the tree edit or reports it as skipped.
+It never publishes a partial index stream.  This is an important
+difference from a ``best effort'' GPU mesher: a silent truncation would be
+a hole in the terrain that is hard to diagnose.
+
+\subsection{The global break list}
+
+The global list is sorted and deduplicated by insertion sort and a linear
+unique pass.  The lists are small (at most 64 entries), so an $\Oh(n^2)$
+sort is faster than a library sort and, more importantly, has a
+deterministic order.  Equality uses the edge epsilon:
+\begin{equation}
+  |b_i-b_j|\le \epsilon \quad\Rightarrow\quad \text{duplicate}.
+\end{equation}
+The sort is stable for equal keys because the insertion sort only moves
+strictly greater values.  This matches the CPU's \code{std::sort} behaviour
+for these list sizes and keeps the emitted triangle order deterministic.
+
+\subsection{Owner and quadrant sampling}
+
+For each sub-segment the shader samples the four quadrants at its
+midpoint.  It does not reuse the quadrant cells from the break collection:
+the midpoint of a sub-segment is a different position and may fall in a
+different cell.  The owner is selected by the ordering rule of
+\Cref{sec:cpuwalk}.  The owner's interpolated field at the segment
+endpoints decides the winding.  If the owner's interpolation degenerates
+(both endpoints get the same sign because a zero lies exactly on a corner),
+the producing cell's endpoint signs are used instead.  Those signs are
+authoritative because the producing cell only scans edges with a sign
+change.
+
+\subsection{Consequences}
+
+The stitching step is what makes it legal to publish every LoD rung and let
+the renderer choose one per region.  Without it, the mesh would be
+crack-free only within a single rung; at rung transitions the surface would
+have T-junctions and visible seams.  With it, the coarse and fine sides of
+a boundary agree on the edge split and on the owner, so their duplicated
+boundary quads have identical vertex order and identical triplanar plane.
+This is also why the chunk-border guard in the simplifier is necessary:
+the stitching can resolve interior LoD changes, but it cannot resolve a
+difference in the chunk's own boundary cells because the two chunks never
+share a node table.

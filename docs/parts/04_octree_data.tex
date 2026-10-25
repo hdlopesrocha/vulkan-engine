@@ -1,0 +1,194 @@
+\section{The CPU octree data structure}
+\label{sec:octreedata}
+
+\subsection{Node layout}
+
+An \code{OctreeNode} is a compact record:
+\begin{center}
+\begin{tabular}{@{}p{0.32\linewidth}p{0.60\linewidth}@{}}
+\toprule
+Field & Purpose\\
+\midrule
+\code{float sdf[8]} & eight corner samples (may contain $+\infty$)\\
+\code{int brushIndex} & material index, or the discard sentinel\\
+\code{int textureType} & triplanar / projection / custom mapping\\
+\code{glm::vec2 data} & mapping scale or authored UV\\
+\code{glm::vec3 hsv} & tint carried to the vertex payload\\
+\code{uint8_t lod} & stored ladder level, +1 shifted; $0$ = unset\\
+\code{uint8_t chunkLod} & chunk-rung level, +1 shifted; $0$ = not a chunk\\
+\code{uint8_t bits} & leaf flag, chunk flag, type\\
+\code{uint blockId} & index of the child block in the allocator\\
+\code{uint version} & bump on every published revision\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The +1 shift is a storage trick: a single byte can represent ``unset''
+(0) and levels 0--254 without a separate sentinel.  Every propagator uses
+the same convention:
+\begin{equation}
+  lod_{\text{parent}} = \min_i lod_{\text{child},i} + 1,
+  \qquad
+  chunkLod_{\text{parent}} = \min_i chunkLod_{\text{child},i} + 1 .
+\end{equation}
+The GPU shader compares the stored level directly against the target
+level; no shift is applied in the shader.
+
+Children are stored in a separate \code{ChildBlock}, an eight-entry array
+allocated from an \code{OctreeAllocator}.  A leaf has no block; an internal
+node has a block with up to eight children.  The allocator is a pool of
+blocks and nodes; freeing a subtree returns blocks to the pool and bumps
+the generation of the parent.  Because node addresses are recycled, every
+publish/delete handler must be paired: a new node at a recycled address
+must not inherit the previous occupant's pending mesh.  The engine's
+change handler explicitly reports the whole deleted subtree before
+\code{clear()} releases the children.
+
+\subsection{Cube corners and edges}
+
+The corner convention is bit-based:
+\begin{center}
+\begin{tabular}{@{}c|ccc@{}}
+\toprule
+$i$ & $x$ & $y$ & $z$\\
+\midrule
+0 & 0 & 0 & 0\\
+1 & 0 & 0 & 1\\
+2 & 0 & 1 & 0\\
+3 & 0 & 1 & 1\\
+4 & 1 & 0 & 0\\
+5 & 1 & 0 & 1\\
+6 & 1 & 1 & 0\\
+7 & 1 & 1 & 1\\
+\bottomrule
+\end{tabular}
+\end{center}
+The twelve edges are
+\begin{equation}
+\begin{aligned}
+&(0,1),(1,3),(2,3),(0,2),\\
+&(4,5),(5,7),(6,7),(4,6),\\
+&(0,4),(1,5),(2,6),(3,7).
+\end{aligned}
+\label{eq:edges}
+\end{equation}
+This ordering is load-bearing: the QEF loop, the GPU scan loop, the
+Blender exporter, and the CPU reference all iterate the same twelve edges
+in the same order.  Changing it changes the floating-point accumulation
+order and therefore the last bits of a vertex position.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.95]
+  % back face
+  \draw[grid] (0,0) rectangle (3,3);
+  % front face offset
+  \draw[grid] (1.1,1.1) rectangle (4.1,4.1);
+  \foreach \p in {(0,0),(3,0),(0,3),(3,3)} \draw[grid] \p -- ++(1.1,1.1);
+  % corners
+  \foreach \x/\y/\lab in {0/0/0,3/0/1,0/3/2,3/3/3,1.1/1.1/4,4.1/1.1/5,1.1/4.1/6,4.1/4.1/7}
+    \fill[accent] (\x,\y) circle (2pt) node[below right,font=\scriptsize]{\lab};
+  % edges highlighted
+  \draw[accent2,thick] (0,0)--(3,0) node[midway,below,font=\scriptsize]{(0,1)};
+  \draw[accent2,thick] (3,0)--(4.1,1.1);
+  \draw[accent2,thick] (0,0)--(1.1,1.1);
+  \draw[accent2,thick] (1.1,1.1)--(4.1,1.1);
+  % axes
+  \draw[-{Latex[length=2mm]},ink!70] (0,-0.6)--(1,-0.6) node[right,font=\scriptsize]{$x$};
+  \draw[-{Latex[length=2mm]},ink!70] (0,-0.6)--(0,0.4) node[above,font=\scriptsize]{$y$};
+  \draw[-{Latex[length=2mm]},ink!70] (0,-0.6)--(-0.5,-1.2) node[below,font=\scriptsize]{$z$};
+\end{tikzpicture}
+\caption{Corner numbering and the first four edges.  The cube is drawn with
+$z$ receding; the corner bits are $(x,y,z)$ with bit 2 $=x$, bit 1 $=y$,
+bit 0 $=z$.  The GPU table stores corners in two \code{vec4}s and edges as
+twelve integer pairs.}
+\label{fig:corners}
+\end{figure}
+
+\subsection{Types and sentinels}
+
+Each node has a \code{SpaceType}: \code{Empty}, \code{Surface}, or
+\code{Solid}.  The classification uses \code{SDF::eval}:
+\begin{equation}
+  \operatorname{eval}(\mathbf{d}) =
+  \begin{cases}
+    \text{Empty}, & \text{no finite negative corner and no finite positive corner},\\
+    \text{Solid}, & \text{all finite corners negative},\\
+    \text{Surface}, & \text{otherwise (both signs present)}.
+  \end{cases}
+\end{equation}
+An all-$+\infty$ cell is Empty.  A cell with only positive finite corners
+is Empty.  A cell with only negative finite corners is Solid.  A cell with
+both is Surface.  The edge scan is stricter: it tests the \emph{sign pair}
+of each edge directly, so a surface cell whose only negative corner is
+diagonally opposite a positive one may have no active cube edge; the scan
+simply emits nothing.
+
+\subsection{Level of detail and chunk ladder}
+
+Two distinct levels live on a node:
+\begin{description}
+\item[\code{lod}] the simplification ladder level.  A leaf at the
+  tessellation frontier has $lod=1$; a parent whose eight children can be
+  collapsed has $lod=\min child + 1$; the root has the largest value.
+\item[\code{chunkLod}] the chunk rung.  A node is a chunk root when its
+  cube is between $\Delta/2$ and $\Delta$; its immediate descendants are
+  marked $chunkLod=1$, their children $2$, and so on.  The renderer's LoD
+  gate consumes this value.
+\end{description}
+The chunk size $\Delta$ is fixed per scene (for example $512$ world
+units).  A chunk root at level 0 is the finest published rung; its
+ancestors form the coarser rungs.  The renderer keeps exactly one rung per
+region visible, which is why the mesher publishes every rung rather than
+only the finest one.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.85]
+  % tree
+  \node[box,minimum width=17mm] (root) at (0,3.2) {root\\$lod=N$};
+  \foreach \i/\x in {0/-2.4,1/-0.8,2/0.8,3/2.4} {
+    \node[box,minimum width=14mm] (c\i) at (\x,1.7) {chunk\\$lod=N-1$};
+    \draw[arrow] (root) -- (c\i);
+  }
+  \foreach \i/\x in {0/-3.2,1/-2.4,2/-1.6,3/-0.8,4/0.0,5/0.8,6/1.6,7/2.4} {
+    \node[box,minimum width=11mm,font=\scriptsize] (g\i) at (\x,0.2) {leaf\\$lod=1$};
+  }
+  % ladder bar
+  \fill[accent!15] (-4.2,-1.0) rectangle (4.2,-0.65);
+  \foreach \x/\t in {-3.6/0,-2.4/1,-1.2/2,0/3,1.2/4,2.4/5,3.6/6}
+    \node[font=\scriptsize] at (\x,-0.82) {\t};
+  \node[font=\scriptsize,left] at (-4.3,-0.82) {rung $r$:};
+  \draw[decorate,decoration={brace,mirror,amplitude=4pt},accent2]
+    (-3.9,-1.1) -- (3.9,-1.1) node[midway,below=4pt,font=\scriptsize]{published solid chunks (one draw entry per rung)};
+\end{tikzpicture}
+\caption{The chunk ladder.  Every surface-bearing cell whose size lies in
+$(\Delta/2,\Delta]$ is a chunk root at some rung.  Its children are the
+next finer rung, and so on.  The GPU gate walks this dyadic lattice from
+the root to choose exactly one visible rung per region.}
+\label{fig:ladder}
+\end{figure}
+
+\subsection{Memory model}
+
+The octree is a sparse pointer structure, not a dense grid.  A node is
+small (the eight floats dominate) and a block is eight pointers.  For a
+reference terrain with about $10^6$ surface cells the node storage is on
+the order of tens of megabytes, which is small compared with the GPU
+pools.  The expensive part is not the octree itself but the per-chunk
+flattened upload: a chunk's neighbourhood can contain several thousand
+nodes, each uploaded as a 128-byte record (eight floats, cube, metadata,
+HSV/mapping, children).  \Cref{sec:perf} measures this traffic.
+
+\subsection{Concurrency}
+
+\code{Octree::apply} takes a unique lock on \code{treeMutex}; every
+iteration (`iterateMultiThreaded`, the exporter walk, the debug cube walk)
+takes a shared lock.  The shape recursion forks at a band of cube sizes and
+joins its children before returning, so a tree never exposes a partially
+written child block to a reader.  The flattening runs under the shared
+lock: it reads the tree structure and copies the neighbourhood into a
+private \code{OctreeTopologyInput}.  The GPU pass then works on the copy,
+so the tree can be edited again while the GPU is still meshing an older
+snapshot.  The version recorded in the chunk manager (not the pointer)
+decides whether a rebuild is needed.

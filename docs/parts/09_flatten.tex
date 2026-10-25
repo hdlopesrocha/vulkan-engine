@@ -1,0 +1,165 @@
+\section{Flattening the octree neighbourhood}
+\label{sec:flatten}
+
+\subsection{What the shader needs}
+
+A chunk's scan cell can query a neighbouring cell at a coarser or finer
+LoD, possibly in a neighbouring chunk.  The shader cannot walk pointers, so
+the host must provide a node table that contains every cell the walk can
+reach.  The table must include:
+
+\begin{enumerate}
+\item the world root at index 0 (the shader's descent anchor);
+\item the root-to-chunk ancestor path, with root-consistent cubes;
+\item all descendants of the chunk down to the target LoD;
+\item all coarser nodes in the one-cell margin around the chunk, plus
+  their children, because an edge sample can cross the boundary and land
+  in a coarser neighbour;
+\item a child index per node (or $-1$ when absent);
+\item one dense vertex slot per surface node in the table.
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.9]
+  % chunk grid
+  \draw[grid] (0,0) rectangle (5,5);
+  \draw[grid] (2,0)--(2,5); \draw[grid] (3.5,0)--(3.5,5);
+  \draw[grid] (0,2)--(5,2); \draw[grid] (0,3.5)--(5,3.5);
+  \fill[accent!12] (2,2) rectangle (3.5,3.5);
+  \node[font=\scriptsize] at (2.75,2.75) {chunk};
+  % margin
+  \draw[accent2,thick,dashed] (-0.7,-0.7) rectangle (5.7,5.7);
+  \node[font=\scriptsize,accent2] at (5.2,5.55) {one-cell margin};
+  % root path
+  \draw[good,thick] (0,0)--(0.8,0.8)--(2,2);
+  \node[font=\scriptsize,good] at (0.7,0.25) {root path};
+  % neighbor coarse
+  \fill[orange!15] (3.5,3.5) rectangle (5,5);
+  \node[font=\scriptsize] at (4.25,4.25) {coarse};
+  % arrows
+  \draw[-{Latex[length=2mm]},ink!60] (2.75,1.3) -- (2.75,2.0);
+  \node[right,font=\scriptsize] at (2.8,1.55) {scan cell};
+\end{tikzpicture}
+\caption{The flattened neighbourhood.  The chunk subtree is walked to the
+target rung; the one-cell margin is included so edge samples that cross
+the boundary can resolve coarser neighbours.  Index 0 is always the world
+root, because the shader's descent starts there for samples outside the
+chunk anchor cube.}
+\label{fig:flatten}
+\end{figure}
+
+\subsection{Root-consistent ancestor chain}
+
+The host replays the child index from the world root to the chunk:
+\begin{lstlisting}[caption={Ancestor chain replay.},label={lst:chain}]
+cube = rootCube; node = root;
+chain.push({node, cube});
+while (node != chunk) {
+    i = cube.getChildIndex(chunkCenter);
+    node = children[i];
+    cube = cube.getChild(i);
+    chain.push({node, cube});
+}
+\end{lstlisting}
+The replay is necessary because a cached chunk cube may have accumulated
+float drift.  The shader will compute its own child indices from the world
+root, so the host must use exactly the same arithmetic.  If the chain
+cannot be replayed (stale node, missing child), the chunk is marked
+\code{Unavailable}; there is no CPU fallback.
+
+\subsection{Descending the table}
+
+The table is built from the chain root.  For each node, the host writes:
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Buffer & Contents\\
+\midrule
+\code{sdf0, sdf1} & two \code{vec4}s of corner samples\\
+\code{cubeMinSize} & \code{vec4(cubeMin, cubeSize)}\\
+\code{meta} & \code{ivec4(lod, type, brush, flags)}\\
+\code{hsv} & \code{vec4(hsv, textureType)}, \code{vec4(data,0,0)}\\
+\code{child03, child47} & two \code{ivec4}s of child indices\\
+\code{cells} & compacted scan-cell node ids\\
+\code{rawKeys} & device-local raw-node-key buffer\\
+\bottomrule
+\end{tabular}
+\end{center}
+The layout is 128 bytes per node: $4\times4$ floats for SDFs, $4$ floats
+for the cube, $4$ ints for metadata, $8$ floats for HSV/mapping, and $8$
+ints for children.  It is uploaded into host-visible coherent buffers; the
+shader reads it through storage-buffer descriptors.
+
+\subsection{The scan-cell list}
+
+The scan list contains cells exactly at the target rung that straddle the
+surface.  The host counts \emph{all} cells at the rung (for the key-size
+hint) but only appends the straddling ones.  The compaction test is:
+\begin{equation}
+  \exists i: d_i<0 \quad\land\quad \exists j: d_j\ge 0,
+\end{equation}
+with $+\infty$ counting as non-negative.  This is not the same as
+\code{type == Surface}: a negative-plus-infinity cell is typed Solid yet
+can emit an edge.  Filtering by type would silently drop those edges.
+
+\subsection{The descent anchor}
+
+The shader's \code{findCellAt} descends from the root.  A per-sample root
+descent would be expensive, so the host supplies \code{fromId}: the first
+node on the chunk path whose stored LoD is at most the target LoD.  For any
+sample inside that node's cube, starting the descent there is
+bit-identical to starting at the root, because no ancestor of the anchor
+is a stop node.  Samples in the margin outside the anchor fall back to the
+root.  This is a pure optimization; the result is the same.
+
+\subsection{Why the margin is one cell}
+
+An edge sample point is a corner of a scan cell, nudged outward by one ulp
+in two axes.  The neighbouring quadrant cell can be one cell larger than
+the scan cell (a coarse ancestor).  The flattening domain is therefore
+\begin{equation}
+  [\mathbf{c}_{\min}-\ell,\; \mathbf{c}_{\max}+\ell],
+\end{equation}
+where $\ell$ is the largest target-rung cell size in the subtree,
+\emph{including non-surface cells that were compacted out of the scan
+list}.  Deriving the margin from the compacted list would under-estimate
+the largest neighbour and could omit a cell the walk samples.
+
+\subsection{Vertex slots}
+
+Every node whose \code{type} is \code{Surface} receives a dense slot in
+table order:
+\begin{equation}
+  \text{flags} \mathrel{|}= (s+1)\ll1.
+\end{equation}
+Bit 0 remains the leaf flag.  The shader decodes
+\begin{equation}
+  s = (\text{flags}\gg1)-1.
+\end{equation}
+The count is the exact vertex span size: every surface node gets exactly
+one vertex, whether or not it is referenced by the index stream.  This
+slightly over-allocates the span (an unreferenced node still gets a vertex)
+but makes finalize a simple one-to-one scatter and the slot deterministic.
+
+\subsection{Table order and determinism}
+
+The table order is fixed by the traversal: root, chunk subtree in
+child-index order, then the margin descent.  The slot assignment follows
+that order.  A rebuild with the same tree produces the same slots.  The
+renderer relies on this for the packed-pool span and for the ray-tracing
+BLAS, which references the same base vertex and index ranges.
+
+\subsection{Failure modes}
+
+Flattening can fail for only a few reasons:
+\begin{itemize}
+\item the chunk node is not reachable from the root (stale parameters);
+\item the chain is deeper than 200 (a corrupt tree);
+\item the chunk has no surface cell at the rung (a valid empty chunk, not a
+  failure);
+\item the table is missing a child block the descent needs.
+\end{itemize}
+The first, second, and fourth mark the chunk \code{Unavailable}; the
+caller skips it and logs.  The third returns a valid empty input, the GPU
+pass reports zero geometry, and the publisher settles the empty revision.

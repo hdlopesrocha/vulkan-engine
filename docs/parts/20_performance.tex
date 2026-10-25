@@ -1,0 +1,141 @@
+\section{Performance and memory}
+\label{sec:perf}
+
+\subsection{Cost model}
+
+The per-chunk cost is
+\begin{equation}
+  C_{\text{chunk}} =
+  C_{\text{flatten}} + C_{\text{upload}} + C_{\text{walk}} +
+  C_{\text{read}} + C_{\text{reserve}} + C_{\text{finalize}} +
+  C_{\text{publish}}.
+\end{equation}
+The flatten and upload scales with the number of nodes in the
+neighbourhood; the walk scales with the number of scan cells and active
+edges; the finalize scales with the index and vertex counts.  The host
+reads only six integers between the two submissions.
+
+\subsection{Measured topology rates}
+
+The debug profiler in \code{OctreeTopologyCompute} reports cumulative
+averages every 256 chunks when \code{VULKAN_SETUP_DIAG=1}.  On the reference
+scene the observed windows were:
+
+\begin{center}
+\begin{tabular}{@{}rrrr@{}}
+\toprule
+Chunks & avg ms/chunk & avg cells & avg nodes\\
+\midrule
+256  & 8.3  & 1031 & 3761\\
+512  & 9.3  & 911  & 3440\\
+768  & 10.0 & 885  & 3382\\
+1280 & 18.9 & 788  & 3053\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The later window is slower despite fewer cells and nodes because the
+workers contend with the render thread and with descriptor/buffer growth.
+The uncontended floor reported for the last window of an earlier capture
+was about 4.2 ms/chunk.  The difference is a convoy effect, not a
+super-linear algorithm.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.78\linewidth,height=5.2cm,
+  xlabel={chunk window (cumulative)},ylabel={ms/chunk},
+  xtick={256,512,768,1280},
+  ymin=0,ymax=22,
+  grid=major,grid style={draw=ink!12},
+  legend style={font=\scriptsize,at={(0.98,0.97)},anchor=north east},
+  tick label style={font=\scriptsize},
+  label style={font=\small}
+]
+\addplot[mark=*,thick,accent] coordinates {(256,8.3) (512,9.3) (768,10.0) (1280,18.9)};
+\addplot[mark=square*,thick,accent2,dashed] coordinates {(256,4.2) (512,4.2) (768,4.2) (1280,4.2)};
+\legend{observed window, uncontended floor}
+\end{axis}
+\end{tikzpicture}
+\caption{Observed topology cost per chunk.  The floor is the cost when the
+worker pool is not contending with the render thread or with buffer
+growth.}
+\label{fig:perf}
+\end{figure}
+
+\subsection{Throughput}
+
+The walk is one invocation per scan cell.  For a chunk with about 900 scan
+cells and 3.4k nodes, the measured 8--19 ms includes the host-side flatten
+and upload, the two submissions, and the fence wait.  The GPU dispatch
+itself is a small fraction: the adaptive walk is branch-heavy and the
+per-invocation arrays (break list, stack, memo) are larger than the scan
+loop.  The cost is dominated by the branch divergence of the edge
+classification and by the break collection, not by the QEF solve.
+
+\subsection{Memory budget}
+
+The reference configuration reserves:
+\begin{center}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Resource & Size & Notes\\
+\midrule
+Solid vertex pool & 768 MB & 64 B $\times$ 12M elements\\
+Solid index pool & 192 MB & 4 B $\times$ 48M elements\\
+Water vertex pool & 96 MB & 64 B $\times$ 1.5M elements\\
+Water index pool & 96 MB & 4 B $\times$ 24M elements\\
+Vegetation concat A/B & 256 MB $\times$ 2 & 8M instances $\times$ 32 B\\
+Vegetation baked A/B & 32 MB $\times$ 2 & one float per instance\\
+Vegetation scratch & 80 MB & 2 $\times$ 10 $\times$ 131k $\times$ 32 B\\
+Texture arrays & 720 / 747 MB & five maps, 28 layers\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The pools are preallocated once.  A publish only carves or frees a span;
+it never allocates a Vulkan buffer.  This is why the steady-state path has
+zero \code{vmaCreateBuffer} calls and why a streaming burst cannot
+fragment the allocator.
+
+\subsection{Streaming behaviour}
+
+Chunks are drained at a controlled rate (16 per frame in the scene
+publisher, 10 per frame for vegetation).  A full drain would submit
+hundreds of topology builds at once; on a 4 GB iGPU that trips the amdgpu
+watchdog.  The rate limit keeps the submit queue bounded and spreads the
+GPU work over frames.  The vegetation and fire effects lag the solid
+publish by one or two frames; that is acceptable because the chunk is not
+visible until its draw entry is published.
+
+\subsection{Failure costs}
+
+The expensive failure is a key-capacity retry: it re-uploads the node
+table and re-runs the walk.  The hint (25 keys per scan cell plus 64) was
+calibrated to make retries rare.  The hard cap (8M keys, 32 MB) is chosen
+so a pathological chunk fails explicitly rather than allocating
+unbounded memory.  A pool exhaustion is a sizing bug: the pools are
+preallocated for the worst measured scene, and a new scene must bump the
+budget deliberately.
+
+\subsection{Interpretation}
+
+The pipeline is not ``free''.  It pays:
+\begin{itemize}
+\item a per-chunk flatten and upload of the node neighbourhood;
+\item two submissions and one fence wait;
+\item a small host read of six counters;
+\item a per-chunk span reservation and descriptor update.
+\end{itemize}
+It saves:
+\begin{itemize}
+\item a GPU$\rightarrow$CPU vertex readback;
+\item a CPU-side QEF solve for every vertex;
+\item a host-side triangle append and a staging upload;
+\item a CPU-to-GPU copy of the index stream.
+\end{itemize}
+On a discrete GPU the readback and staging are the dominant costs; on an
+integrated GPU they are even more expensive because the memory is shared.
+The measured topology cost is the price of the split, and it is paid on
+worker threads, not on the render thread.

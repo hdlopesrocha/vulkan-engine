@@ -1,0 +1,120 @@
+\section{From pool span to rendered frame}
+\label{sec:render}
+
+\subsection{Stable draw entries}
+
+The renderer is a \emph{slotted} indirect renderer.  Each chunk owns one
+stable draw-entry index; the entry is never compacted or renumbered while
+the chunk is alive.  The packed pools are separate:
+\begin{itemize}
+\item a single large vertex pool (device-local, 64-byte elements);
+\item a single large index pool (device-local, 32-bit elements);
+\item a host-visible indirect-command array;
+\item a host-visible bounds/LoD-meta array.
+\end{itemize}
+A chunk's vertex and index data live in a variable-size span allocated by
+\code{PackedSpaceAllocator}.  The draw entry stores the span's base vertex,
+first index, index count, and instance count.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \fill[accent!10] (0,0) rectangle (10,0.9);
+  \foreach \x/\w/\lab in {0/2.2/chunk A,2.2/1.4/chunk B,3.6/2.8/chunk C,6.4/1.1/free,7.5/2.5/chunk D}
+    \fill[accent!28] (\x,0) rectangle (\x+\w,0.9)
+      node[midway,font=\scriptsize]{\lab};
+  \draw (0,0) rectangle (10,0.9);
+  \node[above] at (5,0.95) {vertex/index pool (one large allocation)};
+  % draw entries
+  \foreach \x/\lab in {0/A,2.2/B,3.6/C,7.5/D} {
+    \draw (0.1+\x*0.8,1.4) rectangle (0.1+\x*0.8+0.45,1.9);
+    \node[font=\scriptsize] at (0.1+\x*0.8+0.22,1.65) {\lab};
+  }
+  \draw[-{Latex[length=2mm]}] (0.3,1.4)--(0.5,0.95);
+  \draw[-{Latex[length=2mm]}] (2.0,1.4)--(2.6,0.95);
+  \draw[-{Latex[length=2mm]}] (3.2,1.4)--(4.6,0.95);
+  \draw[-{Latex[length=2mm]}] (6.2,1.4)--(8.2,0.95);
+  \node[below] at (5,-0.15) {stable draw entries (one per chunk slot)};
+\end{tikzpicture}
+\caption{Packed pools and stable draw entries.  Chunk spans are packed
+best-fit into one large vertex pool and one large index pool; the draw
+entry is a stable index into the indirect-command array.  Rebuilding a
+chunk replaces only its span.}
+\label{fig:pool}
+\end{figure}
+
+\subsection{The draw command}
+
+A draw command is
+\begin{equation}
+\begin{aligned}
+  \text{DrawIndexedIndirectCount}(&\text{indexCount},\text{instanceCount}=1,\\
+  &\text{firstIndex},\text{vertexOffset}=\text{baseVertex},\\
+  &\text{firstInstance}=\text{slot}).
+\end{aligned}
+\end{equation}
+The vertex shader uses \code{gl_InstanceIndex} only for the per-chunk
+vegetation/impostor path; the solid terrain vertex is a direct vertex
+attribute.  The index stream is chunk-local: every index is a slot number
+in the chunk's vertex span, and \code{vertexOffset} rebases it at draw time.
+
+\subsection{Depth and offscreen composition}
+
+Vegetation is rendered to its own color and depth targets on a parallel
+async command buffer; the solid pass has a separate depth target.  The
+composite pass tests the vegetation depth against the solid scene depth.
+This decoupling is why the vegetation pass can use a different render
+scale and why it can be skipped on steady-empty frames.  The solid chunks
+themselves are drawn in the main solid pass, with a depth prepass and a
+shadow cascade.
+
+\subsection{Shadows}
+
+The shadow renderer reuses the same slots and the same hierarchy.  A
+cascade cull emits one compacted command per chunk per cascade, reusing the
+already-selected LoD stamp from the main cull.  The shadow vertex shader
+reads the same 64-byte vertex and index pool.  No second mesh exists.
+The cascade copy lists and descriptor-buffer mirror include the brush map
+and wind field so the shadow tessellation stage can displace and classify
+the surface without a separate descriptor.
+
+\subsection{Ray tracing}
+
+The hybrid ray tracer builds a BLAS over the merged vertex/index pools.  A
+chunk's geometry span is referenced directly:
+\begin{itemize}
+\item vertex buffer = the pool, vertex stride 64;
+\item index buffer = the pool, first index = span's first index;
+\item geometry flags = opaque or alpha-tested, depending on the material.
+\end{itemize}
+Because the span is published only after the finalize fence, the BLAS build
+never sees partially written vertices.  A chunk rebuild requests a BLAS
+refresh; the proxy boxes are used for the water reflection path and for
+the fallback when the BLAS is not ready.
+
+\subsection{Material and mapping}
+
+The vertex carries brush, HSV, texture type, and mapping data.  The solid
+fragment shader selects the material texture from the brush and the
+triplanar/projection mapping from the texture type.  Because the CPU never
+computed a vertex, the mapping data must come from the node: the shape
+leaf paints it, internal nodes inherit the dominant child, and finalize
+writes it into the vertex.  A mapping bug therefore shows up as a texture
+scale collapse, not as a geometry error.
+
+\subsection{The frame graph}
+
+The main frame is roughly:
+\begin{enumerate}
+\item frame fences and pending command-buffer processing;
+\item uploads and deferred destroys;
+\item GPU cull for solid, water, SDF, bbox, vegetation;
+\item depth prepass;
+\item shadow cascades;
+\item solid color pass;
+\item water, vegetation, video, SDF passes;
+\item post-process composition;
+\item ImGui and present.
+\end{enumerate}
+The topology pass is not in this list: it runs on worker threads when a
+chunk is built, not per frame.  A frame only consumes published spans.

@@ -1,0 +1,135 @@
+\section{Stage 0: the GPU walk}
+\label{sec:gpuwalk}
+
+\subsection{Invocation model}
+
+The walk dispatch has one invocation per compacted scan cell:
+\begin{equation}
+  \text{groups} = \left\lceil \frac{|\text{cells}|}{64} \right\rceil,
+\end{equation}
+with a local size of 64.  The shader starts from
+\code{gl_GlobalInvocationID.x}; if it is beyond the cell count, it
+returns.  All per-invocation state is private:
+\begin{itemize}
+\item break list (64 floats),
+\item local break list (32 floats),
+\item task stack (256 intervals),
+\item QEF position memo (8 entries),
+\item overflow flag and diagnostic counters.
+\end{itemize}
+No workgroup shared memory is needed.  This makes the pass portable across
+devices with small shared-memory budgets and avoids workgroup
+synchronization.
+
+\subsection{Node accessors}
+
+The shader wraps the eight storage buffers in typed accessors:
+\begin{lstlisting}[style=glsl,caption={Node accessors (abridged).},label={lst:accessors}]
+float nodeSdf(uint id, int i) { return (i < 4) ? sdf0[id][i] : sdf1[id][i-4]; }
+int nodeType(uint id)   { return meta[id].y; }
+int nodeBrush(uint id)  { return meta[id].z; }
+int nodeSlot(uint id)   { return int(meta[id].w >> 1) - 1; }
+vec3 nodeMin(uint id)   { return cubeMinSize[id].xyz; }
+float nodeSize(uint id) { return cubeMinSize[id].w; }
+int nodeChild(uint id, int i) { ... }
+\end{lstlisting}
+The table is a flat array; there are no pointers.  The accessors are
+inlined by the compiler.
+
+\subsection{\code{findCellAt}}
+
+The descent mirrors the CPU walker:
+\begin{lstlisting}[style=glsl,caption={The root-to-cell descent.},label={lst:findcell}]
+Cell findCellAt(vec3 pos) {
+    if (!worldContains(pos)) return INVALID;
+    uint idx = pc.fromId >= 0 ? pc.fromId : 0;
+    if (pos outside anchor cube) idx = 0;
+    while (!nodeIsLeaf(idx) && nodeLod(idx) > pc.targetLod) {
+        ivec3 half = nodeMin(idx) + 0.5*nodeSize(idx);
+        int child = (pos.x >= half.x ? 4 : 0)
+                  + (pos.y >= half.y ? 2 : 0)
+                  + (pos.z >= half.z ? 1 : 0);
+        int c = nodeChild(idx, child);
+        if (c < 0) return INVALID;
+        idx = c;
+    }
+    return Cell(idx, nodeMin(idx), nodeSize(idx));
+}
+\end{lstlisting}
+The stop condition is ``leaf or stored LoD at most target''.  The stored
+LoD is +1 shifted, exactly as on the CPU.  Starting at \code{fromId} is
+valid only for positions strictly inside the anchor cube; a point on the
+upper face must follow the sibling branch, so the test uses a strict upper
+bound.
+
+\subsection{Edge span construction}
+
+For each of the twelve cube edges, the shader loads the two corner signs.
+If they are equal, the edge is inactive.  Otherwise it builds an
+\code{EdgeSpan}.  The varying axis is the component with the largest
+absolute corner difference (exact for an axis-aligned cube).  The two other
+axes are the fixed $u,v$ axes.  The span's epsilon is
+\begin{equation}
+  \epsilon = \max(\text{worldSize}, L)\cdot10^{-6},
+\end{equation}
+and the boundary sample offset is
+\begin{equation}
+  \delta = \max(L\cdot10^{-3},10^{-6}).
+\end{equation}
+The epsilon is used for duplicate rejection and sign-change tests; the
+offset is used when a sample sits exactly on a cell face.
+
+\subsection{The ulp nudge and the zero guard}
+
+Sampling a point exactly on a cell face is ambiguous: the two cells both
+claim it.  The shader nudges the fixed coordinates by one float in the
+direction of the quadrant.  At zero, \code{nextafter(0,+inf)} is a
+subnormal; FTZ GPUs flush it to zero, and the negative quadrant then
+resolves into the positive cell.  The shader detects a subnormal nudge and
+uses a small normal offset instead.  This is a small detail with a large
+visual consequence: without it, the surface disappears along the world
+$x=0$, $y=0$, and $z=0$ planes.
+
+\subsection{The scan loop}
+
+For each active edge the walk:
+\begin{enumerate}
+\item initializes the global break list with the span endpoints;
+\item calls \code{collectBreaks};
+\item sorts and uniques the global list;
+\item iterates consecutive breaks and calls \code{emitSegment} for each
+  interval wider than $2\epsilon$.
+\end{enumerate}
+This is exactly the CPU loop.  The only difference is that the CPU stores
+the breaks in a \code{std::vector} and the GPU uses fixed arrays.
+
+\subsection{Diagnostics}
+
+Two counters are accumulated only when \code{VULKAN_SETUP_DIAG} is set:
+\code{findCellCalls} and \code{reuseHits}.  They are summed locally and
+published with one atomic pair per scan cell, so the diagnostic path does
+not add a per-call atomic.  The normal path has a predictable branch and no
+counter traffic.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 8mm,font=\small]
+  \node[box] (cell) {one scan cell};
+  \node[box,below=of cell] (edges) {12 edges};
+  \node[box,below=of edges] (active) {sign change?};
+  \node[box,right=of active] (span) {build \code{EdgeSpan}};
+  \node[box,below=of span] (breaks) {\code{collectBreaks}};
+  \node[box,below=of breaks] (segments) {emit each sub-segment};
+  \node[box,below=of segments] (poly) {owner + ring + winding};
+  \node[box,below=of poly] (tri) {emit triangle keys};
+  \draw[arrow] (cell)--(edges); \draw[arrow] (edges)--(active);
+  \draw[arrow] (active)--node[above,note]{yes}(span);
+  \draw[arrow] (span)--(breaks); \draw[arrow] (breaks)--(segments);
+  \draw[arrow] (segments)--(poly); \draw[arrow] (poly)--(tri);
+  \draw[arrow] (active.west) -- ++(-1.0,0) |- node[pos=0.75,left,note]{no, next edge} (edges.west);
+\end{tikzpicture}
+\caption{One scan-cell invocation.  Inactive edges are skipped; active
+edges are stitched and emitted.  The entire control flow is private to the
+invocation.}
+\label{fig:scanflow}
+\end{figure}

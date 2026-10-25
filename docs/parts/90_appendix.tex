@@ -1,0 +1,163 @@
+\appendix
+\section{Storage layouts and constants}
+\label{app:layout}
+
+\subsection{Octree node record (host)}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Field & Type & Bytes\\
+\midrule
+\code{sdf[8]} & float & 32\\
+\code{brushIndex} & int & 4\\
+\code{textureType} & int & 4\\
+\code{data} & vec2 & 8\\
+\code{hsv} & vec3 & 12\\
+\code{blockId} & uint & 4\\
+\code{bits} & uint8 & 1\\
+\code{lod} & uint8 & 1\\
+\code{chunkLod} & uint8 & 1\\
+\code{version} & uint & 4\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{GPU node table (flattened)}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Binding & Record & Bytes\\
+\midrule
+0 & \code{vec4 sdf0} & 16\\
+1 & \code{vec4 sdf1} & 16\\
+2 & \code{vec4 cubeMinSize} & 16\\
+3 & \code{ivec4 meta} & 16\\
+4 & \code{vec4 nodeHsv[2]} & 32\\
+5 & \code{ivec4 child03} & 16\\
+6 & \code{ivec4 child47} & 16\\
+\midrule
+total & & 128\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Packed vertex record}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Word & Field & Bytes\\
+\midrule
+0 & position.xyz + color.x & 16\\
+1 & color.yz + texCoord.xy & 16\\
+2 & normal.xyz + brush bits & 16\\
+3 & textureType bits + hsv & 16\\
+\midrule
+total & & 64\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Push constants}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Field & Meaning\\
+\midrule
+\code{cellCount} & scan cells in this dispatch\\
+\code{targetLod} & rung to scan\\
+\code{fromId} & descent anchor\\
+\code{fromBrush} & fallback brush\\
+\code{rootMinSize} & world root $(x,y,z,L)$\\
+\code{worldSize} & root edge for epsilon\\
+\code{keyCapacity} & raw key bound\\
+\code{pass} & 0 walk / 1 finalize\\
+\code{vertexBase} & span-relative vertex base\\
+\code{vertexCapacity} & vertex span bound\\
+\code{indexBase} & span-relative index base\\
+\code{indexCapacity} & index span bound\\
+\code{indexCount} & raw vertices to remap\\
+\code{nodeCount} & node-table entries to write\\
+\code{diag} & diagnostic counters on/off\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Constants}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Name & Value & Purpose\\
+\midrule
+\code{kVerticesPerCellHint} & 25 & key sizing\\
+\code{kKeyCapacityHeadroom} & 64 & key sizing\\
+\code{kMaxKeysPerCall} & $2^{23}$ & hard key cap\\
+\code{BREAK\_CAP} & 64 & final breaks per edge\\
+\code{LOCAL\_BREAK\_CAP} & 32 & local breaks per interval\\
+\code{TASK\_STACK} & 256 & interval stack\\
+\code{POS\_MEMO} & 8 & QEF memo\\
+\code{kInstanceStride} & 32 & vegetation instance\\
+\code{kMaxVegChunks} & 4096 & vegetation chunk cap\\
+\code{kPlacementScratchPerChunk} & 131072 & vegetation coarse cap\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{The complete scan-cell algorithm}
+\label{app:algorithm}
+
+\begin{algorithm}[H]
+\caption{GPU scan cell (one invocation per cell)}
+\begin{algorithmic}[1]
+\State $cell \gets$ cell descriptor from table
+\State $corners[8] \gets$ node SDF samples
+\For{$e=0$ to $11$}
+  \State $(i,j) \gets$ \code{EDGES}[e]
+  \If{sign($corners[i]$) $=$ sign($corners[j]$)}
+    \State \textbf{continue}
+  \EndIf
+  \State $span \gets$ \code{makeEdgeSpan}(e, cell)
+  \If{$span.end-span.start \le 2\epsilon$}
+    \State \textbf{continue}
+  \EndIf
+  \State $breaks \gets \{span.start, span.end\}$
+  \State \code{collectBreaks}(span, span.start, span.end)
+  \If{overflow} \State \textbf{fail chunk} \EndIf
+  \State sort/unique($breaks$)
+  \For{$k=1$ to $|breaks|-1$}
+    \If{$breaks[k]-breaks[k-1] > 2\epsilon$}
+      \State \code{emitSegment}(span, $breaks[k-1]$, $breaks[k]$,
+        $sign_i$, $sign_j$)
+    \EndIf
+  \EndFor
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\section{Glossary}
+\label{app:glossary}
+
+\begin{description}[leftmargin=2.2em,style=nextline]
+\item[Chunk] A cube of edge $\Delta$ whose subtree is flattened and meshed
+  as one unit.  A chunk root is published as a draw entry.
+\item[Rung] A level of the chunk ladder.  $r=0$ is the finest published
+  level; larger $r$ are coarser ancestors.
+\item[Scan cell] A cube at the target rung whose twelve edges are scanned
+  for sign changes.
+\item[Edge span] The interval of an active cube edge, with its fixed
+  coordinates and epsilon.
+\item[Break] A coordinate inside an edge span where a neighbouring cell
+  boundary forces a split.
+\item[Owner] The surface cell that determines the winding and leads the
+  ring of a sub-segment.
+\item[Raw key] The node index of one triangle corner, written in stage 0
+  and remapped to a slot in stage 1.
+\item[Slot] The dense vertex index assigned to a surface node by the host.
+\item[Span] A reserved range in the packed vertex/index pools.
+\item[Stamp] The per-entry LoD keep/reject decision written by the cull and
+  consumed by the shadow/RT paths.
+\end{description}

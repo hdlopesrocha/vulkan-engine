@@ -1,0 +1,106 @@
+\section{Discussion, limitations, and future work}
+\label{sec:discussion}
+
+\subsection{What the split buys}
+
+The CPU octree is a semantic store: it knows the SDF, the brush, the
+mapping, the version, and the LoD ladder.  The GPU mesher is a pure
+function from a flattened neighbourhood to a dual mesh.  This separation
+makes both sides simpler:
+\begin{itemize}
+\item the CPU never needs a triangle mesh to answer ``what is the
+  material at this cell?'';
+\item the GPU never needs a pointer, an allocator, or a tree lock;
+\item the renderer never needs a conversion pass;
+\item the exporter can reuse the CPU walker as a reference.
+\end{itemize}
+
+\subsection{The remaining host cost}
+
+The host still pays for the flattened upload and the two fence waits per
+chunk.  The measured 8--19 ms/chunk is not negligible.  The cost is on
+worker threads, so it does not directly stall the render thread, but it
+consumes CPU cores and memory bandwidth.  The next step would be to batch
+several chunks into one submission and share one descriptor set, as the
+perf reports propose.  That would amortize the submit/fence cost and the
+descriptor writes.  The current per-chunk design was chosen for
+incremental streaming and easy failure isolation; batching is a
+throughput optimization, not a correctness requirement.
+
+\subsection{The mesh is not the only consumer}
+
+The same span feeds:
+\begin{itemize}
+\item the raster solid pass;
+\item the shadow cascades;
+\item the ray-tracing BLAS;
+\item the vegetation placement compute;
+\item the SDF fire anchors (via node SDFs).
+\end{itemize}
+This is why the span protocol is centralized in \code{IndirectRenderer}.
+If each consumer allocated its own copy, the memory and the synchronization
+surface would explode.  The packed pool is the single source of geometry
+truth for the frame.
+
+\subsection{Adaptive LoD and cracks}
+
+The adaptive stitching is exact for the chunk-local walk, but it relies on
+both chunks seeing the same four quadrant cells.  The one-cell margin
+guarantees this for a neighbour that is at most one cell larger.  A
+pathological tree with a much larger neighbour (more than one cell) could
+still sample outside the margin.  The flattening uses the largest target
+cell in the subtree, not the chunk's own cell, precisely to cover this
+case.  A future change that shrinks the margin must re-run the
+CPU-vs-GPU self-check on a chunk with a coarse neighbour.
+
+\subsection{The coarse-rung density cap}
+
+Vegetation placement caps a single coarse rung at a fixed instance count.
+This is a deliberate visual/performance trade: a root-scale chunk can
+request hundreds of thousands of tufts, which is both expensive and
+visually indistinguishable from a smaller count at its distance.  The cap
+is logged, not silent.  A future distance-density model could replace the
+hard cap with a screen-space or distance-based thinning curve.
+
+\subsection{The fire anchors}
+
+The fire effect now derives anchors from the node SDFs rather than from the
+triangulated surface.  This is cheaper and fits the GPU-only mesh, but it
+is coarser than the old triangle sampling.  The Newton step lands on the
+trilinear zero crossing; for a primitive sphere or cylinder this is
+accurate.  For a highly non-planar cell, the anchor can be a few
+centimetres off the true QEF surface.  The flame scale is large enough
+that this is not visible.  A future improvement could run a small GPU
+placement pass over the brush-4 triangles and read back only the anchor
+records.
+
+\subsection{What would break the design}
+
+The following changes would violate the contract and require a redesign:
+\begin{itemize}
+\item reading a vertex back to the host (destroys the no-readback
+  property);
+\item letting the CPU write a chunk vertex (destroys the single-producer
+  invariant);
+\item freeing a span without a cull-frame delay (use-after-free);
+\item changing the node table order without re-running the exporter
+  comparison (changes slot assignment and the BLAS);
+\item dropping a triangle on overflow instead of failing (silent holes).
+\end{itemize}
+
+\subsection{Future work}
+
+Three directions are natural:
+\begin{enumerate}
+\item \textbf{Batched topology.}  Flatten all chunks of a layer into one
+  arena, record one walk and one finalize dispatch for the batch, and
+  read all counters with one map.  This is the highest-leverage performance
+  change.
+\item \textbf{GPU-side fire placement.}  A compute pass over brush-4
+  triangles could produce anchors in a device buffer and the SDF scene
+  could consume them directly, avoiding the host anchor list.
+\item \textbf{Compressed vertex payload.}  The 64-byte vertex is generous;
+  a packed normal/brush/mapping format could halve the pool and the
+  bandwidth, at the cost of a decode in the vertex shader and the BLAS
+  build.
+\end{enumerate}

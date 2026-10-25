@@ -1,0 +1,38 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+This report followed one geometric path from an author's implicit shape to
+a shaded pixel.  The CPU evaluates the SDF, builds an adaptive octree of
+corner samples, simplifies it into a LoD ladder, and flattens a chunk's
+neighbourhood into compact tables.  The GPU walks the twelve cube edges,
+stitches LoD boundaries, solves one dual vertex per surface cell, and
+writes the final 64-byte vertices and chunk-local indices directly into
+the renderer's persistent pools.  The host sees counters, slots, and
+versions—not vertices.
+
+The key ideas are:
+\begin{itemize}
+\item \textbf{One Cartesian producer.}  Stage 1 is the only runtime code
+  that writes a vertex.  This eliminates an entire class of
+  CPU/GPU divergence and makes the offline exporter a meaningful
+  reference.
+\item \textbf{Root-consistent flattening.}  The GPU table is a
+  serialisable snapshot of the exact neighbourhood the CPU walker would
+  traverse, including the one-cell margin for coarse neighbours.
+\item \textbf{Break-based stitching.}  The edge is split at every cell
+  boundary, not at a fixed table of configurations.  Two chunks resolve
+  the same edge to the same owner and the same sub-segments.
+\item \textbf{Span publishing.}  A chunk's geometry is a reserved range in
+  a large pool, published only after the finalize fence and freed only
+  after the cull frames that could reference it have retired.
+\item \textbf{One hierarchy for everything.}  Raster, shadows, ray
+  tracing, vegetation, and fire all consume the same published span or the
+  same node metadata.
+\end{itemize}
+
+The result is not a toy mesher.  It streams an adaptive, crack-free
+surface from a mutable SDF octree into a real-time renderer without a
+vertex readback, and it keeps the host's work proportional to the number
+of chunks and nodes, not to the number of triangles.  The measured costs
+and the invariants in this report are the contract a future change must
+preserve.
