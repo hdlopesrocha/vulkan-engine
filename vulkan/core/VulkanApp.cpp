@@ -395,6 +395,12 @@ void VulkanApp::mainLoop() {
 
 void VulkanApp::cleanup() {
     printf("[VulkanApp] cleanup start - device=%p\n", (void*)device);
+    // Stop CPU workers before the first device-wide wait/teardown. They can
+    // still submit topology/upload/placement command buffers, which races
+    // vkDeviceWaitIdle and then the destroy calls below. stopBackgroundThreads
+    // is CPU-only (no Vulkan), so it is safe on both the normal and the
+    // device-lost path.
+    stopBackgroundThreads();
     bool isDeviceLost = false;
     if (device != VK_NULL_HANDLE) {
         VkResult waitRes = deviceWaitIdle();
@@ -417,10 +423,7 @@ void VulkanApp::cleanup() {
         // teardown. This includes skipping clean() (manager teardown) — any
         // non-Vulkan resources it would free are reclaimed by the OS too.
         deviceLost.store(true);
-        // Join/stop the app's CPU threads (e.g. sceneProcessThread) so no
-        // joinable std::thread survives to process exit (that would call
-        // std::terminate). Must NOT touch Vulkan.
-        stopBackgroundThreads();
+        // Threads were already stopped above (CPU-only, no Vulkan).
         glfwTerminate();
         return;
     }
@@ -1257,6 +1260,11 @@ VkResult VulkanApp::queueWaitIdle() {
 }
 
 VkResult VulkanApp::deviceWaitIdle() {
+    // Serialize with every queue submission: vkDeviceWaitIdle uses all queues,
+    // and a background worker (topology/upload/vegetation placement) may still
+    // be submitting. Without this lock the validation layer reports
+    // "VkQueue is simultaneously used" at the worker's vkQueueSubmit2.
+    std::lock_guard<std::mutex> lock(getQueueSubmitMutex(graphicsQueue));
     return vkDeviceWaitIdle(device);
 }
 
