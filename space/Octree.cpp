@@ -354,35 +354,10 @@ void Octree::apply(
     // origin, leaf length and packed index range) is final then.
     configureShapeCache(args);
 
-#ifndef NDEBUG
-    // Perf report 29 M7: one line per apply under VULKAN_SETUP_DIAG. The
-    // environment is read once; with the variable unset the counters stay
-    // nullptr and only the branch in evaluateSDF remains.
-    static const bool setupDiag = std::getenv("VULKAN_SETUP_DIAG") != nullptr;
-    static std::atomic<uint64_t> applyIndex{0};
-    ShapeCacheStats cacheStats;
-    const uint64_t thisApply = setupDiag ? applyIndex.fetch_add(1, std::memory_order_relaxed) : 0;
-    const auto applyStart = setupDiag ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
-    if (setupDiag) args.cacheStats = &cacheStats;
-#endif
-
     OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, root ? root->getType() : SpaceType::Empty, 0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
     OctreeThreadContext localChunkContext;
     NodeOperationResult r = NodeOperationResult();
     shape(r, frame, args, &localChunkContext, updateHandler, deleteHandler);
-
-#ifndef NDEBUG
-    if (setupDiag) {
-        const double ms = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - applyStart).count();
-        const uint64_t hits = cacheStats.hits.load(std::memory_order_relaxed);
-        const uint64_t misses = cacheStats.misses.load(std::memory_order_relaxed);
-        const uint64_t probes = hits + misses;
-        const double rate = probes > 0 ? (100.0 * double(hits) / double(probes)) : 0.0;
-        std::cout << "[octree-diag] apply " << thisApply << ": " << ms << " ms, cache hits "
-                  << hits << ", misses " << misses << ", hit rate " << rate << "%" << std::endl;
-    }
-#endif
 }
 
 int Octree::heightRootToChunk(int lod, float minSize) const {
