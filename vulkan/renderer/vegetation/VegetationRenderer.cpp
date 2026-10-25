@@ -2405,10 +2405,10 @@ void VegetationRenderer::publishCompletedPlacements(VulkanApp* app) {
 // expands the grass triangles into area-weighted slots and writes the 32-byte
 // instance records DIRECTLY into a shared scratch ring (its per-chunk capacity
 // is the only guess; a chunk's real count is area-based and can reach several
-// thousand tufts). The placement fence callback reads that exact count,
-// allocates the persistent buffer at that size, and copies the slice into it on
-// the GPU. No CPU geometry is uploaded and no instance byte ever reaches the
-// host.
+// thousand tufts). The placement fence callback reads that exact count and
+// allocates the persistent buffer; the next main-thread processPendingChunksGPU
+// call copies the slice into it on the GPU and publishes the chunk. No CPU
+// geometry is uploaded and no instance byte ever reaches the host.
 void VegetationRenderer::processPendingChunksGPU(VulkanApp* app, uint32_t maxChunks) {
     if (!app) return;
     // Finish/copy the batches whose placement fence completed since the last
