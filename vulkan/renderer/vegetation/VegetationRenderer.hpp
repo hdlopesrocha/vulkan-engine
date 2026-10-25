@@ -275,7 +275,9 @@ public:
     // keeps the persistent per-chunk buffers exactly sized while the output
     // capacity (chunk area x density, potentially thousands of tufts) is only
     // bounded by the scratch slice. Coarse ancestor rungs can reach ~1e5 tufts
-    // in a wide terrain; 131k leaves headroom without a per-chunk reservation.
+    // in a wide terrain; root-scale rungs are intentionally thinned at this
+    // cap (far-field density is imperceptible and a per-chunk reservation of
+    // hundreds of thousands of tufts would blow the budget).
     static constexpr uint32_t kPlacementBatchMax = 10;
     static constexpr uint32_t kPlacementScratchPerChunk = 131072;
     static constexpr uint32_t kPlacementScratchCount = 2;

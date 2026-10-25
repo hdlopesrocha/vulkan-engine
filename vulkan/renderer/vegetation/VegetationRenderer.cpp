@@ -2618,9 +2618,10 @@ void VegetationRenderer::processPendingChunksGPU(VulkanApp* app, uint32_t maxChu
             if (count > kPlacementScratchPerChunk) {
                 static std::atomic<int> logged{0};
                 if (logged.fetch_add(1) < 8) {
-                    std::cerr << "[VegetationRenderer] placement scratch clamp (chunk="
+                    std::cerr << "[VegetationRenderer] coarse-rung instance cap (chunk="
                               << static_cast<unsigned long long>(w.chunkId)
-                              << " count=" << count << " cap=" << kPlacementScratchPerChunk << ")\n";
+                              << " intended=" << count << " kept=" << kPlacementScratchPerChunk
+                              << "): far-rung density thinned\n";
                 }
                 count = kPlacementScratchPerChunk;
             }
