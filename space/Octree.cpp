@@ -409,9 +409,10 @@ bool Octree::isThreadNode(float nodeLength, float minSize, int threadSize) const
     return minSize*threadSize*0.25f < nodeLength && nodeLength <= minSize*threadSize;
 }
 
-// Detached shape tasks carry their exception back to the parent's ForkState
-// (the parent waits on the latch before reading it), so a failed child cannot
-// silently leave a partially written result that the parent commits.
+// Threaded children are ordinary pool futures: each task owns a copy of its
+// frame and the ShapeArgs, writes into a shared result block, and is joined by
+// FutureJoin. A child failure is stored in its future and ignored (the shape
+// path has no exception contract).
 
 void Octree::shapeChildren(
     const OctreeNodeFrame &frame, 
