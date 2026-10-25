@@ -1,5 +1,9 @@
 #include "Octree.hpp"
+#include <array>
 #include <atomic>
+#include <future>
+#include <memory>
+#include <mutex>
 #include <string>
 #include "../math/BrushMode.hpp"
 #include "NodeOperationResult.hpp"
@@ -7,9 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <exception>
 #include <iostream>
-#include <latch>
 #include <optional>
 #include <vector>
 #include <cstdint>
@@ -434,40 +436,43 @@ void Octree::shapeChildren(
     }
     glm::vec3 hsv = node ? node->hsv : frame.hsv;
 
-    // Per-child records for the detached fork tasks. They live in this frame,
-    // which stays blocked in the latch wait below until every task has
-    // counted down, so the pointers cannot dangle. The whole fork state is
-    // only built when this level actually forks, so the sequential path (the
-    // vast majority of nodes) pays nothing for it.
-    struct ForkState;
-    struct ForkTask {
-        const OctreeNodeFrame * frame = nullptr;
-        NodeOperationResult * result = nullptr;
-        const ShapeArgs * args = nullptr;
-        OctreeNodeDataHandler * update = nullptr;
-        OctreeNodeDataHandler * deleteHandler = nullptr;
-        Octree * tree = nullptr;
-        std::latch * done = nullptr;
-        ForkState * fork = nullptr;
-    };
-    struct ForkState {
-        ForkTask tasks[8];
-        std::latch done{8};
-        std::exception_ptr enqueueError;
-        // First child exception. Tasks write under the mutex; the parent reads
-        // after the latch wait (which provides the happens-before edge).
-        std::mutex errorMutex;
-        std::exception_ptr taskError;
-    };
-    std::optional<ForkState> fork;
-    if (isChildThread) fork.emplace();
+    // Threaded children write into a shared result block owned by the tasks:
+    // if an enqueue fails the parent may unwind while already-enqueued tasks
+    // still run, so the block must not live on this stack. Frames and ShapeArgs
+    // are copied into each task for the same reason.
+    std::shared_ptr<std::array<NodeOperationResult, 8>> threadedResults;
+    std::array<std::future<void>, 8> futures;
+    int futureCount = 0;
+    if (isChildThread) {
+        threadedResults = std::make_shared<std::array<NodeOperationResult, 8>>();
+    }
+    const ShapeArgs argsCopy = args;
     // Child frames are stored in place (optional::emplace) rather than copied
     // into an array: OctreeNodeFrame has no assignment operator.
     std::optional<OctreeNodeFrame> childFrames[8];
 
-    // Validate the child links before anything is enqueued: a detached task
-    // references this frame, so throwing mid-fork would destroy it while a
-    // task still holds pointers into it.
+    // Join every enqueued future on both the normal and the unwind path. The
+    // wait helps drain queued work, then blocks on the future: once runOneTask()
+    // finds an empty queue the future's task is running, and the fork band's
+    // deepest task never forks, so blocking cannot starve the pool. wait() (not
+    // get()) keeps child exceptions from escaping; the shape path has no
+    // exception contract.
+    struct FutureJoin {
+        ThreadPool& pool;
+        std::array<std::future<void>, 8>& futures;
+        int& count;
+        void wait() {
+            for (int i = 0; i < count; ++i) {
+                while (futures[i].wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+                    if (!pool.runOneTask())
+                        futures[i].wait();
+                }
+            }
+        }
+        ~FutureJoin() { wait(); }
+    } join{threadPool, futures, futureCount};
+
+    // Validate the child links before anything is enqueued.
     if(node != NULL) {
         for (uint i = 0; i < 8; ++i) {
             if(children[i] == node) {
@@ -505,71 +510,22 @@ void Octree::shapeChildren(
         );
         childFrames[i]->hsv = childHsv;
 
-    
         if(isChildThread) {
-            ForkTask &task = fork->tasks[i];
-            task.frame = &childFrames[i].value();
-            task.result = &childResult[i];
-            task.args = &args;
-            task.update = &updateHandler;
-            task.deleteHandler = &deleteHandler;
-            task.tree = this;
-            task.done = &fork->done;
-            task.fork = &*fork;
-            ForkTask *taskPtr = &task;
-            try {
-                // No notify per task: the whole fork is woken once below.
-                threadPool.enqueueDetachedNoNotify([taskPtr] {
-                    // Bookkeeping runs exactly once even if the task throws,
-                    // including during the thread-local context construction.
-                    struct Completion {
-                        std::latch *done;
-                        ~Completion() { done->count_down(); }
-                    } completion{taskPtr->done};
-                    try {
-                        // The context lives in the worker thread and is reused
-                        // by later tasks; args.cacheGeneration invalidates its
-                        // caches when a new apply starts. Nothing captured here
-                        // outlives this frame, which is blocked in the latch
-                        // wait.
-                        thread_local OctreeThreadContext workerContext;
-                        taskPtr->tree->shape(*taskPtr->result, *taskPtr->frame, *taskPtr->args,
-                                             &workerContext, *taskPtr->update, *taskPtr->deleteHandler);
-                    } catch (...) {
-                        std::lock_guard<std::mutex> lock(taskPtr->fork->errorMutex);
-                        if (!taskPtr->fork->taskError)
-                            taskPtr->fork->taskError = std::current_exception();
-                    }
+            futures[futureCount++] = threadPool.enqueue(
+                [this, frame = childFrames[i].value(), results = threadedResults, i,
+                 argsCopy, &updateHandler, &deleteHandler] {
+                    thread_local OctreeThreadContext workerContext;
+                    shape((*results)[i], frame, argsCopy, &workerContext,
+                          updateHandler, deleteHandler);
                 });
-            } catch (...) {
-                // The pool is stopping. Account for the task that was not
-                // enqueued so the wait below cannot hang, and rethrow once the
-                // other children have finished.
-                fork->done.count_down();
-                if (!fork->enqueueError) fork->enqueueError = std::current_exception();
-            }
         } else {
             shape(childResult[i], childFrames[i].value(), args, threadContext, updateHandler, deleteHandler);
         }
-    
     }
     if(isChildThread) {
-        // One wakeup for the eight enqueues (perf report 29, L8). The queue
-        // mutex is already released by enqueueDetachedNoNotify().
-        threadPool.notifyAll();
-        // Help drain the pool, then block on the latch. Once runOneTask() sees
-        // an empty queue, every child still outstanding is already running on
-        // another worker: the two-level fork band ends at 4*minSize, so a
-        // second-level task never enqueues more work. Blocking on the latch
-        // therefore cannot starve the pool, and no polling is needed.
-        while (!fork->done.try_wait()) {
-            if (!threadPool.runOneTask())
-                fork->done.wait();
-        }
-        // All children have finished. A child failure means its result may be
-        // partially written, so fail the apply instead of committing it.
-        if (fork->taskError) std::rethrow_exception(fork->taskError);
-        if (fork->enqueueError) std::rethrow_exception(fork->enqueueError);
+        join.wait();
+        for (int i = 0; i < 8; ++i)
+            childResult[i] = (*threadedResults)[i];
     }
 }
 
