@@ -284,6 +284,30 @@ public:
         std::atomic<bool> inUse{false};
     };
     std::array<PlacementScratch, kPlacementScratchCount> placementScratch;
+
+    // Placement-fence callback output. The callback only reads the measured
+    // counts and allocates the exact persistent buffers; the GPU copy out of
+    // the scratch slice runs on the next main-thread processPendingChunksGPU()
+    // call, never inside the deferred callback (no queue submission from a
+    // callback thread).
+    struct PendingPublishEntry {
+        NodeID chunkId = 0;
+        uint32_t count = 0;
+        VkDeviceSize scratchOffset = 0;
+        glm::vec3 center{0.0f};
+        glm::vec3 aabbMin{0.0f};
+        glm::vec3 aabbMax{0.0f};
+        Buffer instBuf;
+    };
+    struct PendingPublishBatch {
+        uint32_t scratchIndex = 0;
+        std::vector<PendingPublishEntry> entries;
+    };
+    std::deque<PendingPublishBatch> pendingPublish;
+    mutable std::mutex pendingPublishMutex;
+    // Copy pending placement results out of the scratch ring and publish them.
+    // Main-thread only (queue submissions are legal there).
+    void publishCompletedPlacements(VulkanApp* app);
     static constexpr VkDeviceSize kMaxVegInstances =
         static_cast<VkDeviceSize>(kMaxVegChunks) * kMaxVegInstancesPerChunk;
     // Pre-allocate ALL culling buffers to worst-case capacity in a single

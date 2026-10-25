@@ -112,6 +112,16 @@ void VegetationRenderer::destroyCulling() {
     }
     concatActiveUsesAlt = false;
     concatSubmittedUsesAlt = false;
+    // Placement results whose fence fired but whose main-thread copy never ran
+    // (teardown mid-batch): the exact instance buffers are ours to destroy.
+    {
+        std::lock_guard<std::mutex> lk(pendingPublishMutex);
+        for (auto& batch : pendingPublish)
+            for (auto& e : batch.entries)
+                if (e.instBuf.buffer != VK_NULL_HANDLE)
+                    appPtr->destroyBuffer(e.instBuf);
+        pendingPublish.clear();
+    }
     // GPU placement scratch ring. In-flight placements are drained by the
     // teardown wait below (the app destroys only after all submissions).
     for (auto& s : placementScratch) {
@@ -2304,6 +2314,90 @@ void VegetationRenderer::ensurePlacementPipeline(VulkanApp* app) {
     std::cerr << "[VegetationRenderer] GPU placement pipeline ready (VegetationPlacement.comp)\n";
 }
 
+// Copy pending placement results out of the scratch ring and publish them.
+// Main-thread only: the placement-fence callback never submits work (a
+// vkQueueSubmit2 from a deferred-callback thread tripped validation's
+// simultaneous-queue-use check).
+void VegetationRenderer::publishCompletedPlacements(VulkanApp* app) {
+    if (!app) return;
+    std::deque<PendingPublishBatch> ready;
+    {
+        std::lock_guard<std::mutex> lk(pendingPublishMutex);
+        ready.swap(pendingPublish);
+    }
+    if (ready.empty()) return;
+
+    for (auto& batch : ready) {
+        Buffer& scratch = placementScratch[batch.scratchIndex].buffer;
+        if (!batch.entries.empty() && scratch.buffer != VK_NULL_HANDLE) {
+            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+                VkBufferMemoryBarrier2 bar{};
+                bar.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                bar.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                bar.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+                bar.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+                bar.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+                bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bar.buffer = scratch.buffer;
+                bar.offset = 0;
+                bar.size = VK_WHOLE_SIZE;
+                VkDependencyInfo dep{};
+                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.bufferMemoryBarrierCount = 1;
+                dep.pBufferMemoryBarriers = &bar;
+                vkCmdPipelineBarrier2(cmd, &dep);
+
+                for (auto& e : batch.entries) {
+                    if (e.count == 0 || e.instBuf.buffer == VK_NULL_HANDLE) continue;
+                    VkBufferCopy region{};
+                    region.srcOffset = e.scratchOffset;
+                    region.dstOffset = 0;
+                    region.size = VkDeviceSize(e.count) * kInstanceStride;
+                    vkCmdCopyBuffer(cmd, scratch.buffer, e.instBuf.buffer, 1, &region);
+                }
+
+                // Copy writes -> subsequent transfer/vertex reads (the next
+                // consolidation copy and the draws).
+                VkMemoryBarrier2 outBar{};
+                outBar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+                outBar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+                outBar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                outBar.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                outBar.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT |
+                                       VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
+                                       VK_ACCESS_2_SHADER_READ_BIT;
+                VkDependencyInfo outDep{};
+                outDep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                outDep.memoryBarrierCount = 1;
+                outDep.pMemoryBarriers = &outBar;
+                vkCmdPipelineBarrier2(cmd, &outDep);
+            });
+        }
+
+        for (auto& e : batch.entries) {
+            if (e.count == 0 || e.instBuf.buffer == VK_NULL_HANDLE) continue;
+            // Release the previous generation only after the new bytes are
+            // resident (the copy above completed before publish).
+            destroyInstanceBuffer(e.chunkId, app);
+            InstanceBuffer ibuf;
+            ibuf.buffer     = e.instBuf.buffer;
+            ibuf.memory     = e.instBuf.memory;
+            ibuf.allocation = e.instBuf.allocation;
+            ibuf.center     = e.center;
+            ibuf.aabbMin    = e.aabbMin;
+            ibuf.aabbMax    = e.aabbMax;
+            ibuf.count      = e.count;
+            chunkBuffers[e.chunkId] = ibuf;
+            chunkInstanceCounts[e.chunkId] = e.count;
+            vegConsolidationDirty = true;
+        }
+        // M9-(1): the chunk set moved — read barriers re-record next call.
+        noteChunkBuffersChanged();
+        placementScratch[batch.scratchIndex].inUse.store(false, std::memory_order_release);
+    }
+}
+
 // GPU-side instance placement. Each queued chunk already lives in the solid
 // renderer's packed pools (OctreeTriangles.comp), so this drains the queue,
 // allocates one device-local instance buffer per chunk, and dispatches
@@ -2317,6 +2411,9 @@ void VegetationRenderer::ensurePlacementPipeline(VulkanApp* app) {
 // host.
 void VegetationRenderer::processPendingChunksGPU(VulkanApp* app, uint32_t maxChunks) {
     if (!app) return;
+    // Finish/copy the batches whose placement fence completed since the last
+    // call. This runs on the main thread, so its queue submission is legal.
+    publishCompletedPlacements(app);
     if (!solidIR) return;
     ensurePlacementPipeline(app);
     const VkBuffer solidVerts = solidIR->getVertexBufferHandle();
@@ -2513,8 +2610,8 @@ void VegetationRenderer::processPendingChunksGPU(VulkanApp* app, uint32_t maxChu
 
     app->deferDestroyUntilFence(fence, [this, app, scratchIndex, work = std::move(work)]() mutable {
         VkDevice dev = app->getDevice();
-        Buffer& scratchBuf = placementScratch[scratchIndex].buffer;
-        uint32_t copies = 0;
+        PendingPublishBatch batch;
+        batch.scratchIndex = static_cast<uint32_t>(scratchIndex);
         for (auto& w : work) {
             uint32_t count = (w.counterBuf.mappedData != nullptr)
                                  ? *static_cast<uint32_t*>(w.counterBuf.mappedData) : 0u;
@@ -2549,92 +2646,28 @@ void VegetationRenderer::processPendingChunksGPU(VulkanApp* app, uint32_t maxChu
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, /*zeroInit=*/false);
-            if (w.instBuf.buffer == VK_NULL_HANDLE) {
-                w.count = 0;
+            if (w.instBuf.buffer == VK_NULL_HANDLE)
                 continue;
-            }
-            w.count = count;
-            ++copies;
+            PendingPublishEntry e;
+            e.chunkId = w.chunkId;
+            e.count = count;
+            e.scratchOffset = w.scratchOffset;
+            e.center = w.center;
+            e.aabbMin = w.aabbMin;
+            e.aabbMax = w.aabbMax;
+            e.instBuf = w.instBuf;
+            w.instBuf = {};
+            batch.entries.push_back(std::move(e));
         }
 
-        if (copies > 0) {
-            // Placement bytes are only in the scratch slice; copy each exact
-            // prefix into the persistent buffer on the GPU. Synchronous, but
-            // tiny (a few hundred KB per batch) and far cheaper than the
-            // topology submits that produced the source mesh.
-            app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-                VkBufferMemoryBarrier2 bar{};
-                bar.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-                bar.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                bar.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-                bar.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-                bar.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-                bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                bar.buffer = scratchBuf.buffer;
-                bar.offset = 0;
-                bar.size = VK_WHOLE_SIZE;
-                VkDependencyInfo dep{};
-                dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep.bufferMemoryBarrierCount = 1;
-                dep.pBufferMemoryBarriers = &bar;
-                vkCmdPipelineBarrier2(cmd, &dep);
-                for (auto& w : work) {
-                    if (w.count == 0 || w.instBuf.buffer == VK_NULL_HANDLE) continue;
-                    VkBufferCopy region{};
-                    region.srcOffset = w.scratchOffset;
-                    region.dstOffset = 0;
-                    region.size = VkDeviceSize(w.count) * kInstanceStride;
-                    vkCmdCopyBuffer(cmd, scratchBuf.buffer, w.instBuf.buffer, 1, &region);
-                }
-                // Copy writes -> subsequent transfer/vertex reads (the next
-                // consolidation copy and the draws). The fence wait also
-                // orders the submissions; the barrier makes the writes
-                // available/visible to the device stages.
-                VkMemoryBarrier2 outBar{};
-                outBar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-                outBar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-                outBar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-                outBar.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                outBar.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT |
-                                       VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
-                                       VK_ACCESS_2_SHADER_READ_BIT;
-                VkDependencyInfo outDep{};
-                outDep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                outDep.memoryBarrierCount = 1;
-                outDep.pMemoryBarriers = &outBar;
-                vkCmdPipelineBarrier2(cmd, &outDep);
-            });
+        if (batch.entries.empty()) {
+            placementScratch[scratchIndex].inUse.store(false, std::memory_order_release);
+            return;
         }
-
-        for (auto& w : work) {
-            if (w.count == 0 || w.instBuf.buffer == VK_NULL_HANDLE) {
-                if (w.instBuf.buffer != VK_NULL_HANDLE) {
-                    app->destroyBuffer(w.instBuf);
-                    w.instBuf = {};
-                }
-                if (w.count == 0)
-                    tombstoneConsolidated(w.chunkId);
-                continue;
-            }
-            // Release the previous generation only after the new bytes are
-            // resident (the copy above already completed).
-            destroyInstanceBuffer(w.chunkId, app);
-            InstanceBuffer ibuf;
-            ibuf.buffer     = w.instBuf.buffer;
-            ibuf.memory     = w.instBuf.memory;
-            ibuf.allocation = w.instBuf.allocation;
-            ibuf.center     = w.center;
-            ibuf.aabbMin    = w.aabbMin;
-            ibuf.aabbMax    = w.aabbMax;
-            ibuf.count      = w.count;
-            chunkBuffers[w.chunkId] = ibuf;
-            chunkInstanceCounts[w.chunkId] = w.count;
-            vegConsolidationDirty = true;
+        {
+            std::lock_guard<std::mutex> lk(pendingPublishMutex);
+            pendingPublish.push_back(std::move(batch));
         }
-        // M9-(1): the chunk set moved — read barriers re-record next call.
-        noteChunkBuffersChanged();
-        placementScratch[scratchIndex].inUse.store(false, std::memory_order_release);
     });
 }
 
