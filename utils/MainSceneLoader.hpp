@@ -467,11 +467,11 @@ public:
         float fireSpotRadius = 128.0f;
 
         {
-            std::cout << "\ttransparentLayer.add(sphere)"<< std::endl;
+            std::cout << "\topaqueLayer.add(fire)"<< std::endl;
             BoundingSphere sphere = BoundingSphere(fireSpotPosition, fireSpotRadius);
             Transformation model = Transformation(glm::vec3(sphere.radius,fireSpotHeight,sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(4), TriplanarMappingPainter(), tileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(4), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
 
