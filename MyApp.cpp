@@ -3696,6 +3696,87 @@ public:
                 ImGui::Text("Vegetation Chunks: %zu", vegChunks);
                 ImGui::Text("Vegetation Instances: %zu", vegInstances);
 
+                // ── Per-chunk GPU mesh utilization (cross-edge capacity plan) ──
+                // The snapshot is versioned/cached inside SceneRenderer: ask for
+                // it only while the section is expanded, and hold one shared_ptr
+                // for the whole table. Re-sorting happens only after a build.
+                if (sceneRenderer && ImGui::CollapsingHeader("Chunk Mesh Utilization")) {
+                    const auto meshProfiles = sceneRenderer->chunkMeshProfileSnapshot();
+                    if (!meshProfiles || meshProfiles->chunks.empty()) {
+                        ImGui::Text("No chunk builds recorded yet.");
+                    } else {
+                        const ChunkMeshProfileAggregate& a = meshProfiles->aggregate;
+                        ImGui::Text("Chunks %zu  built %zu  empty %zu  failed %zu",
+                                    a.chunks, a.built, a.empty, a.failed);
+                        ImGui::Text("Cross edges %llu  low-util %zu  overflow %zu",
+                                    static_cast<unsigned long long>(a.crossEdges),
+                                    a.lowUtilizationChunks, a.overflowChunks);
+                        ImGui::Text("Vertex  %llu/%llu (%.1f%%)  per-chunk %.1f/%.1f/%.1f/%.1f",
+                                    static_cast<unsigned long long>(a.vertexCount),
+                                    static_cast<unsigned long long>(a.vertexCapacity),
+                                    a.vertexUtilization,
+                                    a.vertexStats.min, a.vertexStats.mean,
+                                    a.vertexStats.median, a.vertexStats.max);
+                        ImGui::Text("Index   %llu/%llu (%.1f%%)  per-chunk %.1f/%.1f/%.1f/%.1f",
+                                    static_cast<unsigned long long>(a.indexCount),
+                                    static_cast<unsigned long long>(a.indexCapacity),
+                                    a.indexUtilization,
+                                    a.indexStats.min, a.indexStats.mean,
+                                    a.indexStats.median, a.indexStats.max);
+                        ImGui::Text("Combined byte-weighted %.1f%%  per-chunk %.1f/%.1f/%.1f/%.1f",
+                                    a.combinedUtilization,
+                                    a.combinedStats.min, a.combinedStats.mean,
+                                    a.combinedStats.median, a.combinedStats.max);
+                        if (ImGui::BeginChild("##chunk-mesh-profile", ImVec2(0.0f, 220.0f), true)) {
+                            constexpr ImGuiTableFlags tableFlags =
+                                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                ImGuiTableFlags_SizingStretchProp;
+                            if (ImGui::BeginTable("##chunk-mesh-profile-table", 10, tableFlags)) {
+                                ImGui::TableSetupColumn("Layer");
+                                ImGui::TableSetupColumn("Chunk");
+                                ImGui::TableSetupColumn("LoD");
+                                ImGui::TableSetupColumn("Status");
+                                ImGui::TableSetupColumn("CrossE");
+                                ImGui::TableSetupColumn("V used/cap");
+                                ImGui::TableSetupColumn("V %");
+                                ImGui::TableSetupColumn("I used/cap");
+                                ImGui::TableSetupColumn("I %");
+                                ImGui::TableSetupColumn("Comb %");
+                                ImGui::TableHeadersRow();
+                                // Clip the row loop: scenes can hold thousands of
+                                // chunks and the table is rebuilt every frame.
+                                ImGuiListClipper clipper;
+                                clipper.Begin(static_cast<int>(meshProfiles->chunks.size()));
+                                while (clipper.Step()) {
+                                    for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+                                        const ChunkMeshProfile& p =
+                                            meshProfiles->chunks[static_cast<size_t>(row)];
+                                        ImGui::TableNextRow();
+                                        ImGui::TableNextColumn(); ImGui::Text("%d", p.layer);
+                                        ImGui::TableNextColumn(); ImGui::Text("%u", p.chunkId);
+                                        ImGui::TableNextColumn(); ImGui::Text("%u", static_cast<unsigned>(p.lod));
+                                        ImGui::TableNextColumn();
+                                        ImGui::Text("%s", p.status == ChunkMeshProfileStatus::Built ? "built"
+                                                       : p.status == ChunkMeshProfileStatus::Empty ? "empty" : "failed");
+                                        ImGui::TableNextColumn(); ImGui::Text("%u", p.crossEdgeCount);
+                                        ImGui::TableNextColumn(); ImGui::Text("%u/%u", p.vertexCount, p.vertexCapacity);
+                                        ImGui::TableNextColumn(); ImGui::Text("%.1f", p.vertexUtilization());
+                                        ImGui::TableNextColumn(); ImGui::Text("%u/%u", p.indexCount, p.indexCapacity);
+                                        ImGui::TableNextColumn(); ImGui::Text("%.1f", p.indexUtilization());
+                                        ImGui::TableNextColumn();
+                                        if (p.overflowed())
+                                            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f), "%.1f", p.combinedUtilization());
+                                        else
+                                            ImGui::Text("%.1f", p.combinedUtilization());
+                                    }
+                                }
+                                ImGui::EndTable();
+                            }
+                        }
+                        ImGui::EndChild();
+                    }
+                }
+
               
                 if (profilingEnabled) {
                     ImGui::Separator();
@@ -5560,6 +5641,8 @@ void MyApp::postSubmit() {
                       << " failed=" << ss.residentFailed
                       << " cpuFallback=" << ss.cpuFallback
                       << std::endl;
+            if (std::getenv("VULKAN_CHUNK_PROFILE") != nullptr)
+                sceneRenderer->logChunkMeshProfiles();
         }
     }
     if (textureMixer) {
