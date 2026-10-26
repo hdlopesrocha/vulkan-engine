@@ -2656,10 +2656,15 @@ void IndirectRenderer::releaseGpuMeshSpan(uint32_t slotIndex)
 
     LevelData& ld = info->level_;
     if (ld.allocated) {
-        if (ld.oldVertexBase != UINT32_MAX || ld.oldIndexBase != UINT32_MAX) {
-            spaceAlloc.freeVertex(ld.oldVertexBase, ld.oldVertexCount);
-            spaceAlloc.freeIndex(ld.oldIndexBase, ld.oldIndexCount);
-        }
+        // `ld` is the span reserved for the pass that just failed; the slot's
+        // staged zero command means no draw references it, so it can go back
+        // immediately. A previous PUBLISHED span (old*) may still be read by
+        // in-flight frames: free it with the same meta flush that installs the
+        // zero command, exactly like publishGpuMeshSpan() releases a replaced
+        // span. Freeing it here would let the next reservation overwrite data a
+        // frame is still drawing.
+        if (ld.oldVertexBase != UINT32_MAX || ld.oldIndexBase != UINT32_MAX)
+            stageSpanFree(ld.oldVertexBase, ld.oldVertexCount, ld.oldIndexBase, ld.oldIndexCount);
         spaceAlloc.freeVertex(ld.baseVertex, ld.vertexCount);
         spaceAlloc.freeIndex(ld.firstIndex, ld.indexCount);
         ld = LevelData{};
