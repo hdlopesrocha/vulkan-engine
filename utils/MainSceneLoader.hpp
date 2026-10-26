@@ -502,7 +502,7 @@ public:
                 bool startCap = false;
                 bool endCap   = false;
                 BoundingSphere segSphere = roadSpline.boundingSphereInRange(tMin, tMax, halfDiag);
-                RoadDistanceFunction roadFunc(&roadSpline, 32.0f, 3*32.0f,
+                RoadDistanceFunction roadFunc(&roadSpline, 32.0f, 96.0f,
                                               tMin, tMax, startCap, endCap,
                                               segSphere.center, segSphere.radius, Transformation(), tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), roadFunc, roadModel,
