@@ -73,14 +73,11 @@ Field & Meaning\\
 \code{fromBrush} & fallback brush\\
 \code{rootMinSize} & world root $(x,y,z,L)$\\
 \code{worldSize} & root edge for epsilon\\
-\code{keyCapacity} & raw key bound\\
-\code{pass} & 0 walk / 1 finalize\\
 \code{vertexBase} & span-relative vertex base\\
 \code{vertexCapacity} & vertex span bound\\
 \code{indexBase} & span-relative index base\\
 \code{indexCapacity} & index span bound\\
-\code{indexCount} & raw vertices to remap\\
-\code{nodeCount} & node-table entries to write\\
+\code{nodeCount} & node-table entries (election-buffer bound)\\
 \code{diag} & diagnostic counters on/off\\
 \bottomrule
 \end{tabular}
@@ -93,9 +90,10 @@ Field & Meaning\\
 \toprule
 Name & Value & Purpose\\
 \midrule
-\code{kVerticesPerCellHint} & 25 & key sizing\\
-\code{kKeyCapacityHeadroom} & 64 & key sizing\\
-\code{kMaxKeysPerCall} & $2^{23}$ & hard key cap\\
+\code{kTrianglesPerSegment} & 2 & index bound per segment\\
+\code{kIndicesPerTriangle} & 3 & index bound per triangle\\
+\code{kMaxSegmentsPerCrossEdge} & 64 & break-list bound\\
+\code{kMaxSpanRetries} & 3 & overflow-growth attempts\\
 \code{BREAK\_CAP} & 64 & final breaks per edge\\
 \code{LOCAL\_BREAK\_CAP} & 32 & local breaks per interval\\
 \code{TASK\_STACK} & 256 & interval stack\\
@@ -154,9 +152,10 @@ Name & Value & Purpose\\
   boundary forces a split.
 \item[Owner] The surface cell that determines the winding and leads the
   ring of a sub-segment.
-\item[Raw key] The node index of one triangle corner, written in stage 0
-  and remapped to a slot in stage 1.
-\item[Slot] The dense vertex index assigned to a surface node by the host.
+\item[Cross edge] A scanned cube edge whose two stored corner samples have
+  opposite signs.  The per-chunk count sizes the index span.
+\item[Slot] The dense vertex index assigned to a surface node by the host;
+  the geometry pass writes the payload once per referenced slot.
 \item[Span] A reserved range in the packed vertex/index pools.
 \item[Stamp] The per-entry LoD keep/reject decision written by the cull and
   consumed by the shadow/RT paths.

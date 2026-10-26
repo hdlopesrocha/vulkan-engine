@@ -82,7 +82,6 @@ Buffer & Contents\\
 \code{hsv} & \code{vec4(hsv, textureType)}, \code{vec4(data,0,0)}\\
 \code{child03, child47} & two \code{ivec4}s of child indices\\
 \code{cells} & compacted scan-cell node ids\\
-\code{rawKeys} & device-local raw-node-key buffer\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -93,15 +92,32 @@ shader reads it through storage-buffer descriptors.
 
 \subsection{The scan-cell list}
 
-The scan list contains cells exactly at the target rung that straddle the
-surface.  The host counts \emph{all} cells at the rung (for the key-size
-hint) but only appends the straddling ones.  The compaction test is:
+The scan list contains cells exactly at the target rung that have at least
+one crossing edge.  The host counts the crossing edges per cell while it
+builds the list:
 \begin{equation}
-  \exists i: d_i<0 \quad\land\quad \exists j: d_j\ge 0,
+  \text{crossEdges}(c) =
+  \#\{(i,j)\in\text{SDF\_EDGES} :
+      \operatorname{sign}(d_i)\ne\operatorname{sign}(d_j)\},
 \end{equation}
 with $+\infty$ counting as non-negative.  This is not the same as
 \code{type == Surface}: a negative-plus-infinity cell is typed Solid yet
 can emit an edge.  Filtering by type would silently drop those edges.
+
+The same pass produces the index-capacity hint used by the geometry
+dispatch:
+\begin{equation}
+  I_{\text{hint}} =
+  6 \sum_{c\in\text{cells}}
+      \operatorname{clamp}\!\left(
+        \frac{\text{cellSize}(c)}{m},1,64\right)
+      \cdot\text{crossEdges}(c),
+\end{equation}
+where $m$ is the smallest cube in the flattened table.  A segment expands
+to at most two triangles of three indices; the clamp is the shader's break
+list capacity.  This is a topology bound, not a statistical estimate.  If
+it is nevertheless exceeded, the shader reports the exact requirement and
+the host grows only that chunk's span.
 
 \subsection{The descent anchor}
 
@@ -137,10 +153,13 @@ Bit 0 remains the leaf flag.  The shader decodes
 \begin{equation}
   s = (\text{flags}\gg1)-1.
 \end{equation}
-The count is the exact vertex span size: every surface node gets exactly
-one vertex, whether or not it is referenced by the index stream.  This
-slightly over-allocates the span (an unreferenced node still gets a vertex)
-but makes finalize a simple one-to-one scatter and the slot deterministic.
+The count is the dense slot address space, an exact upper bound on every
+index the shader can write.  It is not the number of vertices actually
+produced: the geometry pass writes the payload only for slots referenced by
+a triangle, and the published span is trimmed to the highest referenced
+slot plus one.  Unreferenced slots between zero and that extent remain holes
+in the reserved span, so the per-chunk profile reports both the written
+vertex count and the published extent.
 
 \subsection{Table order and determinism}
 
@@ -156,10 +175,11 @@ Flattening can fail for only a few reasons:
 \begin{itemize}
 \item the chunk node is not reachable from the root (stale parameters);
 \item the chain is deeper than 200 (a corrupt tree);
-\item the chunk has no surface cell at the rung (a valid empty chunk, not a
-  failure);
+\item the chunk has no crossing scan cell, or no surface node in the
+  flattened table owns a slot (a valid empty chunk, not a failure);
 \item the table is missing a child block the descent needs.
 \end{itemize}
 The first, second, and fourth mark the chunk \code{Unavailable}; the
-caller skips it and logs.  The third returns a valid empty input, the GPU
-pass reports zero geometry, and the publisher settles the empty revision.
+caller skips it and logs.  The third returns a valid empty input, the
+geometry pass is not dispatched, and the publisher settles the empty
+revision.

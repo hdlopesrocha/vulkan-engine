@@ -93,9 +93,8 @@ The following changes would violate the contract and require a redesign:
 Three directions are natural:
 \begin{enumerate}
 \item \textbf{Batched topology.}  Flatten all chunks of a layer into one
-  arena, record one walk and one finalize dispatch for the batch, and
-  read all counters with one map.  This is the highest-leverage performance
-  change.
+  arena, record one geometry dispatch for the batch, and read all counters
+  with one map.  This is the highest-leverage performance change.
 \item \textbf{GPU-side fire placement.}  A compute pass over brush-4
   triangles could produce anchors in a device buffer and the SDF scene
   could consume them directly, avoiding the host anchor list.

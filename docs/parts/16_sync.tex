@@ -7,13 +7,26 @@ The engine has a main graphics queue and, when available, a distinct
 graphics-family queue for geometry/upload work.  The topology compute
 pass is submitted on the graphics queue with a single-time command buffer
 and a fence, because its descriptor set and staging buffers are serialized
-by a global mutex.  The finalize pass writes the renderer's packed pools;
+by a global mutex.  The geometry pass writes the renderer's packed pools;
 the cull, raster, shadow, and ray-tracing passes then read them on the same
 queue or after the documented cross-queue wait.
 
-\subsection{The two barriers inside the topology submission}
+\subsection{The barriers inside the topology submission}
 
-Each topology submission ends with a compute$\rightarrow$host barrier:
+The submission starts by clearing the device-local election buffer and then
+barriers the fill against the compute stage:
+\begin{lstlisting}[style=glsl,caption={Election-buffer clear barrier.},label={lst:fillbarrier}]
+vkCmdFillBuffer(cmd, nodeWritten, 0, nodeCount * 4, 0);
+b.srcStageMask  = TRANSFER;
+b.srcAccessMask = TRANSFER_WRITE;
+b.dstStageMask  = COMPUTE_SHADER;
+b.dstAccessMask = SHADER_READ | SHADER_WRITE;
+\end{lstlisting}
+This is required because \code{atomicExchange(nodeWritten[node], 1)} elects
+one vertex writer per node; without the barrier the dispatch could read a
+stale flag from a previous chunk and skip a payload.
+
+The submission ends with a compute$\rightarrow$host barrier:
 \begin{lstlisting}[style=glsl,caption={Counter readback barrier.},label={lst:hostbarrier}]
 VkMemoryBarrier2 b{};
 b.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -24,7 +37,7 @@ vkCmdPipelineBarrier2(cmd, &dep);
 \end{lstlisting}
 This makes the integer counters visible to the host-mapped memory.  The
 vertex/index writes are not read by the host, so they do not need a host
-barrier.  The finalize pass ends with a pool barrier:
+barrier.  The geometry pass is followed by a pool barrier:
 \begin{lstlisting}[style=glsl,caption={Pool visibility barrier.},label={lst:poolbarrier}]
 b.srcStageMask  = COMPUTE_SHADER;
 b.srcAccessMask = SHADER_WRITE;
@@ -40,11 +53,14 @@ once per chunk, not once per consumer.
 \subsection{The fence and the deferred release}
 
 The topology submission uses a fence.  The host waits on the fence before
-reading the counters.  The old span is released through a staged free
-queue; the actual free happens two cull frames later.  This is necessary
-because the previous frame's cull or draw command buffers may still be in
-flight and still reference the old span.  The renderer does not wait for
-the whole device; it tracks the cull frame slot.
+reading the counters.  An overflow retry releases the unpublished
+reservation immediately (no draw command can reference it) and clears the
+chunk's level data before the provider reserves again.  A previously
+published span is released through the staged free queue; the actual free
+happens two cull frames later.  This is necessary because the previous
+frame's cull or draw command buffers may still be in flight and still
+reference that span.  The renderer does not wait for the whole device; it
+tracks the cull frame slot.
 
 \subsection{Consolidation}
 

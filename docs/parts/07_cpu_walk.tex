@@ -249,10 +249,10 @@ The CPU walker passes each triangle to \code{Tesselator::handle}, which:
 \item computes the triplanar UV plane from the face normal;
 \item appends the triangle to the chunk's \code{Geometry}.
 \end{itemize}
-The GPU port does not have a \code{Tesselator} equivalent.  Stage 1 writes
-the vertex payload directly from the node id and the index stream directly
-from the raw keys.  This is possible because the CPU handler's output is a
-pure function of the node state.
+The GPU port does not have a \code{Tesselator} equivalent.  The geometry
+pass writes the vertex payload directly from the emitting node and appends
+the index stream directly into the chunk's span.  This is possible because
+the CPU handler's output is a pure function of the node state.
 
 \subsection{Why keep the CPU walker?}
 

@@ -6,9 +6,10 @@
 The following invariants must hold after any change to the pipeline.
 
 \begin{invariant}[Single Cartesian producer]
-For a runtime chunk, every Cartesian vertex is written by
-\code{OctreeTriangles.comp} stage 1.  No CPU code writes a chunk vertex.
-The offline exporter is the only exception and is explicitly marked.
+For a runtime chunk, every Cartesian vertex is written by the single
+\code{OctreeTriangles.comp} geometry pass.  No CPU code writes a chunk
+vertex.  The offline exporter is the only exception and is explicitly
+marked.
 \end{invariant}
 
 \begin{invariant}[Slot determinism]
@@ -17,13 +18,15 @@ octree revision produces the same slot for the same surface node.
 \end{invariant}
 
 \begin{invariant}[Span lifetime]
-A draw entry references a span only after the finalize fence has signaled
-and the drop counters are zero.  The old span is not freed until the cull
-frame that could still reference it has retired.
+A draw entry references a span only after the geometry fence has signaled
+and the overflow counters are zero.  The old span is not freed until the
+cull frame that could still reference it has retired; an unpublished
+reservation released during an overflow retry has no draw command and may
+be freed immediately.
 \end{invariant}
 
 \begin{invariant}[Index locality]
-Every index written by stage 1 is a chunk-local slot
+Every index written by the geometry pass is a chunk-local slot
 $s\in[0,\text{vertexCapacity})$ and is rebased by
 \code{vertexOffset=baseVertex} at draw time.
 \end{invariant}
@@ -41,8 +44,10 @@ producing cell's signs.
 \end{invariant}
 
 \begin{invariant}[No silent truncation]
-A break-list, stack, key-capacity, or span overflow sets a counter and
-fails the chunk.  It never publishes a partial span.
+A break-list, stack, or span overflow sets a counter.  A span overflow is
+reported with the exact requirement and retried under a bounded, per-chunk
+growth; a fatal overflow fails the chunk.  No path publishes a partial
+span, and no path writes outside the reserved spans.
 \end{invariant}
 
 \subsection{Validation layers}
@@ -98,10 +103,11 @@ The triangle set is compared order-insensitively.  This catches:
 
 The topology pass is checked for:
 \begin{itemize}
+\item transfer$\rightarrow$compute visibility of the election-buffer clear;
 \item compute$\rightarrow$host visibility before the counter read;
 \item compute$\rightarrow$vertex/index visibility before the draw;
-\item no read of the pool while a finalize dispatch is still writing;
-\item no free of a span still referenced by an in-flight cull.
+\item no read of the pool while the geometry dispatch is still writing;
+\item no free of a published span still referenced by an in-flight cull.
 \end{itemize}
 The vegetation copy is checked for the same pattern: placement fence
 $\rightarrow$ host read $\rightarrow$ copy submission $\rightarrow$

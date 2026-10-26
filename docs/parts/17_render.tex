@@ -87,7 +87,7 @@ chunk's geometry span is referenced directly:
 \item index buffer = the pool, first index = span's first index;
 \item geometry flags = opaque or alpha-tested, depending on the material.
 \end{itemize}
-Because the span is published only after the finalize fence, the BLAS build
+Because the span is published only after the geometry fence, the BLAS build
 never sees partially written vertices.  A chunk rebuild requests a BLAS
 refresh; the proxy boxes are used for the water reflection path and for
 the fallback when the BLAS is not ready.
@@ -98,8 +98,8 @@ The vertex carries brush, HSV, texture type, and mapping data.  The solid
 fragment shader selects the material texture from the brush and the
 triplanar/projection mapping from the texture type.  Because the CPU never
 computed a vertex, the mapping data must come from the node: the shape
-leaf paints it, internal nodes inherit the dominant child, and finalize
-writes it into the vertex.  A mapping bug therefore shows up as a texture
+leaf paints it, internal nodes inherit the dominant child, and the geometry
+pass writes it into the vertex.  A mapping bug therefore shows up as a texture
 scale collapse, not as a geometry error.
 
 \subsection{The frame graph}

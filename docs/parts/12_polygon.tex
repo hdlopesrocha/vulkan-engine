@@ -88,21 +88,41 @@ This catches two cases:
 A zero-area triangle would break normals, shadow-map rasterization, and
 ray-triangle intersections.  Dropping it is safer than emitting it.
 
-\subsection{The raw-key append}
+\subsection{Direct index append and lazy vertices}
 
-The triangle is emitted as three node keys:
-\begin{lstlisting}[style=glsl,caption={Raw key emission.},label={lst:rawkey}]
-uint base = atomicAdd(vertexCount, 3u);
-if (base + 3u > keyCapacity) { atomicAdd(droppedCount, 1u); return; }
-rawKeys[base+0] = c0.id;
-rawKeys[base+1] = c1.id;
-rawKeys[base+2] = c2.id;
+The triangle is appended straight into the chunk's index span:
+\begin{lstlisting}[style=glsl,caption={Index append.},label={lst:indexappend}]
+uint base = atomicAdd(indexCount, 3u);
+int s0 = nodeSlot(c0.id), s1 = nodeSlot(c1.id), s2 = nodeSlot(c2.id);
+if (s0 < 0 || s1 < 0 || s2 < 0) { atomicAdd(invalidSlotCount, 1u); return; }
+uint extent = max(max(s0, s1), s2) + 1u;
+atomicMax(vertexExtent, extent);
+if (base + 3u > pc.indexCapacity || extent > pc.vertexCapacity) {
+    atomicAdd(indexOverflow, (base + 3u > pc.indexCapacity) ? 1u : 0u);
+    atomicAdd(vertexOverflow, (extent > pc.vertexCapacity) ? 1u : 0u);
+    atomicAdd(droppedCount, 1u);
+    return;
+}
+poolIdx[pc.indexBase + base + 0u] = uint(s0);
+poolIdx[pc.indexBase + base + 1u] = uint(s1);
+poolIdx[pc.indexBase + base + 2u] = uint(s2);
+writeVertexOnce(c0.id, s0);
+writeVertexOnce(c1.id, s1);
+writeVertexOnce(c2.id, s2);
 \end{lstlisting}
-The three keys are consecutive, so the finalize pass can map index $i$ to
-\code{rawKeys[i]} independently.  The atomic only reserves the base; the
-three writes are private.  If the key capacity is exhausted, the triangle
-is counted as dropped and the chunk is failed by the host.  The walker
-never writes a partial triangle.
+The atomic only reserves the base; the three index writes are private.
+The counter advances by three even when the triangle does not fit, so the
+host reads the exact index requirement for the overflow-growth retry.  No
+write below the capacity check is ever outside the reserved span, so an
+overflow cannot corrupt another chunk.
+
+The vertex payload is a pure function of its node.  Many corners reference
+the same surface node, so the shader elects one writer per node with an
+\code{atomicExchange} on the device-local \code{nodeWritten} buffer, which
+is cleared before every dispatch.  The elected invocation writes the
+64-byte payload and increments \code{vertexWriteCount}; the others skip it.
+By the time the dispatch completes, every referenced payload is therefore
+written exactly once.
 
 \subsection{Triangle order and visual invariance}
 

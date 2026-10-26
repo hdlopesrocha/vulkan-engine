@@ -22,57 +22,95 @@ The GPU mesher must satisfy a strict contract:
   partial surface.
 \end{enumerate}
 
-\subsection{Why two stages?}
+\subsection{Why one geometry pass?}
 
-The index stream length is not known before the walk.  A triangle can be
-emitted for any active edge and any sub-segment; the raw key count is only
-known after the walk.  The host must reserve an index span of the exact
-size, and the vertex span must cover every surface node that may be
-referenced.  The two-stage design resolves this:
+The walk output is not known before the scan: any active edge can emit any
+number of sub-segments, and each sub-segment expands to one or two
+triangles.  A two-stage design solved this by writing one raw node key per
+triangle corner, reading the count back, reserving the exact index span,
+and remapping the keys in a second dispatch.  That intermediate stream is
+unnecessary once the host can bound the output from the topology it already
+has.
+
+While the scan-cell list is built, the host counts the chunk's
+\emph{cross edges}: the \code{(cell, cube-edge)} pairs whose two stored
+corner samples have opposite signs.  The shader scans exactly those edges,
+so the count matches its work list.  The index capacity is then a topology
+bound, not a calibrated multiplier:
+\begin{equation}
+  I_{\text{cap}} =
+  \sum_{\text{scan cell }c}
+    6 \cdot \text{segments}(c) \cdot \text{crossEdges}(c),
+  \label{eq:indexcap}
+\end{equation}
+where a segment expands to at most two triangles of three indices and
+\begin{equation}
+  \text{segments}(c) =
+  \operatorname{clamp}\!\left(
+    \frac{\text{cellSize}(c)}{\text{smallestFlattenedCellSize}},
+    1, 64\right).
+  \label{eq:segments}
+\end{equation}
+Every break coordinate the collector can insert is a boundary of a cell
+returned by \code{findCellAt}; all such cubes are aligned to the smallest
+cube in the flattened table, so one edge of size $S$ can contain at most
+$S/m$ dyadic intervals.  The clamp is the shader's own break-list capacity.
+
+The vertex capacity is exactly the dense surface-node slot address space
+\code{activeVertexCount}.  The host assigns one slot per surface node in
+table order, and every index is one of those slots.  The shader writes only
+the slots a triangle references, so the published extent can be smaller
+than the reserved capacity, but the address space itself is an exact upper
+bound.
 
 \begin{figure}[htbp]
 \centering
 \resizebox{\linewidth}{!}{%
 \begin{tikzpicture}[node distance=6mm and 9mm,font=\small]
   \node[io] (in) {flattened node table\\+ compacted scan cells};
-  \node[gpu,right=of in] (pass0) {pass 0\\\code{walkStage}};
-  \node[io,right=of pass0] (keys) {raw keys\\one per triangle corner};
-  \node[io,below=of keys] (host) {host: read counters\\reserve vertex/index spans};
-  \node[gpu,right=of host] (pass1) {pass 1\\\code{finalizeStage}};
-  \node[io,right=of pass1] (out) {packed pools\\index + 64B vertex};
-  \draw[arrow] (in)--(pass0);
-  \draw[arrow] (pass0)--(keys);
-  \draw[arrow] (keys)--(host);
-  \draw[arrow] (host)--(pass1);
-  \draw[arrow] (pass1)--(out);
-  \draw[darrow] (out.south) -- ++(0,-6mm) -| node[pos=0.25,below,note]{draw entry publish} (in.south);
+  \node[cpu,right=of in] (cap) {CPU cross-edge\\capacity plan};
+  \node[io,right=of cap] (host) {reserve vertex/index\\spans in packed pools};
+  \node[gpu,right=of host] (pass) {geometry pass\\\code{main}};
+  \node[io,right=of pass] (out) {packed pools\\index + 64B vertex};
+  \draw[arrow] (in)--(cap);
+  \draw[arrow] (cap)--(host);
+  \draw[arrow] (host)--(pass);
+  \draw[arrow] (pass)--(out);
+  \draw[darrow] (pass.south) -- ++(0,-6mm) -| node[pos=0.25,below,note]{overflow: exact counts, release + re-reserve} (host.south);
 \end{tikzpicture}}
-\caption{The two GPU stages.  Stage 0 writes one raw node key per triangle
-corner; the host only reads the integer count and reserves spans.  Stage 1
-converts keys to slots and writes the final payload.}
-\label{fig:twostage}
+\caption{The single geometry dispatch.  The CPU sizes both spans from the
+cross-edge topology before submission; the shader appends indices directly
+and writes each referenced vertex payload once.  A defensive overflow is
+reported through counters and resolved by growing only this chunk's span.}
+\label{fig:geometrypass}
 \end{figure}
 
-\subsection{Why raw keys?}
+\subsection{Overflow without out-of-bounds writes}
 
-A raw key is the \emph{node index} of the cell that emitted a triangle
-corner.  The walker already has a \code{Cell} with an id; emitting a key is
-a single integer write.  Stage 1 maps the key to the host-assigned slot:
+The shader still reserves an index base with \code{atomicAdd} and writes the
+triangle only when
 \begin{equation}
-  \text{slot} = \text{nodeSlot}(\text{key}) = (\text{flags}\gg1)-1.
+  \text{base}+3 \le I_{\text{cap}}
+  \quad\land\quad
+  \text{extent} \le V_{\text{cap}}.
 \end{equation}
-The payload (position, normal, brush, HSV, mapping) is a pure function of
-the node, so it does not need to be carried through the key.  This halves
-the intermediate traffic relative to storing a full vertex per corner and
-makes the finalize pass a simple scatter.
+On failure it increments an overflow counter and drops the triangle, but it
+has already advanced the index counter by three and updated the maximum
+referenced slot.  The host therefore reads back the exact index requirement
+and vertex extent without any write outside the reserved span.  It releases
+that chunk's span and asks the provider for the grown capacities; the retry
+is limited to this chunk and normally the first grown attempt succeeds.  A
+fixed-array overflow or a corner without a host-assigned slot is not
+retryable: that indicates a flattening disagreement, so the chunk is
+failed.
 
 \subsection{Determinism}
 
-The walker uses atomics only for the raw-key append and the overflow
-counter.  Triangle order at the end of the raw-key stream is therefore
-non-deterministic when two scan cells emit concurrently.  Does that matter?
-The rendered triangle \emph{set} is deterministic, and each corner carries
-its node key.  The index stream order follows the raw-key order; the
+The walker uses atomics for the index append, the overflow counters, and
+the per-node vertex election.  Triangle order at the end of the index
+stream is therefore non-deterministic when two scan cells emit
+concurrently.  Does that matter?  The rendered triangle \emph{set} is
+deterministic, and each corner carries its host-assigned slot.  The
 renderer does not care about triangle order.  The vertex slots are assigned
 by the host in node-table order, not by emission order, so a rebuild
 produces the same vertex buffer for the same node table.  Ray tracing and

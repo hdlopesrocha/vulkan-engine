@@ -21,7 +21,7 @@ values.
 Brushes carry the material identity that eventually becomes the vertex's
 \code{brushIndex}; painters write the per-node HSV tint and the mapping
 mode/UV scale.  The mesher never interprets either: it copies the node's
-brush and mapping state into the vertex payload in stage 1.
+brush and mapping state into the vertex payload in the geometry pass.
 
 \subsection{Corner sampling}
 
@@ -200,5 +200,5 @@ Word & Components & Source\\
 \end{center}
 The renderer treats the 64-byte record as the canonical \code{Vertex}; the
 same record is used by the raster path, the ray-tracing BLAS, and the
-offline exporter.  This is why the finalize stage does not need a
+offline exporter.  This is why the geometry pass does not need a
 conversion pass.

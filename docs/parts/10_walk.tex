@@ -1,9 +1,9 @@
-\section{Stage 0: the GPU walk}
+\section{The GPU geometry pass}
 \label{sec:gpuwalk}
 
 \subsection{Invocation model}
 
-The walk dispatch has one invocation per compacted scan cell:
+The geometry dispatch has one invocation per compacted scan cell:
 \begin{equation}
   \text{groups} = \left\lceil \frac{|\text{cells}|}{64} \right\rceil,
 \end{equation}

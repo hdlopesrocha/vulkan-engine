@@ -1,4 +1,4 @@
-\section{Host orchestration: two submissions per chunk}
+\section{Host orchestration: one submission per chunk}
 \label{sec:orch}
 
 \subsection{The driver}
@@ -6,92 +6,92 @@
 \code{OctreeTopologyCompute::computeResident} is the only entry point.  It
 is called by \code{SceneRenderer::buildChunkResident} on a scene worker
 thread.  The method holds a mutex for the whole chunk, so two workers never
-share the staging buffers or the descriptor set.  The two submissions are:
+share the staging buffers or the descriptor set.  The normal path is one
+submission:
 
 \begin{enumerate}
-\item \textbf{walk:} upload the flattened input, dispatch one invocation
-  per scan cell, read the raw vertex count;
-\item \textbf{finalize:} reserve the exact index span, write the index
-  stream and vertex payload, read the drop counters.
+\item the host flattens the neighbourhood and derives the cross-edge
+  capacities;
+\item the provider reserves a vertex/index span in the packed pools;
+\item the host uploads the node tables and records one geometry dispatch;
+\item the host waits for the fence and reads the counters;
+\item the host publishes the span, or grows it once and retries.
 \end{enumerate}
 
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[font=\small]
-  \draw[->,thick] (0,0) -- (13.2,0) node[right]{time};
+  \draw[->,thick] (0,0) -- (12.4,0) node[right]{time};
   \node[above] at (1.2,0) {CPU};
   \node[above] at (1.2,-1.2) {GPU};
   \draw[dashed] (1.2,-1.4)--(1.2,0.6);
   % CPU work
-  \fill[cpu,draw=accent] (0.2,0.15) rectangle (2.2,0.65) node[midway,font=\scriptsize]{flatten+upload};
-  \fill[cpu,draw=accent] (3.2,0.15) rectangle (4.4,0.65) node[midway,font=\scriptsize]{read count};
-  \fill[cpu,draw=accent] (5.6,0.15) rectangle (7.4,0.65) node[midway,font=\scriptsize]{reserve span};
-  \fill[cpu,draw=accent] (8.6,0.15) rectangle (10.4,0.65) node[midway,font=\scriptsize]{read drops};
-  \fill[cpu,draw=accent] (11.2,0.15) rectangle (12.6,0.65) node[midway,font=\scriptsize]{publish};
+  \fill[cpu,draw=accent] (0.2,0.15) rectangle (2.6,0.65) node[midway,font=\scriptsize]{flatten + capacity};
+  \fill[cpu,draw=accent] (2.8,0.15) rectangle (4.4,0.65) node[midway,font=\scriptsize]{reserve span};
+  \fill[cpu,draw=accent] (4.6,0.15) rectangle (6.2,0.65) node[midway,font=\scriptsize]{upload};
+  \fill[cpu,draw=accent] (8.4,0.15) rectangle (10.4,0.65) node[midway,font=\scriptsize]{read 10 counters};
+  \fill[cpu,draw=accent] (10.6,0.15) rectangle (12.2,0.65) node[midway,font=\scriptsize]{publish / retry};
   % GPU work
-  \fill[gpu,draw=accent2] (2.4,-1.0) rectangle (5.2,-0.5) node[midway,font=\scriptsize]{pass 0: walk};
-  \fill[gpu,draw=accent2] (7.6,-1.0) rectangle (10.2,-0.5) node[midway,font=\scriptsize]{pass 1: finalize};
+  \fill[gpu,draw=accent2] (6.4,-1.0) rectangle (8.2,-0.5) node[midway,font=\scriptsize]{geometry pass};
   % arrows
-  \draw[arrow] (2.2,0.4)--(2.4,0.4)--(2.4,-0.4);
-  \draw[arrow] (5.2,-0.75)--(5.4,-0.75)--(5.4,0.4)--(5.6,0.4);
-  \draw[arrow] (7.4,0.4)--(7.6,0.4)--(7.6,-0.4);
-  \draw[arrow] (10.2,-0.75)--(10.4,-0.75)--(10.4,0.4)--(10.6,0.4);
-  \draw[arrow] (10.4,0.4)--(11.2,0.4);
+  \draw[arrow] (4.4,0.4)--(4.6,0.4);
+  \draw[arrow] (6.2,0.4)--(6.4,0.4)--(6.4,-0.4);
+  \draw[arrow] (8.2,-0.75)--(8.4,-0.75)--(8.4,0.4);
+  \draw[arrow] (10.4,0.4)--(10.6,0.4);
 \end{tikzpicture}
-\caption{One chunk's two-submission timeline.  The host reads only integer
-counters between the submissions.  The finalize pass writes the renderer's
-pools directly.}
+\caption{One chunk's normal timeline.  The spans are reserved from the CPU
+cross-edge bound before submission; the single geometry pass writes the
+renderer's pools directly.  The host reads integers after the fence.}
 \label{fig:timeline}
 \end{figure}
 
 \subsection{The input upload}
 
-The eight input buffers are host-visible and coherent.  \code{uploadInput}
-writes:
+The input buffers are host-visible and coherent.  \code{uploadInput} writes:
 \begin{itemize}
 \item 128 bytes per node for the node table;
 \item 4 bytes per cell for the scan list;
-\item six counters (raw vertices, overflow, dropped, findCell calls, reuse
-  hits);
+\item ten counters (indices, extent, overflow, drops, diagnostics, and the
+  distinct vertex write count);
 \end{itemize}
 and resets the counters.  The upload is not a single \code{memcpy}: the
 node record is split across five arrays so the shader can use scalar
-layout and avoid a 128-byte struct with alignment surprises.
+layout and avoid a 128-byte struct with alignment surprises.  The
+\code{nodeWritten} election buffer is device-local; it is cleared with
+\code{vkCmdFillBuffer} immediately before the dispatch, not uploaded from
+the host.
 
 \subsection{Capacity management}
 
-The buffers grow to the largest chunk seen so far:
+The input buffers grow to the largest chunk seen so far:
 \begin{equation}
   \text{nodeCap}\ge |\N|,\qquad
-  \text{cellCap}\ge |\text{cells}|,\qquad
-  \text{keyCap}\ge \text{keys}.
+  \text{cellCap}\ge |\text{cells}|.
 \end{equation}
-A grow recreates the buffer and bumps \code{bufferGeneration}.  The
+A grow recreates the buffers and bumps \code{bufferGeneration}.  The
 descriptor writer checks the generation and rewrites bindings 0--9 only
 when it changes.  In steady state, a chunk with the same capacity reuses
-the descriptors and pays zero descriptor writes.  The device-local key
-buffer is recreated only when the key capacity grows; it is not grown per
+the descriptors and pays zero descriptor writes.  The device-local
+\code{nodeWritten} buffer follows \code{nodeCap}; it is not grown per chunk.
+The packed vertex/index spans belong to the renderer and are reserved per
 chunk.
 
-\subsection{Key sizing and retry}
+\subsection{Capacity plan and the provider callback}
 
-The host does not know the raw vertex count before the walk.  It starts
-from a per-cell hint:
-\begin{equation}
-  K_0 = \min(25\cdot|\text{cells}|+64,\;2^{23}).
-\end{equation}
-If the walk reports drops and the key count is below the hard limit, the
-host doubles the capacity and re-uploads and re-walks.  A recursion buffer
-overflow is not retryable: it means the fixed stack was too small, so the
-chunk is failed.  The key capacity is the only retryable dimension.
-
-\subsection{The provider callback}
-
-After the walk, the host knows \code{rawCount}.  It asks the renderer to
-reserve a span:
+The provider is called before the dispatch with a demand derived from the
+CPU topology:
+\begin{itemize}
+\item vertex capacity = \code{activeVertexCount} (dense surface-node slot
+  address space);
+\item index capacity = $\sum_c 6\cdot\text{segments}(c)\cdot
+  \text{crossEdges}(c)$;
+\item the cross-edge count and maximum segment span are carried for the
+  profile.
+\end{itemize}
+The provider reserves a stable draw-entry slot and a variable-size span:
 \begin{lstlisting}[caption={Span reservation callback (shape).},label={lst:provider}]
 GpuMeshSpan span = ir.reserveGpuMeshSpan(chunkId,
-    demand.suggestedVertexCapacity, demand.rawVertexCount,
+    demand.suggestedVertexCapacity, demand.suggestedIndexCapacity,
     &cubeMin, &cubeMax, level, &cubeMin);
 target.vertexBuffer = span.vertexBuffer;
 target.baseVertex = span.baseVertex;
@@ -101,22 +101,29 @@ target.firstIndex = span.firstIndex;
 target.indexCapacity = span.indexCapacity;
 target.slotIndex = span.slotIndex;
 \end{lstlisting}
-\code{reserveGpuMeshSpan} allocates a stable draw-entry slot and a
-variable-size span in the packed pools.  It records the previous span for
-deferred release.  The span is sized for the worst case:
-\begin{itemize}
-\item vertex capacity = number of surface nodes (every slot is written);
-\item index capacity = raw vertex count (one index per raw vertex).
-\end{itemize}
+If the provider cannot fit the requested capacities, the build fails
+without dispatching.  The caller releases the reservation and leaves the
+revision uncommitted, so a later opportunity can retry.
 
-\subsection{Finalize and publication}
+\subsection{Overflow growth}
 
-The host binds the span's vertex and index windows and records the finalize
-dispatch.  It then waits for the fence and reads the drop counters.  If the
-chunk is valid:
+If the shader reports an index or vertex overflow, the service calls the
+release callback with the reservation it just failed to use.  The renderer
+frees that unpublished span immediately (no draw command references it) and
+defers the free of any previously published span through the usual staged
+meta flush.  The service then asks the provider for the exact reported
+capacities and retries the same chunk with a freshly cleared
+\code{nodeWritten} buffer.  At most three attempts are made.  Only this
+chunk's spans are released and re-reserved; other chunks and the global
+descriptor state are untouched.  A fixed break-list overflow or an invalid
+slot fails immediately because capacity cannot fix it.
+
+\subsection{Publication}
+
+After the fence, the host reads the counters.  If the chunk is valid:
 \begin{enumerate}
-\item \code{publishGpuMeshSpan(slot, vertexCount, indexCount)} trims the
-  reserved span to the reported counts, frees the tail, and stages the
+\item \code{publishGpuMeshSpan(slot, vertexExtent, indexCount)} trims the
+  reserved span to the referenced extent, frees the tail, and stages the
   draw command + bounds + LoD meta;
 \item the scene publisher stores a \code{LoDMesh} with the slot, counts,
   base vertex, first index, bounds, brush, and mapping metadata;
@@ -128,33 +135,38 @@ reference a freed range.
 
 \subsection{Why the host reads only counters}
 
-The GPU writes three things: raw keys, vertices, indices.  The host reads
-only the counters:
+The GPU writes indices and vertices.  The host reads only counters:
 \begin{center}
 \begin{tabular}{@{}ll@{}}
 \toprule
 Counter & Use\\
 \midrule
-\code{vertexCount} & raw key count; index span sizing\\
-\code{overflowCount} & fixed-capacity recursion failure\\
-\code{droppedCount} & key capacity or pool span failure\\
+\code{indexCount} & indices appended; growth requirement\\
+\code{indexOverflow} & triangles rejected by the index span\\
+\code{vertexExtent} & published extent; growth requirement\\
+\code{vertexOverflow} & triangles rejected by the vertex span\\
+\code{vertexWriteCount} & distinct payloads written; utilization\\
+\code{invalidSlotCount} & flattening disagreement (fatal)\\
+\code{overflowCount} & fixed-capacity recursion failure (fatal)\\
+\code{droppedCount} & total rejected triangles\\
 \code{findCellCalls} & diagnostics only\\
 \code{reuseHits} & diagnostics only\\
 \bottomrule
 \end{tabular}
 \end{center}
-The instance/vertex bytes never cross the bus.  This is the single most
-important property of the design: the host cannot accidentally stall on a
-vertex readback because there is no vertex readback API.
+No position, normal, or 64-byte vertex ever crosses the bus.  This is the
+single most important property of the design: the host cannot accidentally
+stall on a vertex readback because there is no vertex readback API.
 
 \subsection{Error policy}
 
-A chunk build can fail in four ways:
+A chunk build can fail in the following ways:
 \begin{enumerate}
 \item \textbf{flattening unavailable}: the chunk is skipped with a log;
-\item \textbf{walk overflow}: the chunk is failed and retried after the
-  next edit; it is not partially drawn;
-\item \textbf{key capacity exhausted}: retry with a larger key buffer;
+\item \textbf{fixed-array overflow or invalid slot}: the chunk is failed and
+  retried after the next edit; it is not partially drawn;
+\item \textbf{span overflow}: the exact reported capacities are requested
+  and the dispatch is retried once or twice, scoped to the chunk;
 \item \textbf{pool span full}: release the slot and skip; the pool is sized
   for the worst case and this is a sizing bug, not a normal state.
 \end{enumerate}

@@ -12,7 +12,7 @@ versions—not vertices.
 
 The key ideas are:
 \begin{itemize}
-\item \textbf{One Cartesian producer.}  Stage 1 is the only runtime code
+\item \textbf{One Cartesian producer.}  The geometry pass is the only runtime code
   that writes a vertex.  This eliminates an entire class of
   CPU/GPU divergence and makes the offline exporter a meaningful
   reference.
@@ -23,7 +23,7 @@ The key ideas are:
   boundary, not at a fixed table of configurations.  Two chunks resolve
   the same edge to the same owner and the same sub-segments.
 \item \textbf{Span publishing.}  A chunk's geometry is a reserved range in
-  a large pool, published only after the finalize fence and freed only
+  a large pool, published only after the geometry fence and freed only
   after the cull frames that could reference it have retired.
 \item \textbf{One hierarchy for everything.}  Raster, shadows, ray
   tracing, vegetation, and fire all consume the same published span or the

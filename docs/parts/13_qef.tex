@@ -81,7 +81,7 @@ node's eight corners and cube.  If the memo is full, the slot is chosen by
 
 \subsection{The payload}
 
-Stage 1 writes the final vertex from the node id:
+The elected writer reconstructs the final vertex from the node id:
 \begin{lstlisting}[style=glsl,caption={Vertex payload layout.},label={lst:payload}]
 uint o = (pc.vertexBase + slot) * 4u;
 poolVerts[o+0] = vec4(p, 1.0);
@@ -107,15 +107,18 @@ The vertex input attribute is \code{R32\_SINT}, and the ray-tracing path
 uses \code{floatBitsToInt}; writing a numeric float would decode to a
 garbage mapping mode and drop every non-triplanar vertex.
 
-\subsection{One vertex per node}
+\subsection{One dense slot per node}
 
-Every surface node in the flattened table gets a vertex, including nodes
-that the index stream never references.  This is intentional:
+Every surface node in the flattened table gets a dense slot, including
+nodes that the index stream never references.  This is intentional:
 \begin{itemize}
 \item it makes slot assignment a simple table order;
-\item it makes the span size known from the host count;
-\item it lets the finalize pass write one vertex per invocation without a
-  compaction pass.
+\item it makes the vertex address space known from the host count, so the
+  span is an exact upper bound for every index;
+\item it lets the geometry pass elect one writer per referenced slot with
+  \code{atomicExchange} instead of running a separate compaction pass.
 \end{itemize}
-The wasted bytes are bounded by the number of surface nodes in the
-neighbourhood and are small compared with the triangle stream.
+Only referenced slots are written, and the published span is trimmed to the
+highest referenced slot plus one.  The remaining holes are bounded by the
+number of surface nodes in the neighbourhood and are reported by the
+per-chunk utilization profile.
