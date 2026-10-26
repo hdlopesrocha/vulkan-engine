@@ -2351,6 +2351,8 @@ public:
                 colorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
                 VkClearValue depthClear{};
                 depthClear.depthStencil = {1.0f, 0};
+                const uint32_t solidW = this->sceneRenderer->solidRenderer->getRenderWidth();
+                const uint32_t solidH = this->sceneRenderer->solidRenderer->getRenderHeight();
 
                 // C2 gate: skip the depth prepass and run a single forward
                 // pass (color writes depth) when disabled in settings. Forced
@@ -2382,31 +2384,9 @@ public:
                 // ── Instance 1: Deferred depth pre-pass (no color attachment) ──
                 // Skipped by the C2 gate (single forward pass instead).
                 if (!skipSolidPrepass) {
-                    VkRenderingAttachmentInfo depthAtt{};
-                    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                    depthAtt.imageView = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
-                    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                    depthAtt.clearValue = depthClear;
-
-                    VkRenderingInfo ri{};
-                    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-                    ri.renderArea.offset = {0, 0};
-                    ri.renderArea.extent = {this->sceneRenderer->solidRenderer->getRenderWidth(), this->sceneRenderer->solidRenderer->getRenderHeight()};
-                    ri.layerCount = 1;
-                    ri.colorAttachmentCount = 0;
-                    ri.pColorAttachments = nullptr;
-                    ri.pDepthAttachment = &depthAtt;
-
-                    vkCmdBeginRendering(solidCmd, &ri);
-
-                    {
-                        VkViewport vp{0.0f, 0.0f, (float)this->sceneRenderer->solidRenderer->getRenderWidth(), (float)this->sceneRenderer->solidRenderer->getRenderHeight(), 0.0f, 1.0f};
-                        vkCmdSetViewport(solidCmd, 0, 1, &vp);
-                        VkRect2D sc{{0, 0}, {this->sceneRenderer->solidRenderer->getRenderWidth(), this->sceneRenderer->solidRenderer->getRenderHeight()}};
-                        vkCmdSetScissor(solidCmd, 0, 1, &sc);
-                    }
+                    RendererUtils::beginDepthOnlyPass(
+                        solidCmd, this->sceneRenderer->solidRenderer->getDepthView(frameIdx),
+                        solidW, solidH, 1.0f);
 
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 6);
@@ -2416,7 +2396,7 @@ public:
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 7);
 
-                    vkCmdEndRendering(solidCmd);
+                    RendererUtils::endDepthOnlyPass(solidCmd);
                 }
 
                 // Transition solid color to COLOR_ATTACHMENT_OPTIMAL for the color pass.
@@ -2482,49 +2462,26 @@ public:
 
                 // ── Instance 2: Color pass (load depth from prepass) ──
                 {
-                    VkRenderingAttachmentInfo colorAtt{};
-                    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                    colorAtt.imageView = this->sceneRenderer->solidRenderer->getColorView(frameIdx);
-                    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                    colorAtt.clearValue = colorClear;
-
-                    VkRenderingAttachmentInfo depthAtt{};
-                    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                    depthAtt.imageView = this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
-                    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    const VkImageView solidColorView =
+                        this->sceneRenderer->solidRenderer->getColorView(frameIdx);
+                    const VkImageView solidDepthView =
+                        this->sceneRenderer->solidRenderer->getDepthView(frameIdx);
                     // C2 gate: CLEAR when the prepass was skipped (single
                     // forward pass, color writes depth), LOAD otherwise.
-                    // STORE is kept in both modes: the water pass samples
-                    // this depth later in the frame.
-                    depthAtt.loadOp = skipSolidPrepass ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-                    // STORE (not DONT_CARE): the solid depth is sampled later in
-                    // this same frame by the water pass (SSR/shore clamps,
-                    // raster water-region depth) and by debug/preview views.
-                    // DONT_CARE left the sampled image undefined after the color
-                    // pass — on this driver it read as clear over the whole lake
-                    // even though the depth prepass had written the bed, which
-                    // cut the raster water depth off.
-                    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                    depthAtt.clearValue = depthClear;
-
-                    VkRenderingInfo ri{};
-                    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-                    ri.renderArea.offset = {0, 0};
-                    ri.renderArea.extent = {this->sceneRenderer->solidRenderer->getRenderWidth(), this->sceneRenderer->solidRenderer->getRenderHeight()};
-                    ri.layerCount = 1;
-                    ri.colorAttachmentCount = 1;
-                    ri.pColorAttachments = &colorAtt;
-                    ri.pDepthAttachment = &depthAtt;
-
-                    vkCmdBeginRendering(solidCmd, &ri);
-
-                    {
-                        VkViewport vp{0.0f, 0.0f, (float)this->sceneRenderer->solidRenderer->getRenderWidth(), (float)this->sceneRenderer->solidRenderer->getRenderHeight(), 0.0f, 1.0f};
-                        vkCmdSetViewport(solidCmd, 0, 1, &vp);
-                        VkRect2D sc{{0, 0}, {this->sceneRenderer->solidRenderer->getRenderWidth(), this->sceneRenderer->solidRenderer->getRenderHeight()}};
-                        vkCmdSetScissor(solidCmd, 0, 1, &sc);
+                    // Both helpers use STORE (not DONT_CARE): the solid depth
+                    // is sampled later in this same frame by the water pass
+                    // (SSR/shore clamps, raster water-region depth) and by
+                    // debug/preview views. DONT_CARE left the sampled image
+                    // undefined after the color pass — on this driver it read
+                    // as clear over the whole lake even though the depth
+                    // prepass had written the bed, which cut the raster water
+                    // depth off.
+                    if (skipSolidPrepass) {
+                        RendererUtils::beginColorDepthPass(solidCmd, solidColorView, solidDepthView,
+                                                           solidW, solidH, colorClear, depthClear);
+                    } else {
+                        RendererUtils::beginColorDepthPassLoadDepth(
+                            solidCmd, solidColorView, solidDepthView, solidW, solidH, colorClear);
                     }
 
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
@@ -2757,22 +2714,6 @@ public:
                 sceneRenderer->vegetationRenderer->setVegColorLayout(frameIdx, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
                 sceneRenderer->vegetationRenderer->setVegDepthLayout(frameIdx, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-                auto beginVegInstance = [&](VkRenderingAttachmentInfo* colorAtt, VkRenderingAttachmentInfo* depthAtt, uint32_t colorCount) {
-                    VkRenderingInfo ri{};
-                    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-                    ri.renderArea.offset = {0, 0};
-                    ri.renderArea.extent = {w, h};
-                    ri.layerCount = 1;
-                    ri.colorAttachmentCount = colorCount;
-                    ri.pColorAttachments = (colorCount > 0) ? colorAtt : nullptr;
-                    ri.pDepthAttachment = depthAtt;
-                    vkCmdBeginRendering(vegCmd, &ri);
-                    VkViewport vp{0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f};
-                    vkCmdSetViewport(vegCmd, 0, 1, &vp);
-                    VkRect2D sc{{0, 0}, {w, h}};
-                    vkCmdSetScissor(vegCmd, 0, 1, &sc);
-                };
-
                 // Blade tufts and/or the captured impostors. The blades own
                 // [0, impostorDistance) and the impostors take over beyond.
                 const bool drawBillboards = vegetationEnabled;
@@ -2784,63 +2725,29 @@ public:
                     sceneRenderer->vegetationRenderer->recordReadBarriers(vegCmd);
                     if (drawBillboards) {
                         // Instance 1: depth prepass (no color attachment)
-                        {
-                            VkClearValue vegDepthClear{}; vegDepthClear.depthStencil = {1.0f, 0};
-                            VkRenderingAttachmentInfo depthAtt{};
-                            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                            depthAtt.imageView = vegDepthView;
-                            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                            depthAtt.clearValue = vegDepthClear;
-                            beginVegInstance(nullptr, &depthAtt, 0);
-                            sceneRenderer->vegetationRenderer->drawDepth(this, vegCmd, vegCamPos);
-                            vkCmdEndRendering(vegCmd);
-                        }
+                        RendererUtils::beginDepthOnlyPass(vegCmd, vegDepthView, w, h, 1.0f);
+                        sceneRenderer->vegetationRenderer->drawDepth(this, vegCmd, vegCamPos);
+                        RendererUtils::endDepthOnlyPass(vegCmd);
                         // Instance 2: color + depth (depth loaded from prepass)
-                        {
-                            VkClearValue vegColorClear{}; vegColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-                            VkRenderingAttachmentInfo colorAtt{};
-                            colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                            colorAtt.imageView = vegColorView;
-                            colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                            colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                            colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                            colorAtt.clearValue = vegColorClear;
-                            VkRenderingAttachmentInfo depthAtt{};
-                            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                            depthAtt.imageView = vegDepthView;
-                            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                            beginVegInstance(&colorAtt, &depthAtt, 1);
-                            sceneRenderer->vegetationRenderer->drawColor(this, vegCmd, vegCamPos,
-                                                                         /*drawBillboards=*/true,
-                                                                         /*drawImpostors=*/drawImpostors);
-                            vkCmdEndRendering(vegCmd);
-                        }
+                        VkClearValue vegColorClear{};
+                        vegColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+                        RendererUtils::beginColorDepthPassLoadDepth(vegCmd, vegColorView, vegDepthView,
+                                                                    w, h, vegColorClear);
+                        sceneRenderer->vegetationRenderer->drawColor(this, vegCmd, vegCamPos,
+                                                                     /*drawBillboards=*/true,
+                                                                     /*drawImpostors=*/drawImpostors);
+                        vkCmdEndRendering(vegCmd);
                     } else {
                         // Grass Raycast impostor-only: one color+depth CLEAR
                         // instance. No billboard depth prepass is needed — the
                         // impostor pipeline writes the captured depth itself
                         // (gl_FragDepth from the captured view depth).
-                        VkClearValue vegColorClear{}; vegColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-                        VkClearValue vegDepthClear{}; vegDepthClear.depthStencil = {1.0f, 0};
-                        VkRenderingAttachmentInfo colorAtt{};
-                        colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                        colorAtt.imageView = vegColorView;
-                        colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                        colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                        colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                        colorAtt.clearValue = vegColorClear;
-                        VkRenderingAttachmentInfo depthAtt{};
-                        depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                        depthAtt.imageView = vegDepthView;
-                        depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                        depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                        depthAtt.clearValue = vegDepthClear;
-                        beginVegInstance(&colorAtt, &depthAtt, 1);
+                        VkClearValue vegColorClear{};
+                        vegColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+                        VkClearValue vegDepthClear{};
+                        vegDepthClear.depthStencil = {1.0f, 0};
+                        RendererUtils::beginColorDepthPass(vegCmd, vegColorView, vegDepthView, w, h,
+                                                           vegColorClear, vegDepthClear);
                         sceneRenderer->vegetationRenderer->drawColor(this, vegCmd, vegCamPos,
                                                                      /*drawBillboards=*/false,
                                                                      /*drawImpostors=*/true);
@@ -2848,23 +2755,12 @@ public:
                     }
                 } else {
                     // Clear the offscreen so the composite sees empty vegetation.
-                    VkClearValue vegColorClear{}; vegColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-                    VkClearValue vegDepthClear{}; vegDepthClear.depthStencil = {1.0f, 0};
-                    VkRenderingAttachmentInfo colorAtt{};
-                    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                    colorAtt.imageView = vegColorView;
-                    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                    colorAtt.clearValue = vegColorClear;
-                    VkRenderingAttachmentInfo depthAtt{};
-                    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                    depthAtt.imageView = vegDepthView;
-                    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                    depthAtt.clearValue = vegDepthClear;
-                    beginVegInstance(&colorAtt, &depthAtt, 1);
+                    VkClearValue vegColorClear{};
+                    vegColorClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+                    VkClearValue vegDepthClear{};
+                    vegDepthClear.depthStencil = {1.0f, 0};
+                    RendererUtils::beginColorDepthPass(vegCmd, vegColorView, vegDepthView, w, h,
+                                                       vegColorClear, vegDepthClear);
                     vkCmdEndRendering(vegCmd);
                 }
 

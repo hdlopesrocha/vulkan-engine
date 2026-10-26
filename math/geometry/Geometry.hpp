@@ -2,6 +2,7 @@
 #include "Vertex.hpp"
 #include "VertexHasher.hpp"
 #include "BoundingCube.hpp"
+#include <cstdint>
 #include <vector>
 #include <type_traits>
 #include <memory>
@@ -41,4 +42,19 @@ using GeometryLodCallback = std::function<void(
     const BoundingCube& cube, // the emitting cell's OWN cube (band box, for frustum cull)
     const BoundingCube& baseCube // the FINEST chunk's cube (shared column anchor)
 )>;
+
+// Appends the 36 indices of a 24-vertex cube (six CCW quads, four vertices per
+// face in the order the proxy cube builders emit them).
+inline void appendCubeQuadIndices(std::vector<uint32_t>& indices) {
+    indices.reserve(indices.size() + 36);
+    for (uint32_t face = 0; face < 6; ++face) {
+        const uint32_t base = face * 4;
+        indices.push_back(base + 0);
+        indices.push_back(base + 1);
+        indices.push_back(base + 2);
+        indices.push_back(base + 0);
+        indices.push_back(base + 2);
+        indices.push_back(base + 3);
+    }
+}
  

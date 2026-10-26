@@ -255,31 +255,6 @@ void BrushSdfRenderer::recordPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
     VkClearValue depthClear{};
     depthClear.depthStencil = {1.0f, 0};
 
-    VkRenderingAttachmentInfo colorAtt{};
-    colorAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAtt.imageView = colorImageViews[fi];
-    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.clearValue = colorClear;
-
-    VkRenderingAttachmentInfo depthAtt{};
-    depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAtt.imageView = depthImageViews[fi];
-    depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAtt.clearValue = depthClear;
-
-    VkRenderingInfo ri{};
-    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    ri.renderArea.offset = {0, 0};
-    ri.renderArea.extent = {width, height};
-    ri.layerCount = 1;
-    ri.colorAttachmentCount = 1;
-    ri.pColorAttachments = &colorAtt;
-    ri.pDepthAttachment = &depthAtt;
-
     // HOST->shader visibility for the two host-written UBOs this pass reads:
     // the main-scene UBO (camera rays) and the brush params (brush transform).
     // Both are memcpy'd on the recording thread just before this call; without
@@ -325,11 +300,8 @@ void BrushSdfRenderer::recordPass(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
         }
     }
 
-    vkCmdBeginRendering(cmd, &ri);
-    VkViewport vp{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-    VkRect2D sc{{0, 0}, {width, height}};
-    vkCmdSetScissor(cmd, 0, 1, &sc);
+    RendererUtils::beginColorDepthPass(cmd, colorImageViews[fi], depthImageViews[fi],
+                                       width, height, colorClear, depthClear);
 
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);

@@ -5,6 +5,7 @@
 #include "../RendererUtils.hpp"
 #include "../../pipeline/ShaderStage.hpp"
 #include "../../../utils/FileReader.hpp"
+#include "../../../math/geometry/Geometry.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstring>
 #include <iostream>
@@ -68,16 +69,7 @@ void DebugSDFRenderer::createCubeBuffers(VulkanApp* app) {
     };
 
     std::vector<uint32_t> indices;
-    indices.reserve(36);
-    for (uint32_t face = 0; face < 6; ++face) {
-        const uint32_t base = face * 4;
-        indices.push_back(base + 0);
-        indices.push_back(base + 1);
-        indices.push_back(base + 2);
-        indices.push_back(base + 0);
-        indices.push_back(base + 2);
-        indices.push_back(base + 3);
-    }
+    appendCubeQuadIndices(indices);
 
     // Upload via the async transfer path (graphics-family transfer queue when
     // available, else main graphics queue). The completion semaphore is
