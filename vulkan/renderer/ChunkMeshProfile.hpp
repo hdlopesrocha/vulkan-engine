@@ -40,6 +40,16 @@ struct ChunkMeshProfile {
     static constexpr uint32_t kVertexStrideBytes = 64; // math/geometry/Vertex
     static constexpr uint32_t kIndexStrideBytes = 4;
 
+    static const char* statusName(ChunkMeshProfileStatus value) {
+        switch (value) {
+            case ChunkMeshProfileStatus::Built: return "built";
+            case ChunkMeshProfileStatus::Empty: return "empty";
+            case ChunkMeshProfileStatus::Failed: return "failed";
+        }
+        return "failed";
+    }
+    const char* statusName() const { return statusName(status); }
+
     bool hasGeometry() const {
         return status == ChunkMeshProfileStatus::Built && vertexCount > 0 && indexCount > 0;
     }
@@ -53,19 +63,22 @@ struct ChunkMeshProfile {
                              : 0.0;
     }
 
-    // Independent vertex/index utilization.
-    double vertexUtilization() const { return percent(vertexCount, vertexCapacity); }
-    double indexUtilization() const { return percent(indexCount, indexCapacity); }
-
     // Byte-weighted combined utilization: one reserved vertex slot is 64 B,
     // one reserved index is 4 B. Using the byte ratio (not the average of the
     // two percentages) keeps the metric comparable to the pool footprint.
-    double combinedUtilization() const {
-        const uint64_t used = uint64_t(vertexCount) * kVertexStrideBytes +
-                              uint64_t(indexCount) * kIndexStrideBytes;
-        const uint64_t capacity = uint64_t(vertexCapacity) * kVertexStrideBytes +
-                                  uint64_t(indexCapacity) * kIndexStrideBytes;
+    static double combinedUtilization(uint64_t vertices, uint64_t indices,
+                                      uint64_t vertexCapacity, uint64_t indexCapacity) {
+        const uint64_t used = vertices * kVertexStrideBytes + indices * kIndexStrideBytes;
+        const uint64_t capacity = vertexCapacity * kVertexStrideBytes +
+                                  indexCapacity * kIndexStrideBytes;
         return percent(used, capacity);
+    }
+
+    // Independent vertex/index utilization.
+    double vertexUtilization() const { return percent(vertexCount, vertexCapacity); }
+    double indexUtilization() const { return percent(indexCount, indexCapacity); }
+    double combinedUtilization() const {
+        return combinedUtilization(vertexCount, indexCount, vertexCapacity, indexCapacity);
     }
 };
 
@@ -219,11 +232,8 @@ private:
 
         a.vertexUtilization = ChunkMeshProfile::percent(a.vertexCount, a.vertexCapacity);
         a.indexUtilization = ChunkMeshProfile::percent(a.indexCount, a.indexCapacity);
-        const uint64_t usedBytes = a.vertexCount * ChunkMeshProfile::kVertexStrideBytes +
-                                   a.indexCount * ChunkMeshProfile::kIndexStrideBytes;
-        const uint64_t capBytes = a.vertexCapacity * ChunkMeshProfile::kVertexStrideBytes +
-                                  a.indexCapacity * ChunkMeshProfile::kIndexStrideBytes;
-        a.combinedUtilization = ChunkMeshProfile::percent(usedBytes, capBytes);
+        a.combinedUtilization = ChunkMeshProfile::combinedUtilization(
+            a.vertexCount, a.indexCount, a.vertexCapacity, a.indexCapacity);
 
         a.vertexStats = stats(std::move(vertexUtils));
         a.indexStats = stats(std::move(indexUtils));

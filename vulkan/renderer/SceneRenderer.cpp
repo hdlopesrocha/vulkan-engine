@@ -2006,12 +2006,10 @@ void SceneRenderer::logChunkMeshProfiles() const {
 
     if (std::getenv("VULKAN_CHUNK_PROFILE") == nullptr) return;
     for (const ChunkMeshProfile& p : snap->chunks) {
-        const char* status = p.status == ChunkMeshProfileStatus::Built ? "built"
-                           : p.status == ChunkMeshProfileStatus::Empty ? "empty" : "failed";
         std::printf("[chunkmesh] layer=%d chunk=%u lod=%u status=%s crossEdges=%u segMax=%u "
                     "v=%u/%u extent=%u (%.1f%%) i=%u/%u (%.1f%%) combined=%.1f%% attempts=%u "
                     "idxOverflow=%u vtxOverflow=%u invalid=%u grew=%d\n",
-                    p.layer, p.chunkId, static_cast<unsigned>(p.lod), status,
+                    p.layer, p.chunkId, static_cast<unsigned>(p.lod), p.statusName(),
                     p.crossEdgeCount, p.maxSegmentsPerCrossEdge,
                     p.vertexCount, p.vertexCapacity, p.vertexExtent, p.vertexUtilization(),
                     p.indexCount, p.indexCapacity, p.indexUtilization(), p.combinedUtilization(),
@@ -2308,7 +2306,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
 
     // Empty chunk (no surface at this revision): nothing to draw, but the
     // revision is settled (recorded by the caller's commit).
-    if (res.indexCount < 3u || res.poolVertexCount == 0u) {
+    if (res.indexCount < 3u || res.vertexExtent == 0u) {
         streamStats_.residentEmpty.fetch_add(1, std::memory_order_relaxed);
         recordProfile(ChunkMeshProfileStatus::Empty);
         if (res.slotIndex != UINT32_MAX) ir.releaseGpuMeshSpan(res.slotIndex);
@@ -2317,7 +2315,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
         return true;
     }
 
-    if (!ir.publishGpuMeshSpan(res.slotIndex, res.poolVertexCount, res.indexCount)) {
+    if (!ir.publishGpuMeshSpan(res.slotIndex, res.vertexExtent, res.indexCount)) {
         recordProfile(ChunkMeshProfileStatus::Failed);
         skipChunk("could not publish its span");
         return true;
@@ -2333,7 +2331,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     lm.boundsMax = cubeMax;
     lm.boundsBase = cubeMin;
     lm.gpuSlot = res.slotIndex;
-    lm.gpuVertexCount = res.poolVertexCount;
+    lm.gpuVertexCount = res.vertexExtent;
     lm.gpuIndexCount = res.indexCount;
     lm.gpuBaseVertex = res.baseVertex;
     lm.gpuFirstIndex = res.firstIndex;

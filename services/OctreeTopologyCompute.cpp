@@ -338,10 +338,9 @@ void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget& target)
 }
 
 namespace {
-void countStats(uint64_t& calls, double& totalMs, double& lastMs, double& cells,
-                double& nodes, double& triangles, double ms, size_t cellCount,
-                size_t nodeCount, double triangleCount) {
-    lastMs = ms;
+void countStats(uint64_t& calls, double& totalMs, double& cells, double& nodes,
+                double& triangles, double ms, size_t cellCount, size_t nodeCount,
+                double triangleCount) {
     ++calls;
     totalMs += ms;
     cells += double(cellCount);
@@ -511,15 +510,14 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
     ensureCapacity(nodeCount, cellCount);
 
     OctreeTopologyDemand demand;
-    demand.crossEdgeCount = input.crossEdgeCount;
-    demand.maxSegmentsPerCrossEdge = std::max<uint32_t>(input.maxSegmentsPerCrossEdge, 1u);
     demand.suggestedVertexCapacity = input.activeVertexCount;
     // The CPU hint is the per-cell dyadic segment sum. If a caller predates the
     // cross-edge accounting, fall back to the full 12-edges-per-cell bound
     // rather than an arbitrary multiplier.
-    uint64_t fallbackSegments = uint64_t(input.crossEdgeCount) * demand.maxSegmentsPerCrossEdge;
+    const uint32_t maxSegmentsPerCrossEdge = std::max<uint32_t>(input.maxSegmentsPerCrossEdge, 1u);
+    uint64_t fallbackSegments = uint64_t(input.crossEdgeCount) * maxSegmentsPerCrossEdge;
     if (fallbackSegments == 0)
-        fallbackSegments = uint64_t(cellCount) * 12u * demand.maxSegmentsPerCrossEdge;
+        fallbackSegments = uint64_t(cellCount) * 12u * maxSegmentsPerCrossEdge;
     demand.suggestedIndexCapacity = input.indexCapacityHint != 0
         ? input.indexCapacityHint
         : octree_topology::indexCapacityFromSegments(fallbackSegments);
@@ -704,14 +702,13 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
             continue;
         }
 
-        res.poolVertexCount = vertexExtent;
         res.ok = true;
         break;
     }
 
     if (!res.ok) return res;
 
-    countStats(statCalls, statMs, statMsLast, statCells, statNodes, statTriangles,
+    countStats(statCalls, statMs, statCells, statNodes, statTriangles,
                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
                cellCount, nodeCount, double(res.indexCount) / 3.0);
 

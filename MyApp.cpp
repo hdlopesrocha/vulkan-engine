@@ -3756,8 +3756,7 @@ public:
                                         ImGui::TableNextColumn(); ImGui::Text("%u", p.chunkId);
                                         ImGui::TableNextColumn(); ImGui::Text("%u", static_cast<unsigned>(p.lod));
                                         ImGui::TableNextColumn();
-                                        ImGui::Text("%s", p.status == ChunkMeshProfileStatus::Built ? "built"
-                                                       : p.status == ChunkMeshProfileStatus::Empty ? "empty" : "failed");
+                                        ImGui::Text("%s", p.statusName());
                                         ImGui::TableNextColumn(); ImGui::Text("%u", p.crossEdgeCount);
                                         ImGui::TableNextColumn(); ImGui::Text("%u/%u", p.vertexCount, p.vertexCapacity);
                                         ImGui::TableNextColumn(); ImGui::Text("%.1f", p.vertexUtilization());

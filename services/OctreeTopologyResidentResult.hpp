@@ -5,7 +5,6 @@
 // Result of one GPU topology build. Only counts come back to the host — the
 // Cartesian vertex stream stays in the renderer's device-local pools.
 struct OctreeTopologyResidentResult {
-    uint32_t poolVertexCount = 0;     // highest referenced slot + 1 (the published extent)
     uint32_t writtenVertexCount = 0;  // distinct vertex payloads actually written
     uint32_t indexCount = 0;          // index stream length actually appended
     uint32_t slotIndex = UINT32_MAX;
@@ -16,7 +15,7 @@ struct OctreeTopologyResidentResult {
     uint32_t maxSegmentsPerCrossEdge = 1;
     uint32_t vertexCapacity = 0;  // reserved vertex span (dense slot bound)
     uint32_t indexCapacity = 0;   // reserved index span (cross-edge bound)
-    uint32_t vertexExtent = 0;    // max referenced slot + 1 (before trimming)
+    uint32_t vertexExtent = 0;    // highest referenced slot + 1; the published extent
     uint32_t indexOverflow = 0;   // triangles that did not fit the index span
     uint32_t vertexOverflow = 0;  // triangles whose vertex slot did not fit
     uint32_t invalidSlots = 0;    // corners whose node had no host-assigned slot

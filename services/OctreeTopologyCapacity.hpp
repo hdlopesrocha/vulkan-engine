@@ -36,11 +36,6 @@ constexpr uint32_t kIndicesPerTriangle = 3;
 // beyond this bound.
 constexpr uint32_t kMaxSegmentsPerCrossEdge = 64;
 
-inline uint32_t clampSegments(uint64_t segments) {
-    return static_cast<uint32_t>(std::min<uint64_t>(
-        std::max<uint64_t>(segments, 1ull), kMaxSegmentsPerCrossEdge));
-}
-
 inline uint32_t segmentBound(uint32_t levelSpan) {
     if (levelSpan >= 6u) return kMaxSegmentsPerCrossEdge;
     return 1u << levelSpan;

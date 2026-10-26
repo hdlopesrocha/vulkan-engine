@@ -107,7 +107,6 @@ private:
 
     uint64_t statCalls = 0;
     double statMs = 0.0;
-    double statMsLast = 0.0;
     double statCells = 0.0;
     double statNodes = 0.0;
     double statTriangles = 0.0;
