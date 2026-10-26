@@ -12,7 +12,8 @@
 // ancestor path plus the nodes inside the search domain), `cells` are the
 // indices of the surface-straddling nodes scanned at targetLod (the compacted
 // walkLadder frontier), and `activeVertexCount` is the number of surface nodes
-// that received a vertex slot (the exact vertex-span size).
+// that received a vertex slot (the exact dense-slot address space; only the
+// slots actually referenced by a triangle are written).
 struct OctreeTopologyInput {
     std::vector<OctreeGpuNode> nodes;
     std::vector<uint32_t> cells;
@@ -24,5 +25,12 @@ struct OctreeTopologyInput {
     glm::vec3 rootMin{0.0f}; // world root cube, used for the contains() test
     float rootSize = 0.0f;
     uint32_t activeVertexCount = 0; // surface-node slots packed into flags bits 1+
-    uint32_t scanCellCount = 0;     // all targetLod cells before compaction (key sizing)
+    // Cross-edge accounting computed while the compacted scan list is built.
+    // A cross edge is one (scan cell, cube edge) pair whose two stored corner
+    // samples have opposite signs; the shader emits one segment per dyadic
+    // interval of that edge. `indexCapacityHint` is the resulting safe
+    // index-stream size (sum of the per-cell interval bounds).
+    uint32_t crossEdgeCount = 0;
+    uint32_t maxSegmentsPerCrossEdge = 1;
+    uint32_t indexCapacityHint = 0;
 };

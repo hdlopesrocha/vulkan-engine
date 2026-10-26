@@ -2176,13 +2176,17 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     const int lod = static_cast<int>(chunkLod) - 1;
     const bool frontier = (lod == 0);
 
-    // The walk's raw vertex count is only known after the first submission, so
-    // the span is reserved from a provider callback: it runs on this thread
-    // (between the two submissions) with the exact sizes.
+    // A single dispatch writes indices and vertices straight into the packed
+    // pools, so the provider callback reserves both spans before submission.
+    // The CPU cross-edge accounting sizes both spans before the dispatch, so
+    // the provider runs once per chunk (again only if a defensive overflow is
+    // reported). The release callback hands a rejected reservation back to the
+    // pool before the grown-capacity retry, scoped to this chunk.
     OctreeTopologyResidentResult res = topo->computeResident(
-        topoInput, [&](const OctreeTopologyDemand& d) -> OctreeTopologyTarget {
+        topoInput,
+        [&](const OctreeTopologyDemand& d) -> OctreeTopologyTarget {
             GpuMeshSpan span = ir.reserveGpuMeshSpan(chunkId, d.suggestedVertexCapacity,
-                                                     d.rawVertexCount, &cubeMin, &cubeMax,
+                                                     d.suggestedIndexCapacity, &cubeMin, &cubeMax,
                                                      lod, &cubeMin);
             OctreeTopologyTarget t;
             if (span.slotIndex == UINT32_MAX) {
@@ -2190,7 +2194,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
                 if (logged.fetch_add(1) < 8)
                     std::cerr << "[SceneRenderer] resident span empty (chunk=" << chunkId
                               << " layer=" << layer << " verts=" << d.suggestedVertexCapacity
-                              << " idx=" << d.rawVertexCount << " slot=" << span.slotIndex
+                              << " idx=" << d.suggestedIndexCapacity << " slot=" << span.slotIndex
                               << " vb=" << (void*)span.vertexBuffer
                               << " ib=" << (void*)span.indexBuffer << ")\n";
                 return t; // no slot / pool space
@@ -2203,7 +2207,8 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
             t.indexCapacity = span.indexCapacity;
             t.slotIndex = span.slotIndex;
             return t;
-        });
+        },
+        [&](uint32_t slotIndex) { ir.releaseGpuMeshSpan(slotIndex); });
 
     const auto skipChunk = [&](const char* what) {
         // The span was reserved but nothing usable was written: hand it back to

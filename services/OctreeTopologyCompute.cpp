@@ -1,7 +1,9 @@
 #include "OctreeTopologyCompute.hpp"
+#include "OctreeTopologyCapacity.hpp"
 #include "../vulkan/core/VulkanApp.hpp"
 #include "../vulkan/resources/Buffer.hpp"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -17,32 +19,20 @@ struct TopologyPC {
     int32_t fromBrush;
     glm::vec4 rootMinSize; // xyz = world root min, w = world root size
     float worldSize;
-    uint32_t keyCapacity;  // rawKeys[] capacity: hard bound on raw vertices
-    // pass 0 = walk (emits raw node keys), 1 = finalize (index stream + one
-    // vertex per host-assigned surface-node slot). Every pass writes device
-    // memory only; nothing is read back except the integer counters.
-    uint32_t pass;
-    uint32_t vertexBase;
-    uint32_t vertexCapacity;
-    uint32_t indexBase;
-    uint32_t indexCapacity;
-    uint32_t indexCount;   // finalize: raw vertices in the index stream
-    uint32_t nodeCount;    // finalize: node-table entries (vertex tail bound)
-    uint32_t diag;         // 1 = accumulate findCellAt/reuse counters
+    uint32_t vertexBase;     // span-relative base inside the bound vertex window
+    uint32_t vertexCapacity; // pool elements reserved for this chunk
+    uint32_t indexBase;      // span-relative base inside the bound index window
+    uint32_t indexCapacity;  // index pool elements reserved for this chunk
+    uint32_t nodeCount;      // node-table entries (nodeWritten[] bound)
+    uint32_t diag;           // 1 = accumulate findCellAt/reuse counters
 };
 
-// Raw-vertex density per scan cell used to size the walk's key space. The
-// emitted keys are unchanged by this hint; only the allocation is sized.
-// Dense multi-segment chunks overshoot the old 24/cell estimate by 12-24
-// vertices, and every overshoot cost a full re-upload + re-walk (L9), so the
-// initial capacity carries headroom instead.
-constexpr size_t kVerticesPerCellHint = 25;
-constexpr size_t kKeyCapacityHeadroom = 64;
-// Hard ceiling on the walk's raw vertex count (3 per triangle): the chunk-local
-// index stream has one entry per raw vertex, so this is also the index-span
-// bound. Measured worst chunk: ~3.8M raw vertices.
-constexpr size_t kMaxKeysPerCall = 1u << 23;     // 8M -> 32 MB of keys (device local)
-}
+// A span overflow is resolved by releasing the chunk's reservation and asking
+// the provider for the exact capacity the shader reported. Two retries are
+// enough (index growth, then a defensive vertex growth); more would only spin
+// on a provider that cannot fit the required span.
+constexpr uint32_t kMaxSpanRetries = 3;
+} // namespace
 
 OctreeTopologyCompute* OctreeTopologyCompute::globalInstance = nullptr;
 
@@ -66,7 +56,7 @@ void OctreeTopologyCompute::init(VulkanApp* vkApp) {
     if (pipeline != VK_NULL_HANDLE) return;
     VkDevice device = vkApp->getDevice();
 
-    // 8 input tables + counters/raw keys + the two packed pool spans.
+    // 7 node tables + cells + counters + node-written flags + the two pools.
     constexpr uint32_t kBindingCount = 12;
     VkDescriptorSetLayoutBinding bindings[kBindingCount] = {};
     for (uint32_t b = 0; b < kBindingCount; ++b) {
@@ -137,8 +127,7 @@ void OctreeTopologyCompute::init(VulkanApp* vkApp) {
     vkApp->resources.addDescriptorSet(descSet, "OctreeTopologyCompute: descSet");
 }
 
-void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount,
-                                           size_t keyCount) {
+void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount) {
     const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     // Any recreated input buffer invalidates the descriptor set: bump the
     // generation so the next writeDescriptors() rewrites bindings 0-9. When
@@ -153,6 +142,7 @@ void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount,
         app->destroyBuffer(bHsv);
         app->destroyBuffer(bChild03);
         app->destroyBuffer(bChild47);
+        app->destroyBuffer(bNodeWritten);
         bSdf0 = app->createBuffer(sizeof(float) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bSdf1 = app->createBuffer(sizeof(float) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bCube = app->createBuffer(sizeof(float) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
@@ -161,6 +151,12 @@ void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount,
         bHsv = app->createBuffer(sizeof(float) * 8 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bChild03 = app->createBuffer(sizeof(int32_t) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         bChild47 = app->createBuffer(sizeof(int32_t) * 4 * nodeCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
+        // Device-local: written by vkCmdFillBuffer immediately before the
+        // geometry dispatch (atomicExchange elects one vertex writer per node).
+        bNodeWritten = app->createBuffer(sizeof(uint32_t) * nodeCount,
+                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         nodeCap = nodeCount;
         recreated = true;
     }
@@ -170,20 +166,13 @@ void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount,
         cellCap = cellCount;
         recreated = true;
     }
-    if (keyCount > keyCap) {
-        // Device-local: the keys are written by the walk and read by the
-        // finalize index pass.
-        app->destroyBuffer(bRawKeys);
-        bRawKeys = app->createBuffer(sizeof(uint32_t) * keyCount,
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        keyCap = keyCount;
-        recreated = true;
-    }
     if (bCounter.buffer == VK_NULL_HANDLE) {
-        // 0 raw vertices, 1 fixed-array overflows, 2 unused (deduped count),
-        // 3 dropped pool writes, 4 findCellAt descents, 5 quadrant reuse hits.
-        bCounter = app->createBuffer(sizeof(uint32_t) * 6, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
+        // 0 indices appended, 1 fixed-array overflows, 2 vertex extent,
+        // 3 dropped triangles, 4 findCellAt descents, 5 quadrant reuse hits,
+        // 6 index-span overflows, 7 vertex-span overflows, 8 invalid slots,
+        // 9 distinct vertex payloads written. (12 uints keeps the buffer a
+        // multiple of the 4-byte fill alignment and leaves headroom.)
+        bCounter = app->createBuffer(sizeof(uint32_t) * 12, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         recreated = true;
     }
     if (recreated) ++bufferGeneration;
@@ -209,7 +198,7 @@ void hostReadBarrier(VkCommandBuffer cmd) {
 } // namespace
 
 // Uploads the flattened neighborhood into the host-visible input buffers and
-// resets the four counters. Caller must hold `mutex` and have called
+// resets the counters. Caller must hold `mutex` and have called
 // ensureCapacity() for this input.
 void OctreeTopologyCompute::uploadInput(const OctreeTopologyInput& input) {
     const size_t nodeCount = input.nodes.size();
@@ -249,18 +238,11 @@ void OctreeTopologyCompute::uploadInput(const OctreeTopologyInput& input) {
     }
     for (size_t i = 0; i < cellCount; ++i) cells[i] = input.cells[i];
     uint32_t* counters = (uint32_t*)bCounter.mappedData;
-    counters[0] = 0; // emitted vertices (raw, 3 per triangle)
-    counters[1] = 0; // fixed-capacity recursion buffer overflow
-    counters[2] = 0; // unused (historical deduped-vertex count)
-    counters[3] = 0; // drops: key capacity or pool span overflow
-    counters[4] = 0; // findCellAt descents (VULKAN_SETUP_DIAG only)
-    counters[5] = 0; // quadrant lookups avoided by AABB reuse (diag only)
+    for (int i = 0; i < 12; ++i) counters[i] = 0;
 }
 
-// Points the descriptor set at the resident target's pools. Binding 9 always
-// points at the raw keys; 10/11 fall back to a small input buffer for
-// the walk pass (which never touches them, but every declared binding still
-// needs a valid buffer).
+// Points the descriptor set at the resident target's pools and the per-chunk
+// node-written flags.
 // A storage descriptor's range must not exceed
 // VkPhysicalDeviceLimits::maxStorageBufferRange (128 MB on some drivers, while
 // the packed pools are 768/192 MB) and its offset must be aligned. Bind the
@@ -300,12 +282,9 @@ static PoolSpanBinding makePoolSpanBinding(const OctreeTopologyTarget& target,
     return b;
 }
 
-void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget* target) {
+void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget& target) {
     constexpr uint32_t kBindingCount = 12;
-    constexpr uint32_t kInputBindingCount = 10; // 0..9: node tables, cells, counters, raw keys
-    const bool resident = target != nullptr &&
-                          target->vertexBuffer != VK_NULL_HANDLE &&
-                          target->indexBuffer != VK_NULL_HANDLE;
+    constexpr uint32_t kInputBindingCount = 10; // 0..9: node tables, cells, counters, node flags
     VkDescriptorBufferInfo infos[kBindingCount]{};
     VkWriteDescriptorSet writes[kBindingCount] = {};
 
@@ -316,9 +295,9 @@ void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget* target)
     if (rewriteInputs) {
         VkBuffer bufs[kInputBindingCount] = {bSdf0.buffer, bSdf1.buffer, bCube.buffer, bMeta.buffer,
                                              bHsv.buffer, bChild03.buffer, bChild47.buffer, bCells.buffer,
-                                             bCounter.buffer, bRawKeys.buffer};
-        // Every declared binding must name a valid buffer even when the current
-        // pass never touches it; fall back to a small always-present input buffer.
+                                             bCounter.buffer, bNodeWritten.buffer};
+        // Every declared binding must name a valid buffer; fall back to the
+        // small always-present cells buffer if a table is unexpectedly empty.
         for (uint32_t b = 0; b < kInputBindingCount; ++b) {
             if (bufs[b] == VK_NULL_HANDLE) bufs[b] = bCells.buffer;
         }
@@ -335,12 +314,8 @@ void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget* target)
     }
 
     // Bindings 10/11 are the renderer's packed pools and change per chunk.
-    // The walk pass passes nullptr and only needs a valid binding: use the
-    // cells buffer, exactly as the old fallback did.
-    VkBuffer poolVertex = resident ? target->vertexBuffer : bCells.buffer;
-    VkBuffer poolIndex = resident ? target->indexBuffer : bCells.buffer;
     for (uint32_t b = kInputBindingCount; b < kBindingCount; ++b) {
-        const VkBuffer buf = (b == 10) ? poolVertex : poolIndex;
+        const VkBuffer buf = (b == 10) ? target.vertexBuffer : target.indexBuffer;
         infos[b] = {buf, 0, app->getClampedWholeSizeRange(buf)};
         writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[b].dstSet = descSet;
@@ -351,12 +326,10 @@ void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget* target)
     }
     // Bind this chunk's span (offset+range) so the descriptor stays inside
     // every device's maxStorageBufferRange; the shader indexes it span-relative.
-    if (resident) {
-        const PoolSpanBinding span = makePoolSpanBinding(*target,
-                                                         app->getMinStorageBufferOffsetAlignment());
-        infos[10] = {poolVertex, span.vertexOffset, span.vertexRange};
-        infos[11] = {poolIndex, span.indexOffset, span.indexRange};
-    }
+    const PoolSpanBinding span = makePoolSpanBinding(
+        target, app->getMinStorageBufferOffsetAlignment());
+    infos[10] = {target.vertexBuffer, span.vertexOffset, span.vertexRange};
+    infos[11] = {target.indexBuffer, span.indexOffset, span.indexRange};
 
     const uint32_t firstWrite = rewriteInputs ? 0u : kInputBindingCount;
     const uint32_t writeCount = kBindingCount - firstWrite;
@@ -395,17 +368,20 @@ void OctreeTopologyCompute::recordProfile(const ProfileSample& s) {
         a.totalMs += b.totalMs;
         a.uploadMs += b.uploadMs;
         a.descriptorMs += b.descriptorMs;
-        a.walkMs += b.walkMs;
         a.providerMs += b.providerMs;
-        a.phase2Ms += b.phase2Ms;
+        a.dispatchMs += b.dispatchMs;
         a.nodes += b.nodes;
         a.cells += b.cells;
-        a.rawVertices += b.rawVertices;
-        a.activeVertices += b.activeVertices;
+        a.indices += b.indices;
+        a.vertices += b.vertices;
+        a.crossEdges += b.crossEdges;
+        a.vertexCapacity += b.vertexCapacity;
+        a.indexCapacity += b.indexCapacity;
         a.uploadedBytes += b.uploadedBytes;
         a.descriptorWrites += b.descriptorWrites;
         a.retries += b.retries;
-        a.keyCapacity += b.keyCapacity;
+        a.indexOverflow += b.indexOverflow;
+        a.vertexOverflow += b.vertexOverflow;
         a.findCellCalls += b.findCellCalls;
         a.reuseHits += b.reuseHits;
         ++a.chunks;
@@ -420,32 +396,30 @@ void OctreeTopologyCompute::recordProfile(const ProfileSample& s) {
               << " avg ms: total=" << (profTotal.totalMs * inv)
               << " upload=" << (profTotal.uploadMs * inv)
               << " desc=" << (profTotal.descriptorMs * inv)
-              << " walk=" << (profTotal.walkMs * inv)
               << " provider=" << (profTotal.providerMs * inv)
-              << " phase2=" << (profTotal.phase2Ms * inv)
+              << " dispatch=" << (profTotal.dispatchMs * inv)
               << " | last " << profWindow.chunks << " ms: total=" << (profWindow.totalMs * win)
               << " upload=" << (profWindow.uploadMs * win)
               << " desc=" << (profWindow.descriptorMs * win)
-              << " walk=" << (profWindow.walkMs * win)
               << " provider=" << (profWindow.providerMs * win)
-              << " phase2=" << (profWindow.phase2Ms * win) << "\n";
+              << " dispatch=" << (profWindow.dispatchMs * win) << "\n";
     std::cerr << "[OctreeTopology][setup-diag] chunks=" << profTotal.chunks
               << " avg/chunk: nodes=" << (double(profTotal.nodes) * inv)
               << " cells=" << (double(profTotal.cells) * inv)
-              << " raw=" << (double(profTotal.rawVertices) * inv)
-              << " activeVerts=" << (double(profTotal.activeVertices) * inv)
+              << " crossEdges=" << (double(profTotal.crossEdges) * inv)
+              << " indices=" << (double(profTotal.indices) * inv)
+              << " writtenVerts=" << (double(profTotal.vertices) * inv)
+              << " vCap=" << (double(profTotal.vertexCapacity) * inv)
+              << " iCap=" << (double(profTotal.indexCapacity) * inv)
               << " bytes=" << (double(profTotal.uploadedBytes) * inv)
               << " descWrites=" << (double(profTotal.descriptorWrites) * inv)
-              << " keyCap=" << (double(profTotal.keyCapacity) * inv)
               << " findCell=" << (double(profTotal.findCellCalls) * inv)
               << " reuse=" << (double(profTotal.reuseHits) * inv)
-              << " | last " << profWindow.chunks << ": raw=" << (double(profWindow.rawVertices) * win)
-              << " bytes=" << (double(profWindow.uploadedBytes) * win)
-              << " descWrites=" << (double(profWindow.descriptorWrites) * win)
-              << " keyCap=" << (double(profWindow.keyCapacity) * win)
-              << " findCell=" << (double(profWindow.findCellCalls) * win)
-              << " reuse=" << (double(profWindow.reuseHits) * win)
-              << " retries=" << profWindow.retries << "\n";
+              << " | last " << profWindow.chunks << ": indices=" << (double(profWindow.indices) * win)
+              << " crossEdges=" << (double(profWindow.crossEdges) * win)
+              << " retries=" << profWindow.retries
+              << " idxOverflow=" << profWindow.indexOverflow
+              << " vtxOverflow=" << profWindow.vertexOverflow << "\n";
     profWindow = ProfileSample{};
 }
 
@@ -459,34 +433,37 @@ void OctreeTopologyCompute::printProfileSummary() {
               << " avg ms: total=" << (profTotal.totalMs * inv)
               << " upload=" << (profTotal.uploadMs * inv)
               << " desc=" << (profTotal.descriptorMs * inv)
-              << " walk=" << (profTotal.walkMs * inv)
               << " provider=" << (profTotal.providerMs * inv)
-              << " phase2=" << (profTotal.phase2Ms * inv)
+              << " dispatch=" << (profTotal.dispatchMs * inv)
               << " | totals: nodes=" << profTotal.nodes
               << " cells=" << profTotal.cells
-              << " raw=" << profTotal.rawVertices
-              << " activeVerts=" << profTotal.activeVertices
+              << " crossEdges=" << profTotal.crossEdges
+              << " indices=" << profTotal.indices
+              << " writtenVerts=" << profTotal.vertices
+              << " vCap=" << profTotal.vertexCapacity
+              << " iCap=" << profTotal.indexCapacity
               << " uploadedMB=" << (double(profTotal.uploadedBytes) / (1024.0 * 1024.0))
               << " descWrites=" << profTotal.descriptorWrites
               << " retries=" << profTotal.retries
-              << " keyCap=" << profTotal.keyCapacity
+              << " idxOverflow=" << profTotal.indexOverflow
+              << " vtxOverflow=" << profTotal.vertexOverflow
               << " findCell=" << profTotal.findCellCalls
               << " reuse=" << profTotal.reuseHits << "\n";
 }
 
-// Resident path. Two submissions with a host round trip in between:
-//   1) walk — writes one raw node key per emitted triangle corner and the raw
-//      count. The index stream has exactly one entry per raw vertex, so its
-//      span can only be sized once that count is known; `provider` reserves
-//      the span (and the host-assigned surface-node vertex slots).
-//   2) finalize — one dispatch rewrites the index stream from the raw keys and
-//      writes one vertex per host-assigned surface-node slot directly into the
-//      renderer's packed pools (device-local, never read back). Only integer
-//      counters return to the host; no Cartesian vertex ever crosses back from
-//      the GPU.
-// No vertex data is ever uploaded: the app only sends the node SDF tables.
+// Single geometry submission per chunk:
+//   1) vkCmdFillBuffer clears the per-node written flags (device-local).
+//   2) One dispatch scans the compacted cells, appends indices directly into
+//      the reserved span and writes each referenced vertex payload exactly
+//      once. Only integer counters return to the host; no Cartesian vertex
+//      ever crosses back from the GPU.
+// Spans are sized on the CPU from the cross-edge topology bound, so there is no
+// counting walk. If a defensive overflow is reported, the shader has not
+// written out of bounds; the exact required counts are read back and only this
+// chunk's span is released and re-reserved.
 OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
-    const OctreeTopologyInput& input, const OctreeTopologyTargetProvider& provider) {
+    const OctreeTopologyInput& input, const OctreeTopologyTargetProvider& provider,
+    const OctreeTopologyReleaseCallback& release) {
     // Profiler entry stamp sits before the lock so totalMs includes the wait
     // for a busy service (the convoy the report measures); the legacy statMs
     // below keeps its old post-lock meaning.
@@ -496,11 +473,18 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
     // Read the descriptor-write counter under the same lock that guards it.
     const uint64_t descWritesAtStart = statDescriptorWrites;
     OctreeTopologyResidentResult res;
+    res.crossEdgeCount = input.crossEdgeCount;
+    res.maxSegmentsPerCrossEdge = input.maxSegmentsPerCrossEdge;
+    res.attempts = 0; // incremented per submitted dispatch
     const size_t nodeCount = input.nodes.size();
     const size_t cellCount = input.cells.size();
     if (app == nullptr || nodeCount == 0) return res;
-    if (cellCount == 0) {
-        // Valid empty chunk: no scan cell at this rung straddles the surface.
+    if (cellCount == 0 || input.activeVertexCount == 0) {
+        // Valid empty chunk: no scan cell at this rung straddles the surface, or
+        // no surface node in the flattened neighborhood owns a slot, so the
+        // shader cannot emit a triangle. Do not ask the pool for a zero-sized
+        // span (it rejects those); settle the revision as empty instead.
+        res.attempts = 0; // no dispatch was submitted
         res.ok = true;
         return res;
     }
@@ -524,223 +508,235 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
         acc += msSince(t);
     };
 
-    // Capacity headroom (L9): 25 keys per scan cell plus a small constant,
-    // capped by kMaxKeysPerCall. The hint was calibrated per all targetLod
-    // cells, so use the pre-compaction count when the caller provides it;
-    // otherwise the compacted list is a conservative fallback. This only sizes
-    // the key space -- the emitted keys are unchanged. The retry loop below
-    // stays as the safety net for genuinely denser chunks.
-    const size_t hintCells = input.scanCellCount != 0 ? input.scanCellCount : cellCount;
-    size_t keyWant = std::min(hintCells * kVerticesPerCellHint + kKeyCapacityHeadroom,
-                              kMaxKeysPerCall);
-    size_t keys = 0;
-    const size_t activeVerts = input.activeVertexCount;
-    uint32_t rawCount = 0;
-    bool walkOk = false;
+    ensureCapacity(nodeCount, cellCount);
+
+    OctreeTopologyDemand demand;
+    demand.crossEdgeCount = input.crossEdgeCount;
+    demand.maxSegmentsPerCrossEdge = std::max<uint32_t>(input.maxSegmentsPerCrossEdge, 1u);
+    demand.suggestedVertexCapacity = input.activeVertexCount;
+    // The CPU hint is the per-cell dyadic segment sum. If a caller predates the
+    // cross-edge accounting, fall back to the full 12-edges-per-cell bound
+    // rather than an arbitrary multiplier.
+    uint64_t fallbackSegments = uint64_t(input.crossEdgeCount) * demand.maxSegmentsPerCrossEdge;
+    if (fallbackSegments == 0)
+        fallbackSegments = uint64_t(cellCount) * 12u * demand.maxSegmentsPerCrossEdge;
+    demand.suggestedIndexCapacity = input.indexCapacityHint != 0
+        ? input.indexCapacityHint
+        : octree_topology::indexCapacityFromSegments(fallbackSegments);
+
     // Per-phase setup timings (VULKAN_SETUP_DIAG only; zero otherwise).
-    double uploadMs = 0.0, descriptorMs = 0.0, walkMs = 0.0, providerMs = 0.0, phase2Ms = 0.0;
-    uint64_t attempts = 0;
+    double uploadMs = 0.0, descriptorMs = 0.0, providerMs = 0.0, dispatchMs = 0.0;
+    uint32_t attempts = 0;
+    // Worst attempt across retries: a successful grown retry resets the shader
+    // counters, but the profile must still report the overflow that caused the
+    // growth. Taking the max keeps these counts comparable to one dispatch's
+    // triangle count instead of double-counting the same triangles per attempt.
+    uint32_t maxIndexOverflow = 0, maxVertexOverflow = 0, maxInvalidSlots = 0;
+    OctreeTopologyTarget target;
 
-    TopologyPC pc{};
-    pc.cellCount = (uint32_t)cellCount;
-    pc.targetLod = input.targetLod;
-    pc.fromId = (int32_t)input.fromId;
-    pc.fromBrush = input.fromBrush;
-    pc.rootMinSize = glm::vec4(input.rootMin, input.rootSize);
-    pc.worldSize = input.rootSize;
-    pc.pass = 0u;
-    pc.indexCount = 0u;
-    pc.nodeCount = (uint32_t)nodeCount;
-    pc.diag = setupDiag ? 1u : 0u;
+    const uint32_t cellGroups = static_cast<uint32_t>((cellCount + 63) / 64);
 
-    for (int attempt = 0; attempt < 6 && !walkOk; ++attempt) {
+    for (uint32_t attempt = 0; attempt < kMaxSpanRetries; ++attempt) {
         ++attempts;
-        ensureCapacity(nodeCount, cellCount, keyWant);
-        keys = std::min(keyWant, keyCap);
-        timed(uploadMs, [&] { uploadInput(input); }); // also resets the counters
-        timed(descriptorMs, [&] { writeDescriptors(nullptr); });
-        pc.keyCapacity = (uint32_t)keys;
+        timed(providerMs, [&] { target = provider(demand); });
+        res.slotIndex = target.slotIndex;
+        res.baseVertex = target.baseVertex;
+        res.firstIndex = target.firstIndex;
+        res.attempts = attempts;
 
-        // Phase 1: the walk. Only the keys are written; the counters tell us
-        // how big the chunk's index stream is.
-        const uint32_t cellGroups = (uint32_t)((cellCount + 63) / 64);
-        timed(walkMs, [&] {
+        const bool targetValid = target.vertexBuffer != VK_NULL_HANDLE &&
+                                 target.indexBuffer != VK_NULL_HANDLE;
+        if (!targetValid ||
+            target.vertexCapacity < demand.suggestedVertexCapacity ||
+            target.indexCapacity < demand.suggestedIndexCapacity) {
+            static std::atomic<int> logged{0};
+            if (logged.fetch_add(1) < 8)
+                std::cerr << "[OctreeTopology] span too small for chunk (needVerts="
+                          << demand.suggestedVertexCapacity
+                          << " needIdx=" << demand.suggestedIndexCapacity
+                          << " gotVerts=" << target.vertexCapacity
+                          << " gotIdx=" << target.indexCapacity
+                          << (targetValid ? "" : " no-target") << "): skipped\n";
+            res.vertexCapacity = target.vertexCapacity;
+            res.indexCapacity = target.indexCapacity;
+            return res; // ok == false
+        }
+        res.vertexCapacity = target.vertexCapacity;
+        res.indexCapacity = target.indexCapacity;
+
+        timed(uploadMs, [&] { uploadInput(input); }); // also resets the counters
+        timed(descriptorMs, [&] { writeDescriptors(target); });
+
+        const PoolSpanBinding poolSpan = makePoolSpanBinding(
+            target, app->getMinStorageBufferOffsetAlignment());
+        TopologyPC pc{};
+        pc.cellCount = static_cast<uint32_t>(cellCount);
+        pc.targetLod = input.targetLod;
+        pc.fromId = static_cast<int32_t>(input.fromId);
+        pc.fromBrush = input.fromBrush;
+        pc.rootMinSize = glm::vec4(input.rootMin, input.rootSize);
+        pc.worldSize = input.rootSize;
+        pc.vertexBase = poolSpan.relVertexBase; // span-relative inside binding 10
+        pc.vertexCapacity = target.vertexCapacity;
+        pc.indexBase = poolSpan.relIndexBase;   // span-relative inside binding 11
+        pc.indexCapacity = target.indexCapacity;
+        pc.nodeCount = static_cast<uint32_t>(nodeCount);
+        pc.diag = setupDiag ? 1u : 0u;
+
+        timed(dispatchMs, [&] {
             app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
+                // Clear the per-node "payload already written" flags. Filling
+                // the device-local buffer here keeps the reset on the GPU and
+                // scoped to this chunk's dispatch.
+                vkCmdFillBuffer(cmd, bNodeWritten.buffer, 0,
+                                VkDeviceSize(nodeCount) * sizeof(uint32_t), 0u);
+                // Fill writes -> compute atomics/reads of nodeWritten[].
+                {
+                    VkBufferMemoryBarrier2 fill{};
+                    fill.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                    fill.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                    fill.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                    fill.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                    fill.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+                    fill.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    fill.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    fill.buffer = bNodeWritten.buffer;
+                    fill.offset = 0;
+                    fill.size = VkDeviceSize(nodeCount) * sizeof(uint32_t);
+                    VkDependencyInfo dep{};
+                    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                    dep.bufferMemoryBarrierCount = 1;
+                    dep.pBufferMemoryBarriers = &fill;
+                    vkCmdPipelineBarrier2(cmd, &dep);
+                }
+
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &descSet, 0, nullptr);
                 vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TopologyPC), &pc);
                 vkCmdDispatch(cmd, cellGroups, 1, 1);
+
+                // Pool writes -> the cull's shader reads, the indirect draws and
+                // the ray-tracing build inputs that read the same buffers.
+                VkBufferMemoryBarrier2 pool[2] = {};
+                for (int b = 0; b < 2; ++b) {
+                    pool[b].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                    pool[b].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                    pool[b].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+                    pool[b].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
+                                         | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT
+                                         | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
+                                         | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                         | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+                    pool[b].dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT
+                                          | VK_ACCESS_2_INDEX_READ_BIT
+                                          | VK_ACCESS_2_SHADER_READ_BIT
+                                          | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+                    pool[b].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    pool[b].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    pool[b].offset = 0;
+                    pool[b].size = VK_WHOLE_SIZE;
+                }
+                pool[0].buffer = target.vertexBuffer;
+                pool[1].buffer = target.indexBuffer;
+                VkDependencyInfo poolDep{};
+                poolDep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                poolDep.bufferMemoryBarrierCount = 2;
+                poolDep.pBufferMemoryBarriers = pool;
+                vkCmdPipelineBarrier2(cmd, &poolDep);
+
                 hostReadBarrier(cmd);
             });
         });
 
         const uint32_t* counters = (const uint32_t*)bCounter.mappedData;
-        const uint32_t emitted = counters[0];
-        const uint32_t walkOverflow = counters[1];
-        const uint32_t walkDropped = counters[3];
-        // A fixed-capacity recursion buffer overflow means the GPU walk could
-        // differ from the CPU reference; more key space cannot fix it, so fail
-        // the chunk instead of retrying or drawing truncated geometry.
-        if (walkOverflow != 0) break;
-        if (walkDropped == 0 && emitted <= keys) {
-            rawCount = std::min<uint32_t>(emitted, (uint32_t)keys);
-            rawCount -= rawCount % 3u;
-            walkOk = true;
-            break;
+        const uint32_t attemptedIndices = counters[0];
+        const uint32_t fixedOverflow = counters[1];
+        const uint32_t vertexExtent = counters[2];
+        const uint32_t dropped = counters[3];
+        const uint32_t indexOverflow = counters[6];
+        const uint32_t vertexOverflow = counters[7];
+        const uint32_t invalidSlots = counters[8];
+        const uint32_t writtenVertices = counters[9];
+
+        maxIndexOverflow = std::max(maxIndexOverflow, indexOverflow);
+        maxVertexOverflow = std::max(maxVertexOverflow, vertexOverflow);
+        maxInvalidSlots = std::max(maxInvalidSlots, invalidSlots);
+        res.indexCount = attemptedIndices;
+        res.writtenVertexCount = writtenVertices;
+        res.vertexExtent = vertexExtent;
+        res.indexOverflow = maxIndexOverflow;
+        res.vertexOverflow = maxVertexOverflow;
+        res.invalidSlots = maxInvalidSlots;
+        res.attempts = attempts;
+
+        if (fixedOverflow != 0 || invalidSlots != 0) {
+            static std::atomic<int> logged{0};
+            if (logged.fetch_add(1) < 8)
+                std::cerr << "[OctreeTopology] geometry pass rejected chunk (fixedOverflow="
+                          << fixedOverflow << " invalidSlots=" << invalidSlots
+                          << " cells=" << cellCount << "): skipped\n";
+            return res; // ok == false; caller releases the span
         }
-        if (keys >= kMaxKeysPerCall) break;
-        const size_t nextWant = std::min<size_t>(keys * 2, kMaxKeysPerCall);
-        if (nextWant <= keys) break;
-        static std::atomic<int> retryLogged{0};
-        if (retryLogged.fetch_add(1) < 8)
-            std::cerr << "[OctreeTopology] walk key capacity too small (emitted=" << emitted
-                      << " cap=" << keys << " cells=" << cellCount
-                      << ") — retrying with " << nextWant << "\n";
-        keyWant = nextWant;
-    }
 
-    if (!walkOk) {
-        static std::atomic<int> logged{0};
-        if (logged.fetch_add(1) < 8) {
-            const uint32_t* finalCounters = (const uint32_t*)bCounter.mappedData;
-            std::cerr << "[OctreeTopology] chunk walk failed (cap=" << keys
-                      << " cells=" << cellCount << " overflow=" << finalCounters[1]
-                      << "): skipped\n";
+        if (indexOverflow != 0 || vertexOverflow != 0 || dropped != 0) {
+            // The shader appended/counted past the span but never wrote out of
+            // bounds. Grow only this chunk to the exact reported requirement.
+            const uint32_t needIndex = std::max(attemptedIndices, demand.suggestedIndexCapacity);
+            const uint32_t needVertex = std::max(vertexExtent, demand.suggestedVertexCapacity);
+            const bool noProgress = needIndex <= demand.suggestedIndexCapacity &&
+                                    needVertex <= demand.suggestedVertexCapacity;
+            if (!release || attempt + 1u >= kMaxSpanRetries || noProgress) {
+                static std::atomic<int> logged{0};
+                if (logged.fetch_add(1) < 8)
+                    std::cerr << "[OctreeTopology] span overflow could not be resolved (idx="
+                              << attemptedIndices << "/" << target.indexCapacity
+                              << " vert=" << vertexExtent << "/" << target.vertexCapacity
+                              << " retries=" << attempt << "): skipped\n";
+                return res; // ok == false; caller releases the span
+            }
+            // Free the reservation before asking the provider for the grown
+            // capacities: only this chunk's spans are released/re-reserved.
+            release(target.slotIndex);
+            res.slotIndex = UINT32_MAX; // already released (caller must not repeat)
+            demand.suggestedIndexCapacity = needIndex;
+            demand.suggestedVertexCapacity = needVertex;
+            res.grew = true;
+            continue;
         }
-        return res; // ok == false
+
+        res.poolVertexCount = vertexExtent;
+        res.ok = true;
+        break;
     }
 
-    res.indexCount = rawCount;
-    if (rawCount < 3u) {
-        res.ok = true; // empty chunk: nothing to draw, not a failure
-        return res;
-    }
-
-    // Reserve the packed span with the walk's exact index size and the host's
-    // dense surface-node slot count. The finalize pass writes every slot, so
-    // the vertex span must cover all of them (indices reference a subset).
-    OctreeTopologyDemand demand;
-    demand.rawVertexCount = rawCount;
-    demand.maxUniqueVertices = (uint32_t)activeVerts;
-    demand.suggestedVertexCapacity = (uint32_t)activeVerts;
-    OctreeTopologyTarget target;
-    timed(providerMs, [&] { target = provider(demand); });
-    res.slotIndex = target.slotIndex;
-    res.baseVertex = target.baseVertex;
-    res.firstIndex = target.firstIndex;
-    const bool targetValid = target.vertexBuffer != VK_NULL_HANDLE &&
-                             target.indexBuffer != VK_NULL_HANDLE;
-    if (!targetValid || target.vertexCapacity < demand.suggestedVertexCapacity ||
-        target.indexCapacity < rawCount) {
-        static std::atomic<int> logged{0};
-        if (logged.fetch_add(1) < 8)
-            std::cerr << "[OctreeTopology] span too small for chunk (raw=" << rawCount
-                      << " needVerts=" << demand.suggestedVertexCapacity
-                      << " gotVerts=" << target.vertexCapacity
-                      << " gotIdx=" << target.indexCapacity
-                      << (targetValid ? "" : " no-target") << "): skipped\n";
-        return res; // ok == false
-    }
-
-    // Finalize: one dispatch writes the chunk-local index stream (one entry per
-    // raw vertex, pointing at its emitting node's host-assigned slot) and the
-    // vertex payload for every surface-node slot. The two ranges are disjoint
-    // and independent, so one dispatch covers both; the index range comes first
-    // because it is the larger one.
-    timed(descriptorMs, [&] { writeDescriptors(&target); });
-    const PoolSpanBinding poolSpan = makePoolSpanBinding(
-        target, app->getMinStorageBufferOffsetAlignment());
-    pc.vertexBase = poolSpan.relVertexBase; // span-relative inside binding 10
-    pc.vertexCapacity = target.vertexCapacity;
-    pc.indexBase = poolSpan.relIndexBase; // span-relative inside binding 11
-    pc.indexCapacity = target.indexCapacity;
-    pc.indexCount = rawCount;
-    pc.nodeCount = (uint32_t)nodeCount;
-    pc.pass = 1u;
-    const uint64_t finalizeWork = uint64_t(rawCount) + uint64_t(nodeCount);
-    const uint32_t finalizeGroups = (uint32_t)((finalizeWork + 63) / 64);
-
-    // Finalize timing covers the index/vertex dispatch and its fence wait --
-    // the submission the report calls "phase 2".
-    const auto tPhase2 = setupDiag ? now() : std::chrono::steady_clock::time_point{};
-    app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &descSet, 0, nullptr);
-        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TopologyPC), &pc);
-        vkCmdDispatch(cmd, finalizeGroups, 1, 1);
-
-        // Pool writes -> the cull's shader reads, the indirect draws and the
-        // ray-tracing build inputs that read the same buffers.
-        VkBufferMemoryBarrier2 pool[2] = {};
-        for (int b = 0; b < 2; ++b) {
-            pool[b].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-            pool[b].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            pool[b].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-            pool[b].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
-                                 | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT
-                                 | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
-                                 | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
-                                 | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-            pool[b].dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT
-                                  | VK_ACCESS_2_INDEX_READ_BIT
-                                  | VK_ACCESS_2_SHADER_READ_BIT
-                                  | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
-            pool[b].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            pool[b].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            pool[b].offset = 0;
-            pool[b].size = VK_WHOLE_SIZE;
-        }
-        pool[0].buffer = target.vertexBuffer;
-        pool[1].buffer = target.indexBuffer;
-        VkDependencyInfo poolDep{};
-        poolDep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        poolDep.bufferMemoryBarrierCount = 2;
-        poolDep.pBufferMemoryBarriers = pool;
-        vkCmdPipelineBarrier2(cmd, &poolDep);
-
-        hostReadBarrier(cmd);
-    });
-    if (setupDiag) phase2Ms += msSince(tPhase2);
-
-    const uint32_t* finalCounters = (const uint32_t*)bCounter.mappedData;
-    const uint32_t dropFinal = finalCounters[3];
-    res.poolVertexCount = (uint32_t)activeVerts;
-    const bool spanFits = activeVerts <= target.vertexCapacity;
-    res.ok = dropFinal == 0 && spanFits;
-    if (!res.ok) {
-        static std::atomic<int> logged{0};
-        if (logged.fetch_add(1) < 8)
-            std::cerr << "[OctreeTopology] finalize dropped output for chunk (raw="
-                      << rawCount << " activeVerts=" << activeVerts
-                      << " capacity=" << target.vertexCapacity
-                      << " drops=" << dropFinal << "): skipped\n";
-        return res;
-    }
+    if (!res.ok) return res;
 
     countStats(statCalls, statMs, statMsLast, statCells, statNodes, statTriangles,
                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
-               cellCount, nodeCount, double(rawCount) / 3.0);
+               cellCount, nodeCount, double(res.indexCount) / 3.0);
 
     if (setupDiag) {
         ProfileSample s;
         s.totalMs = msSince(tEnter); // includes the wait for `mutex`
         s.uploadMs = uploadMs;
         s.descriptorMs = descriptorMs;
-        s.walkMs = walkMs;
         s.providerMs = providerMs;
-        s.phase2Ms = phase2Ms;
+        s.dispatchMs = dispatchMs;
         s.nodes = nodeCount;
         s.cells = cellCount;
-        s.rawVertices = rawCount;
-        s.activeVertices = activeVerts;
+        s.indices = res.indexCount;
+        s.vertices = res.writtenVertexCount;
+        s.crossEdges = input.crossEdgeCount;
+        s.vertexCapacity = res.vertexCapacity;
+        s.indexCapacity = res.indexCapacity;
         s.uploadedBytes = uint64_t(nodeCount) * 128u; // 7 input tables, 128 B/node
         s.descriptorWrites = statDescriptorWrites - descWritesAtStart;
         s.retries = attempts > 0 ? attempts - 1 : 0;
-        s.keyCapacity = keys;
-        s.findCellCalls = finalCounters[4];
-        s.reuseHits = finalCounters[5];
+        s.indexOverflow = res.indexOverflow;
+        s.vertexOverflow = res.vertexOverflow;
+        s.findCellCalls = ((const uint32_t*)bCounter.mappedData)[4];
+        s.reuseHits = ((const uint32_t*)bCounter.mappedData)[5];
         recordProfile(s);
     }
     return res;
 }
-

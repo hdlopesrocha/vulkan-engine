@@ -3,6 +3,7 @@
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeAllocator.hpp"
 #include "../services/OctreeTopologyTypes.hpp"
+#include "../services/OctreeTopologyCapacity.hpp"
 #include "../space/IteratorHandler.hpp"
 #include "../sdf/SDF.hpp"
 #include "../math/Math.hpp"
@@ -49,14 +50,16 @@ bool cubeIntersectsCube(const glm::vec3& aMin, const glm::vec3& aMax, const glm:
 // alone is not a safe filter (a negative+INFINITY node is typed Solid yet the
 // shader still emits its crossing edges). Dropping the other cells from the
 // scan list is therefore exact and shrinks the walk dispatch.
-static bool cellStraddlesSurface(const OctreeNode* n) {
-    bool hasNegative = false;
-    bool hasNonNegative = false;
-    for (int i = 0; i < 8; ++i) {
-        if (n->sdf[i] < 0.0f) hasNegative = true;
-        else hasNonNegative = true;
+//
+// The same pass counts the crossing edges because that count, not the cell
+// count, is what bounds the GPU index stream: every crossing edge produces at
+// most one segment per dyadic interval (see OctreeTopologyCapacity.hpp).
+static uint32_t countCrossEdges(const OctreeNode* n) {
+    uint32_t count = 0;
+    for (const glm::ivec2& edge : SDF_EDGES) {
+        if ((n->sdf[edge.x] < 0.0f) != (n->sdf[edge.y] < 0.0f)) ++count;
     }
-    return hasNegative && hasNonNegative;
+    return count;
 }
 
 // Flattens the octree neighborhood the GPU topology walker needs for one
@@ -75,10 +78,10 @@ struct GpuTopologyBuilder {
     // possible neighbour cell (collectBreaks samples a non-surface neighbour's
     // cube faces too), so deriving it from the compacted list would be wrong.
     float maxScanCellSize = 0.0f;
-    // All targetLod cells (before compaction). The walk's key-space hint was
-    // calibrated per all-cell, so it must keep using this count even though the
-    // dispatch only scans the straddling subset.
-    uint32_t allScanCells = 0;
+    // Cross-edge counts aligned with out.cells. Kept here (not in the input)
+    // because they are only needed until the capacity hint is computed.
+    std::vector<uint32_t> cellCrossEdges;
+    uint32_t crossEdgeCount = 0;
     std::unordered_map<OctreeNode*, uint32_t> ids;
 
     GpuTopologyBuilder(const Octree& t, OctreeTopologyInput& o, int lod)
@@ -128,8 +131,12 @@ struct GpuTopologyBuilder {
         if (lod == targetLod) {
             // Discovery/compaction: only cells with a zero crossing can emit.
             maxScanCellSize = std::max(maxScanCellSize, cube.getLengthX());
-            ++allScanCells;
-            if (cellStraddlesSurface(n)) out.cells.push_back(addNode(n, cube));
+            const uint32_t crossings = countCrossEdges(n);
+            if (crossings != 0) {
+                out.cells.push_back(addNode(n, cube));
+                cellCrossEdges.push_back(crossings);
+                crossEdgeCount += crossings;
+            }
         } else if (lod > targetLod) {
             OctreeNode* children[8] = {};
             n->getChildren(*tree.allocator, children);
@@ -194,7 +201,7 @@ bool buildGpuTopologyInput(const Octree& tree, OctreeNode* chunk, const Bounding
     out.fromBrush = chunk->brushIndex;
     out.rootMin = tree.getMin();
     out.rootSize = tree.getLengthX();
-    out.scanCellCount = builder.allScanCells;
+    out.crossEdgeCount = builder.crossEdgeCount;
 
     // No surface cell at this rung: this is a valid empty chunk, not a
     // flattening failure. computeResident() reports ok with zero geometry and
@@ -218,11 +225,35 @@ bool buildGpuTopologyInput(const Octree& tree, OctreeNode* chunk, const Bounding
     // sample is inside it and falls back to this root otherwise.)
     builder.descend(rootId, chain[0].first, chain[0].second);
 
+    // Cross-edge-derived index capacity. `descend` has now added every node
+    // the shader's findCellAt can return, so the smallest cube in the table is
+    // the lattice on which collectBreaks() can place a break. Per scan cell,
+    // an edge of size S contributes at most S/smallest intervals; summing that
+    // over the cell's crossing edges (instead of using the chunk's largest
+    // scan cell for all of them) keeps the bound tight without under-sizing.
+    float smallestCellSize = chunkLength;
+    for (const OctreeGpuNode& n : out.nodes) {
+        if (n.cubeSize > 0.0f) smallestCellSize = std::min(smallestCellSize, n.cubeSize);
+    }
+    uint64_t segmentCount = 0;
+    uint32_t maxSegments = 1;
+    for (size_t i = 0; i < out.cells.size(); ++i) {
+        const OctreeGpuNode& cell = out.nodes[out.cells[i]];
+        const uint32_t segments =
+            octree_topology::segmentsForCellSize(cell.cubeSize, smallestCellSize);
+        maxSegments = std::max(maxSegments, segments);
+        segmentCount += static_cast<uint64_t>(segments) * builder.cellCrossEdges[i];
+    }
+    out.maxSegmentsPerCrossEdge = maxSegments;
+    out.indexCapacityHint = octree_topology::indexCapacityFromSegments(segmentCount);
+
     // Vertex generation: assign one dense slot to every surface node in the
     // flattened table (the only nodes that can become triangle corners). The
     // slot is packed into flags bits 1..31 (bit 0 stays the leaf flag) and
     // decoded by the shader as (flags >> 1) - 1. Table order makes the pool's
-    // vertex order deterministic; the count is the exact vertex-span size.
+    // vertex order deterministic; the count is the dense slot address space.
+    // The shader writes only the slots a triangle actually references, so the
+    // published extent (highest referenced slot + 1) can be smaller.
     uint32_t vertexSlot = 0;
     for (OctreeGpuNode& n : out.nodes) {
         if (n.type == static_cast<int32_t>(SpaceType::Surface)) {
