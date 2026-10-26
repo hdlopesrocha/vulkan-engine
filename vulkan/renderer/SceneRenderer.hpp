@@ -56,6 +56,7 @@ class World;
 #include "SolidProxyData.hpp"
 #include "StaticTextureSignature.hpp"
 #include "Set0DescriptorBuffers.hpp"
+#include "ChunkMeshProfile.hpp"
 
 class SceneRenderer : public Renderer {
 public:
@@ -188,8 +189,22 @@ public:
     // how the GPU topology path resolved every node it was asked to build.
     StreamStats streamStats() const;
 
+    // Per-chunk GPU mesh-build profile: cross-edge count, reserved capacities,
+    // actual counts, overflow/growth events. The snapshot is versioned and
+    // cached inside the registry, so the UI can call this every frame.
+    std::shared_ptr<const ChunkMeshProfileSnapshot> chunkMeshProfileSnapshot() const;
+    // Aggregate summary (always) plus one line per chunk when
+    // VULKAN_CHUNK_PROFILE is set. Called after scene load/generate through
+    // logMemoryUtilization(), and periodically by the stream diagnostic.
+    void logChunkMeshProfiles() const;
+
     // Relaxed atomics written from the build path (worker/main threads).
     StreamCounters streamStats_;
+
+    // Per-chunk build profile (mutex-protected registry; see
+    // ChunkMeshProfile.hpp). Lives here rather than on OctreeNode because it is
+    // renderer telemetry, not scene topology.
+    ChunkMeshProfileRegistry chunkMeshProfiles_;
 
     // Remove all registered meshes for one layer (from both IRs — the layer
     // may have been remapped since its slots were published) and clear it.

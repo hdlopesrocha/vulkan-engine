@@ -280,6 +280,7 @@ size_t SceneRenderer::getRegisteredModelCount() const {
 }
 
 void SceneRenderer::removeAllLayerMeshes(Layer layer) {
+    if (layer >= 0) chunkMeshProfiles_.clearLayer(static_cast<int32_t>(layer));
     // The layer may have been remapped since its slots were published, so
     // free its slots from BOTH renderers (removeMeshSlotted on an unknown
     // slot only frees the draw block — safe when the slot belongs to the
@@ -318,6 +319,7 @@ void SceneRenderer::removeAllMeshes() {
     if (solidRenderer) solidRenderer->getIndirectRenderer().removeAllMeshes();
     if (waterRenderer) waterRenderer->getIndirectRenderer().removeAllMeshes();
     if (videoRenderer) videoRenderer->getIndirectRenderer().removeAllMeshes();
+    chunkMeshProfiles_.clear();
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
     for (auto& st : layerStates_) {
         if (!st) continue;
@@ -1930,6 +1932,8 @@ void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame) {
         auto& deleteMap = layerPendingDeletes(layer);
         for (auto it = deleteMap.begin(); it != deleteMap.end(); ) {
             if (curFrame - it->second.birthFrame > VulkanApp::MAX_FRAMES_IN_FLIGHT) {
+                chunkMeshProfiles_.erase(static_cast<int32_t>(layer),
+                                         static_cast<uint32_t>(it->first));
                 ir->removeMeshSlotted(it->second.slotIndex);
                 it = deleteMap.erase(it);
             } else {
@@ -1969,6 +1973,51 @@ void SceneRenderer::logMemoryUtilization() {
     if (vegetationRenderer) vegetationRenderer->logUtilization();
     // Report 23 C1: the texture side of the budget, previously uncounted.
     if (textureArrays_) textureArrays_->logMemoryUtilization("main");
+    logChunkMeshProfiles();
+}
+
+std::shared_ptr<const ChunkMeshProfileSnapshot> SceneRenderer::chunkMeshProfileSnapshot() const {
+    return chunkMeshProfiles_.snapshot();
+}
+
+// Per-chunk GPU mesh utilization. One aggregate block is always emitted (the
+// call sites are load/generate boundaries, so this is not per-frame logging);
+// the full per-chunk table is opt-in through VULKAN_CHUNK_PROFILE.
+void SceneRenderer::logChunkMeshProfiles() const {
+    const auto snap = chunkMeshProfiles_.snapshot();
+    if (!snap || snap->chunks.empty()) return;
+    const ChunkMeshProfileAggregate& a = snap->aggregate;
+
+    std::printf("[chunkmesh] chunks=%zu built=%zu empty=%zu failed=%zu overflow=%zu lowUtil(<25%%)=%zu\n",
+                a.chunks, a.built, a.empty, a.failed, a.overflowChunks, a.lowUtilizationChunks);
+    std::printf("[chunkmesh] totals: crossEdges=%llu v=%llu/%llu (%.1f%%) i=%llu/%llu (%.1f%%) "
+                "combined=%.1f%%\n",
+                static_cast<unsigned long long>(a.crossEdges),
+                static_cast<unsigned long long>(a.vertexCount),
+                static_cast<unsigned long long>(a.vertexCapacity), a.vertexUtilization,
+                static_cast<unsigned long long>(a.indexCount),
+                static_cast<unsigned long long>(a.indexCapacity), a.indexUtilization,
+                a.combinedUtilization);
+    std::printf("[chunkmesh] per-chunk util min/mean/median/max: "
+                "v=%.1f/%.1f/%.1f/%.1f i=%.1f/%.1f/%.1f/%.1f combined=%.1f/%.1f/%.1f/%.1f\n",
+                a.vertexStats.min, a.vertexStats.mean, a.vertexStats.median, a.vertexStats.max,
+                a.indexStats.min, a.indexStats.mean, a.indexStats.median, a.indexStats.max,
+                a.combinedStats.min, a.combinedStats.mean, a.combinedStats.median, a.combinedStats.max);
+
+    if (std::getenv("VULKAN_CHUNK_PROFILE") == nullptr) return;
+    for (const ChunkMeshProfile& p : snap->chunks) {
+        const char* status = p.status == ChunkMeshProfileStatus::Built ? "built"
+                           : p.status == ChunkMeshProfileStatus::Empty ? "empty" : "failed";
+        std::printf("[chunkmesh] layer=%d chunk=%u lod=%u status=%s crossEdges=%u segMax=%u "
+                    "v=%u/%u extent=%u (%.1f%%) i=%u/%u (%.1f%%) combined=%.1f%% attempts=%u "
+                    "idxOverflow=%u vtxOverflow=%u invalid=%u grew=%d\n",
+                    p.layer, p.chunkId, static_cast<unsigned>(p.lod), status,
+                    p.crossEdgeCount, p.maxSegmentsPerCrossEdge,
+                    p.vertexCount, p.vertexCapacity, p.vertexExtent, p.vertexUtilization(),
+                    p.indexCount, p.indexCapacity, p.indexUtilization(), p.combinedUtilization(),
+                    p.attempts, p.indexOverflow, p.vertexOverflow, p.invalidSlots,
+                    p.grew ? 1 : 0);
+    }
 }
 
 void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
@@ -2210,6 +2259,36 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
         },
         [&](uint32_t slotIndex) { ir.releaseGpuMeshSpan(slotIndex); });
 
+    // Record the per-chunk utilization/overflow profile on every outcome. The
+    // registry overwrites the chunk's previous entry (latest build wins).
+    const auto recordProfile = [&](ChunkMeshProfileStatus status) {
+        ChunkMeshProfile p;
+        p.chunkId = chunkId;
+        p.layer = static_cast<int32_t>(layer);
+        p.lod = static_cast<uint8_t>(lod);
+        p.status = status;
+        p.crossEdgeCount = res.crossEdgeCount;
+        p.maxSegmentsPerCrossEdge = res.maxSegmentsPerCrossEdge;
+        p.vertexCapacity = res.vertexCapacity;
+        p.indexCapacity = res.indexCapacity;
+        p.vertexCount = res.writtenVertexCount;
+        p.vertexExtent = res.vertexExtent;
+        p.indexCount = res.indexCount;
+        p.indexOverflow = res.indexOverflow;
+        p.vertexOverflow = res.vertexOverflow;
+        p.invalidSlots = res.invalidSlots;
+        p.attempts = res.attempts;
+        p.grew = res.grew;
+        if (status == ChunkMeshProfileStatus::Failed) {
+            // A failed build has no published geometry; keep the attempted
+            // index/vertex counts out of the utilization aggregates.
+            p.vertexCount = 0;
+            p.vertexExtent = 0;
+            p.indexCount = 0;
+        }
+        chunkMeshProfiles_.record(p);
+    };
+
     const auto skipChunk = [&](const char* what) {
         // The span was reserved but nothing usable was written: hand it back to
         // the pool. The chunk stays unbuilt (logged) — the app never falls back
@@ -2222,6 +2301,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
 
     if (!res.ok) {
         streamStats_.residentFailed.fetch_add(1, std::memory_order_relaxed);
+        recordProfile(ChunkMeshProfileStatus::Failed);
         skipChunk("failed");
         return true;
     }
@@ -2230,6 +2310,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     // revision is settled (recorded by the caller's commit).
     if (res.indexCount < 3u || res.poolVertexCount == 0u) {
         streamStats_.residentEmpty.fetch_add(1, std::memory_order_relaxed);
+        recordProfile(ChunkMeshProfileStatus::Empty);
         if (res.slotIndex != UINT32_MAX) ir.releaseGpuMeshSpan(res.slotIndex);
         if (world_ && frontier) world_->chunkManager().cancelRebuild(static_cast<ChunkManager::ChunkId>(chunkId));
         published = true;
@@ -2237,10 +2318,12 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     }
 
     if (!ir.publishGpuMeshSpan(res.slotIndex, res.poolVertexCount, res.indexCount)) {
+        recordProfile(ChunkMeshProfileStatus::Failed);
         skipChunk("could not publish its span");
         return true;
     }
 
+    recordProfile(ChunkMeshProfileStatus::Built);
     streamStats_.residentBuilt.fetch_add(1, std::memory_order_relaxed);
     LoDMesh lm;
     lm.lod = static_cast<uint8_t>(lod);
