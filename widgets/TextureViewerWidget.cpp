@@ -7,7 +7,6 @@
 #include "components/ColumnLayout.hpp"
 #include "components/MaterialEditor.hpp"
 #include "components/ScrollablePicker.hpp"
-#include "components/ImGuiHelpers.hpp"
 #include "../services/VideoTextureService.hpp"
 
 namespace {
@@ -43,11 +42,7 @@ void TextureViewer::render() {
 
     if (!arrayManager || !materials) return;
 
-    ImGui::SetNextWindowPos(ImVec2(0, 24), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(1280, 680), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(320, 300), ImVec2(FLT_MAX, FLT_MAX));
-    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen,
-        ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    auto wg = ImGuiComponents::BeginColumnWindow(displayTitle().c_str(), &isOpen);
     if (!wg.visible()) return;
 
     size_t tc = materials->size();

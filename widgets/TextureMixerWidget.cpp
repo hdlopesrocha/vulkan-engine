@@ -5,7 +5,6 @@
 #include <iostream>
 #include "components/ColumnLayout.hpp"
 #include "components/MaterialEditor.hpp"
-#include "components/ImGuiHelpers.hpp"
 #include "components/ScrollablePicker.hpp"
 #include "components/TexturePreview.hpp"
 #include "components/TexturePreviewTabs.hpp"
@@ -18,11 +17,7 @@ TextureMixerWidget::TextureMixerWidget(std::shared_ptr<TextureMixer> textures_, 
     : Widget(title_, u8"\uf1de"), textures(std::move(textures_)), mixerParams(mixerParams_) {}
 
 void TextureMixerWidget::render() {
-    ImGui::SetNextWindowPos(ImVec2(0, 24), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(1280, 680), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(320, 300), ImVec2(FLT_MAX, FLT_MAX));
-    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen,
-        ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    auto wg = ImGuiComponents::BeginColumnWindow(displayTitle().c_str(), &isOpen);
     if (!wg.visible()) return;
 
     if (!textures) {

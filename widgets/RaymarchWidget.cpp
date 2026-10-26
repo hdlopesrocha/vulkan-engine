@@ -38,7 +38,7 @@ void RaymarchWidget::render() {
     // ---- The shape picked in the first section drives which sections are
     // ---- built at all: Cloud shows the volumetric controls, Sphere/Cube are
     // ---- opaque bodies so only their rig + generic/rendering sections apply.
-    std::vector<std::function<void()>> sections;
+    std::vector<ImGuiComponents::ColumnSection> sections;
     std::vector<float> sectionEstH;
     sections.reserve(12);
     sectionEstH.reserve(12);
@@ -576,75 +576,6 @@ void RaymarchWidget::render() {
 
     // ---- Packing: same best-fit columns as the Settings menu (fixed 256px
     // ---- columns, overflow scrolls horizontally).
-    const int n = static_cast<int>(sections.size());
     static std::vector<float> cachedH;
-    if (static_cast<int>(cachedH.size()) != n) {
-        // The visible section set changes with the selected shape: reseed from
-        // the per-section estimates so the first frame of a new set packs
-        // well; the measured heights refine it from there.
-        cachedH.assign(n, 170.0f);
-        for (int i = 0; i < n && i < static_cast<int>(sectionEstH.size()); ++i) {
-            cachedH[i] = sectionEstH[i];
-        }
-    }
-
-    float availW = ImGui::GetContentRegionAvail().x;
-    float availH = ImGui::GetContentRegionAvail().y;
-    if (availW < 50.0f) availW = 300.0f;
-    if (availH < 50.0f) availH = 500.0f;
-    const float flowH = availH - 4.0f;
-
-    constexpr float kSectionGap = 8.0f;
-    std::vector<int> colOf(n, 0);
-    std::vector<float> colH(1, 0.0f);
-    for (int i = 0; i < n; ++i) {
-        const float h = cachedH[i] > 1.0f ? cachedH[i] : 170.0f;
-        int best = -1;
-        float bestRem = 1e30f;
-        for (int c = 0; c < static_cast<int>(colH.size()); ++c) {
-            const float rem = flowH - colH[c];
-            if ((colH[c] <= 0.0f || rem >= h) && rem - h < bestRem) {
-                best = c;
-                bestRem = rem - h;
-            }
-        }
-        if (best < 0) {
-            best = static_cast<int>(colH.size());
-            colH.emplace_back(0.0f);
-        }
-        colOf[i] = best;
-        colH[best] += h + kSectionGap;
-    }
-    const int nCols = static_cast<int>(colH.size());
-
-    auto renderSectionMeasured = [&](int idx, bool firstInColumn) {
-        if (!firstInColumn) {
-            ImGui::Spacing();
-            ImGuiComponents::ColSeparator();
-            ImGui::Spacing();
-        }
-        const float y0 = ImGui::GetCursorScreenPos().y;
-        sections[idx]();
-        const float y1 = ImGui::GetCursorScreenPos().y;
-        const float measured = y1 - y0;
-        if (measured > 1.0f) cachedH[idx] = measured;
-    };
-
-    constexpr float colWidth = kRaymarchColWidth;
-    const float spacingX = ImGui::GetStyle().ItemSpacing.x;
-
-    for (int c = 0; c < nCols; ++c) {
-        if (c > 0) ImGui::SameLine(0.0f, spacingX);
-        ImGui::BeginGroup();
-        ImGui::Dummy(ImVec2(colWidth, 0.0f));
-        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + colWidth);
-        bool first = true;
-        for (int i = 0; i < n; ++i) {
-            if (colOf[i] != c) continue;
-            renderSectionMeasured(i, first);
-            first = false;
-        }
-        ImGui::PopTextWrapPos();
-        ImGui::EndGroup();
-    }
+    ImGuiComponents::LayoutSections(sections, cachedH, sectionEstH);
 }

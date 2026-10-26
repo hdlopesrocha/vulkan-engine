@@ -3,7 +3,6 @@
 #include <glm/trigonometric.hpp>
 #include <cmath>
 
-#include "components/ImGuiHelpers.hpp"
 #include "components/ColumnLayout.hpp"
 
 ImpostorWidget::ImpostorWidget(std::shared_ptr<ImpostorService> svc)

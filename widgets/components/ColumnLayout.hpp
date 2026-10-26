@@ -3,6 +3,7 @@
 #include <imgui.h>
 #include <algorithm>
 #include <functional>
+#include <utility>
 #include <vector>
 
 #include "ImGuiHelpers.hpp"
@@ -14,6 +15,10 @@ constexpr float kColumnWidth = 256.0f;
 struct ColumnSection {
     std::function<void()> draw;
     float width = kColumnWidth;
+
+    ColumnSection() = default;
+    ColumnSection(std::function<void()> fn, float w = kColumnWidth)
+        : draw(std::move(fn)), width(w) {}
 };
 
 inline void ColSeparator(float width = kColumnWidth) {
@@ -22,6 +27,19 @@ inline void ColSeparator(float width = kColumnWidth) {
         ImVec2(sp.x, sp.y), ImVec2(sp.x + width, sp.y),
         ImGui::GetColorU32(ImGuiCol_Separator));
     ImGui::Dummy(ImVec2(width, 1.0f));
+}
+
+// Shared window setup for the resizable, horizontally scrolling multi-column
+// panels. Keep the returned guard alive for the whole panel body:
+//   auto wg = BeginColumnWindow(displayTitle().c_str(), &isOpen);
+//   if (!wg.visible()) return;
+inline ImGuiHelpers::WindowGuard BeginColumnWindow(
+    const char* title, bool* isOpen, const ImVec2& size = ImVec2(1280.0f, 680.0f)) {
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 24.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(size, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(320.0f, 300.0f), ImVec2(FLT_MAX, FLT_MAX));
+    return ImGuiHelpers::WindowGuard(title, isOpen,
+        ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 }
 
 inline void TooltipOnHover(const char* desc) {

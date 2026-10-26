@@ -1,9 +1,7 @@
 #include "SettingsWidget.hpp"
-#include "components/ImGuiHelpers.hpp"
 #include "components/ColumnLayout.hpp"
 #include "vulkan/includes/debug/DebugModes.hpp"
 #include <vector>
-#include <functional>
 
 SettingsWidget::SettingsWidget(Settings& settingsRef, ShadowParams* shadowParams_) : Widget("Settings", u8"\uf013"), settings(settingsRef), shadowParams(shadowParams_) {
     isOpen = true;
@@ -14,19 +12,15 @@ void SettingsWidget::resetToDefaults() {
 }
 
 namespace {
-// Every column is exactly this wide; separators match it 1:1.
-constexpr float kSettingsColWidth = 256.0f;
+// Full-width controls line up with the shared column packer.
+constexpr float kSettingsColWidth = ImGuiComponents::kColumnWidth;
 } // namespace
 
 void SettingsWidget::render() {
     // Resizable. Only the horizontal scrollbar is kept: vertical overflow is
     // handled by flowing sections into new columns, and the mouse wheel never
     // scrolls vertically (NoScrollWithMouse).
-    ImGui::SetNextWindowPos(ImVec2(0, 24), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(1280, 680), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(320, 300), ImVec2(FLT_MAX, FLT_MAX));
-    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen,
-        ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    auto wg = ImGuiComponents::BeginColumnWindow(displayTitle().c_str(), &isOpen);
     if (!wg.visible()) return;
 
     // ---- Sections: each must be self-contained (header + controls) so it can
@@ -35,7 +29,7 @@ void SettingsWidget::render() {
     // ---- last. Tiny related groups are merged (Display & Performance, Input)
     // ---- and the oversized Hybrid RT block is split, so every block is
     // ---- similarly sized and columns pack without big empty gaps.
-    std::vector<std::function<void()>> sections;
+    std::vector<ImGuiComponents::ColumnSection> sections;
     sections.reserve(12);
 
     // 0: Rendering (core toggles — most used)
@@ -426,93 +420,10 @@ void SettingsWidget::render() {
     });
 
     // ---- Packing: best-fit over the last frame's measured section heights.
-    // ---- Sections are visited in importance order; each goes into the fullest
-    // ---- column that still fits it, so leftover gaps get filled instead of
-    // ---- stranding empty column space. New columns open only when nothing
-    // ---- fits; overflow scrolls horizontally (fixed 256px columns).
-    const int n = static_cast<int>(sections.size());
     static std::vector<float> cachedH;
-    if (static_cast<int>(cachedH.size()) != n) {
-        // First frame estimates; refined by measurement from frame 2 on.
-        cachedH.assign(n, 170.0f);
-        cachedH[0] = 230.0f;   // Rendering (incl. texture-array size, report 23 C1)
-        cachedH[1] = 230.0f;   // Hybrid RT toggles
-        cachedH[2] = 300.0f;   // RT Distances
-        cachedH[3] = 240.0f;   // RT Ray Budget
-        cachedH[4] = 210.0f;   // Display & Performance
-        cachedH[5] = 190.0f;   // Shadow Effects
-        cachedH[8] = 180.0f;   // Level of Detail
-        cachedH[9] = 260.0f;   // Tessellation
-        cachedH[11] = 230.0f;  // Debug Visualisation
-    }
-
-    float availW = ImGui::GetContentRegionAvail().x;
-    float availH = ImGui::GetContentRegionAvail().y;
-    if (availW < 50.0f) availW = 300.0f;
-    if (availH < 50.0f) availH = 500.0f;
-    // Safety margin so rounding/trailing spacing can never push content 1px
-    // past the bottom edge (which would summon a vertical scrollbar).
-    // Columns are sized against flowH, guaranteeing content height < availH.
-    const float flowH = availH - 4.0f;
-
-    // No width cap: as many columns as the height requires. Horizontal
-    // scrolling handles overflow instead of squeezing columns.
-    constexpr float kSectionGap = 8.0f;
-    std::vector<int> colOf(n, 0);
-    std::vector<float> colH(1, 0.0f);
-    for (int i = 0; i < n; ++i) {
-        const float h = cachedH[i] > 1.0f ? cachedH[i] : 170.0f;
-        // Tightest column that fits wins; empty columns always accept so a
-        // section taller than the window still lands somewhere sane.
-        int best = -1;
-        float bestRem = 1e30f;
-        for (int c = 0; c < static_cast<int>(colH.size()); ++c) {
-            const float rem = flowH - colH[c];
-            if ((colH[c] <= 0.0f || rem >= h) && rem - h < bestRem) {
-                best = c;
-                bestRem = rem - h;
-            }
-        }
-        if (best < 0) {
-            best = static_cast<int>(colH.size());
-            colH.emplace_back(0.0f);
-        }
-        colOf[i] = best;
-        colH[best] += h + kSectionGap;
-    }
-    const int nCols = static_cast<int>(colH.size());
-
-    auto renderSectionMeasured = [&](int idx, bool firstInColumn) {
-        if (!firstInColumn) {
-            ImGui::Spacing();
-            ImGuiComponents::ColSeparator();
-            ImGui::Spacing();
-        }
-        const float y0 = ImGui::GetCursorScreenPos().y;
-        sections[idx]();
-        const float y1 = ImGui::GetCursorScreenPos().y;
-        const float measured = y1 - y0;
-        if (measured > 1.0f) cachedH[idx] = measured;
+    static const std::vector<float> estimates = {
+        230.0f, 230.0f, 300.0f, 240.0f, 210.0f, 190.0f,
+        0.0f,   0.0f,   180.0f, 260.0f, 0.0f,   230.0f,
     };
-
-    // Fixed column width: every column is exactly kSettingsColWidth; overflow scrolls.
-    constexpr float colWidth = kSettingsColWidth;
-    const float spacingX = ImGui::GetStyle().ItemSpacing.x;
-
-    for (int c = 0; c < nCols; ++c) {
-        if (c > 0) ImGui::SameLine(0.0f, spacingX);
-        ImGui::BeginGroup();
-        // Enforce the column width so TextWrapped + full-width widgets wrap
-        // consistently and the group extends past the window edge when needed.
-        ImGui::Dummy(ImVec2(colWidth, 0.0f));
-        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + colWidth);
-        bool first = true;
-        for (int i = 0; i < n; ++i) {
-            if (colOf[i] != c) continue;
-            renderSectionMeasured(i, first);
-            first = false;
-        }
-        ImGui::PopTextWrapPos();
-        ImGui::EndGroup();
-    }
+    ImGuiComponents::LayoutSections(sections, cachedH, estimates);
 }

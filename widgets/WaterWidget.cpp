@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cfloat>
 #include "components/ColumnLayout.hpp"
-#include "components/ImGuiHelpers.hpp"
 
 WaterWidget::WaterWidget(WaterRenderer* renderer_, std::vector<WaterSettings>* params_)
     : Widget("Water Settings", u8"\uf043"), renderer(renderer_), params(params_) {
@@ -22,11 +21,7 @@ void WaterWidget::render() {
 
     WaterSettings &layerParams = (*params)[currentLayer];
 
-    ImGui::SetNextWindowPos(ImVec2(0, 24), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(1280, 680), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(320, 300), ImVec2(FLT_MAX, FLT_MAX));
-    ImGuiHelpers::WindowGuard wg(displayTitle().c_str(), &isOpen,
-        ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    auto wg = ImGuiComponents::BeginColumnWindow(displayTitle().c_str(), &isOpen);
     if (!wg.visible()) return;
 
     std::vector<ColumnSection> sections;
