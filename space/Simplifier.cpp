@@ -18,27 +18,6 @@ SimplificationResult Simplifier::simplify(
         const BoundingCube& chunkCube) const 
 {
     SimplificationResult res(0u);
-    int brushIndex = DISCARD_BRUSH_INDEX;
-
-    // --- 1. Brush consistency and simplification-chain check (unchanged) ---
-    // With texturing enabled all surface children must share the same brush index
-    // and must themselves be simplified (ensures the LOD chain is consistent).
-    if(texturing) {
-        for(uint i = 0; i < 8; ++i) {
-            NodeOperationResult * child = &children[i];
-            if(child && child->resultType == SpaceType::Surface) {
-                if(brushIndex == DISCARD_BRUSH_INDEX) {
-                    brushIndex = child->brushIndex;
-                } else if(child->brushIndex != DISCARD_BRUSH_INDEX
-                           && child->brushIndex != brushIndex) {
-                    return res;   // material boundary: preserve full detail
-                }
-                if(child->node && !child->node->isLeaf()) {
-                    return res;   // unsimplified (non-collapsed) child: cannot collapse parent
-                }
-            }
-        }
-    }
 
     // --- 2. Chunk-border guard ---
     // Direct children of a chunk root (side = chunkSize / 2) must never be
