@@ -38,7 +38,7 @@
 #include "vulkan/renderer/SceneQueues.hpp"
 #include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
-#include "utils/SvgBrush.hpp"
+#include "brushes/SvgBrush.hpp"
 #include "sdf/SvgPolygonDistanceFunction.hpp"
 #include "sdf/SvgShape.hpp"
 #include "utils/BlenderExport.hpp"

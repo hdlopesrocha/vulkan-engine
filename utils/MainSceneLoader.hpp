@@ -52,11 +52,11 @@
 #include "../sdf/SvgPolygonDistanceFunction.hpp"
 
 
-#include "LandBrush.hpp"
-#include "SimpleBrush.hpp"
-#include "SvgBrush.hpp"
-#include "WaterBrush.hpp"
-#include "NormalBrush.hpp"
+#include "../brushes/LandBrush.hpp"
+#include "../brushes/SimpleBrush.hpp"
+#include "../brushes/SvgBrush.hpp"
+#include "../brushes/WaterBrush.hpp"
+#include "../brushes/NormalBrush.hpp"
 
 
 class MainSceneLoader : public SceneLoaderCallback {

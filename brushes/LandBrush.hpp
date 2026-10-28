@@ -1,6 +1,5 @@
 #pragma once
 #include "../math/TexturePositionPainter.hpp"
-#include "../math/BrushMode.hpp"
 
 // Terrain material classifier (height + slope -> material index).
 //
@@ -14,7 +13,7 @@ class LandBrush : public TexturePositionPainter {
 public:
     LandBrush() = default;
 
-    int paint(const OctreeNode &o) const override { (void)o; return LAND_BRUSH_INDEX; }
-    glm::vec3 paintHSV(const OctreeNode &o) const override { (void)o; return glm::vec3(0.0f, 0.5f, 0.5f); }
-    bool needsPosition() const override { return false; }
+    int paint(const OctreeNode &o) const override;
+    glm::vec3 paintHSV(const OctreeNode &o) const override;
+    bool needsPosition() const override;
 };
