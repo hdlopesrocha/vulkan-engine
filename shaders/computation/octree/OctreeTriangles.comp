@@ -84,7 +84,8 @@ layout(push_constant) uniform PC {
     uint cellCount;
     int targetLod;
     int fromId;
-    int fromBrush;
+    int fromBrush;      // anchor-chunk brush: vertex-payload safety net only
+                        // (emitTriangle drops raw DISCARD corners)
     vec4 rootMinSize;   // xyz = world root min, w = world root size
     float worldSize;    // Octree::getLengthX() (edge.eps base)
     uint vertexBase;      // span-relative base inside the bound pool window
@@ -515,13 +516,16 @@ void emitTriangle(Cell c0, Cell c1, Cell c2, float eps) {
     if (samePosition(p1, p2, eps)) return;
     if (samePosition(p2, p0, eps)) return;
 
-    int b0 = nodeBrush(c0.id);
-    int b1 = nodeBrush(c1.id);
-    int b2 = nodeBrush(c2.id);
-    if (b0 <= DISCARD_BRUSH) b0 = pc.fromBrush;
-    if (b1 <= DISCARD_BRUSH) b1 = pc.fromBrush;
-    if (b2 <= DISCARD_BRUSH) b2 = pc.fromBrush;
-    if (b0 <= DISCARD_BRUSH || b1 <= DISCARD_BRUSH || b2 <= DISCARD_BRUSH) return;
+    // DISCARD_BRUSH_INDEX (-1) is the "never painted" sentinel. A vertex that
+    // still carries it must not produce geometry: substituting the anchor
+    // chunk's brush here resurrected unpainted cells as triangles with a
+    // borrowed material (and mixed materials across the triangle). Drop the
+    // whole triangle instead. Anchors that are themselves discard-brush never
+    // reach this pass (SceneRenderer::processNodeLayer rejects them), so this
+    // only removes the finer unpainted cells inside a painted chunk.
+    if (nodeBrush(c0.id) <= DISCARD_BRUSH) return;
+    if (nodeBrush(c1.id) <= DISCARD_BRUSH) return;
+    if (nodeBrush(c2.id) <= DISCARD_BRUSH) return;
 
     // Append the triangle's three indices. The counter advances by 3 even
     // when the triangle does not fit, so the host reads back the exact number
@@ -931,6 +935,9 @@ void writeVertexOnce(uint node, int slot) {
     vec3 p = cellPos(c);
     vec3 n = cellNormal(c, p);
     int brush = nodeBrush(node);
+    // Defensive only: emitTriangle never emits a triangle with a raw DISCARD
+    // corner, so a referenced node always has a real brush. Keep the sentinel
+    // out of the vertex payload in case a future path writes one directly.
     if (brush <= DISCARD_BRUSH) brush = pc.fromBrush;
     residentWriteVertex(uint(slot), p, n, brush, nodeHsvOf(node), nodeTextureType(node), nodeData(node));
 }

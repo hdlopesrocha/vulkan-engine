@@ -13,6 +13,7 @@
 #include "../includes/shader/locations.hpp"
 #include "../includes/debug/DebugModes.hpp"
 #include "../../math/geometry/ContainmentType.hpp"
+#include "../../math/BrushMode.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -2355,6 +2356,19 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     const uint8_t chunkLod = nodeData.node ? nodeData.node->getChunkLod() : 0;
     if (chunkLod < 1) return;
     const uint32_t version = nodeData.node->version;
+
+    // A node carrying the discard brush index was never painted. Both walkers
+    // drop every triangle whose corners resolve to DISCARD (CPU
+    // OctreeTriangleTessellator::emitTriangle, GPU OctreeTriangles.comp
+    // emitTriangle), and the brush tally in Octree::shape hands an anchor the
+    // dominant painted descendant's brush — so a discard-brush anchor cannot
+    // contain a drawable triangle, only an empty mesh plus a node table of
+    // unusable ring candidates. Do not propagate it to the GPU. Counted as
+    // empty so the stream telemetry stays accurate.
+    if (nodeData.node->brushIndex <= DISCARD_BRUSH_INDEX) {
+        streamStats_.residentEmpty.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     // ── GPU-resident build (the only chunk mesh path) ────────────────────────
     // Only the chunk's flattened SDF neighborhood is sent to the GPU; the
