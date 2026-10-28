@@ -209,11 +209,14 @@ vec3 sdfCellPosition(float sdf[8], vec3 mn, float sz) {
     massPoint /= float(count);
 
     // Regularize toward the mass point so an underconstrained QEF does not
-    // spike (same 1e-2 factor as the CPU).
-    ATA[0][0] += 1e-2;
-    ATA[1][1] += 1e-2;
-    ATA[2][2] += 1e-2;
-    ATb += massPoint * 1e-2;
+    // spike. 0.1 (was 1e-2): keeps each vertex near its own crossing centroid
+    // instead of letting neighbouring cells park on the same cube corner on
+    // surfaces nearly parallel to a lattice plane (beaches, waterline), where
+    // they formed long thin triangles. MUST match sdf/SDF.cpp.
+    ATA[0][0] += 1e-1;
+    ATA[1][1] += 1e-1;
+    ATA[2][2] += 1e-1;
+    ATb += massPoint * 1e-1;
 
     precise vec3 result = sdfSolveLinearSystem(ATA, ATb);
 
