@@ -363,8 +363,16 @@ Cell findCellAt(vec3 pos) {
 // coarser, so a chunk and its coarser neighbour see the same four quadrants on
 // a shared edge; filtering by lod == targetLod here made the two sides emit
 // different polygons and opened the surface along every LoD band boundary.
+//
+// The node TYPE alone is not enough: a node is also typed Surface when only its
+// children contain the surface, and that node's own eight corner samples have no
+// zero crossing. SDF::getPosition() then falls back to the cube centre, and the
+// emitted triangle bridges from that centre to the real surface — a long spike.
+// Requiring an actual crossing in the node's own samples (SDF::eval, which
+// skips INFINITY corners) matches the CPU gate exactly, so both sides of a
+// shared edge drop the same non-crossing cells.
 bool isSurfaceCell(Cell c) {
-    return c.valid && nodeType(c.id) == TYPE_SURFACE;
+    return c.valid && nodeType(c.id) == TYPE_SURFACE && evalSdfType(c.id) == TYPE_SURFACE;
 }
 
 // ownerLess: cube size, then min, then identity (CPU uses pointer order; the
