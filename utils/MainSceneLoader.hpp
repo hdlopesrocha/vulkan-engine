@@ -65,7 +65,7 @@ public:
 
     // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
     // distance=0.2: flat patches may have up to 20% cube-size SDF error (curved gets 10%).
-    Simplifier simplifier = Simplifier(0.95f, 0.2f, true);
+    Simplifier simplifier = Simplifier(0.05f);
     // Brush index of the first MaterialKind::Video material (set by MyApp after
     // the material palette is built). Negative disables the demo video cube.
     int videoBrushIndex = -1;

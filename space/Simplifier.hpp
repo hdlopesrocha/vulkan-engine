@@ -7,11 +7,9 @@
 struct NodeOperationResult;
 
 class Simplifier {
-    float angle;
-    float distance;
-    bool texturing;
+    float toleranceMultiplier;
 public:
-    Simplifier(float angle, float distance, bool texturing);
+    Simplifier(float toleranceMultiplier);
     // `chunkCube` is the bounding cube of the GPU-upload chunk that this node
     // belongs to.  Direct children of the chunk root are never simplified to
     // guarantee consistent detail at chunk boundaries.

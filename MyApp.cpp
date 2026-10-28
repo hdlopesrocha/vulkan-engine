@@ -4837,7 +4837,7 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
         svgBrush ? static_cast<const TexturePositionPainter&>(*svgBrush)
                  : static_cast<const TexturePositionPainter&>(simpleBrush);
 
-    Simplifier simplifier(0.95f, 0.2f, true);
+    Simplifier simplifier(0.05f);
     auto applyEntry = [&](SignedDistanceFunction& wrappedFunc) {
         applyBrushWithEffect(entry, wrappedFunc, octree, brushOp, model, brush, simplifier,
                              updateHandler, deleteHandler);

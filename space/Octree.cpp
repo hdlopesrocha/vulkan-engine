@@ -743,7 +743,12 @@ void Octree::shape(
                 } else  {
                 
                     if(process) {
-                        if (!isChunk) {
+                        // The simplifier collapses cells inside a chunk. Nodes
+                        // at or above the chunk size are themselves published
+                        // as coarse LoD meshes and must keep aggregating one
+                        // ladder rung per size; collapsing one of them removes
+                        // its whole rung (`lod == targetLod` finds nothing).
+                        if (!isChunk && nodeLength < chunkSize) {
                             // Pass frame.chunkCube so the simplifier can guard chunk borders.
                             SimplificationResult simplificationResult = args.simplifier.simplify(frame.cube, r.resultSDF, children, frame.chunkCube);
                             if(simplificationResult.isSimplified) {
@@ -835,7 +840,11 @@ void Octree::shape(
                 }
             }    
         }
-        if(selectedLod > 0u) {
+        // A node the simplifier accepted is a terminal cell of the ladder
+        // (stored lod 1). Do not overwrite that decision with min(child)+1:
+        // the children still exist for later edits, but the mesh walk must
+        // stop here, which is the whole point of simplification.
+        if(selectedLod > 0u && r.selectedLod == 0u) {
             r.selectedLod = selectedLod + 1u;
         }
         if(selectedChunkLod > 0u) {
