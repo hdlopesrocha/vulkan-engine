@@ -93,7 +93,7 @@ current frame.
 
 The texture-coordinate technique is a **per-vertex** value
 (`Vertex::textureType`, `TextureType` in `math/TextureType.hpp`) painted by the
-`TexturePositionPainter` (`paintTextureType`) and assigned per shape in `MainSceneLoader`;
+`BrushPainter` (`paintTextureType`) and assigned per shape in `MainSceneLoader`;
 the vertex carries the matching UV (`paintUV`, default `(0, 0)`). `Triplanar`
 derives its UVs from the world position on the GPU, so a triplanar vertex is
 written with `texCoord = (0, 0)`; `ProjectionX/Y/Z` and `Angular` are also

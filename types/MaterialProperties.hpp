@@ -60,7 +60,7 @@ struct MaterialProperties {
 
     // ── Texture coordinates ─────────────────────────────────────────────
     // The technique is a per-vertex value (Vertex::textureType, painted by the
-    // scene's TexturePositionPainter). The material only carries the Angular
+    // scene's BrushPainter). The material only carries the Angular
     // center/radius: xyz = bounding-volume center, w = radius (0 keeps the
     // default world-space sphere, useful for objects whose SDF bounds are
     // unknown).

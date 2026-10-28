@@ -38,7 +38,7 @@
 #include "vulkan/renderer/SceneQueues.hpp"
 #include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
-#include "brushes/SvgBrush.hpp"
+#include "brushPainters/SvgBrush.hpp"
 #include "sdf/SvgPolygonDistanceFunction.hpp"
 #include "sdf/SvgShape.hpp"
 #include "utils/BlenderExport.hpp"
@@ -4654,7 +4654,7 @@ static void forEachBrushSDF(const BrushEntry& entry, const Transformation& model
 // Shared effect+apply: wraps func in the selected effect (if any) and applies to octree.
 static void applyBrushWithEffect(const BrushEntry& entry, SignedDistanceFunction& func,
                                  Octree& octree, const SignedDistanceOperation& op,
-                                 const Transformation& model, const TexturePositionPainter& brush,
+                                 const Transformation& model, const BrushPainter& brush,
                                  const Simplifier& simplifier,
                                  Octree::OctreeNodeDataHandler& updateHandler,
                                  Octree::OctreeNodeDataHandler& deleteHandler) {
@@ -4840,9 +4840,9 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
                                                   entry.svgTintFromFill);
         }
     }
-    const TexturePositionPainter& brush =
-        svgBrush ? static_cast<const TexturePositionPainter&>(*svgBrush)
-                 : static_cast<const TexturePositionPainter&>(simpleBrush);
+    const BrushPainter& brush =
+        svgBrush ? static_cast<const BrushPainter&>(*svgBrush)
+                 : static_cast<const BrushPainter&>(simpleBrush);
 
     Simplifier simplifier(0.05f);
     auto applyEntry = [&](SignedDistanceFunction& wrappedFunc) {

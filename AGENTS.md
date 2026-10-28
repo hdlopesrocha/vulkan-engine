@@ -60,7 +60,8 @@ Two entry points: `MyApp.cpp` (class `MyApp` extends `VulkanApp`) and `server.cp
 - `scripts/` — helper scripts, including `convert_videos.sh` (the only video conversion/staging path; the engine loads converted clips only)
 - `widgets/` — ImGui debug/editor UI (compiled only with `-DUSE_IMGUI`, i.e. release builds)
 - `tree/` — AttractorField, TreeGenerator, TreeHandler
-- `brushes/` — brush painter classes (LandBrush, SimpleBrush, NormalBrush, SvgBrush, WaterBrush)
+- `brushPainters/` — brush painter classes (LandBrush, SimpleBrush, NormalBrush, SvgBrush, WaterBrush)
+- `textureCoordPainters/` — TextureCoordPainter implementations (Triplanar, ProjectionX/Y/Z, Angular, Custom)
 - `utils/` — LocalScene, MainSceneLoader, FileReader, SettingsFile, Brush3dManager
 
 Three async queues (graphics, vegetation compute, geometry compute) each with own `VkCommandPool`. Uses `deferDestroyUntilFence()` for GPU-safe object cleanup. Frames in flight: 3. StagingRingBuffer for uploads.

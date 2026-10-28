@@ -12,7 +12,7 @@ static constexpr uint32_t ATTR_BRUSH_INDEX = 4u;
 static constexpr uint32_t ATTR_HSV = 6u;
 static constexpr uint32_t ATTR_INSTANCE = 5u;
 // Per-vertex texture-coordinate technique (math/TextureType.hpp), painted by
-// the TexturePositionPainter.
+// the BrushPainter.
 static constexpr uint32_t ATTR_TEXTURE_TYPE = 9u;
 // Baked per-instance vegetation height scale (perf report 22 C2/H4):
 // float per instance in the concatenated aux buffer (binding 2).

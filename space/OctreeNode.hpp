@@ -14,7 +14,7 @@ public:
     int brushIndex = 0;
     // Per-vertex texture-coordinate technique (TextureType from
     // math/TextureType.hpp) plus the generic per-node `data` painted by the
-    // TexturePositionPainter — currently the mapping/UV scale that becomes the
+    // BrushPainter — currently the mapping/UV scale that becomes the
     // vertex's texCoord. Copying them onto the node lets the tessellators emit
     // them as vertex attributes.
     int textureType = 0;

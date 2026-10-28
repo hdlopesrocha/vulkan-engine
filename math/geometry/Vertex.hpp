@@ -35,7 +35,7 @@ public:
     // per-vertex tangent removed: compute in fragment shader for triplanar mapping
     int brushIndex;
     // Per-vertex texture-coordinate technique (TextureType), painted by the
-    // TexturePositionPainter. Replaces the former unused _pad0 so the vertex stride
+    // BrushPainter. Replaces the former unused _pad0 so the vertex stride
     // stays 64 bytes. Triplanar (0) is the default; its UVs are computed on the
     // GPU from the world position, so texCoord is (0, 0) for those vertices.
     int textureType;

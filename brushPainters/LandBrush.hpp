@@ -1,5 +1,5 @@
 #pragma once
-#include "../math/TexturePositionPainter.hpp"
+#include "../math/BrushPainter.hpp"
 
 // Terrain material classifier (height + slope -> material index).
 //
@@ -9,7 +9,7 @@
 // painter only marks the node with LAND_BRUSH_INDEX, and needsPosition() ==
 // false lets Octree::shape skip SDF::getPosition / getNormalFromPosition
 // entirely for terrain.
-class LandBrush : public TexturePositionPainter {
+class LandBrush : public BrushPainter {
 public:
     LandBrush() = default;
 

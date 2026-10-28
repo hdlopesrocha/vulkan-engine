@@ -339,7 +339,7 @@ void Octree::apply(
         const SignedDistanceOperation &operation,
         const SignedDistanceFunction &function,
         const Transformation &model,
-        const TexturePositionPainter &painter,
+        const BrushPainter &painter,
         const TextureCoordPainter &coordPainter,
         float minSize,
         const Simplifier &simplifier,

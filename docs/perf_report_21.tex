@@ -244,7 +244,7 @@ showing the solid passes shrinking; Maximum (tessellation on) must be
 pixel-identical.
 \\ \textbf{Correction after implementation:} approach A was reverted for the
 color passes. \texttt{LandBrush::paint} assigns materials per vertex by slope
-and height bands (\texttt{brushes/LandBrush.cpp}), so multi-material triangles
+and height bands (\texttt{brushPainters/LandBrush.cpp}), so multi-material triangles
 cover entire mountainsides --- flat-shading them visibly breaks blending far
 beyond boundary pixels. The shipped fix keeps the tessellated family for all
 color passes (blending intact) and binds the no-tess twin only where the

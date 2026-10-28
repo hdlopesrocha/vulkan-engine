@@ -4,7 +4,7 @@
 // Per-vertex texture-coordinate technique.
 //
 // The selected technique used to live on the material (TextureMappingMode); it
-// is now painted per vertex by the TexturePositionPainter (like brushIndex), so one
+// is now painted per vertex by the BrushPainter (like brushIndex), so one
 // mesh can mix mappings. The numbers stay in sync with the GLSL constants in
 // shaders/includes/TextureMapping.glsl (TEXTURE_MAPPING_*) and with the
 // material default (types/MaterialProperties.hpp aliases this enum).

@@ -19,7 +19,7 @@ struct OctreeGpuNode {
     int32_t flags;       // bit0 = leaf (no children block); bits1+ = vertexSlot + 1
                          // (0 = node has no vertex slot; assigned by LocalScene
                          // during surface-cell compaction)
-    // Per-vertex mapping painted by the TexturePositionPainter (TextureType + Custom UV).
+    // Per-vertex mapping painted by the BrushPainter (TextureType + Custom UV).
     int32_t textureType;
     glm::vec2 data;
     glm::vec3 hsv;
