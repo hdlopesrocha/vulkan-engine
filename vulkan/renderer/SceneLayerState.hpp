@@ -21,7 +21,5 @@ struct SceneLayerState {
     std::unordered_map<NodeID, PendingDeleteEntry> pendingDeletes;
     std::unique_ptr<std::recursive_mutex> mutex;
     std::unique_ptr<ThreadPool> genPool;
-    SceneLayerState()
-        : mutex(std::make_unique<std::recursive_mutex>()),
-          genPool(std::make_unique<ThreadPool>(std::max(2u, std::thread::hardware_concurrency() / 2))) {}
+    SceneLayerState();
 };

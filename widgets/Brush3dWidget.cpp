@@ -42,8 +42,9 @@ Brush3dWidget::Brush3dWidget(TextureArrayManager* texMgr, uint32_t loadedLayers,
 }
 
 std::string Brush3dWidget::layerDisplayName(int targetLayer) const {
-    if (scene_ && targetLayer >= 0 && static_cast<size_t>(targetLayer) < scene_->layerCount())
-        return scene_->layerName(targetLayer);
+    if (scene_) {
+        if (const Layer* l = scene_->findLayer(targetLayer)) return l->name();
+    }
     if (targetLayer >= 0 && targetLayer < 2) return layerNames[targetLayer];
     return "Layer";
 }
@@ -185,16 +186,21 @@ void Brush3dWidget::renderEntry(int index) {
 
     // Target Layer (dynamic list from the Scene; falls back to Opaque/Transparent)
     {
-        const int nLayers = scene_ ? static_cast<int>(scene_->layerCount()) : 2;
-        const int clamped = std::max(0, std::min(e.targetLayer, std::max(0, nLayers - 1)));
-        if (clamped != e.targetLayer) { e.targetLayer = clamped; dirty = true; }
+        const size_t nLayers = scene_ ? scene_->layerCount() : 2;
+        const Layer* current = scene_ ? scene_->findLayer(e.targetLayer) : nullptr;
+        if (!current) {
+            const Layer* first = (scene_ && scene_->layerAt(0)) ? scene_->layerAt(0) : nullptr;
+            e.targetLayer = first ? first->id() : 0;
+            dirty = true;
+        }
         std::string preview = layerDisplayName(e.targetLayer);
         if (ImGui::BeginCombo("Layer", preview.c_str())) {
-            for (int i = 0; i < nLayers; ++i) {
-                const bool sel = (i == e.targetLayer);
-                std::string name = layerDisplayName(i);
-                if (ImGui::Selectable(name.c_str(), sel)) {
-                    e.targetLayer = i;
+            for (size_t i = 0; i < nLayers; ++i) {
+                const Layer* l = scene_ ? scene_->layerAt(i) : nullptr;
+                if (!l) continue;
+                const bool sel = (l->id() == e.targetLayer);
+                if (ImGui::Selectable(l->name().c_str(), sel)) {
+                    e.targetLayer = l->id();
                     dirty = true;
                 }
             }

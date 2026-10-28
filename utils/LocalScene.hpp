@@ -3,23 +3,13 @@
 #include "Scene.hpp"
 #include "../space/Octree.hpp"
 #include "types/Settings.hpp"
-#include <unordered_map>
-#include <mutex>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 
 class LocalScene : public Scene {
 public:
-    // One dynamic scene layer: a named octree plus its renderer selection.
-    // Octrees are heap-allocated (shared) so layer add/remove never destroys
-    // an Octree while a worker thread still holds it (request* copies the
-    // shared_ptr under lock and walks without holding the layer mutex).
-    struct SceneLayer {
-        std::string name = "Layer";
-        LayerRendererType renderer = LayerRendererType::Solid;
-        bool enabled = true;
-        std::shared_ptr<Octree> octree;
-    };
-
     ThreadPool threadPool;
 
 public:
@@ -27,36 +17,34 @@ public:
     ~LocalScene();
 
     // ── Scene dynamic-layer interface ──
+    // Layers are heap-allocated and shared: a worker task keeps its octree
+    // alive after the layer is removed from the list.
+    Layer* layerAt(size_t index) override;
+    const Layer* layerAt(size_t index) const override;
+    Layer* findLayer(Layer::Id id) override;
+    const Layer* findLayer(Layer::Id id) const override;
     size_t layerCount() const override;
-    std::string layerName(Layer layer) const override;
-    void setLayerName(Layer layer, const std::string& name) override;
-    LayerRendererType layerRenderer(Layer layer) const override;
-    void setLayerRenderer(Layer layer, LayerRendererType renderer) override;
-    bool layerEnabled(Layer layer) const override;
-    void setLayerEnabled(Layer layer, bool enabled) override;
-    Layer addLayer(const std::string& name, LayerRendererType renderer) override;
-    bool removeLayer(Layer layer) override;
-    Octree* getLayerOctree(Layer layer) override;
-    const Octree* getLayerOctree(Layer layer) const override;
+    Layer* addLayer(const std::string& name, LayerRendererType renderer) override;
+    bool removeLayer(Layer& layer) override;
 
     // Explicitly stop all thread pools (LocalScene + every layer Octree).
     // Must be called before any objects captured by enqueued tasks are destroyed.
     void stopPools();
 
-    ChunkTopologyStatus buildChunkTopology(Layer layer, OctreeNodeData& data, uint8_t chunkLod,
+    ChunkTopologyStatus buildChunkTopology(Layer& layer, OctreeNodeData& data, uint8_t chunkLod,
                                            uint32_t version, OctreeTopologyInput& out) override;
-    void commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint32_t version) override;
-    bool buildSdfRegionTable(Layer layer, const glm::vec3& min, const glm::vec3& max,
+    void commitChunkTopology(Layer& layer, uintptr_t emittingNodeId, uint32_t version) override;
+    bool buildSdfRegionTable(Layer& layer, const glm::vec3& min, const glm::vec3& max,
                              std::vector<OctreeGpuNode>& out, size_t maxNodes) override;
-    void requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride = nullptr) override;
-    void requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride = nullptr) override;
-    bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) override;
-    int maxChunkLod(Layer layer, float minSize) const override;
-    glm::vec3 lodRootMin(Layer layer) const override;
-    float lodRootSize(Layer layer) const override;
+    void requestSDFCubes(Layer& layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride = nullptr) override;
+    void requestBoundingBoxes(Layer& layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride = nullptr) override;
+    bool isNodeUpToDate(Layer& layer, OctreeNodeData &data, uint version) override;
+    int maxChunkLod(const Layer& layer, float minSize) const override;
+    glm::vec3 lodRootMin(const Layer& layer) const override;
+    float lodRootSize(const Layer& layer) const override;
     void loadScene(SceneLoaderCallback& callback, std::vector<Octree::OctreeNodeDataHandler> updateHandlers, std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) override;
-    void reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) override;
-    void invalidateTessellationCache(Layer layer) override;
+    void reemitLayer(Layer& layer, const Octree::OctreeNodeDataHandler& updateHandler) override;
+    void invalidateTessellationCache(Layer& layer) override;
     void save(const std::string& filePath, const Settings* settings = nullptr);
     void load(const std::string& filePath, Settings* settings = nullptr);
     void load(const std::string& filePath, std::vector<Octree::OctreeNodeDataHandler> updateHandlers, std::vector<Octree::OctreeNodeDataHandler> deleteHandlers, Settings* settings = nullptr);
@@ -70,8 +58,16 @@ public:
     void noteDeletedNode(uintptr_t nodeId);
 
 private:
-    Octree* layerOctreeLocked(Layer layer) const;
-    std::vector<SceneLayer> layers_;
+    std::vector<std::shared_ptr<Layer>> layers_;
+    // Stable ids, never reused (the wire protocol and GPU layer-state arrays
+    // key on them, and a removed layer's pending work must stay distinct from
+    // a new layer appended at the same list position).
+    Layer::Id nextLayerId_ = 0;
+    // Removed layers stay alive until the next controlled reset: a worker
+    // thread may still hold the Layer* it resolved for an in-flight chunk
+    // build, and destroying the object under it would be a use-after-free.
+    // MyApp joins its tessellation threads before resetAllLayers().
+    std::vector<std::shared_ptr<Layer>> retiredLayers_;
     mutable std::mutex layersMutex_;
     // Last-tessellated version per emitting node. buildChunkTopology skips a
     // revision that is already resident on the GPU; node versions only bump in

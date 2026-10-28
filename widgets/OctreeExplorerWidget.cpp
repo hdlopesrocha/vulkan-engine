@@ -34,8 +34,8 @@ void OctreeExplorerWidget::render() {
         ImGui::TextDisabled("No scene layers");
         return;
     }
-    if (selectedLayer < 0 || static_cast<size_t>(selectedLayer) >= nLayers)
-        selectedLayer = 0;
+    if (!scene->findLayer(selectedLayer))
+        selectedLayer = scene->layerAt(0) ? scene->layerAt(0)->id() : 0;
     if (exportBlenderCallback_) {
         if (ImGui::Button("Export to Blender (.blend)")) exportBlenderCallback_();
         ImGuiHelpers::SetTooltipIfHovered(
@@ -43,14 +43,17 @@ void OctreeExplorerWidget::render() {
             "(materials, engine camera, sun, packed textures) plus the .glb source data");
         ImGui::Separator();
     }
-    const std::string curName = scene->layerName(selectedLayer);
+    const Layer* selected = scene->findLayer(selectedLayer);
+    const std::string curName = selected ? selected->name() : std::string();
     ImGui::Text("Layer: %s", curName.c_str());
     ImGui::SameLine();
     if (ImGui::BeginCombo("##layer", curName.c_str())) {
         for (size_t i = 0; i < nLayers; ++i) {
-            const bool sel = (static_cast<int>(i) == selectedLayer);
-            if (ImGui::Selectable(scene->layerName(static_cast<Layer>(i)).c_str(), sel))
-                selectedLayer = static_cast<int>(i);
+            const Layer* l = scene->layerAt(i);
+            if (!l) continue;
+            const bool sel = (l->id() == selectedLayer);
+            if (ImGui::Selectable(l->name().c_str(), sel))
+                selectedLayer = l->id();
         }
         ImGui::EndCombo();
     }
@@ -77,7 +80,7 @@ void OctreeExplorerWidget::render() {
     }
     ImGuiHelpers::SetTooltipIfHovered("Expand/collapse helpers: Expand All = one frame, Persist Expand = keep expanded, Collapse All = collapse now");
 
-    const Octree* treePtr = scene->getLayerOctree(selectedLayer);
+    const Octree* treePtr = scene->findLayer(selectedLayer) ? scene->findLayer(selectedLayer)->octree() : nullptr;
     if (!treePtr) {
         ImGui::TextDisabled("Layer has no local octree (remote mode)");
         return;

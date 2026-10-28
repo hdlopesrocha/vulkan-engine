@@ -127,7 +127,7 @@
 // wires them behind a UniqueChangeCollector dedup stage and dispatches on the
 // main thread.
 std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(SceneRenderer* renderer, VulkanApp* app, Scene* scene,
-              Layer layer, float minSize, ThreadPool* genPool, const PublishTarget& target) {
+              Layer::Id layer, float minSize, ThreadPool* genPool, const PublishTarget& target) {
 
     Octree::OctreeNodeDataHandler onAdded = [renderer, app, scene, layer, minSize, genPool, target](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
@@ -149,7 +149,7 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
         // queued as its own entry — the consumer publishes it into the chunk's
         // stable slot.
         renderer->processNodeLayer(*scene, layer, nid, nodeCopy,
-            [renderer, cid, nodeCopy, target](Layer layer_, NodeID nid_, const LoDMesh& lodMesh) {
+            [renderer, cid, nodeCopy, target](Layer::Id layer_, NodeID nid_, const LoDMesh& lodMesh) {
                 // Every published chunk is GPU-resident. There is no host-side
                 // vertex mirror; an invalidation without a live slot is dropped.
                 if (lodMesh.gpuSlot == UINT32_MAX) {
@@ -490,6 +490,9 @@ public:
     std::vector<std::shared_ptr<UniqueChangeCollector>> collectors;
     std::vector<Octree::OctreeNodeDataHandler> layerAddHandlers;
     std::vector<Octree::OctreeNodeDataHandler> layerRemoveHandlers;
+    // Live layer ids the handlers were built for. Ids are stable and never
+    // reused, so a remove+add with the same count must still rebuild.
+    std::vector<Layer::Id> knownLayerIds_;
     mutable std::mutex layersSyncMutex_;
     // Per-slot resources for the async back-face task, reused in a ring of
     // ASYNC_RING_SIZE slots so the per-frame task allocates nothing.
@@ -1169,7 +1172,7 @@ public:
         // Dynamic scene layers + per-layer renderer selection.
         layersWidget = std::make_shared<LayersWidget>(&world->activeScene(), sceneRenderer,
             [this]() { syncLayers(); },
-            [this](Layer layer) { repopulateLayer(layer); });
+            [this](Layer::Id layer) { repopulateLayer(layer); });
         widgetManager.addWidget(layersWidget);
         playSetupAlert("setup-ui");
     }
@@ -1264,11 +1267,11 @@ public:
     void applyBrushToScene();
     // Apply one brush event to a layer's octree (shared by live apply and undo
     // replay); does not record history or advance previousTranslate.
-    void applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& sweepStart, Layer layer);
+    void applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& sweepStart, Layer::Id layer);
     // Serialize/restore the layer base and manage the per-layer brush stack.
-    void ensureBrushBase(Layer layer, Octree& tree);
-    void recordBrushEvent(Layer layer, const BrushHistoryEvent& event);
-    void undoBrushLayer(Layer layer, bool group);
+    void ensureBrushBase(Layer::Id layer, Octree& tree);
+    void recordBrushEvent(Layer::Id layer, const BrushHistoryEvent& event);
+    void undoBrushLayer(Layer::Id layer, bool group);
     void clearBrushHistory();
     void pollBrushUndo();
     // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
@@ -1282,7 +1285,7 @@ public:
     void resetSceneState();
     // Replay the deduplicated scene change events into the renderer handlers
     // (replaces UniqueOctreeChangeHandler::handleEvents).
-    void dispatchLayerEvents(Layer layer);
+    void dispatchLayerEvents(Layer::Id layer);
     void dispatchAllEvents();
     // Rebuild collectors + renderer handlers for the active scene's current
     // layer list. Safe to call any time on the main thread: grows
@@ -1297,7 +1300,7 @@ public:
     // renderer switch). Re-emits the layer into its collector and dispatches
     // it on a worker thread; GPU upload follows progressively on the main
     // thread. Safe to call from the UI thread.
-    void repopulateLayer(Layer layer);
+    void repopulateLayer(Layer::Id layer);
 
     // ── H3 (perf report 29): debug overlay collection gate ─────────────────
     // Applies Settings::showSDFDebug / showBoundingBoxes to the debug
@@ -1307,6 +1310,7 @@ public:
     // transition runs one re-collection pass so the overlay is complete
     // immediately. Main thread only.
     void applyDebugOverlaySettings();
+
     // One-shot re-collection of both debug overlays for every live chunk
     // (no re-tessellation, no upload). See applyDebugOverlaySettings().
     void recollectDebugOverlays();
@@ -1316,16 +1320,17 @@ public:
     // parallel. `completionLog` is printed verbatim once all threads join.
     void startTessellationThreads(const char* completionLog) {
         ensureLayerHandlers();
-        size_t n = 0;
-        {
-            std::lock_guard<std::mutex> lock(layersSyncMutex_);
-            n = collectors.size();
+        std::vector<Layer::Id> ids;
+        if (world) {
+            Scene& scene = world->activeScene();
+            for (size_t i = 0; i < scene.layerCount(); ++i)
+                if (const Layer* l = scene.layerAt(i)) ids.push_back(l->id());
         }
-        sceneProcessThread = std::thread([this, completionLog, n]() {
+        sceneProcessThread = std::thread([this, completionLog, ids]() {
             std::vector<std::thread> workers;
-            workers.reserve(n);
-            for (size_t i = 0; i < n; ++i)
-                workers.emplace_back([this, i]() { dispatchLayerEvents(static_cast<Layer>(i)); });
+            workers.reserve(ids.size());
+            for (Layer::Id id : ids)
+                workers.emplace_back([this, id]() { dispatchLayerEvents(id); });
             for (auto& t : workers) t.join();
             std::cout << completionLog;
         });
@@ -1394,7 +1399,8 @@ public:
             nunchukPublisher.update();
             nunchukPublisher.applyControls(&eventManager, camera, deltaTime,
                                            &controllerManager, &brushManager,
-                                            (world && !useRemote && world->scene().layerCount() > 0) ? world->scene().getLayerOctree(0) : nullptr);
+                                            (world && !useRemote && world->scene().findLayer(LAYER_OPAQUE))
+                                                ? world->scene().findLayer(LAYER_OPAQUE)->octree() : nullptr);
         } else {
             // Still poll nunchuk state so Home/A button edge detection works
             nunchukPublisher.update();
@@ -4793,7 +4799,7 @@ void MyApp::updateBrushPreview(uint32_t frameIndex) {
     if (entry->sweepMode) entry->previousTranslate = entry->translate;
 }
 
-void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& sweepStart, Layer targetLayer) {
+void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& sweepStart, Layer::Id targetLayer) {
     if (!world || !sceneRenderer || useRemote) return;
 
     AddSignedDistanceOperation addOp;
@@ -4812,7 +4818,8 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
         std::cerr << "[applyBrushEventToLayer] invalid targetLayer " << static_cast<int>(targetLayer) << std::endl;
         return;
     }
-    Octree* octreePtr = world->scene().getLayerOctree(targetLayer);
+    Layer* targetLayerPtr = world->scene().findLayer(targetLayer);
+    Octree* octreePtr = targetLayerPtr ? targetLayerPtr->octree() : nullptr;
     if (!octreePtr) return;
     Octree& octree = *octreePtr;
 
@@ -4845,7 +4852,7 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
     forEachBrushSDF(entry, model, sweepStart, entry.minSize, "[applyBrushEventToLayer]", applyEntry);
 }
 
-void MyApp::ensureBrushBase(Layer layer, Octree& tree) {
+void MyApp::ensureBrushBase(Layer::Id layer, Octree& tree) {
     if (layer < 0) return;
     if (brushHistories.size() <= static_cast<size_t>(layer)) brushHistories.resize(static_cast<size_t>(layer) + 1);
     LayerBrushHistory& history = brushHistories[static_cast<size_t>(layer)];
@@ -4876,13 +4883,13 @@ void MyApp::ensureBrushBase(Layer layer, Octree& tree) {
               << " MiB compressed (" << history.baseRawBytes / 1048576.0 << " MiB raw)\n";
 }
 
-void MyApp::recordBrushEvent(Layer layer, const BrushHistoryEvent& event) {
+void MyApp::recordBrushEvent(Layer::Id layer, const BrushHistoryEvent& event) {
     if (layer < 0) return;
     if (brushHistories.size() <= static_cast<size_t>(layer)) brushHistories.resize(static_cast<size_t>(layer) + 1);
     brushHistories[static_cast<size_t>(layer)].events.push_back(event);
 }
 
-void MyApp::undoBrushLayer(Layer layer, bool group) {
+void MyApp::undoBrushLayer(Layer::Id layer, bool group) {
     if (useRemote) {
         std::cout << "[BrushUndo] ignored in remote mode (server owns the scene)\n";
         return;
@@ -4894,7 +4901,8 @@ void MyApp::undoBrushLayer(Layer layer, bool group) {
         return;
     }
     if (!world->activeScene().validLayer(layer)) return;
-    Octree* tree = world->scene().getLayerOctree(layer);
+    Layer* layerPtr = world->scene().findLayer(layer);
+    Octree* tree = layerPtr ? layerPtr->octree() : nullptr;
     if (!tree) return;
 
     size_t undoCount = 1;
@@ -4954,7 +4962,7 @@ void MyApp::undoBrushLayer(Layer layer, bool group) {
 
     {
         std::lock_guard<std::mutex> lock(layersSyncMutex_);
-        if (layer < static_cast<Layer>(collectors.size()) && collectors[layer]) collectors[layer]->clear();
+        if (layer < static_cast<Layer::Id>(collectors.size()) && collectors[layer]) collectors[layer]->clear();
     }
 
     undoReplaying = true;
@@ -4968,7 +4976,8 @@ void MyApp::undoBrushLayer(Layer layer, bool group) {
     // old tessellation dedup must be dropped and every chunk re-requested.
     {
         Scene& scene = world->activeScene();
-        scene.invalidateTessellationCache(layer);
+        Layer* l = scene.findLayer(layer);
+        if (l) scene.invalidateTessellationCache(*l);
         Octree::OctreeNodeDataHandler updateHandler;
         {
             std::lock_guard<std::mutex> lock(layersSyncMutex_);
@@ -4976,8 +4985,8 @@ void MyApp::undoBrushLayer(Layer layer, bool group) {
                 updateHandler = collectors[layer]->updateHandler;
             }
         }
-        if (updateHandler) {
-            scene.reemitLayer(layer, updateHandler);
+        if (updateHandler && l) {
+            scene.reemitLayer(*l, updateHandler);
             dispatchLayerEvents(layer);
         }
     }
@@ -5006,7 +5015,7 @@ void MyApp::pollBrushUndo() {
         const bool radial = radialMenu && radialMenu->IsVisible();
         if (!uiCapture && !radial) {
             const BrushEntry* entry = brushManager.getSelectedEntry();
-            if (entry) undoBrushLayer(static_cast<Layer>(entry->targetLayer), shift);
+            if (entry) undoBrushLayer(entry->targetLayer, shift);
         }
     }
     undoKeyWasDown = combo;
@@ -5025,14 +5034,15 @@ void MyApp::applyBrushToScene() {
     const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
     if (!selectedEntry) return;
     const BrushEntry entry = *selectedEntry;
-    const Layer targetLayer = static_cast<Layer>(entry.targetLayer);
+    const Layer::Id targetLayer = entry.targetLayer;
     if (!world->activeScene().validLayer(targetLayer)) {
         std::cerr << "[MyApp::applyBrushToScene] invalid targetLayer " << entry.targetLayer << std::endl;
         return;
     }
 
     if (!undoReplaying) {
-        if (Octree* tree = world->scene().getLayerOctree(targetLayer)) {
+        Layer* targetLayerPtr = world->scene().findLayer(targetLayer);
+        if (Octree* tree = targetLayerPtr ? targetLayerPtr->octree() : nullptr) {
             ensureBrushBase(targetLayer, *tree);
             BrushHistoryEvent event;
             event.entry = entry;
@@ -5115,7 +5125,7 @@ void MyApp::resetSceneState() {
     }
 }
 
-void MyApp::dispatchLayerEvents(Layer layer) {
+void MyApp::dispatchLayerEvents(Layer::Id layer) {
     std::shared_ptr<UniqueChangeCollector> collector;
     Octree::OctreeNodeDataHandler onAdd, onDel;
     {
@@ -5129,9 +5139,12 @@ void MyApp::dispatchLayerEvents(Layer layer) {
     if (!collector) return;
     // Disabled layers drop queued events (no tessellation while hidden).
     // repopulateLayer() re-queues on re-enable.
-    if (world && !world->activeScene().layerEnabled(layer)) {
-        collector->clear();
-        return;
+    if (world) {
+        const Layer* l = world->activeScene().findLayer(layer);
+        if (!l || !l->enabled()) {
+            collector->clear();
+            return;
+        }
     }
     // The scene server is a second consumer of the same deduped changes, so a
     // client sees every edit the local renderer does.
@@ -5156,52 +5169,67 @@ void MyApp::dispatchLayerEvents(Layer layer) {
 }
 
 void MyApp::dispatchAllEvents() {
-    // Snapshot size under lock; per-layer dispatch re-locks to copy.
-    size_t n = 0;
-    {
-        std::lock_guard<std::mutex> lock(layersSyncMutex_);
-        n = collectors.size();
+    // Snapshot the live layer ids; per-layer dispatch re-locks to copy.
+    std::vector<Layer::Id> ids;
+    if (world) {
+        Scene& scene = world->activeScene();
+        ids.reserve(scene.layerCount());
+        for (size_t i = 0; i < scene.layerCount(); ++i)
+            if (const Layer* l = scene.layerAt(i)) ids.push_back(l->id());
     }
-    for (size_t i = 0; i < n; ++i)
-        dispatchLayerEvents(static_cast<Layer>(i));
+    for (Layer::Id id : ids) dispatchLayerEvents(id);
 }
 
 void MyApp::ensureLayerHandlers() {
     if (!world || !sceneRenderer) return;
     std::lock_guard<std::mutex> lock(layersSyncMutex_);
     Scene& scene = world->activeScene();
-    const size_t n = std::max<size_t>(scene.layerCount(), 2);
+    // Live ids (stable, never reused) and the vector size that covers them.
+    std::vector<Layer::Id> ids;
+    ids.reserve(scene.layerCount());
+    Layer::Id maxId = 1;
+    for (size_t i = 0; i < scene.layerCount(); ++i) {
+        if (const Layer* l = scene.layerAt(i)) {
+            ids.push_back(l->id());
+            maxId = std::max(maxId, l->id());
+        }
+    }
+    const size_t n = static_cast<size_t>(maxId) + 1;
     sceneRenderer->ensureLayerStates(n);
-    if (collectors.size() == n && layerAddHandlers.size() == n && layerRemoveHandlers.size() == n) return;
-    // Grow (stable addresses via shared_ptr) or shrink (only the tail is ever
-    // removed — LayersWidget restricts removal to the last layer, so earlier
-    // indices stay valid; pending events for the dropped layer are discarded).
-    // Old collectors stay alive via shared_ptr copies held by in-flight
-    // dispatches.
-    while (collectors.size() > n) collectors.pop_back();
-    while (collectors.size() < n)
-        collectors.push_back(std::make_shared<UniqueChangeCollector>());
-    // Rebuild ALL handlers: build() captures PublishTarget references to the
-    // layer's heap-allocated state, so previously built handlers stay valid,
-    // but rebuilding is cheap and keeps indices in sync after add/remove.
+    if (ids == knownLayerIds_ && collectors.size() == n &&
+        layerAddHandlers.size() == n && layerRemoveHandlers.size() == n)
+        return;
+    knownLayerIds_ = ids;
+    // Per-id dispatch arrays. Holes are removed layers: keep null collector
+    // entries so a queued id can be dropped without touching another layer.
+    collectors.resize(n);
+    for (size_t i = 0; i < n; ++i)
+        if (!collectors[i]) collectors[i] = std::make_shared<UniqueChangeCollector>();
     layerAddHandlers.assign(n, {});
     layerRemoveHandlers.assign(n, {});
+    // Rebuild the handlers for every live layer: build() captures
+    // PublishTarget references to the layer's heap-allocated GPU state, so a
+    // removed layer's handlers must not stay reachable.
     Scene* sceneForChanges = &world->activeScene();
     const float minSize = 30.0f;
-    for (size_t i = 0; i < n; ++i) {
-        const Layer layer = static_cast<Layer>(i);
+    for (Layer::Id id : ids) {
         auto handlers = build(
-            sceneRenderer, this, sceneForChanges, layer, minSize,
-            &sceneRenderer->layerGenPool(layer),
+            sceneRenderer, this, sceneForChanges, id, minSize,
+            &sceneRenderer->layerGenPool(id),
             {
                 sceneRenderer->pendingMeshQueue,
                 sceneRenderer->pendingMeshMutex,
-                sceneRenderer->layerChunks(layer),
-                sceneRenderer->layerMutex(layer),
-                sceneRenderer->layerPendingDeletes(layer)
+                sceneRenderer->layerChunks(id),
+                sceneRenderer->layerMutex(id),
+                sceneRenderer->layerPendingDeletes(id)
             });
-        layerAddHandlers[i] = handlers.first;
-        layerRemoveHandlers[i] = handlers.second;
+        layerAddHandlers[id] = handlers.first;
+        layerRemoveHandlers[id] = handlers.second;
+    }
+    // Drop queued events for ids that no longer exist.
+    for (size_t i = 0; i < n; ++i) {
+        if (std::find(ids.begin(), ids.end(), static_cast<Layer::Id>(i)) == ids.end() && collectors[i])
+            collectors[i]->clear();
     }
 }
 
@@ -5225,23 +5253,24 @@ void MyApp::syncLayers() {
     ensureLayerHandlers();
 }
 
-void MyApp::repopulateLayer(Layer layer) {
+void MyApp::repopulateLayer(Layer::Id layer) {
     if (!world || !sceneRenderer) return;
     ensureLayerHandlers();
     Scene& scene = world->activeScene();
-    if (!scene.validLayer(layer) || !scene.layerEnabled(layer)) return;
+    Layer* layerPtr = scene.findLayer(layer);
+    if (!layerPtr || !layerPtr->enabled()) return;
     // The GPU slots were freed; the octree still holds the data but the
     // tessellation dedup cache considers it up-to-date, so invalidate first
     // (otherwise the re-emit below is skipped as a no-op).
-    scene.invalidateTessellationCache(layer);
+    scene.invalidateTessellationCache(*layerPtr);
     Octree::OctreeNodeDataHandler updateHandler;
     {
         std::lock_guard<std::mutex> lock(layersSyncMutex_);
-        if (layer < 0 || static_cast<size_t>(layer) >= collectors.size() || !collectors[static_cast<size_t>(layer)])
+        if (layer < 0 || static_cast<size_t>(layer) >= collectors.size() || !collectors[layer])
             return;
-        updateHandler = collectors[static_cast<size_t>(layer)]->updateHandler;
+        updateHandler = collectors[layer]->updateHandler;
     }
-    scene.reemitLayer(layer, updateHandler);
+    scene.reemitLayer(*layerPtr, updateHandler);
     // Dispatch on a worker thread (same pattern as startTessellationThreads):
     // the collector replay enqueues tessellation onto the layer's gen pool
     // and returns quickly; the main thread uploads results progressively.
@@ -5250,13 +5279,6 @@ void MyApp::repopulateLayer(Layer layer) {
     std::thread([this, layer]() { dispatchLayerEvents(layer); }).detach();
 }
 
-// ── H3 (perf report 29): debug overlay collection gate ─────────────────────
-// The two debug renderers' enabled bits are the only gate on the per-chunk
-// subtree walks (SceneRenderer::collectDebugForChunk). Applying the settings
-// here starts/stops collection; the draw path keeps checking
-// settings.showSDFDebug / settings.showBoundingBoxes exactly as before, so
-// nothing about what is drawn changes — with both off (the default) the walks
-// and the ~478 MB of retained records simply never happen.
 void MyApp::applyDebugOverlaySettings() {
     if (!sceneRenderer) return;
     const bool sdfOn = settings.showSDFDebug;
@@ -5289,8 +5311,9 @@ void MyApp::recollectDebugOverlays() {
     Scene& scene = world->activeScene();
     const size_t layerCount = scene.layerCount();
     for (size_t i = 0; i < layerCount; ++i) {
-        const Layer layer = static_cast<Layer>(i);
-        if (!scene.layerEnabled(layer)) continue;
+        Layer* layerPtr = scene.layerAt(i);
+        if (!layerPtr || !layerPtr->enabled()) continue;
+        const Layer::Id layer = layerPtr->id();
 
         // Snapshot the live chunk ids (published chunks and their ancestor
         // cells) under the layer's map lock.
@@ -5307,7 +5330,7 @@ void MyApp::recollectDebugOverlays() {
         // only copy the descriptors here; the debug walks run afterwards and
         // take that lock themselves.
         std::vector<OctreeNodeData> nodes;
-        scene.reemitLayer(layer, [&nodes](const OctreeNodeData& nd) { nodes.push_back(nd); });
+        scene.reemitLayer(*layerPtr, [&nodes](const OctreeNodeData& nd) { nodes.push_back(nd); });
         for (OctreeNodeData& nd : nodes) {
             if (!nd.node) continue;
             const NodeID nid = reinterpret_cast<NodeID>(nd.node);
@@ -5337,13 +5360,18 @@ void MyApp::ensureDroplets() {
     // surface is inside the table at every spawn position. Droplets that leave
     // it are retired by the finalize pass, so it never has to cover the map.
     const float lateral = std::max(16.0f, settings.dropletSpawnRadius) * 2.5f;
-    const glm::vec3 rootMin = world->scene().lodRootMin(0);
-    const glm::vec3 rootMax = rootMin + glm::vec3(world->scene().lodRootSize(0));
+    Layer* dropletLayer = world->scene().findLayer(LAYER_OPAQUE);
+    if (!dropletLayer) {
+        std::cerr << "[MyApp] droplet simulation disabled: no opaque layer\n";
+        return;
+    }
+    const glm::vec3 rootMin = world->scene().lodRootMin(*dropletLayer);
+    const glm::vec3 rootMax = rootMin + glm::vec3(world->scene().lodRootSize(*dropletLayer));
     dropletRegionMin = glm::vec3(-lateral, rootMin.y, -lateral);
     dropletRegionMax = glm::vec3(lateral, rootMax.y, lateral);
 
     std::vector<OctreeGpuNode> nodes;
-    if (!world->scene().buildSdfRegionTable(0, dropletRegionMin, dropletRegionMax, nodes,
+    if (!world->scene().buildSdfRegionTable(*dropletLayer, dropletRegionMin, dropletRegionMax, nodes,
                                             ParticlePhysicsSim::kMaxRegionNodes) ||
         nodes.empty()) {
         std::cerr << "[MyApp] droplet simulation disabled: no SDF region table for layer 0\n";

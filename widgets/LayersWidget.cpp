@@ -5,7 +5,7 @@
 
 LayersWidget::LayersWidget(Scene* scene, SceneRenderer* renderer,
                          std::function<void()> onLayersChanged,
-                         std::function<void(Layer)> onLayerRepopulate)
+                         std::function<void(Layer::Id)> onLayerRepopulate)
     : Widget("Layers", u8"\uf0c9"), scene_(scene), renderer_(renderer),
       onLayersChanged_(std::move(onLayersChanged)),
       onLayerRepopulate_(std::move(onLayerRepopulate)) {}
@@ -33,46 +33,48 @@ void LayersWidget::render() {
 
     static const char* kRendererNames[] = { "Solid", "Water", "Video" };
     for (size_t i = 0; i < n; ++i) {
-        const Layer layer = static_cast<Layer>(i);
+        Layer* layer = scene_->layerAt(i);
+        if (!layer) continue;
+        const Layer::Id layerId = layer->id();
         ImGui::PushID(static_cast<int>(i));
         ImGui::Text("%zu", i); ImGui::NextColumn();
 
-        bool enabled = scene_->layerEnabled(layer);
+        bool enabled = layer->enabled();
         if (ImGui::Checkbox("##en", &enabled)) {
             if (!enabled) {
                 // Hiding is immediate (slots freed).
-                if (renderer_) renderer_->removeAllLayerMeshes(layer);
-                scene_->setLayerEnabled(layer, enabled);
+                if (renderer_) renderer_->removeAllLayerMeshes(layerId);
+                layer->setEnabled(enabled);
             } else {
-                scene_->setLayerEnabled(layer, enabled);
+                layer->setEnabled(enabled);
                 // Re-queue the layer's chunks so it renders again without a
                 // manual Generate Map.
-                if (onLayerRepopulate_) onLayerRepopulate_(layer);
+                if (onLayerRepopulate_) onLayerRepopulate_(layerId);
             }
         }
         ImGui::NextColumn();
 
-        std::string name = scene_->layerName(layer);
+        std::string name = layer->name();
         char buf[64];
         snprintf(buf, sizeof(buf), "%s", name.c_str());
         if (ImGui::InputText("##name", buf, sizeof(buf))) {
-            scene_->setLayerName(layer, buf);
+            layer->setName(buf);
         }
         ImGui::NextColumn();
 
-        int cur = static_cast<int>(scene_->layerRenderer(layer));
+        int cur = static_cast<int>(layer->renderer());
         if (cur < 0 || cur > 2) cur = 0;
         if (ImGui::Combo("##renderer", &cur, kRendererNames, 3)) {
             const auto next = static_cast<LayerRendererType>(cur);
             // Free the layer's slots from the OLD pool before remapping so
             // nothing renders twice, then re-queue into the new pool.
-            if (renderer_) renderer_->removeAllLayerMeshes(layer);
-            scene_->setLayerRenderer(layer, next);
-            if (onLayerRepopulate_) onLayerRepopulate_(layer);
+            if (renderer_) renderer_->removeAllLayerMeshes(layerId);
+            layer->setRenderer(next);
+            if (onLayerRepopulate_) onLayerRepopulate_(layerId);
         }
         ImGui::NextColumn();
 
-        const size_t chunks = renderer_ ? renderer_->getLayerModelCount(layer) : 0;
+        const size_t chunks = renderer_ ? renderer_->getLayerModelCount(layerId) : 0;
         ImGui::Text("%zu", chunks);
         ImGui::NextColumn();
         ImGui::PopID();
@@ -99,9 +101,9 @@ void LayersWidget::render() {
     if (ImGui::Button("+ Add Layer")) {
         std::string nm = newLayerName_.empty()
             ? ("Layer " + std::to_string(n)) : newLayerName_;
-        scene_->addLayer(nm, LayerRendererType::Solid);
+        Layer* added = scene_->addLayer(nm, LayerRendererType::Solid);
         newLayerName_.clear();
-        if (renderer_) renderer_->ensureLayerStates(scene_->layerCount());
+        if (renderer_ && added) renderer_->ensureLayerStates(static_cast<size_t>(added->id()) + 1);
         if (onLayersChanged_) onLayersChanged_();
     }
     ImGui::SameLine();
@@ -109,10 +111,13 @@ void LayersWidget::render() {
     if (!canRemove) ImGui::BeginDisabled();
     if (ImGui::Button("- Remove Last")) {
         if (n > 1) {
-            const Layer last = static_cast<Layer>(n - 1);
-            if (renderer_) renderer_->removeAllLayerMeshes(last);
-            scene_->removeLayer(last);
-            if (onLayersChanged_) onLayersChanged_();
+            Layer* last = scene_->layerAt(n - 1);
+            if (last) {
+                const Layer::Id lastId = last->id();
+                if (renderer_) renderer_->removeAllLayerMeshes(lastId);
+                scene_->removeLayer(*last);
+                if (onLayersChanged_) onLayersChanged_();
+            }
         }
     }
     if (!canRemove) ImGui::EndDisabled();

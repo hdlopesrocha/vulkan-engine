@@ -9,7 +9,7 @@
 // standalone record so publishers and streaming targets can name it without
 // pulling in the full renderer.
 struct PendingMeshData {
-    Layer layer;
+    Layer::Id layer;
     NodeID nid;
     LoDMesh lodMesh;
     OctreeNodeData nodeData;   // world cube of the source node (stable band center)

@@ -68,8 +68,10 @@ std::vector<chunkproto::ChunkRecord> collectAll(ChunkIdRegistry& ids, LocalScene
     out.reserve(8192);
     const size_t n = scene.layerCount();
     for (size_t i = 0; i < n; ++i) {
-        Octree* tree = scene.getLayerOctree(static_cast<Layer>(i));
-        if (tree) walkTree(*tree, static_cast<uint8_t>(i), ids, out);
+        Layer* l = scene.layerAt(i);
+        if (!l) continue;
+        Octree* tree = l->octree();
+        if (tree) walkTree(*tree, static_cast<uint8_t>(l->id()), ids, out);
     }
     return out;
 }
@@ -92,15 +94,16 @@ std::vector<chunkproto::SceneMetaLayer> collectMeta(LocalScene& scene) {
     const size_t n = scene.layerCount();
     out.reserve(n);
     for (size_t i = 0; i < n; ++i) {
-        const Layer layer = static_cast<Layer>(i);
-        Octree* tree = scene.getLayerOctree(layer);
+        Layer* l = scene.layerAt(i);
+        if (!l) continue;
+        Octree* tree = l->octree();
         if (!tree) continue;
-        // Layer directory (names + renderer mapping) comes from the scene,
+        // Layer directory (names + renderer mapping) comes from the layer,
         // read before the tree lock so no locks ever nest here.
         chunkproto::SceneMetaLayer dir;
-        dir.layer = static_cast<uint8_t>(i);
-        dir.name = scene.layerName(layer);
-        dir.renderer = static_cast<uint8_t>(scene.layerRenderer(layer));
+        dir.layer = static_cast<uint8_t>(l->id());
+        dir.name = l->name();
+        dir.renderer = static_cast<uint8_t>(l->renderer());
         metaForTree(*tree, dir, out);
     }
     return out;

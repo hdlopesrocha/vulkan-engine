@@ -12,13 +12,15 @@
 #include "../space/OctreeNodeData.hpp"
 #include "../services/OctreeTopologyTypes.hpp"
 
-// Dynamic scene layers: the Scene owns a list of layers (octrees) instead of
-// two fixed members. Layer is the index into that list.
-using Layer = int;
-constexpr Layer LAYER_OPAQUE = 0;
-constexpr Layer LAYER_TRANSPARENT = 1;
+// Dynamic scene layers: each Scene owns a list of Layer objects, and each
+// Layer owns its octree + renderer selection (utils/Layer.hpp). Layer ids are
+// stable keys for the wire protocol / GPU state arrays; layer POSITIONS are
+// the list order (layerAt).
+#include "Layer.hpp"
 
-#include "LayerRendererType.hpp"
+constexpr Layer::Id LAYER_OPAQUE = 0;
+constexpr Layer::Id LAYER_TRANSPARENT = 1;
+
 #include "SceneLoaderCallback.hpp"
 
 // Forward declaration: optional pools may be supplied to the debug/SDF walks
@@ -28,34 +30,31 @@ class ThreadPool;
 class Scene {
 
 public:
-    Scene() = default;
-    virtual ~Scene() = default;
+    Scene();
+    virtual ~Scene();
 
     // ── Dynamic layer list ──
+    // Positional access (0..layerCount()-1). Null when out of range, so a UI
+    // loop can iterate without racing a concurrent remove.
+    virtual Layer* layerAt(size_t index) = 0;
+    virtual const Layer* layerAt(size_t index) const = 0;
+    // Stable-id access (wire protocol, settings, renderer state).
+    virtual Layer* findLayer(Layer::Id id) = 0;
+    virtual const Layer* findLayer(Layer::Id id) const = 0;
     virtual size_t layerCount() const = 0;
-    virtual std::string layerName(Layer layer) const = 0;
-    virtual void setLayerName(Layer layer, const std::string& name) = 0;
-    virtual LayerRendererType layerRenderer(Layer layer) const = 0;
-    virtual void setLayerRenderer(Layer layer, LayerRendererType renderer) = 0;
-    virtual bool layerEnabled(Layer layer) const = 0;
-    virtual void setLayerEnabled(Layer layer, bool enabled) = 0;
-    virtual Layer addLayer(const std::string& name, LayerRendererType renderer) = 0;
-    virtual bool removeLayer(Layer layer) = 0;
-    virtual Octree* getLayerOctree(Layer layer) = 0;
-    virtual const Octree* getLayerOctree(Layer layer) const = 0;
-    bool validLayer(Layer layer) const {
-        return layer >= 0 && static_cast<size_t>(layer) < layerCount();
-    }
+    virtual Layer* addLayer(const std::string& name, LayerRendererType renderer) = 0;
+    virtual bool removeLayer(Layer& layer) = 0;
+    bool validLayer(Layer::Id id) const;
 
     virtual void loadScene(SceneLoaderCallback& callback, std::vector<Octree::OctreeNodeDataHandler> updateHandlers, std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) = 0;
     // Re-emit every chunk of one layer into updateHandler (used to repopulate
     // GPU meshes after a layer is re-enabled or its renderer is switched).
     // Only the update side is needed: the GPU slots were freed, so every
     // live chunk must be re-queued for tessellation.
-    virtual void reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) = 0;
+    virtual void reemitLayer(Layer& layer, const Octree::OctreeNodeDataHandler& updateHandler) = 0;
     // Drop tessellation dedup state so a re-emitted layer actually
     // re-tessellates instead of being skipped as up-to-date. Default no-op.
-    virtual void invalidateTessellationCache(Layer layer) { (void)layer; }
+    virtual void invalidateTessellationCache(Layer& layer);
 
     // ── GPU-resident chunk topology (the only chunk mesh path) ───────────────
     // The host never tessellates: it flattens the octree neighborhood the GPU
@@ -72,17 +71,12 @@ public:
     // exactly this value and the published mesh rung is chunkLod - 1. `version`
     // is the node revision the caller captured (commit passes the same value
     // back, so a concurrent brush edit re-emits instead of being swallowed).
-    virtual ChunkTopologyStatus buildChunkTopology(Layer layer, OctreeNodeData& data,
+    virtual ChunkTopologyStatus buildChunkTopology(Layer& layer, OctreeNodeData& data,
                                                    uint8_t chunkLod, uint32_t version,
-                                                   OctreeTopologyInput& out) {
-        (void)layer; (void)data; (void)chunkLod; (void)version; (void)out;
-        return ChunkTopologyStatus::Unavailable;
-    }
+                                                   OctreeTopologyInput& out);
     // Records that `version` of this chunk is live on the GPU, so a later walk
     // of the same revision is skipped (UpToDate).
-    virtual void commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint32_t version) {
-        (void)layer; (void)emittingNodeId; (void)version;
-    }
+    virtual void commitChunkTopology(Layer& layer, uintptr_t emittingNodeId, uint32_t version);
     // Flattens every octree node whose cube intersects [min, max] into the same
     // node layout the GPU topology pass consumes (entry 0 = world root, corner
     // samples with INFINITY sentinels, children indices). This is the world-SDF
@@ -91,11 +85,8 @@ public:
     // node representation, so a query interpolates the identical SDF the mesh
     // walker triangulates. Returns false when the layer has no octree.
     // `maxNodes` caps the table; a region that does not fit is reported false.
-    virtual bool buildSdfRegionTable(Layer layer, const glm::vec3& min, const glm::vec3& max,
-                                     std::vector<OctreeGpuNode>& out, size_t maxNodes) {
-        (void)layer; (void)min; (void)max; (void)out; (void)maxNodes;
-        return false;
-    }
+    virtual bool buildSdfRegionTable(Layer& layer, const glm::vec3& min, const glm::vec3& max,
+                                     std::vector<OctreeGpuNode>& out, size_t maxNodes);
     // Collect SDF debug cubes: the walk emits one callback per node that
     // carries a drawable SDF face, with the node's own cube (band box) so the
     // caller can place a debug cube. Boxes are emitted for nodes at lod==1
@@ -108,24 +99,24 @@ public:
         uintptr_t emittingNodeId,
         uint32_t brushIndex
     )>;
-    virtual void requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride = nullptr) {}
+    virtual void requestSDFCubes(Layer& layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride = nullptr);
     // Collect mesh bounding-box debug cubes: walk the octree (subtree rooted at
     // `data`) and emit one callback per surface node whose ladder level equals
     // its chunk LoD (node.lod == node.chunkLod), so the debug overlay shows every
     // node box at the chunk's current resolution instead of a single chunk-sized box.
     using BBoxCallback = std::function<void(const BoundingCube& cube)>;
-    virtual void requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride = nullptr) {}
-    virtual bool isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) = 0;
+    virtual void requestBoundingBoxes(Layer& layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride = nullptr);
+    virtual bool isNodeUpToDate(Layer& layer, OctreeNodeData &data, uint version) = 0;
 
     // Maximum LoD level a chunk can publish for the given layer (>= 0). The
     // chunk's ladder maxLevel is clamped to this so HeightRootToChunk(N) >= 0
     // always holds — coarse levels never exceed the chunk's own size band.
-    virtual int maxChunkLod(Layer layer, float minSize) const = 0;
+    virtual int maxChunkLod(const Layer& layer, float minSize) const = 0;
 
     // Root-lattice origin for the GPU rung gate (must be bit-identical to the
     // tree root min the chunks were tessellated against; per-chunk values
     // mis-align parent cells and cull most rungs).
-    virtual glm::vec3 lodRootMin(Layer layer) const { return glm::vec3(0.0f); }
+    virtual glm::vec3 lodRootMin(const Layer& layer) const;
     // Edge length of the layer's octree root cube (0 when there is no tree).
-    virtual float lodRootSize(Layer layer) const { (void)layer; return 0.0f; }
+    virtual float lodRootSize(const Layer& layer) const;
 };

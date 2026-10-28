@@ -269,36 +269,22 @@ bool buildGpuTopologyInput(const Octree& tree, OctreeNode* chunk, const Bounding
 LocalScene::LocalScene()
     : threadPool(std::thread::hardware_concurrency()) {
     layers_.reserve(3);
-    SceneLayer opaque;
-    opaque.name = "Opaque";
-    opaque.renderer = LayerRendererType::Solid;
-    opaque.enabled = true;
-    opaque.octree = std::make_shared<Octree>(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9));
-    layers_.push_back(std::move(opaque));
-    SceneLayer transp;
-    transp.name = "Transparent";
-    transp.renderer = LayerRendererType::Water;
-    transp.enabled = true;
-    transp.octree = std::make_shared<Octree>(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9));
-    layers_.push_back(std::move(transp));
-    // Video layer: geometry using MaterialKind::Video materials. It is drawn
-    // after solid and water so per-material blend modes can composite against
-    // the finished scene color.
-    SceneLayer video;
-    video.name = "Video";
-    video.renderer = LayerRendererType::Video;
-    video.enabled = true;
-    video.octree = std::make_shared<Octree>(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9));
-    layers_.push_back(std::move(video));
+    addLayer("Opaque", LayerRendererType::Solid);
+    addLayer("Transparent", LayerRendererType::Water);
+    addLayer("Video", LayerRendererType::Video);
 }
 
 LocalScene::~LocalScene() = default;
 
 void LocalScene::stopPools() {
     threadPool.stop();
-    std::lock_guard<std::mutex> lock(layersMutex_);
-    for (auto& l : layers_) {
-        if (l.octree) l.octree->threadPool.stop();
+    std::vector<std::shared_ptr<Layer>> layers;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        layers = layers_;
+    }
+    for (auto& l : layers) {
+        if (auto tree = l->octreeRef()) tree->threadPool.stop();
     }
 }
 
@@ -307,93 +293,85 @@ size_t LocalScene::layerCount() const {
     return layers_.size();
 }
 
-std::string LocalScene::layerName(Layer layer) const {
+Layer* LocalScene::layerAt(size_t index) {
     std::lock_guard<std::mutex> lock(layersMutex_);
-    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return {};
-    return layers_[static_cast<size_t>(layer)].name;
+    if (index >= layers_.size()) return nullptr;
+    return layers_[index].get();
 }
 
-void LocalScene::setLayerName(Layer layer, const std::string& name) {
+const Layer* LocalScene::layerAt(size_t index) const {
     std::lock_guard<std::mutex> lock(layersMutex_);
-    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
-    layers_[static_cast<size_t>(layer)].name = name;
+    if (index >= layers_.size()) return nullptr;
+    return layers_[index].get();
 }
 
-LayerRendererType LocalScene::layerRenderer(Layer layer) const {
+Layer* LocalScene::findLayer(Layer::Id id) {
     std::lock_guard<std::mutex> lock(layersMutex_);
-    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size())
-        return (layer == LAYER_TRANSPARENT) ? LayerRendererType::Water : LayerRendererType::Solid;
-    return layers_[static_cast<size_t>(layer)].renderer;
+    for (auto& l : layers_) {
+        if (l->id() == id) return l.get();
+    }
+    return nullptr;
 }
 
-void LocalScene::setLayerRenderer(Layer layer, LayerRendererType renderer) {
+const Layer* LocalScene::findLayer(Layer::Id id) const {
     std::lock_guard<std::mutex> lock(layersMutex_);
-    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
-    layers_[static_cast<size_t>(layer)].renderer = renderer;
+    for (auto& l : layers_) {
+        if (l->id() == id) return l.get();
+    }
+    return nullptr;
 }
 
-bool LocalScene::layerEnabled(Layer layer) const {
+Layer* LocalScene::addLayer(const std::string& name, LayerRendererType renderer) {
     std::lock_guard<std::mutex> lock(layersMutex_);
-    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return false;
-    return layers_[static_cast<size_t>(layer)].enabled;
-}
-
-void LocalScene::setLayerEnabled(Layer layer, bool enabled) {
-    std::lock_guard<std::mutex> lock(layersMutex_);
-    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
-    layers_[static_cast<size_t>(layer)].enabled = enabled;
-}
-
-Layer LocalScene::addLayer(const std::string& name, LayerRendererType renderer) {
-    std::lock_guard<std::mutex> lock(layersMutex_);
-    SceneLayer l;
-    l.name = name.empty() ? ("Layer " + std::to_string(layers_.size())) : name;
-    l.renderer = renderer;
-    l.enabled = true;
     // New layers share the reference root lattice so the GPU rung gate stays
     // aligned across layers.
     glm::vec3 rootMin(0.0f);
     float rootLen = 30.0f;
     float chunkSize = glm::pow(2, 9);
-    if (!layers_.empty() && layers_[0].octree) {
-        rootMin = layers_[0].octree->getMin();
-        rootLen = layers_[0].octree->getLengthX();
-        chunkSize = layers_[0].octree->chunkSize;
+    if (!layers_.empty() && layers_[0]->octree()) {
+        rootMin = layers_[0]->octree()->getMin();
+        rootLen = layers_[0]->octree()->getLengthX();
+        chunkSize = layers_[0]->octree()->chunkSize;
     }
-    l.octree = std::make_shared<Octree>(BoundingCube(rootMin, rootLen), chunkSize);
-    layers_.push_back(std::move(l));
-    return static_cast<Layer>(layers_.size() - 1);
+    const Layer::Id id = nextLayerId_++;
+    auto layer = std::make_shared<Layer>(
+        id, name.empty() ? ("Layer " + std::to_string(id)) : name, renderer,
+        std::make_shared<Octree>(BoundingCube(rootMin, rootLen), chunkSize));
+    layers_.push_back(layer);
+    return layer.get();
 }
 
-bool LocalScene::removeLayer(Layer layer) {
+bool LocalScene::removeLayer(Layer& layer) {
     std::lock_guard<std::mutex> lock(layersMutex_);
-    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return false;
     if (layers_.size() <= 1) return false; // keep at least one layer
-    layers_.erase(layers_.begin() + layer);
-    return true;
-}
-
-Octree* LocalScene::getLayerOctree(Layer layer) {
-    std::lock_guard<std::mutex> lock(layersMutex_);
-    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return nullptr;
-    return layers_[static_cast<size_t>(layer)].octree.get();
-}
-
-const Octree* LocalScene::getLayerOctree(Layer layer) const {
-    std::lock_guard<std::mutex> lock(layersMutex_);
-    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return nullptr;
-    return layers_[static_cast<size_t>(layer)].octree.get();
-}
-
-Octree* LocalScene::layerOctreeLocked(Layer layer) const {
-    if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return nullptr;
-    return layers_[static_cast<size_t>(layer)].octree.get();
+    for (auto it = layers_.begin(); it != layers_.end(); ++it) {
+        if (it->get() == &layer) {
+            // Retire rather than destroy: a worker may still hold this Layer*
+            // for an in-flight chunk build, and findLayer(id) already stops
+            // resolving it, so publishes for it are dropped by id.
+            retiredLayers_.push_back(std::move(*it));
+            layers_.erase(it);
+            return true;
+        }
+    }
+    return false;
 }
 
 void LocalScene::resetAllLayers() {
-    std::lock_guard<std::mutex> lock(layersMutex_);
-    for (auto& l : layers_) {
-        if (l.octree) l.octree->reset();
+    std::vector<std::shared_ptr<Layer>> layers;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        layers = layers_;
+    }
+    for (auto& l : layers) {
+        if (auto tree = l->octreeRef()) tree->reset();
+    }
+    {
+        // Safe here: callers join their tessellation threads first (see the
+        // header contract). Drops the retired layers kept alive for in-flight
+        // worker builds.
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        retiredLayers_.clear();
     }
     std::lock_guard<std::mutex> elock(emittedMutex_);
     emittedVersion_.clear();
@@ -406,16 +384,10 @@ void LocalScene::resetAllLayers() {
 // walk would produce the same mesh), Unavailable when the chunk cannot be
 // flattened (no octree/stale parameters) so the caller falls back to the CPU
 // walker.
-Scene::ChunkTopologyStatus LocalScene::buildChunkTopology(Layer layer, OctreeNodeData& data,
+Scene::ChunkTopologyStatus LocalScene::buildChunkTopology(Layer& layer, OctreeNodeData& data,
                                                           uint8_t chunkLod, uint32_t version,
                                                           OctreeTopologyInput& out) {
-    std::shared_ptr<Octree> tree;
-    {
-        std::lock_guard<std::mutex> lock(layersMutex_);
-        if (layer < 0 || static_cast<size_t>(layer) >= layers_.size())
-            return ChunkTopologyStatus::Unavailable;
-        tree = layers_[static_cast<size_t>(layer)].octree;
-    }
+    std::shared_ptr<Octree> tree = layer.octreeRef();
     if (!tree || data.node == nullptr || chunkLod < 1) return ChunkTopologyStatus::Unavailable;
 
     {
@@ -433,14 +405,13 @@ Scene::ChunkTopologyStatus LocalScene::buildChunkTopology(Layer layer, OctreeNod
     return ChunkTopologyStatus::Ready;
 }
 
-float LocalScene::lodRootSize(Layer layer) const {
-    std::lock_guard<std::mutex> lock(layersMutex_);
-    const Octree* tree = layerOctreeLocked(layer);
+float LocalScene::lodRootSize(const Layer& layer) const {
+    const Octree* tree = layer.octree();
     if (!tree) return 0.0f;
     return tree->getLengthX();
 }
 
-void LocalScene::commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint32_t version) {
+void LocalScene::commitChunkTopology(Layer& layer, uintptr_t emittingNodeId, uint32_t version) {
     (void)layer;
     std::lock_guard<std::mutex> lock(emittedMutex_);
     emittedVersion_[emittingNodeId] = version;
@@ -450,14 +421,9 @@ void LocalScene::commitChunkTopology(Layer layer, uintptr_t emittingNodeId, uint
 // intersecting the region with the same root-consistent cube replay the
 // topology flattening uses (cube.getChild(i) from the tree root), so a query
 // interpolates the identical corner values the mesh walker triangulates.
-bool LocalScene::buildSdfRegionTable(Layer layer, const glm::vec3& min, const glm::vec3& max,
+bool LocalScene::buildSdfRegionTable(Layer& layer, const glm::vec3& min, const glm::vec3& max,
                                      std::vector<OctreeGpuNode>& out, size_t maxNodes) {
-    std::shared_ptr<Octree> tree;
-    {
-        std::lock_guard<std::mutex> lock(layersMutex_);
-        if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return false;
-        tree = layers_[static_cast<size_t>(layer)].octree;
-    }
+    std::shared_ptr<Octree> tree = layer.octreeRef();
     if (!tree || tree->root == nullptr || !tree->allocator) return false;
 
     out.clear();
@@ -519,13 +485,8 @@ bool LocalScene::buildSdfRegionTable(Layer layer, const glm::vec3& min, const gl
     return true;
 }
 
-void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride) {
-    std::shared_ptr<Octree> tree;
-    {
-        std::lock_guard<std::mutex> lock(layersMutex_);
-        if (layer >= 0 && static_cast<size_t>(layer) < layers_.size())
-            tree = layers_[static_cast<size_t>(layer)].octree;
-    }
+void LocalScene::requestSDFCubes(Layer& layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride) {
+    std::shared_ptr<Octree> tree = layer.octreeRef();
     if (!tree) return;
     OctreeThreadContext context;
 
@@ -565,13 +526,8 @@ void LocalScene::requestSDFCubes(Layer layer, OctreeNodeData &data, const SdfCub
     }
 }
 
-void LocalScene::requestBoundingBoxes(Layer layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride) {
-    std::shared_ptr<Octree> tree;
-    {
-        std::lock_guard<std::mutex> lock(layersMutex_);
-        if (layer >= 0 && static_cast<size_t>(layer) < layers_.size())
-            tree = layers_[static_cast<size_t>(layer)].octree;
-    }
+void LocalScene::requestBoundingBoxes(Layer& layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride) {
+    std::shared_ptr<Octree> tree = layer.octreeRef();
     if (!tree) return;
     OctreeThreadContext context;
 
@@ -607,7 +563,7 @@ void LocalScene::requestBoundingBoxes(Layer layer, OctreeNodeData &data, const B
     }
 }
 
-bool LocalScene::isNodeUpToDate(Layer layer, OctreeNodeData &data, uint version) {
+bool LocalScene::isNodeUpToDate(Layer& layer, OctreeNodeData &data, uint version) {
     (void)layer;
     return data.node->version >= version;
 }
@@ -617,14 +573,13 @@ void LocalScene::noteDeletedNode(uintptr_t nodeId) {
     emittedVersion_.erase(nodeId);
 }
 
-int LocalScene::maxChunkLod(Layer layer, float minSize) const {    // The number of LoD levels a chunk can hold above its tessellation
+int LocalScene::maxChunkLod(const Layer& layer, float minSize) const {    // The number of LoD levels a chunk can hold above its tessellation
     // frontier before reaching the chunk-size boundary, clamped to the
     // ladder the tree actually provides: the root carries the highest
     // chunkLod, and its mesh is the far-distance fallback, so levels beyond
     // it are never drawn. The root's chunkLod is stored +1 shifted (uint8,
     // 0 = unset), so decode it back to the 0-based level count here.
-    std::lock_guard<std::mutex> lock(layersMutex_);
-    const Octree* tree = layerOctreeLocked(layer);
+    const Octree* tree = layer.octree();
     if (!tree) return 0;
     int rootChunkLod = -1;
     if (tree->root) {
@@ -634,9 +589,8 @@ int LocalScene::maxChunkLod(Layer layer, float minSize) const {    // The number
     return std::max(0, std::min(tree->heightRootToChunk(0, minSize), rootChunkLod));
 }
 
-glm::vec3 LocalScene::lodRootMin(Layer layer) const {
-    std::lock_guard<std::mutex> lock(layersMutex_);
-    const Octree* tree = layerOctreeLocked(layer);
+glm::vec3 LocalScene::lodRootMin(const Layer& layer) const {
+    const Octree* tree = layer.octree();
     if (!tree) return glm::vec3(0.0f);
     return tree->getMin();
 }
@@ -648,7 +602,7 @@ void LocalScene::loadScene(SceneLoaderCallback& callback, std::vector<Octree::Oc
     {
         std::lock_guard<std::mutex> lock(layersMutex_);
         octrees.reserve(layers_.size());
-        for (auto& l : layers_) octrees.push_back(l.octree.get());
+        for (auto& l : layers_) octrees.push_back(l->octree());
     }
     // Pad handler vectors to the layer count so the loader can index freely.
     if (updateHandlers.size() < octrees.size()) updateHandlers.resize(octrees.size());
@@ -687,10 +641,10 @@ void LocalScene::save(const std::string& filePath, const Settings* settings) {
         std::lock_guard<std::mutex> lock(layersMutex_);
         layerCount = static_cast<uint32_t>(layers_.size());
         for (auto& l : layers_) {
-            names.push_back(l.name);
-            renderers.push_back(static_cast<uint8_t>(l.renderer));
-            enabled.push_back(l.enabled ? 1u : 0u);
-            trees.push_back(l.octree.get());
+            names.push_back(l->name());
+            renderers.push_back(static_cast<uint8_t>(l->renderer()));
+            enabled.push_back(l->enabled() ? 1u : 0u);
+            trees.push_back(l->octree());
         }
     }
     raw.write(reinterpret_cast<const char*>(&layerCount), sizeof(layerCount));
@@ -739,14 +693,13 @@ void LocalScene::load(const std::string& filePath, Settings* settings) {
         // Legacy two-layer bundle: opaque + transparent, no layer metadata.
         std::lock_guard<std::mutex> lock(layersMutex_);
         while (layers_.size() < 2) {
-            SceneLayer l;
-            l.name = "Layer " + std::to_string(layers_.size());
-            l.renderer = LayerRendererType::Solid;
-            l.octree = std::make_shared<Octree>(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9));
-            layers_.push_back(std::move(l));
+            const Layer::Id id = nextLayerId_++;
+            layers_.push_back(std::make_shared<Layer>(
+                id, "Layer " + std::to_string(id), LayerRendererType::Solid,
+                std::make_shared<Octree>(BoundingCube(glm::vec3(0.0f), 30.0f), glm::pow(2, 9))));
         }
-        OctreeFile opaqueLoader(layers_[0].octree.get(), "opaque");
-        OctreeFile transparentLoader(layers_[1].octree.get(), "transparent");
+        OctreeFile opaqueLoader(layers_[0]->octree(), "opaque");
+        OctreeFile transparentLoader(layers_[1]->octree(), "transparent");
         opaqueLoader.readFromStream(raw);
         transparentLoader.readFromStream(raw);
     } else {
@@ -757,7 +710,9 @@ void LocalScene::load(const std::string& filePath, Settings* settings) {
             return;
         }
         std::lock_guard<std::mutex> lock(layersMutex_);
+        for (auto& l : layers_) retiredLayers_.push_back(std::move(l));
         layers_.clear();
+        nextLayerId_ = 0;
         for (uint32_t i = 0; i < layerCount; ++i) {
             uint32_t nlen = 0;
             raw.read(reinterpret_cast<char*>(&nlen), sizeof(nlen));
@@ -769,15 +724,17 @@ void LocalScene::load(const std::string& filePath, Settings* settings) {
             uint8_t rend = 0, en = 1;
             raw.read(reinterpret_cast<char*>(&rend), sizeof(uint8_t));
             raw.read(reinterpret_cast<char*>(&en), sizeof(uint8_t));
-            SceneLayer l;
-            l.name = name.empty() ? ("Layer " + std::to_string(i)) : name;
-            l.renderer = (rend == 1) ? LayerRendererType::Water : LayerRendererType::Solid;
-            l.enabled = (en != 0);
-            l.octree = std::make_shared<Octree>();
-            OctreeFile loader(l.octree.get(), l.name);
+            const std::string layerName = name.empty() ? ("Layer " + std::to_string(i)) : name;
+            auto layer = std::make_shared<Layer>(
+                static_cast<Layer::Id>(i), layerName,
+                (rend == 1) ? LayerRendererType::Water : LayerRendererType::Solid,
+                std::make_shared<Octree>());
+            layer->setEnabled(en != 0);
+            OctreeFile loader(layer->octree(), layerName);
             loader.readFromStream(raw);
-            layers_.push_back(std::move(l));
+            layers_.push_back(std::move(layer));
         }
+        nextLayerId_ = static_cast<Layer::Id>(layers_.size());
     }
 
     if (header.hasSettings != 0u) {
@@ -814,23 +771,18 @@ void LocalScene::load(const std::string& filePath, std::vector<Octree::OctreeNod
     if (updateHandlers.size() < layers_.size()) updateHandlers.resize(layers_.size());
     if (deleteHandlers.size() < layers_.size()) deleteHandlers.resize(layers_.size());
     for (size_t i = 0; i < layers_.size(); ++i) {
-        Octree* tree = layers_[i].octree.get();
+        Octree* tree = layers_[i]->octree();
         if (tree && tree->root && tree->allocator && updateHandlers[i])
             notifyChunkNodes(tree->root, *tree, 0, *tree->allocator, updateHandlers[i], deleteHandlers[i]);
     }
 }
 
-void LocalScene::reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) {
+void LocalScene::reemitLayer(Layer& layer, const Octree::OctreeNodeDataHandler& updateHandler) {
     if (!updateHandler) return;
     // Hold the octree alive for the whole walk so a concurrent removeLayer
     // cannot free it mid-traversal; take the tree's shared lock so a
     // concurrent brush apply (unique lock) cannot mutate nodes under us.
-    std::shared_ptr<Octree> tree;
-    {
-        std::lock_guard<std::mutex> lock(layersMutex_);
-        if (layer < 0 || static_cast<size_t>(layer) >= layers_.size()) return;
-        tree = layers_[static_cast<size_t>(layer)].octree;
-    }
+    std::shared_ptr<Octree> tree = layer.octreeRef();
     if (!tree || !tree->root || !tree->allocator) return;
     Octree::OctreeNodeDataHandler noop;
     {
@@ -839,7 +791,7 @@ void LocalScene::reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& u
     }
 }
 
-void LocalScene::invalidateTessellationCache(Layer layer) {
+void LocalScene::invalidateTessellationCache(Layer& layer) {
     (void)layer;
     // buildChunkTopology skips nodes whose version matches this cache. After the
     // GPU slots for a layer are freed (disable / renderer switch), a re-emit

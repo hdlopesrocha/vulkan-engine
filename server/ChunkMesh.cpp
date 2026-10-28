@@ -55,11 +55,12 @@ bool buildChunkMesh(ChunkIdRegistry& ids, LocalScene& scene, uint64_t id,
     bool found = false;
     const size_t n = scene.layerCount();
     for (size_t i = 0; i < n && !found; ++i) {
-        Octree* tree = scene.getLayerOctree(static_cast<Layer>(i));
+        Layer* l = scene.layerAt(i);
+        Octree* tree = l ? l->octree() : nullptr;
         if (!tree) continue;
         if (containsNode(*tree, target)) {
             found = true;
-            out.layer = static_cast<uint8_t>(i);
+            out.layer = static_cast<uint8_t>(l->id());
             out.version = target->version;
         }
     }

@@ -208,31 +208,31 @@ void SceneRenderer::ensureLayerStates(size_t n) {
         layerStates_.push_back(std::make_unique<SceneLayerState>());
 }
 
-std::unordered_map<NodeID, Model3DVersion>& SceneRenderer::layerChunks(Layer layer) {
-    ensureLayerStates(static_cast<size_t>(std::max<Layer>(layer + 1, 2)));
+std::unordered_map<NodeID, Model3DVersion>& SceneRenderer::layerChunks(Layer::Id layer) {
+    ensureLayerStates(static_cast<size_t>(std::max<Layer::Id>(layer + 1, 2)));
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
     return layerStates_[static_cast<size_t>(layer)]->chunks;
 }
 
-std::recursive_mutex& SceneRenderer::layerMutex(Layer layer) {
-    ensureLayerStates(static_cast<size_t>(std::max<Layer>(layer + 1, 2)));
+std::recursive_mutex& SceneRenderer::layerMutex(Layer::Id layer) {
+    ensureLayerStates(static_cast<size_t>(std::max<Layer::Id>(layer + 1, 2)));
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
     return *layerStates_[static_cast<size_t>(layer)]->mutex;
 }
 
-std::unordered_map<NodeID, PendingDeleteEntry>& SceneRenderer::layerPendingDeletes(Layer layer) {
-    ensureLayerStates(static_cast<size_t>(std::max<Layer>(layer + 1, 2)));
+std::unordered_map<NodeID, PendingDeleteEntry>& SceneRenderer::layerPendingDeletes(Layer::Id layer) {
+    ensureLayerStates(static_cast<size_t>(std::max<Layer::Id>(layer + 1, 2)));
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
     return layerStates_[static_cast<size_t>(layer)]->pendingDeletes;
 }
 
-ThreadPool& SceneRenderer::layerGenPool(Layer layer) {
-    ensureLayerStates(static_cast<size_t>(std::max<Layer>(layer + 1, 2)));
+ThreadPool& SceneRenderer::layerGenPool(Layer::Id layer) {
+    ensureLayerStates(static_cast<size_t>(std::max<Layer::Id>(layer + 1, 2)));
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
     return *layerStates_[static_cast<size_t>(layer)]->genPool;
 }
 
-size_t SceneRenderer::getLayerModelCount(Layer layer) const {
+size_t SceneRenderer::getLayerModelCount(Layer::Id layer) const {
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
     if (layer < 0 || static_cast<size_t>(layer) >= layerStates_.size() || !layerStates_[static_cast<size_t>(layer)])
         return 0;
@@ -241,16 +241,15 @@ size_t SceneRenderer::getLayerModelCount(Layer layer) const {
     return layerStates_[static_cast<size_t>(layer)]->chunks.size();
 }
 
-LayerRendererType SceneRenderer::layerRendererType(Layer layer) const {
+LayerRendererType SceneRenderer::layerRendererType(Layer::Id layer) const {
     if (world_) {
         const Scene& scene = world_->activeScene();
-        if (layer >= 0 && static_cast<size_t>(layer) < scene.layerCount())
-            return scene.layerRenderer(layer);
+        if (const Layer* l = scene.findLayer(layer)) return l->renderer();
     }
     return (layer == LAYER_TRANSPARENT) ? LayerRendererType::Water : LayerRendererType::Solid;
 }
 
-IndirectRenderer* SceneRenderer::indirectForLayer(Layer layer) {
+IndirectRenderer* SceneRenderer::indirectForLayer(Layer::Id layer) {
     const LayerRendererType type = layerRendererType(layer);
     if (type == LayerRendererType::Video) return videoRenderer ? &videoRenderer->getIndirectRenderer() : nullptr;
     if (type == LayerRendererType::Water) return waterRenderer ? &waterRenderer->getIndirectRenderer() : nullptr;
@@ -274,13 +273,13 @@ size_t SceneRenderer::getRegisteredModelCount() const {
     size_t total = 0;
     for (size_t i = 0; i < layerStates_.size(); ++i) {
         if (!layerStates_[i]) continue;
-        if (layerRendererType(static_cast<Layer>(i)) != LayerRendererType::Solid) continue;
+        if (layerRendererType(static_cast<Layer::Id>(i)) != LayerRendererType::Solid) continue;
         total += layerStates_[i]->chunks.size();
     }
     return total;
 }
 
-void SceneRenderer::removeAllLayerMeshes(Layer layer) {
+void SceneRenderer::removeAllLayerMeshes(Layer::Id layer) {
     if (layer >= 0) chunkMeshProfiles_.clearLayer(static_cast<int32_t>(layer));
     // The layer may have been remapped since its slots were published, so
     // free its slots from BOTH renderers (removeMeshSlotted on an unknown
@@ -1662,12 +1661,12 @@ size_t SceneRenderer::publishPendingMeshes(
     // Grow layer states once so per-entry ensureLayerStates never reallocates
     // mid-batch (PublishTarget-style stability for the whole loop).
     {
-        Layer maxLayer = 1;
+        Layer::Id maxLayer = 1;
         for (const auto& item : batch) maxLayer = std::max(maxLayer, item.layer);
         ensureLayerStates(static_cast<size_t>(maxLayer) + 1);
     }
     for (auto& item : batch) {
-        const Layer layer = item.layer;
+        const Layer::Id layer = item.layer;
         const NodeID nid = item.nid;
         const LoDMesh& lod = item.lodMesh;
 
@@ -1675,9 +1674,8 @@ size_t SceneRenderer::publishPendingMeshes(
         // on disable; re-enabling needs Generate Map to repopulate).
         if (world_) {
             const Scene& scene = world_->activeScene();
-            if (layer < 0 || static_cast<size_t>(layer) >= scene.layerCount() ||
-                !scene.layerEnabled(layer))
-                continue;
+            const Layer* l = scene.findLayer(layer);
+            if (!l || !l->enabled()) continue;
         }
 
         if (lod.lod >= 0 && lod.lod < 8) lvlHist[lod.lod]++;
@@ -1837,25 +1835,29 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         glm::vec3 solidRoot(0.0f), waterRoot(0.0f);
         bool haveSolid = false, haveWater = false;
         for (size_t i = 0; i < renderScene.layerCount(); ++i) {
-            const Layer l = static_cast<Layer>(i);
-            if (!renderScene.layerEnabled(l)) continue;
-            if (renderScene.layerRenderer(l) == LayerRendererType::Water) {
-                waterMax = std::max(waterMax, renderScene.maxChunkLod(l, ms));
-                if (!haveWater) { waterRoot = renderScene.lodRootMin(l); haveWater = true; }
+            Layer* l = renderScene.layerAt(i);
+            if (!l || !l->enabled()) continue;
+            if (l->renderer() == LayerRendererType::Water) {
+                waterMax = std::max(waterMax, renderScene.maxChunkLod(*l, ms));
+                if (!haveWater) { waterRoot = renderScene.lodRootMin(*l); haveWater = true; }
             } else {
-                solidMax = std::max(solidMax, renderScene.maxChunkLod(l, ms));
-                if (!haveSolid) { solidRoot = renderScene.lodRootMin(l); haveSolid = true; }
+                solidMax = std::max(solidMax, renderScene.maxChunkLod(*l, ms));
+                if (!haveSolid) { solidRoot = renderScene.lodRootMin(*l); haveSolid = true; }
             }
         }
         // Fall back to the historic layers so an empty/disabled scene never
         // leaves the gate uninitialized.
-        if (!haveSolid && renderScene.layerCount() > 0) {
-            solidMax = renderScene.maxChunkLod(LAYER_OPAQUE, ms);
-            solidRoot = renderScene.lodRootMin(LAYER_OPAQUE);
+        if (!haveSolid) {
+            if (Layer* l = renderScene.findLayer(LAYER_OPAQUE)) {
+                solidMax = renderScene.maxChunkLod(*l, ms);
+                solidRoot = renderScene.lodRootMin(*l);
+            }
         }
-        if (!haveWater && renderScene.layerCount() > 1) {
-            waterMax = renderScene.maxChunkLod(LAYER_TRANSPARENT, ms);
-            waterRoot = renderScene.lodRootMin(LAYER_TRANSPARENT);
+        if (!haveWater) {
+            if (Layer* l = renderScene.findLayer(LAYER_TRANSPARENT)) {
+                waterMax = renderScene.maxChunkLod(*l, ms);
+                waterRoot = renderScene.lodRootMin(*l);
+            }
         }
         solidRenderer->getIndirectRenderer().setMaxLodLevel(solidMax);
         solidRenderer->getIndirectRenderer().setLodRootMin(solidRoot);
@@ -1920,14 +1922,14 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
 void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame) {
     // Snapshot the layer list so per-layer ensureLayerStates never mutates
     // while we iterate.
-    std::vector<Layer> layers;
+    std::vector<Layer::Id> layers;
     {
         std::lock_guard<std::mutex> lock(layerStatesMutex_);
         for (size_t i = 0; i < layerStates_.size(); ++i)
-            layers.push_back(static_cast<Layer>(i));
+            layers.push_back(static_cast<Layer::Id>(i));
     }
     size_t totalPending = 0;
-    for (Layer layer : layers) {
+    for (Layer::Id layer : layers) {
         IndirectRenderer* ir = indirectForLayer(layer);
         if (!ir) continue;
         auto& deleteMap = layerPendingDeletes(layer);
@@ -2044,8 +2046,9 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
     if (world_) {
         int maxLod = 0;
         try {
-            if (world_->activeScene().layerCount() > 0)
-                maxLod = world_->activeScene().maxChunkLod(LAYER_OPAQUE, 1.0f);
+            const Scene& initScene = world_->activeScene();
+            if (const Layer* l = initScene.findLayer(LAYER_OPAQUE))
+                maxLod = initScene.maxChunkLod(*l, 1.0f);
         } catch (...) {}
         std::cout << "[SceneRenderer] initSlottedMode: world "
                   << maxLod
@@ -2200,7 +2203,7 @@ void collectLavaAnchors(const OctreeTopologyInput& input, NodeID nid,
 
 } // anonymous namespace
 
-bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
+bool SceneRenderer::buildChunkResident(Scene& scene, Layer::Id layer, NodeID nid,
                                        OctreeNodeData& nodeData, uint8_t chunkLod,
                                        uint32_t version, OctreeTopologyInput& topoInput,
                                        IndirectRenderer& ir, GeometryHandler onGeometry,
@@ -2345,7 +2348,7 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer layer, NodeID nid,
     return true;
 }
 
-void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, float minSize, ThreadPool* poolOverride) {
+void SceneRenderer::processNodeLayer(Scene& scene, Layer::Id layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, float minSize, ThreadPool* poolOverride) {
 
     // Every cell with a chunkLod (stored 1..5, the +1-shifted uint8_t space)
     // publishes its mesh — each chunk carries its own level and the GPU cull
@@ -2375,11 +2378,13 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
     // compute pass writes Cartesian vertices straight into the packed pools.
     // A scene that cannot flatten its nodes, or a missing compute service, is
     // a hard skip: there is no CPU walker to fall back to.
+    Layer* layerObj = scene.findLayer(layer);
+    if (!layerObj) return;
     bool handled = false;
     if (IndirectRenderer* ir = indirectForLayer(layer)) {
         OctreeTopologyInput topoInput;
         const Scene::ChunkTopologyStatus status =
-            scene.buildChunkTopology(layer, nodeData, chunkLod, version, topoInput);
+            scene.buildChunkTopology(*layerObj, nodeData, chunkLod, version, topoInput);
         if (status == Scene::ChunkTopologyStatus::UpToDate) {
             streamStats_.topologyUpToDate.fetch_add(1, std::memory_order_relaxed);
             handled = true; // this revision is already live on the GPU
@@ -2393,7 +2398,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
             // exhausted, walk overflow) must not be recorded as up-to-date:
             // that turned a transient failure into a permanently missing chunk.
             if (handled && published)
-                scene.commitChunkTopology(layer, reinterpret_cast<uintptr_t>(nodeData.node), version);
+                scene.commitChunkTopology(*layerObj, reinterpret_cast<uintptr_t>(nodeData.node), version);
         } else {
             streamStats_.topologyUnavailable.fetch_add(1, std::memory_order_relaxed);
         }
@@ -2426,7 +2431,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer layer, NodeID nid, Octr
 // change is that each is entered only when its renderer's enabled bit is set.
 // Shared with MyApp::recollectDebugOverlays (one-shot re-collection when an
 // overlay is switched on mid-session) so both paths collect identical cubes.
-void SceneRenderer::collectDebugForChunk(Scene& scene, Layer layer, NodeID nid,
+void SceneRenderer::collectDebugForChunk(Scene& scene, Layer::Id layer, NodeID nid,
                                           OctreeNodeData& nodeData, ThreadPool* poolOverride) {
     const bool collectSdf = debugSDFRenderer && debugSDFRenderer->isEnabled();
     const bool collectBoxes = boundingBoxRenderer && boundingBoxRenderer->isEnabled();
@@ -2446,10 +2451,12 @@ void SceneRenderer::collectDebugForChunk(Scene& scene, Layer layer, NodeID nid,
     // drawable SDF face). Accumulate them for this chunk and publish to the
     // DebugSDFRenderer, which renders them via the terrain IndirectRenderer's
     // folded SDF draw stream.
+    Layer* layerObj = scene.findLayer(layer);
+    if (!layerObj) return;
     if (collectSdf) {
         std::vector<DebugSDFRenderer::CubeSDF> sdfCubes;
         std::mutex sdfMtx;
-        scene.requestSDFCubes(layer, nodeData,
+        scene.requestSDFCubes(*layerObj, nodeData,
             [&sdfCubes, &sdfMtx, &nodeData](const BoundingCube& cube, const std::array<float, 8>& sdf,
                                  uint8_t /*lod*/, uint /*version*/, uintptr_t /*emittingNodeId*/, uint32_t brushIndex) {
                 DebugSDFRenderer::CubeSDF c;
@@ -2482,7 +2489,7 @@ void SceneRenderer::collectDebugForChunk(Scene& scene, Layer layer, NodeID nid,
     if (collectBoxes) {
         std::vector<DebugCubeRenderer::CubeWithColor> bbCubes;
         std::mutex bbMtx;
-        scene.requestBoundingBoxes(layer, nodeData,
+        scene.requestBoundingBoxes(*layerObj, nodeData,
             [&bbCubes, &bbMtx, layer, &nodeData, this](const BoundingCube& cube) {
                 DebugCubeRenderer::CubeWithColor c;
                 c.cube = BoundingBox(cube.getMin(), cube.getMax());
@@ -2544,7 +2551,7 @@ size_t SceneRenderer::getTransparentModelCount() {
     size_t total = 0;
     for (size_t i = 0; i < layerStates_.size(); ++i) {
         if (!layerStates_[i]) continue;
-        if (layerRendererType(static_cast<Layer>(i)) != LayerRendererType::Water) continue;
+        if (layerRendererType(static_cast<Layer::Id>(i)) != LayerRendererType::Water) continue;
         total += layerStates_[i]->chunks.size();
     }
     return total;

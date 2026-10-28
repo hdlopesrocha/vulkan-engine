@@ -610,16 +610,16 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
             stats.error = "cancelled";
             return stats;
         }
-        const Layer layerIndex = static_cast<Layer>(layer);
-        if (!scene.layerEnabled(layerIndex)) continue;
-        Octree* tree = scene.getLayerOctree(layerIndex);
+        Layer* layerObj = scene.layerAt(layer);
+        if (!layerObj || !layerObj->enabled()) continue;
+        Octree* tree = layerObj->octree();
         if (!tree) continue;
 
-        const bool isWater = scene.layerRenderer(layerIndex) == LayerRendererType::Water;
+        const bool isWater = layerObj->renderer() == LayerRendererType::Water;
         if (isWater && !options.includeWater) continue;
 
         report(layerCount > 0 ? float(layer) / float(layerCount) : 0.0f,
-               "tessellating layer " + scene.layerName(layerIndex));
+               "tessellating layer " + layerObj->name());
 
         // Hold the layer's shared lock for the whole walk: chunk pointers and
         // node data stay valid while the worker tessellates. Brush edits

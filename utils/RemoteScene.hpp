@@ -72,29 +72,28 @@ public:
     void loadScene(SceneLoaderCallback& callback,
                    std::vector<Octree::OctreeNodeDataHandler> updateHandlers,
                    std::vector<Octree::OctreeNodeDataHandler> deleteHandlers) override;
-    void reemitLayer(Layer layer, const Octree::OctreeNodeDataHandler& updateHandler) override;
-    void requestSDFCubes(Layer layer, OctreeNodeData& data,
+    void reemitLayer(Layer& layer, const Octree::OctreeNodeDataHandler& updateHandler) override;
+    void requestSDFCubes(Layer& layer, OctreeNodeData& data,
                          const SdfCubeCallback& callback,
                          ThreadPool* poolOverride = nullptr) override;
-    void requestBoundingBoxes(Layer layer, OctreeNodeData& data,
+    void requestBoundingBoxes(Layer& layer, OctreeNodeData& data,
                               const BBoxCallback& callback,
                               ThreadPool* poolOverride = nullptr) override;
-    bool isNodeUpToDate(Layer layer, OctreeNodeData& data, uint version) override;
-    int maxChunkLod(Layer layer, float minSize) const override;
-    glm::vec3 lodRootMin(Layer layer) const override;
+    bool isNodeUpToDate(Layer& layer, OctreeNodeData& data, uint version) override;
+    int maxChunkLod(const Layer& layer, float minSize) const override;
+    glm::vec3 lodRootMin(const Layer& layer) const override;
 
     // ── Dynamic layer list (mirrors the server's layer ids) ──
+    // Remote layers carry no local octree: the server owns the trees and only
+    // streams chunk records. Layer::id() is the wire id, and the list position
+    // matches it (the server's ids are dense 0..N-1).
     size_t layerCount() const override;
-    std::string layerName(Layer layer) const override;
-    void setLayerName(Layer layer, const std::string& name) override;
-    LayerRendererType layerRenderer(Layer layer) const override;
-    void setLayerRenderer(Layer layer, LayerRendererType renderer) override;
-    bool layerEnabled(Layer layer) const override;
-    void setLayerEnabled(Layer layer, bool enabled) override;
-    Layer addLayer(const std::string& name, LayerRendererType renderer) override;
-    bool removeLayer(Layer layer) override;
-    Octree* getLayerOctree(Layer layer) override { (void)layer; return nullptr; }
-    const Octree* getLayerOctree(Layer layer) const override { (void)layer; return nullptr; }
+    Layer* layerAt(size_t index) override;
+    const Layer* layerAt(size_t index) const override;
+    Layer* findLayer(Layer::Id id) override;
+    const Layer* findLayer(Layer::Id id) const override;
+    Layer* addLayer(const std::string& name, LayerRendererType renderer) override;
+    bool removeLayer(Layer& layer) override;
 
 private:
     struct Stub {
@@ -105,17 +104,11 @@ private:
         uint8_t layer = 0;
         bool alive = true;
     };
-    struct LayerInfo {
-        std::string name = "Layer";
-        LayerRendererType renderer = LayerRendererType::Solid;
-        bool enabled = true;
-    };
-
-    void ensureLayerLocked(Layer layer);
+    void ensureLayerLocked(Layer::Id id);
     void ensureLayerForMetaLocked(uint8_t layer);
     // Grow layers/meta/handlers to cover `layer` (no locks held on entry;
     // acquires in the global order layers -> meta -> handlers).
-    void ensureCapacityForLayer(Layer layer);
+    void ensureCapacityForLayer(Layer::Id id);
 
     // Registry ----------------------------------------------------------
     Stub* upsertStub(const chunkproto::ChunkRecord& rec); // creates/refreshes
@@ -143,7 +136,7 @@ private:
 
     // Dynamic layer metadata (names/renderers/enabled). Guarded by layersMutex_.
     mutable std::mutex layersMutex_;
-    std::vector<LayerInfo> layers_;
+    std::vector<std::shared_ptr<Layer>> layers_;
 
     // Stub registry (never frees until disconnect).
     mutable std::mutex stubsMutex_;

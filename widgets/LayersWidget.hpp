@@ -20,7 +20,7 @@ public:
     // app can re-queue that layer's chunks (MyApp::repopulateLayer). Not owned.
     LayersWidget(Scene* scene, SceneRenderer* renderer,
                  std::function<void()> onLayersChanged = {},
-                 std::function<void(Layer)> onLayerRepopulate = {});
+                 std::function<void(Layer::Id)> onLayerRepopulate = {});
 
     void render() override;
     void setScene(Scene* scene) { scene_ = scene; }
@@ -32,7 +32,7 @@ private:
     Scene* scene_ = nullptr; // not owned (active scene; MyApp re-points on remote toggle)
     SceneRenderer* renderer_ = nullptr; // not owned
     std::function<void()> onLayersChanged_;
-    std::function<void(Layer)> onLayerRepopulate_;
+    std::function<void(Layer::Id)> onLayerRepopulate_;
     std::string newLayerName_;
     bool allowStructureEdit_ = true;
 };

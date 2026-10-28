@@ -5,6 +5,6 @@
 
 // One pending scene-graph change (layer + node data).
 struct PendingNode {
-    Layer layer;
+    Layer::Id layer;
     OctreeNodeData node;
 };

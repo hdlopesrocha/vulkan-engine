@@ -137,7 +137,7 @@ public:
     // Pending change queues (thread-safe)
 
     // ── Dynamic per-layer GPU state ──
-    // One entry per Scene layer (index = Layer). Each layer tracks its own
+    // One entry per Scene layer (index = Layer::Id). Each layer tracks its own
     // chunk registry + deferred-delete slots + generation pool, while the two
     // shared IndirectRenderers (solid/water) are selected per layer via the
     // Scene's LayerRendererType (LayersWidget). States are heap-allocated so
@@ -153,7 +153,7 @@ public:
     // render thread in processPendingMeshes to refresh RT proxy albedos.
     std::atomic<bool> proxyAlbedoRefresh_{false};
 
-    // ── Chunk tracking (per Scene layer, index = Layer) ──
+    // ── Chunk tracking (per Scene layer, index = Layer::Id) ──
     // Slots whose chunks were erased but may be replaced (same NodeID, new
     // version). For solid/water the octree node is reused on edit, so NodeID
     // stays stable — addMeshSlotted finds the existing entry and republishes
@@ -173,15 +173,15 @@ public:
     // ensureLayerStates grows the vector to at least n entries (creating
     // generation pools on demand). All accessors auto-grow.
     void ensureLayerStates(size_t n);
-    std::unordered_map<NodeID, Model3DVersion>& layerChunks(Layer layer);
-    std::recursive_mutex& layerMutex(Layer layer);
-    std::unordered_map<NodeID, PendingDeleteEntry>& layerPendingDeletes(Layer layer);
-    ThreadPool& layerGenPool(Layer layer);
-    size_t getLayerModelCount(Layer layer) const;
+    std::unordered_map<NodeID, Model3DVersion>& layerChunks(Layer::Id layer);
+    std::recursive_mutex& layerMutex(Layer::Id layer);
+    std::unordered_map<NodeID, PendingDeleteEntry>& layerPendingDeletes(Layer::Id layer);
+    ThreadPool& layerGenPool(Layer::Id layer);
+    size_t getLayerModelCount(Layer::Id layer) const;
     // Renderer routing for a layer (reads the active Scene's LayerRendererType;
     // falls back to layer 1 = water, others = solid when no world/scene).
-    LayerRendererType layerRendererType(Layer layer) const;
-    IndirectRenderer* indirectForLayer(Layer layer);
+    LayerRendererType layerRendererType(Layer::Id layer) const;
+    IndirectRenderer* indirectForLayer(Layer::Id layer);
     // Back-compat: total solid (opaque) count across Solid-mapped layers.
     size_t getRegisteredModelCount() const;
 
@@ -208,7 +208,7 @@ public:
 
     // Remove all registered meshes for one layer (from both IRs — the layer
     // may have been remapped since its slots were published) and clear it.
-    void removeAllLayerMeshes(Layer layer);
+    void removeAllLayerMeshes(Layer::Id layer);
     // Remove every layer's meshes (clears both IRs).
     void removeAllMeshes();
 
@@ -245,13 +245,13 @@ public:
     void destroyDescriptorBuffers(VulkanApp* app);
     // cleanup declared above (accepts VulkanApp*)
 
-    using GeometryHandler = const std::function<void(Layer, NodeID, const LoDMesh&)>&;
+    using GeometryHandler = const std::function<void(Layer::Id, NodeID, const LoDMesh&)>&;
 
     // Process nodes from a generic per-layer NodeID->OctreeNodeData map
     // Process nodes for a single Layer (nodeMap maps NodeID->OctreeNodeData)
     void processNodeLayer(
         Scene& scene, 
-        Layer layer, 
+        Layer::Id layer, 
         NodeID nid, 
         OctreeNodeData& nodeData, 
         GeometryHandler onGeometry, 
@@ -268,7 +268,7 @@ public:
     // records when the overlay is off. processNodeLayer calls it for every
     // built/up-to-date chunk; MyApp::recollectDebugOverlays calls it once per
     // live chunk when an overlay is switched on mid-session.
-    void collectDebugForChunk(Scene& scene, Layer layer, NodeID nid,
+    void collectDebugForChunk(Scene& scene, Layer::Id layer, NodeID nid,
                               OctreeNodeData& nodeData, ThreadPool* poolOverride = nullptr);
 
     // ── GPU-resident chunk build ─────────────────────────────────────────────
@@ -282,7 +282,7 @@ public:
     // `published` is set when the revision is settled (geometry installed, or
     // legitimately empty); it stays false on a failed build so the caller does
     // not mark the version up-to-date and a later re-emit retries.
-    bool buildChunkResident(Scene& scene, Layer layer, NodeID nid, OctreeNodeData& nodeData,
+    bool buildChunkResident(Scene& scene, Layer::Id layer, NodeID nid, OctreeNodeData& nodeData,
                             uint8_t chunkLod, uint32_t version, OctreeTopologyInput& topoInput,
                             IndirectRenderer& ir, GeometryHandler onGeometry, bool& published);
 
@@ -502,7 +502,7 @@ public:
     CommandBufferState frameCmdState;
 
 private:
-    // Per-layer GPU state (index = Layer). Guarded by layerStatesMutex_ for
+    // Per-layer GPU state (index = Layer::Id). Guarded by layerStatesMutex_ for
     // add/remove; each entry's own mutex guards its chunk maps.
     mutable std::mutex layerStatesMutex_;
     std::vector<std::unique_ptr<SceneLayerState>> layerStates_;

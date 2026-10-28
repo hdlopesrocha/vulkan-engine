@@ -99,18 +99,18 @@ int main(int argc, char** argv) {
     SceneServer server(mainScene, port, /*verbose=*/true);
 
     std::atomic<uint64_t> nSolid{0}, nSolidDel{0}, nLiquid{0}, nLiquidDel{0};
-    auto makeUpsert = [&](Layer layer) -> Octree::OctreeNodeDataHandler {
+    auto makeUpsert = [&](Layer::Id layer) -> Octree::OctreeNodeDataHandler {
         return [&, layer](const OctreeNodeData& nd) {
             if (exportMode) return;
-            server.pushUpsert(nd, static_cast<int>(layer));
+            server.pushUpsert(nd, layer);
             if (layer == LAYER_OPAQUE) ++nSolid;
             else if (layer == LAYER_TRANSPARENT) ++nLiquid;
         };
     };
-    auto makeErase = [&](Layer layer) -> Octree::OctreeNodeDataHandler {
+    auto makeErase = [&](Layer::Id layer) -> Octree::OctreeNodeDataHandler {
         return [&, layer](const OctreeNodeData& nd) {
             if (exportMode) return;
-            server.pushDelete(nd, static_cast<int>(layer));
+            server.pushDelete(nd, layer);
             if (layer == LAYER_OPAQUE) ++nSolidDel;
             else if (layer == LAYER_TRANSPARENT) ++nLiquidDel;
         };
@@ -121,8 +121,10 @@ int main(int argc, char** argv) {
     upserts.reserve(nLayers);
     erases.reserve(nLayers);
     for (size_t i = 0; i < nLayers; ++i) {
-        upserts.push_back(makeUpsert(static_cast<Layer>(i)));
-        erases.push_back(makeErase(static_cast<Layer>(i)));
+        const Layer* l = mainScene.layerAt(i);
+        if (!l) continue;
+        upserts.push_back(makeUpsert(l->id()));
+        erases.push_back(makeErase(l->id()));
     }
 
     if (!exportMode) {
