@@ -1,5 +1,6 @@
 #include "EdgeCell.hpp"
 #include "OctreeNode.hpp"
+#include "../math/BrushMode.hpp"
 #include "../sdf/SDF.hpp"
 #include <functional>
 
@@ -11,9 +12,14 @@ bool EdgeCell::isSurface() const {
     // polygons must use cells that actually straddle the surface; a
     // non-crossing neighbour is treated exactly like Empty/Solid space and
     // closed by the remaining quadrants.
+    //
+    // A discard-brush cell is also never a ring vertex: it was never painted,
+    // so it must not be tessellated or borrow a material from a neighbour.
+    // This mirrors the shader's isSurfaceCell and the GPU scan-list filter.
     return node != NULL
         && node->getType() == SpaceType::Surface
-        && SDF::eval(node->sdf) == SpaceType::Surface;
+        && SDF::eval(node->sdf) == SpaceType::Surface
+        && node->brushIndex > DISCARD_BRUSH_INDEX;
 }
 
 bool EdgeCell::ownerLess(const EdgeCell &a, const EdgeCell &b) {

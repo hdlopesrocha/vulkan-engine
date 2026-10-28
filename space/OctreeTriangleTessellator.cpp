@@ -201,30 +201,14 @@ struct OctreeTriangleTessellator::Walk {
         if(samePosition(va.position, vb.position, eps)) return;
         if(samePosition(vb.position, vc.position, eps)) return;
         if(samePosition(vc.position, va.position, eps)) return;
-        // Brush fallback for unattributed vertices: rung-parent chunks
-        // aggregate finer non-chunk cells whose vertices were solved
-        // (positions valid) but never painted (brush DISCARD), because paint
-        // runs on chunk assignment, not on subdivision. Such triangles are
-        // real surface; attribute them with the anchor chunk's brush (`from`
-        // carries the rung being tessellated) instead of dropping them, which
-        // left holes in chunk wireframes/meshes. Copies only — shared octree
-        // vertex state is never mutated. When the anchor itself is
-        // unattributed the old drop behavior is kept (Tesselator::handle
-        // below enforces the same rule).
-        const int fallbackBrush = (from != NULL) ? from->brushIndex : DISCARD_BRUSH_INDEX;
-        const int fallbackTextureType = (from != NULL) ? from->textureType : 0;
-        const glm::vec2 fallbackUv = (from != NULL) ? from->data : glm::vec2(0.0f);
-        // Resolve the anchor-chunk brush on local copies: the nodes are shared
-        // by adjacent cells and by other chunk builds running on the worker
-        // pools, so the fallback must never be written back into them.
-        OctreeNode na = a, nb = b, nc = c;
-        if(na.brushIndex <= DISCARD_BRUSH_INDEX) { na.brushIndex = fallbackBrush; na.textureType = fallbackTextureType; na.data = fallbackUv; }
-        if(nb.brushIndex <= DISCARD_BRUSH_INDEX) { nb.brushIndex = fallbackBrush; nb.textureType = fallbackTextureType; nb.data = fallbackUv; }
-        if(nc.brushIndex <= DISCARD_BRUSH_INDEX) { nc.brushIndex = fallbackBrush; nc.textureType = fallbackTextureType; nc.data = fallbackUv; }
-        if(na.brushIndex <= DISCARD_BRUSH_INDEX || nb.brushIndex <= DISCARD_BRUSH_INDEX
-            || nc.brushIndex <= DISCARD_BRUSH_INDEX) return;
+        // A discard-brush vertex was never painted: do not tessellate it and do
+        // not borrow the anchor chunk's brush (that resurrected unpainted cells
+        // as geometry with a borrowed material). Same rule as the GPU
+        // emitTriangle and the ring gate in EdgeCell::isSurface.
+        if(a.brushIndex <= DISCARD_BRUSH_INDEX || b.brushIndex <= DISCARD_BRUSH_INDEX
+            || c.brushIndex <= DISCARD_BRUSH_INDEX) return;
 
-        func.handle(na, nb, nc, va, vb, vc, eps);
+        func.handle(a, b, c, va, vb, vc, eps);
     }
 
     void emitSegment(const EdgeSpan &edge, float start, float end, bool sign0, bool sign1) {
@@ -446,7 +430,11 @@ struct OctreeTriangleTessellator::Walk {
         // Stored (+1-shifted → uint8) lod: 0 = unset, 1 = frontier, k+1 = parent.
         const uint8_t lod = node->getLod();
         if(lod == targetLod) {
-            scanCell(node, cube);
+            // A discard-brush cell was never painted: do not even scan it.
+            // Mirrors the GPU scan-list filter in GpuTopologyBuilder::collectCells.
+            if(node->brushIndex > DISCARD_BRUSH_INDEX) {
+                scanCell(node, cube);
+            }
         }
         else if(lod > targetLod) {
             ChildBlock *block = node->getBlock(*tree.allocator);

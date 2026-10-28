@@ -372,8 +372,13 @@ Cell findCellAt(vec3 pos) {
 // Requiring an actual crossing in the node's own samples (SDF::eval, which
 // skips INFINITY corners) matches the CPU gate exactly, so both sides of a
 // shared edge drop the same non-crossing cells.
+//
+// A discard-brush cell is never a ring vertex either: it was never painted, so
+// it must not be tessellated or borrow a material. The host also removes it
+// from the scan list and the dense vertex slots.
 bool isSurfaceCell(Cell c) {
-    return c.valid && nodeType(c.id) == TYPE_SURFACE && evalSdfType(c.id) == TYPE_SURFACE;
+    return c.valid && nodeType(c.id) == TYPE_SURFACE && evalSdfType(c.id) == TYPE_SURFACE
+        && nodeBrush(c.id) > DISCARD_BRUSH;
 }
 
 // ownerLess: cube size, then min, then identity (CPU uses pointer order; the

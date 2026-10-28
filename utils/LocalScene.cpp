@@ -131,6 +131,11 @@ struct GpuTopologyBuilder {
         if (lod == targetLod) {
             // Discovery/compaction: only cells with a zero crossing can emit.
             maxScanCellSize = std::max(maxScanCellSize, cube.getLengthX());
+            // A discard-brush cell was never painted; it must not be scanned
+            // (tessellated), matching the CPU walker's EdgeCell gate and the
+            // shader's isSurfaceCell. It stays in the node table when a
+            // neighbour samples it, but it can never start a segment.
+            if (n->brushIndex <= DISCARD_BRUSH_INDEX) return;
             const uint32_t crossings = countCrossEdges(n);
             if (crossings != 0) {
                 out.cells.push_back(addNode(n, cube));
@@ -256,7 +261,10 @@ bool buildGpuTopologyInput(const Octree& tree, OctreeNode* chunk, const Bounding
     // published extent (highest referenced slot + 1) can be smaller.
     uint32_t vertexSlot = 0;
     for (OctreeGpuNode& n : out.nodes) {
-        if (n.type == static_cast<int32_t>(SpaceType::Surface)) {
+        // Discard-brush nodes never produce geometry (the shader's
+        // isSurfaceCell excludes them), so they need no dense vertex slot.
+        if (n.type == static_cast<int32_t>(SpaceType::Surface) &&
+            n.brushIndex > DISCARD_BRUSH_INDEX) {
             n.flags |= static_cast<int32_t>((vertexSlot + 1u) << 1);
             ++vertexSlot;
         }

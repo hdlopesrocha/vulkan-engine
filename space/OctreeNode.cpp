@@ -1,6 +1,7 @@
 #include "OctreeNode.hpp"
 #include "OctreeAllocator.hpp"
 #include "OctreeNodeData.hpp"
+#include "../math/BrushMode.hpp"
 #include "../sdf/SDF.hpp"
 #include <cmath>
 #include <cstring>
@@ -32,7 +33,10 @@ OctreeNode * OctreeNode::init(Vertex vert) {
 	this->chunkLod = 0;
 	this->setChunk(false);
 	this->setType(SpaceType::Surface);
-	this->brushIndex = vert.brushIndex;
+	// Unpainted until a painter or the parent tally assigns a real brush.
+	// Defaulting to 0 made every intermediate cell look like material 0, so a
+	// discard-brush region still tessellated as real geometry.
+	this->brushIndex = DISCARD_BRUSH_INDEX;
 	this->textureType = vert.textureType;
 	this->data = vert.texCoord;
 	this->hsv = vert.hsv;

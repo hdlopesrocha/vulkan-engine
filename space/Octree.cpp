@@ -792,6 +792,10 @@ void Octree::shape(
     if(!isLeaf) {
         uint8_t selectedLod = 0;
         uint8_t selectedChunkLod = 0;
+        // The tally below is authoritative for an internal cell: if no surface
+        // child carries a painted brush, this node is unpainted and must stay
+        // DISCARD instead of keeping a stale/default material index.
+        r.brushIndex = DISCARD_BRUSH_INDEX;
 
         for(uint i =0 ; i < 8 ; ++i) {
             NodeOperationResult &child = children[i];
