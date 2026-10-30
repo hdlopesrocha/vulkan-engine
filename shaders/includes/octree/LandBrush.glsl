@@ -8,6 +8,9 @@
 // Keep in sync with LandBrush (utils/LandBrush.hpp) and the material indices in
 // utils/LandBrush.cpp.
 const int LAND_BRUSH_INDEX = 255;
+// NormalBrush sentinel (math/BrushMode.hpp NORMAL_BRUSH_INDEX). Resolved per
+// node: keep only nodes facing +Y, the rest are discarded.
+const int NORMAL_BRUSH = 254;
 
 const int LAND_UNDERGROUND    = -1;
 const int LAND_GRASS          = 3;   // textures/grass_color.jpg
