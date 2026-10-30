@@ -14,10 +14,10 @@ NormalBrush::NormalBrush(int brush_, glm::vec3 hsv_, glm::vec3 normal_) {
 
 int NormalBrush::paint(const OctreeNode &o) const {
     (void)o;
-    // The surface normal is no longer available to the painter (the octree
-    // build no longer computes SDF::getNormalFromPosition), so the node's
-    // material is painted unconditionally.
-    return brush;
+    // The surface normal is only computed on the GPU (the octree build never
+    // calls SDF::getNormalFromPosition). Tag the brush; OctreeTriangles.comp
+    // computes dot(surfaceNormal, +Y) and discards the nodes that fail it.
+    return NORMAL_BRUSH_INDEX;
 }
 
 glm::vec3 NormalBrush::paintHSV(const OctreeNode &o) const {
