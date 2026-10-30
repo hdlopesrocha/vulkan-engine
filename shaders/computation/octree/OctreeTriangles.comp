@@ -296,6 +296,29 @@ vec3 cellPosCached(Cell c) {
     return p;
 }
 
+// Final material of a node, the same value the old CPU painters stored on the
+// node before tessellation:
+//   LandBrush::paint(Vertex) classified the node from SDF::getPosition /
+//   getNormalFromPosition of its cube and returned DISCARD_BRUSH_INDEX for
+//   underground (normal.y <= 0.01).
+// Every gate below uses this resolved material, so a discarded node is never
+// scanned, never owns a ring segment and never emits a triangle — the GPU
+// equivalent of the old CPU Tesselator::handle check.
+int nodeResolvedBrush(uint id) {
+    const int raw = nodeBrush(id);
+    if (raw != LAND_BRUSH_INDEX && raw != NORMAL_BRUSH) return raw;
+    Cell c;
+    c.id = id;
+    c.mn = nodeMin(id);
+    c.sz = nodeSize(id);
+    c.valid = true;
+    const vec3 p = cellPosCached(c);
+    const vec3 n = cellNormal(c, p);
+    if (raw == LAND_BRUSH_INDEX) return landMaterialIndex(p, n);
+    // NormalBrush: the old paint(Vertex) kept only +Y-facing nodes.
+    return (dot(normalize(n), vec3(0.0, 1.0, 0.0)) > 0.0) ? 0 : DISCARD_BRUSH;
+}
+
 // ------------------------------------------------------------- findCellAt
 
 bool worldContains(vec3 pos) {
@@ -378,7 +401,7 @@ Cell findCellAt(vec3 pos) {
 // from the scan list and the dense vertex slots.
 bool isSurfaceCell(Cell c) {
     return c.valid && nodeType(c.id) == TYPE_SURFACE && evalSdfType(c.id) == TYPE_SURFACE
-        && nodeBrush(c.id) > DISCARD_BRUSH;
+        && nodeResolvedBrush(c.id) > DISCARD_BRUSH;
 }
 
 // ownerLess: cube size, then min, then identity (CPU uses pointer order; the
@@ -521,16 +544,12 @@ void emitTriangle(Cell c0, Cell c1, Cell c2, float eps) {
     if (samePosition(p1, p2, eps)) return;
     if (samePosition(p2, p0, eps)) return;
 
-    // DISCARD_BRUSH_INDEX (-1) is the "never painted" sentinel. A vertex that
-    // still carries it must not produce geometry: substituting the anchor
-    // chunk's brush here resurrected unpainted cells as triangles with a
-    // borrowed material (and mixed materials across the triangle). Drop the
-    // whole triangle instead. Anchors that are themselves discard-brush never
-    // reach this pass (SceneRenderer::processNodeLayer rejects them), so this
-    // only removes the finer unpainted cells inside a painted chunk.
-    if (nodeBrush(c0.id) <= DISCARD_BRUSH) return;
-    if (nodeBrush(c1.id) <= DISCARD_BRUSH) return;
-    if (nodeBrush(c2.id) <= DISCARD_BRUSH) return;
+    // The old CPU Tesselator::handle dropped a triangle when any corner NODE
+    // carried DISCARD_BRUSH_INDEX after painting. nodeResolvedBrush() is that
+    // same node material (LandBrush already classified).
+    if (nodeResolvedBrush(c0.id) <= DISCARD_BRUSH) return;
+    if (nodeResolvedBrush(c1.id) <= DISCARD_BRUSH) return;
+    if (nodeResolvedBrush(c2.id) <= DISCARD_BRUSH) return;
 
     // Append the triangle's three indices. The counter advances by 3 even
     // when the triangle does not fit, so the host reads back the exact number
@@ -838,6 +857,11 @@ void emitSegment(EdgeSpan edge, float start, float end, bool sign0, bool sign1) 
 
 // Octree::iterateTriangles::scanCell
 void scanCell(uint cellId) {
+    // A node the painter discarded (LandBrush underground, NormalBrush
+    // non-+Y faces) must not be tessellated at all: no corner read, edge walk,
+    // break collection or segment emission.
+    if (nodeResolvedBrush(cellId) <= DISCARD_BRUSH) return;
+
     Cell cell;
     cell.id = cellId;
     cell.mn = nodeMin(cellId);
@@ -939,10 +963,9 @@ void writeVertexOnce(uint node, int slot) {
     c.valid = true;
     vec3 p = cellPos(c);
     vec3 n = cellNormal(c, p);
-    int brush = nodeBrush(node);
-    // Defensive only: emitTriangle never emits a triangle with a raw DISCARD
-    // corner, so a referenced node always has a real brush. Keep the sentinel
-    // out of the vertex payload in case a future path writes one directly.
+    int brush = nodeResolvedBrush(node);
+    // Defensive only: emitTriangle never emits a triangle with a discarded
+    // node, so a referenced node always has a real material.
     if (brush <= DISCARD_BRUSH) brush = pc.fromBrush;
     residentWriteVertex(uint(slot), p, n, brush, nodeHsvOf(node), nodeTextureType(node), nodeData(node));
 }
