@@ -1,6 +1,7 @@
 #pragma once
 #include "ThreadPool.hpp"
 #include "OctreeThreadContext.hpp"
+#include "OctreeSessionContext.hpp"
 #include "OctreeNodeFrame.hpp"
 #include "OctreeAllocator.hpp"
 #include <functional>
@@ -54,13 +55,19 @@ class Octree: public BoundingCube {
         OctreeNodeDataHandler &deleteHandler
     );
     void reset();
+    // `allowChildren` lets the chunk-driven apply run one reached chunk's own
+    // node logic without descending into its subtree: when false the general
+    // path takes the pruned branch exactly as if function.check() had reported
+    // Disjoint, while the early classification branches and the materialization
+    // of this node still run. The top-down apply always passes true.
     void shape(
         NodeOperationResult &r,
         OctreeNodeFrame frame, 
         const ShapeArgs &args, 
         OctreeThreadContext * threadContext,
         OctreeNodeDataHandler &updateHandler,
-        OctreeNodeDataHandler &deleteHandler
+        OctreeNodeDataHandler &deleteHandler,
+        bool allowChildren = true
     );
     bool intersect(const Ray& ray, glm::vec3& outPos) const;
     float getSdfAt(const glm::vec3 &pos);
@@ -80,6 +87,23 @@ class Octree: public BoundingCube {
     bool isChunkNode(float nodeLength) const;
     bool isThreadNode(float nodeLength, float minSize, int threadSize) const;
 private:
+    // Session state that outlives a single apply (the chunk-level history).
+    // apply() owns the tree write lock, so no extra synchronization is needed.
+    OctreeSessionContext sessionContext;
+
+    // Chunk-driven apply. Starts at the work units kept in the session's chunk
+    // history instead of the world root, does not descend into chunk subtrees
+    // the shape cannot reach, and then refreshes the ancestors bottom-up so
+    // their SDF corners/type/LoD still describe the whole subtree. Falls back
+    // to the full root descent (shape()) whenever no chunk is hit or the stored
+    // tree does not satisfy the invariants the bottom-up refresh relies on.
+    void shapeChunks(
+        const ShapeArgs &args,
+        OctreeSessionContext &session,
+        OctreeThreadContext * threadContext,
+        OctreeNodeDataHandler &updateHandler,
+        OctreeNodeDataHandler &deleteHandler
+    );
     void buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext, bool leafPass) const;
     void buildResultSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext) const;
     float evaluateSDF(const ShapeArgs &args, OctreeThreadContext * threadContext, glm::vec3 p) const;
