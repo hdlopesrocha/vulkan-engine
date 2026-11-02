@@ -1563,7 +1563,13 @@ void VegetationRenderer::recordReadBarriers(VkCommandBuffer& commandBuffer) {
         // that cause RADV GPUVM faults (TCP read).
         VkBufferMemoryBarrier2 instanceBarrier{};
         instanceBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        instanceBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        // HOST_BIT is separate from ALL_COMMANDS: the ALL_COMMANDS expansion
+        // never includes the host stage, so a HOST_WRITE source is invalid
+        // unless HOST_BIT is named explicitly (VUID-VkBufferMemoryBarrier2-
+        // srcAccessMask-03917). The CPU upload path needs it; the transfer and
+        // compute sources are already covered by ALL_COMMANDS.
+        instanceBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT |
+                                       VK_PIPELINE_STAGE_2_HOST_BIT;
         instanceBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT |
                                         VK_ACCESS_2_TRANSFER_WRITE_BIT |
                                         VK_ACCESS_2_SHADER_WRITE_BIT;
