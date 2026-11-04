@@ -1,4 +1,5 @@
 #include "LocalScene.hpp"
+#include "OctreeRaymarchTable.hpp"
 #include "../space/OctreeFile.hpp"
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeAllocator.hpp"
@@ -17,6 +18,7 @@
 #include <cmath>
 #include <cfloat>
 #include <cstdlib>
+#include <deque>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -490,6 +492,146 @@ bool LocalScene::buildSdfRegionTable(Layer& layer, const glm::vec3& min, const g
     if (out.empty()) return false;
     std::cout << "[LocalScene] SDF region table: " << out.size() << " nodes (region "
               << (max.x - min.x) << " x " << (max.y - min.y) << " x " << (max.z - min.z) << " m)\n";
+    return true;
+}
+
+bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
+    out.clear();
+    if (maxNodes == 0) return false;
+
+    // Snapshot the enabled Solid layers: each octree is reference-counted, so a
+    // layer removed concurrently cannot destroy the tree under the walk.
+    std::vector<std::shared_ptr<Layer>> layers;
+    {
+        std::lock_guard<std::mutex> lock(layersMutex_);
+        layers.reserve(layers_.size());
+        for (const auto& layer : layers_) {
+            if (!layer || !layer->enabled()) continue;
+            if (layer->renderer() != LayerRendererType::Solid) continue;
+            if (!layer->hasOctree()) continue;
+            layers.push_back(layer);
+        }
+    }
+    if (layers.empty()) return false;
+
+    out.nodes.reserve(std::min<size_t>(maxNodes, 1u << 15));
+
+    auto makeRecord = [](OctreeNode* node, const BoundingCube& cube) {
+        OctreeRaymarchNode rec{};
+        for (int i = 0; i < 4; ++i) rec.sdf0[i] = node->sdf[i];
+        for (int i = 0; i < 4; ++i) rec.sdf1[i] = node->sdf[i + 4];
+        rec.cubeMinSize = glm::vec4(cube.getMin(), cube.getLengthX());
+        rec.meta = glm::ivec4(
+            static_cast<int32_t>(node->getLod()),
+            static_cast<int32_t>(node->getType()),
+            node->brushIndex,
+            node->isLeaf() ? static_cast<int32_t>(OctreeRaymarchTable::FLAG_LEAF) : 0);
+        rec.child03 = glm::ivec4(OctreeRaymarchTable::NO_CHILD);
+        rec.child47 = glm::ivec4(OctreeRaymarchTable::NO_CHILD);
+        rec.hsv0 = glm::vec4(node->hsv, static_cast<float>(node->textureType));
+        rec.hsv1 = glm::vec4(node->data, 0.0f, 0.0f);
+        return rec;
+    };
+
+    struct PendingNode {
+        OctreeNode* node;
+        BoundingCube cube;
+        uint32_t index;
+        uint32_t depth;
+    };
+    std::deque<PendingNode> queue;
+
+    // Diagnostic counters: how much of the surface tree actually made it into
+    // the capped table. A high prune count means deep detail falls back to the
+    // parent's trilinear field.
+    size_t surfaceSeen = 0;
+    size_t prunedChildren = 0;
+    size_t solidChildren = 0;
+    size_t emptyChildren = 0;
+    uint32_t maxDepth = 0;
+    size_t storedInfNodes = 0;
+
+    for (const auto& layer : layers) {
+        std::shared_ptr<Octree> tree = layer->octreeRef();
+        if (!tree || tree->root == nullptr || !tree->allocator) continue;
+        if (out.nodes.size() >= maxNodes) break;
+
+        std::shared_lock<std::shared_mutex> treeLock(tree->treeMutex);
+        OctreeNode* root = tree->root;
+        if (root->getType() != SpaceType::Surface) continue; // no isosurface in this layer
+
+        // Entry 0 of each layer's slice is its root. The shader ray-boxes the
+        // root cube and descends from there; non-surface roots would have no
+        // surface to shade, so they are skipped.
+        const BoundingCube rootCube = static_cast<const BoundingCube&>(*tree);
+        std::cout << "[LocalScene] SDF raymarch root cube: min=(" << rootCube.getMin().x << ", "
+                  << rootCube.getMin().y << ", " << rootCube.getMin().z << ") size="
+                  << rootCube.getLengthX() << std::endl;
+        const uint32_t rootIndex = out.append(makeRecord(root, rootCube));
+        out.layerRoots.push_back(rootIndex);
+        queue.push_back(PendingNode{root, rootCube, rootIndex, 0});
+        {
+            bool anyInf = false;
+            for (int c = 0; c < 8; ++c)
+                anyInf = anyInf || !std::isfinite(root->sdf[c]);
+            storedInfNodes += anyInf ? 1u : 0u;
+        }
+
+        // Breadth-first: the node cap truncates the deepest level uniformly
+        // across the whole tree. Surface children that do not fit are marked on
+        // their parent (pruned mask) so the shader samples the parent's
+        // trilinear field instead of treating the region as empty.
+        while (!queue.empty()) {
+            const PendingNode cur = queue.front();
+            queue.pop_front();
+
+            OctreeNode* children[8] = {};
+            if (!cur.node->isLeaf())
+                cur.node->getChildren(*tree->allocator, children);
+
+            for (int i = 0; i < 8; ++i) {
+                OctreeNode* child = children[i];
+                if (child == nullptr) continue;
+
+                const SpaceType childType = child->getType();
+                if (childType != SpaceType::Surface) {
+                    // Leaf that cannot contain the isosurface: the shader
+                    // treats Empty children as skipped regions and Solid
+                    // children as skipped too (both are crossing-free).
+                    out.setChildType(cur.index, i, static_cast<uint32_t>(childType));
+                    if (childType == SpaceType::Solid) ++solidChildren;
+                    else if (childType == SpaceType::Empty) ++emptyChildren;
+                    continue;
+                }
+                ++surfaceSeen;
+                if (out.nodes.size() >= maxNodes) {
+                    out.setPrunedChild(cur.index, i);
+                    ++prunedChildren;
+                    continue;
+                }
+
+                const BoundingCube childCube = cur.cube.getChild(i);
+                const uint32_t childIndex = out.append(makeRecord(child, childCube));
+                out.setChild(cur.index, i, static_cast<int32_t>(childIndex));
+                const uint32_t depth = cur.depth + 1u;
+                maxDepth = std::max(maxDepth, depth);
+                {
+                    bool anyInf = false;
+                    for (int c = 0; c < 8; ++c)
+                        anyInf = anyInf || !std::isfinite(child->sdf[c]);
+                    storedInfNodes += anyInf ? 1u : 0u;
+                }
+                queue.push_back(PendingNode{child, childCube, childIndex, depth});
+            }
+        }
+    }
+
+    if (out.nodes.empty()) return false;
+    std::cout << "[LocalScene] SDF raymarch table: " << out.nodes.size() << " nodes across "
+              << out.layerRoots.size() << " solid layer(s); surfaceSeen=" << surfaceSeen
+              << " pruned=" << prunedChildren << " solidChildren=" << solidChildren
+              << " emptyChildren=" << emptyChildren << " maxDepth=" << maxDepth
+              << " infCornerNodes=" << storedInfNodes << std::endl;
     return true;
 }
 

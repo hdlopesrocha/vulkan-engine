@@ -143,5 +143,5 @@ void main() {
 
     // Solid surface shading lives in includes/solid/SolidSurface.glsl;
     // it writes outColor (debug branches return early inside it).
-    shadeSolidSurface();
+    shadeSolidSurface(vec3(0.0));
 }

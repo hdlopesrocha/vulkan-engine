@@ -38,6 +38,12 @@ bool Scene::buildSdfRegionTable(Layer& layer, const glm::vec3& min, const glm::v
     return false;
 }
 
+bool Scene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
+    (void)out;
+    (void)maxNodes;
+    return false;
+}
+
 void Scene::requestSDFCubes(Layer& layer, OctreeNodeData& data,
                             const SdfCubeCallback& callback, ThreadPool* poolOverride) {
     (void)layer;

@@ -39,6 +39,7 @@ class World;
 #include "debug/WireframeRenderer.hpp"
 #include "water/WaterBackFaceRenderer.hpp"
 #include "brush/BrushSdfRenderer.hpp"
+#include "octree/OctreeRaymarchRenderer.hpp"
 #include "indirect/IndirectRenderer.hpp"
 #include "rt/RayTracingResources.hpp"
 #include "../../widgets/CloudSettings.hpp"
@@ -89,6 +90,10 @@ public:
     std::unique_ptr<VideoRenderer> videoRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<BrushSdfRenderer> brushRenderer;
+    // Optional solid path: raymarches the octree's stored SDFs instead of the
+    // tessellated chunks (Settings::octreeRaymarchEnabled). Owns the set-2
+    // node-table descriptors and the fullscreen raymarch pipeline.
+    std::unique_ptr<OctreeRaymarchRenderer> octreeRaymarchRenderer;
     std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
     // NOTE (hybrid RT §12): the legacy 360° cubemap capture (Solid360Renderer)
     // was deleted. Solid reflections and water reflection/refraction are

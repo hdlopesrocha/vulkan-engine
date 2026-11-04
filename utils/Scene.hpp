@@ -26,6 +26,10 @@ constexpr Layer::Id LAYER_TRANSPARENT = 1;
 // Forward declaration: optional pools may be supplied to the debug/SDF walks
 // so a caller (e.g. brush editing) does not serialize on the scene pool.
 class ThreadPool;
+// CPU-owned raymarch node table (utils/OctreeRaymarchTable.hpp). Declared here
+// only as an output reference so this interface stays independent of the GPU
+// renderer.
+class OctreeRaymarchTable;
 
 class Scene {
 
@@ -87,6 +91,12 @@ public:
     // `maxNodes` caps the table; a region that does not fit is reported false.
     virtual bool buildSdfRegionTable(Layer& layer, const glm::vec3& min, const glm::vec3& max,
                                      std::vector<OctreeGpuNode>& out, size_t maxNodes);
+    // Flattens every enabled Solid layer's surface octree into the SDF
+    // raymarch table consumed by OctreeRaymarchRenderer. Breadth-first so a
+    // node-cap hit prunes uniformly (the remaining depth is discarded rather
+    // than some regions ending up detailed while others fail). Returns false
+    // when the scene has no local octree or no renderable surface node.
+    virtual bool buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes);
     // Collect SDF debug cubes: the walk emits one callback per node that
     // carries a drawable SDF face, with the node's own cube (band box) so the
     // caller can place a debug cube. Boxes are emitted for nodes at lod==1

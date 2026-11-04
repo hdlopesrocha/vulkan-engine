@@ -134,6 +134,9 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (brushRenderer && app) {
         brushRenderer->cleanup(app);
     }
+    if (octreeRaymarchRenderer && app) {
+        octreeRaymarchRenderer->cleanup(app);
+    }
     if (solidRenderer && app) {
         solidRenderer->cleanup(app);
     }
@@ -192,6 +195,7 @@ void SceneRenderer::setCmdState(CommandBufferState* state) {
     if (waterRenderer) waterRenderer->setCmdState(state);
     if (videoRenderer) videoRenderer->setCmdState(state);
     if (brushRenderer) brushRenderer->setCmdState(state);
+    if (octreeRaymarchRenderer) octreeRaymarchRenderer->setCmdState(state);
 }
 
 void SceneRenderer::stopGenPools() {
@@ -438,6 +442,7 @@ SceneRenderer::SceneRenderer() :
     videoRenderer(std::make_unique<VideoRenderer>()),
     vegetationRenderer(std::make_unique<VegetationRenderer>()),
     brushRenderer(std::make_unique<BrushSdfRenderer>()),
+    octreeRaymarchRenderer(std::make_unique<OctreeRaymarchRenderer>()),
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
@@ -983,6 +988,14 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // pipeline. No octree, no tessellated brush geometry.
     if (brushRenderer) {
         brushRenderer->init(app, app->getWidth(), app->getHeight());
+    }
+
+    // ── Initialize the octree SDF raymarch path ──
+    // Optional solid renderer: set-2 node-table descriptors + fullscreen
+    // pipeline. It owns no render targets (it draws into the solid color/depth
+    // attachments) and stays idle until MyApp uploads a node table.
+    if (octreeRaymarchRenderer) {
+        octreeRaymarchRenderer->init(app);
     }
 
     // ── Wire scene sub-renderers into the pass orchestrators ──

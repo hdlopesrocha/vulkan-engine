@@ -71,7 +71,7 @@ vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir, mat4 prevVP, vec2 selfUV) {
     return vec4(0.0);
 }
 
-void shadeSolidSurface() {
+void shadeSolidSurface(vec3 geomNormalOverride) {
     // Texture indices, optionally overridden by PAINT/REMOVE mode
     ivec3 texIndices = fragTexIndices;
     vec3 hsvColor = fragHSV;
@@ -100,9 +100,13 @@ void shadeSolidSurface() {
     vec2 uv = fragUV;
     bool usedTriplanar = false;
 
-    // Geometry normal (world-space) and geometric face normal from derivatives
+    // Geometry normal (world-space) and geometric face normal from derivatives.
+    // Raymarched callers have no displaced raster surface to differentiate, so
+    // they pass the SDF's analytic normal instead (zero = use derivatives).
     vec3 N = normalize(fragNormal);
-    vec3 geomN = normalize(cross(dFdx(fragPosWorld), dFdy(fragPosWorld)));
+    vec3 geomN = (dot(geomNormalOverride, geomNormalOverride) > 0.0)
+        ? normalize(geomNormalOverride)
+        : normalize(cross(dFdx(fragPosWorld), dFdy(fragPosWorld)));
     if (length(geomN) < 1e-5) geomN = N;
     vec3 worldNormal = N;
 

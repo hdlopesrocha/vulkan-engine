@@ -130,6 +130,10 @@ public:
 
     // Tessellation
     bool tessellationEnabled = false; // user-enabled (was default false)
+    // Solid render mode: raymarch the octree's stored cell SDFs instead of
+    // drawing tessellated chunks. Off by default. Falls back to the tessellated
+    // path when no node table is available (remote scene, no solid layers).
+    bool octreeRaymarchEnabled = false;
     bool shadowTessellationEnabled = false;
     // Deferred depth prepass for the solid pass (perf report 21 C2 gate).
     // true = depth prepass, then color with loaded depth (current behavior);

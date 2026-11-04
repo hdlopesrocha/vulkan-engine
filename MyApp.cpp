@@ -38,6 +38,7 @@
 #include "vulkan/renderer/SceneQueues.hpp"
 #include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
+#include "utils/OctreeRaymarchTable.hpp"
 #include "brushPainters/SvgBrush.hpp"
 #include "sdf/SvgPolygonDistanceFunction.hpp"
 #include "sdf/SvgShape.hpp"
@@ -254,6 +255,15 @@ public:
     // overridden every frame.
     Settings::GrassMode appliedGrassMode = Settings::GrassMode::None;
     SceneRenderer * sceneRenderer = nullptr;
+    // Octree SDF raymarch table (Settings::octreeRaymarchEnabled). Rebuilt on
+    // a debounce when the layered scene changes and uploaded into the current
+    // frame slot on revision change.
+    OctreeRaymarchTable raymarchTable_;
+    uint64_t raymarchTableVersion_ = 0;
+    uint64_t raymarchLayerSignature_ = 0;
+    bool raymarchSignaturePrimed_ = false;
+    bool raymarchDirty_ = false;
+    float raymarchDirtyTime_ = 0.0f;
     // Scene render queues are owned by the generic VulkanApp framework via its
     // SceneQueues member (forward-declared, created and configured below in
     // setup()). MyApp no longer duplicates them; the getXxxQueue() forwarders on
@@ -824,6 +834,11 @@ public:
         if (std::getenv("VULKAN_NO_SOLID") != nullptr) settings.renderSolid = false;
         if (std::getenv("VULKAN_NO_VEG") != nullptr) settings.vegetationEnabled = false;
         if (std::getenv("VULKAN_WIREFRAME") != nullptr) settings.wireframeMode = true;
+        // VULKAN_OCTREE_RAYMARCH=1 starts with the Settings toggle on (the
+        // default stays off): headless validation of the SDF raymarch path.
+        if (const char* env = std::getenv("VULKAN_OCTREE_RAYMARCH")) {
+            if (env[0] != '0') settings.octreeRaymarchEnabled = true;
+        }
 
         // VULKAN_DROPLET_DT forces a fixed per-frame simulation delta (headless
         // validation on slow software rasterizers, where the real frame delta
@@ -1315,6 +1330,16 @@ public:
     // (no re-tessellation, no upload). See applyDebugOverlaySettings().
     void recollectDebugOverlays();
 
+    // ── Octree SDF raymarch (Settings::octreeRaymarchEnabled) ─────────────
+    // CPU signature of the solid-layer list (ids/enabled/renderer/octree
+    // pointer) so add/remove/replace/re-renderer changes mark the node table
+    // dirty without per-frame tree walks.
+    uint64_t raymarchLayerSignature() const;
+    // Debounced rebuild + publish of the node table. Mutations mark
+    // raymarchDirty_ where they happen (brush apply, scene load), never from
+    // chunk-upload traffic: tessellation does not change octree SDF data.
+    void refreshRaymarchTable(float deltaTime);
+
     // Start the background tessellation thread for the current scene. Every
     // layer dispatches on its own thread so all layers tessellate truly in
     // parallel. `completionLog` is printed verbatim once all threads join.
@@ -1442,6 +1467,14 @@ public:
             std::deque<PendingMeshData> pendingBatch;
             sceneRenderer->drainPendingMeshes(pendingBatch, 16);
             sceneRenderer->processPendingMeshes(this, camera.getPosition(), pendingBatch);
+        }
+
+        // Octree SDF raymarch: rebuild the node table on a debounce and keep
+        // every frame slot's revision current. Uploading here is safe: the
+        // frame-slot fence for getCurrentFrame() was waited before update().
+        if (sceneRenderer && sceneRenderer->octreeRaymarchRenderer) {
+            refreshRaymarchTable(deltaTime);
+            sceneRenderer->octreeRaymarchRenderer->upload(getCurrentFrame(), raymarchTable_);
         }
 
 #ifdef DEBUG
@@ -2367,8 +2400,17 @@ public:
                 // the water/composite passes that sample it. The depth layout
                 // transition below still runs in both modes (Instance 2 needs
                 // it when Instance 1 is skipped).
-                const bool skipSolidPrepass = !settings.solidDepthPrepass
-                    && !settings.rtReflections && !settings.rtLocalShadows;
+                const bool solidRaymarch = settings.renderSolid
+                    && settings.octreeRaymarchEnabled
+                    && !useRemote
+                    && this->sceneRenderer->octreeRaymarchRenderer
+                    && this->sceneRenderer->brushRenderer
+                    && this->sceneRenderer->octreeRaymarchRenderer->hasTable(frameIdx);
+                // Raymarch draws its own depth (CLEAR + gl_FragDepth writes), so
+                // it always skips the tessellated depth prepass.
+                const bool skipSolidPrepass = solidRaymarch || (
+                    !settings.solidDepthPrepass
+                    && !settings.rtReflections && !settings.rtLocalShadows);
                 if (settings.renderSolid && this->sceneRenderer->solidRenderer)
                     this->sceneRenderer->solidRenderer->setDeferredColorDepthWrite(skipSolidPrepass);
 
@@ -2482,6 +2524,14 @@ public:
                     // as clear over the whole lake even though the depth
                     // prepass had written the bed, which cut the raster water
                     // depth off.
+                    // Publish this frame's host-side table upload to the
+                    // fragment shader. Must happen before vkCmdBeginRendering:
+                    // HOST is not a framebuffer-space stage and is illegal
+                    // inside a dynamic rendering scope.
+                    if (solidRaymarch) {
+                        this->sceneRenderer->octreeRaymarchRenderer->recordHostWriteBarrier(solidCmd);
+                    }
+
                     if (skipSolidPrepass) {
                         RendererUtils::beginColorDepthPass(solidCmd, solidColorView, solidDepthView,
                                                            solidW, solidH, colorClear, depthClear);
@@ -2505,9 +2555,20 @@ public:
 
                     if (settings.renderSolid) {
                         // Set=1 brush SDF params: PAINT/REMOVE evaluates the
-                        // brush field at each fragment directly.
-                        VkDescriptorSet brushParamsSet = this->sceneRenderer->brushRenderer->getParamsDescriptorSet(frameIdx);
-                        this->sceneRenderer->solidRenderer->drawColor(solidCmd, this, getMainDescriptorSet(), brushParamsSet);
+                        // brush field at each fragment directly (both the
+                        // tessellated and the raymarched solid path shade
+                        // through shadeSolidSurface()).
+                        VkDescriptorSet brushParamsSet = this->sceneRenderer->brushRenderer
+                            ? this->sceneRenderer->brushRenderer->getParamsDescriptorSet(frameIdx)
+                            : VK_NULL_HANDLE;
+                        if (solidRaymarch) {
+                            this->sceneRenderer->octreeRaymarchRenderer->draw(
+                                solidCmd, this, frameIdx, solidW, solidH,
+                                getMainDescriptorSet(), brushParamsSet);
+                        } else {
+                            this->sceneRenderer->solidRenderer->drawColor(
+                                solidCmd, this, getMainDescriptorSet(), brushParamsSet);
+                        }
                         // C2: release the single-pass selector so later
                         // external draws never inherit the depth-write twin.
                         this->sceneRenderer->solidRenderer->setDeferredColorDepthWrite(false);
@@ -2543,7 +2604,7 @@ public:
                         this->sceneRenderer->debugCubeRenderer->renderOverlay(this, solidCmd, getMainDescriptorSet(), widgetCubes);
                     }
 
-                    if (settings.renderSolid && settings.wireframeMode && this->sceneRenderer) {
+                    if (settings.renderSolid && !solidRaymarch && settings.wireframeMode && this->sceneRenderer) {
                         this->sceneRenderer->solidRenderer->drawWireframeOverlay(solidCmd, this, getMainDescriptorSet());
                     }
 
@@ -4454,6 +4515,68 @@ int main(int argc, char** argv) {
     }
 }
 
+// ── Octree SDF raymarch table (Settings::octreeRaymarchEnabled) ─────────────
+
+uint64_t MyApp::raymarchLayerSignature() const {
+    if (!world) return 0;
+    const Scene& scene = world->activeScene();
+    // FNV-1a over the layer list shape. IDs are stable handles; the octree
+    // pointer catches a layer re-created with the same id.
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](uint64_t v) {
+        h ^= v;
+        h *= 1099511628211ull;
+    };
+    mix(scene.layerCount());
+    for (size_t i = 0; i < scene.layerCount(); ++i) {
+        const Layer* l = scene.layerAt(i);
+        if (!l) {
+            mix(0xffffffffu);
+            continue;
+        }
+        mix(static_cast<uint64_t>(static_cast<uint32_t>(l->id())));
+        mix(l->enabled() ? 1u : 0u);
+        mix(static_cast<uint64_t>(l->renderer()));
+        mix(reinterpret_cast<uintptr_t>(l->octree()));
+    }
+    return h;
+}
+
+void MyApp::refreshRaymarchTable(float deltaTime) {
+    if (!sceneRenderer || !sceneRenderer->octreeRaymarchRenderer) return;
+    OctreeRaymarchRenderer& renderer = *sceneRenderer->octreeRaymarchRenderer;
+
+    // Remote scenes stream chunk records and carry no local octree SDFs;
+    // buildRaymarchTable() returns false there and the raster path stays.
+    if (!world || useRemote) return;
+
+    const uint64_t sig = raymarchLayerSignature();
+    if (!raymarchSignaturePrimed_ || sig != raymarchLayerSignature_) {
+        raymarchLayerSignature_ = sig;
+        raymarchSignaturePrimed_ = true;
+        raymarchDirty_ = true;
+        raymarchDirtyTime_ = 0.0f;
+    }
+    if (!raymarchDirty_ || !settings.octreeRaymarchEnabled) return;
+
+    raymarchDirtyTime_ += std::max(deltaTime, 0.0f);
+    if (raymarchDirtyTime_ < 0.4f) return;
+
+    raymarchDirty_ = false;
+    raymarchDirtyTime_ = 0.0f;
+
+    OctreeRaymarchTable rebuilt;
+    world->activeScene().buildRaymarchTable(rebuilt, renderer.maxNodes());
+    // Every rebuild gets a new revision, including an empty result, so stale
+    // per-frame slots are overwritten on their next use.
+    rebuilt.version = ++raymarchTableVersion_;
+    raymarchTable_ = std::move(rebuilt);
+
+    // Publish into this frame's slot now; the other slots version-check on
+    // their next use (upload() is a no-op when the revision matches).
+    renderer.upload(getCurrentFrame(), raymarchTable_);
+}
+
 // Perf report 23 C1: rebuild the five material arrays at a new resolution.
 // Called from preRenderPass when Settings::textureArraySize changes, so the
 // frame is not yet recorded and the device can be idled for the rebuild.
@@ -4850,6 +4973,14 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
                              updateHandler, deleteHandler);
     };
     forEachBrushSDF(entry, model, sweepStart, entry.minSize, "[applyBrushEventToLayer]", applyEntry);
+
+    // A brush edit changes stored SDF corners even for chunks whose
+    // tessellation batch is not drained this frame (e.g. edits outside the
+    // current LoD/visibility window). Mark the raymarch table dirty here, at
+    // the single place every paint/undo application funnels through, so the
+    // debounced rebuild never depends on mesh-upload timing.
+    raymarchDirty_ = true;
+    raymarchDirtyTime_ = 0.0f;
 }
 
 void MyApp::ensureBrushBase(Layer::Id layer, Octree& tree) {
@@ -5413,6 +5544,12 @@ void MyApp::generateMap() {
     world->scene().loadScene(loader, ups, dels);
     std::cout << "[MyApp::generateMap] Octree construction complete\n";
 
+    // The octree SDFs are final now: mark the raymarch table for one debounced
+    // rebuild. Chunk tessellation below publishes geometry only and must not
+    // retrigger this (it does not mutate stored corners).
+    raymarchDirty_ = true;
+    raymarchDirtyTime_ = 0.0f;
+
     // Tessellate chunks in background threads, one per layer.
     startTessellationThreads("[MyApp::generateMap] Scene chunk tessellation complete\n");
     ensureDroplets();
@@ -5469,6 +5606,10 @@ void MyApp::loadSceneFromFile(const std::string& path) {
     }
     world->scene().load(path, ups, dels, &settings);
     std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '" << path << "'\n";
+
+    // New octree content: rebuild the raymarch table once the debounce settles.
+    raymarchDirty_ = true;
+    raymarchDirtyTime_ = 0.0f;
 
     // Every layer tessellates on its own thread.
     startTessellationThreads("[MyApp::loadSceneFromFile] Scene tessellation complete\n");
