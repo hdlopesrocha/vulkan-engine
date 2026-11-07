@@ -1488,11 +1488,17 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     // because their view or sampler is null; a non-zero count means a set kept
     // a stale binding. Reported once at the end (perf report 23 C1 follow-up).
     uint32_t skippedImageWrites = 0;
+    std::array<uint32_t, 16> skippedImageBindings{};
+    auto noteSkippedImage = [&](uint32_t binding) {
+        if (skippedImageWrites < skippedImageBindings.size())
+            skippedImageBindings[skippedImageWrites] = binding;
+        ++skippedImageWrites;
+    };
     {
         DescriptorWriter writer(app->getDevice());
 
         auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
-            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) { ++skippedImageWrites; return; }
+            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) { noteSkippedImage(binding); return; }
             writer.writeImage(staticDs, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                               sampler, view, layout);
         };
@@ -1587,7 +1593,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             VkDescriptorSet ds = shadowDescriptorSets[si];
             DescriptorWriter sw(app->getDevice());
             auto addImg = [&](uint32_t b, VkSampler sm, VkImageView vw, VkImageLayout ly) {
-                if (vw == VK_NULL_HANDLE || sm == VK_NULL_HANDLE) { ++skippedImageWrites; return; }
+                if (vw == VK_NULL_HANDLE || sm == VK_NULL_HANDLE) { noteSkippedImage(b); return; }
                 sw.writeImage(ds, b, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sm, vw, ly);
             };
             addImg(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1631,13 +1637,12 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     // fail at draw time (perf report 23 C1 follow-up).
     if (skippedImageWrites > 0) {
         std::cerr << "[SceneRenderer::updateTextureDescriptorSet] WARNING: skipped "
-                  << skippedImageWrites << " image binding(s) with a null view/sampler";
-        if (textureArrayManager) {
-            std::cerr << " (bump view=" << (void*)textureArrayManager->bumpArray.view
-                      << " sampler=" << (void*)textureArrayManager->bumpSampler
-                      << ", albedo view=" << (void*)textureArrayManager->albedoArray.view << ")";
-        }
-        std::cerr << std::endl;
+                  << skippedImageWrites << " image binding(s) with a null view/sampler (bindings";
+        const uint32_t shown = std::min<uint32_t>(skippedImageWrites,
+                                                  static_cast<uint32_t>(skippedImageBindings.size()));
+        for (uint32_t i = 0; i < shown; ++i) std::cerr << ' ' << skippedImageBindings[i];
+        if (skippedImageWrites > shown) std::cerr << " ...";
+        std::cerr << ')' << std::endl;
     }
 }
 

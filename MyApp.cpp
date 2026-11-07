@@ -736,13 +736,13 @@ public:
         materialManager.allocateBrushMap(brushMapCount, this);
         for (size_t i = 0; i < brushMapCount; ++i) materialManager.updateBrushMap(i, brushMap[i], this);
 
-        // The descriptor set was bound to a dummy buffer at SceneRenderer::init() time
-        // because materialManager hadn't been allocated yet (runs on a background thread).
-        // Now that the real buffer exists, rebind descriptor set binding 5 so the GPU
-        // reads from the actual materials SSBO.
-        if (sceneRenderer) {
-            sceneRenderer->updateTextureDescriptorSet(this, &textureArrayManager);
-        }
+        // SceneRenderer::init() (called right after setupTextures) writes the
+        // complete static/per-frame set-0 bindings with the now-allocated
+        // materials and brush-map buffers, and registers the texture-allocation
+        // listener for later array reallocations. Calling
+        // updateTextureDescriptorSet() here would run before the shadow maps,
+        // material handles and water buffers are wired, so it could only log
+        // skipped bindings — and init would overwrite the set anyway.
 
         // Perf report 23 C1: committed vs. initialized texture memory. The
         // scene renderer logs it again after every scene load/generation.
