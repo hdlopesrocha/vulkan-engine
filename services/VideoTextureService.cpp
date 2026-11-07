@@ -35,10 +35,12 @@ extern "C" {
 
 namespace {
 
+#ifdef HAVE_FFMPEG
 using Clock = std::chrono::steady_clock;
 double nowMs() {
     return std::chrono::duration<double, std::milli>(Clock::now().time_since_epoch()).count();
 }
+#endif
 
 std::string lowerExtension(const std::string& path) {
     std::string ext = std::filesystem::path(path).extension().string();
@@ -47,6 +49,7 @@ std::string lowerExtension(const std::string& path) {
     return ext;
 }
 
+#ifdef HAVE_FFMPEG
 std::string envString(const char* name) {
     const char* v = std::getenv(name);
     return v ? std::string(v) : std::string();
@@ -62,6 +65,7 @@ int64_t fileBytes(const std::string& path) {
     const auto size = std::filesystem::file_size(path, ec);
     return ec ? 0 : static_cast<int64_t>(size);
 }
+#endif
 
 }  // namespace
 
