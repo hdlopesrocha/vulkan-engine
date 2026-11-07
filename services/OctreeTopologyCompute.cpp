@@ -614,7 +614,10 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
                 vkCmdDispatch(cmd, cellGroups, 1, 1);
 
                 // Pool writes -> the cull's shader reads, the indirect draws and
-                // the ray-tracing build inputs that read the same buffers.
+                // the ray-tracing build inputs that read the same buffers. The
+                // acceleration-structure bits require VK_KHR_acceleration_structure
+                // and must stay off the raster path (VUID-10751).
+                const bool rtEnabled = app->rayTracingEnabled();
                 VkBufferMemoryBarrier2 pool[2] = {};
                 for (int b = 0; b < 2; ++b) {
                     pool[b].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -623,12 +626,14 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
                     pool[b].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
                                          | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT
                                          | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
-                                         | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
-                                         | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+                                         | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
                     pool[b].dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT
                                           | VK_ACCESS_2_INDEX_READ_BIT
-                                          | VK_ACCESS_2_SHADER_READ_BIT
-                                          | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+                                          | VK_ACCESS_2_SHADER_READ_BIT;
+                    if (rtEnabled) {
+                        pool[b].dstStageMask |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+                        pool[b].dstAccessMask |= VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+                    }
                     pool[b].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                     pool[b].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                     pool[b].offset = 0;
