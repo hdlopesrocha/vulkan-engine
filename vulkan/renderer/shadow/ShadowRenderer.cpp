@@ -692,18 +692,18 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
         // with binding 0 redirected at the per-cascade UBO slot). Per set the main
         // layout has: UBO bindings 0, 6, 10, 17, 27 (5); combined-image-sampler
         // bindings 1,2,3,4,8,9,12,13,15,16,19,20 (12); storage-buffer bindings
-        // 5, 7, 18, 21, 22, 23, 24, 25, 26 (9); acceleration-structure binding 14
-        // (1, RT builds only — the pool size is omitted when RT is disabled
-        // because the type requires VK_KHR_acceleration_structure and the layout
-        // drops the binding). Binding
+        // 5, 7, 18, 21, 22, 23, 24, 25, 26, 28 (10); acceleration-structure
+        // binding 14 (1, RT builds only — the pool size is omitted when RT is
+        // disabled because the type requires VK_KHR_acceleration_structure and
+        // the layout drops the binding). Binding
         // 11 (legacy cubemap) is gone (hybrid RT); 19/20 are the solid SSR
-        // sources, 21/22 the real-scene reflection lookups.
+        // sources, 21/22 the real-scene reflection lookups, 28 the brush map.
         if (cascadeDescPool_ == VK_NULL_HANDLE) {
             const uint32_t setCount = frameCount * SHADOW_CASCADE_COUNT;
             VkDescriptorPoolSize ps[4]{};
             ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;          ps[0].descriptorCount = 5 * setCount;
             ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[1].descriptorCount = 12 * setCount;
-            ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;         ps[2].descriptorCount = 9 * setCount;
+            ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;         ps[2].descriptorCount = 10 * setCount;
             uint32_t poolSizeCount = 3;
             if (app->rayTracingEnabled()) {
                 ps[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; ps[3].descriptorCount = 1 * setCount;
