@@ -1,7 +1,6 @@
 #pragma once
 #include "ThreadPool.hpp"
 #include "OctreeThreadContext.hpp"
-#include "OctreeSessionContext.hpp"
 #include "OctreeNodeFrame.hpp"
 #include "OctreeAllocator.hpp"
 #include <functional>
@@ -87,19 +86,15 @@ class Octree: public BoundingCube {
     bool isChunkNode(float nodeLength) const;
     bool isThreadNode(float nodeLength, float minSize, int threadSize) const;
 private:
-    // Session state that outlives a single apply (the chunk-level history).
-    // apply() owns the tree write lock, so no extra synchronization is needed.
-    OctreeSessionContext sessionContext;
-
-    // Chunk-driven apply. Starts at the work units kept in the session's chunk
-    // history instead of the world root, does not descend into chunk subtrees
-    // the shape cannot reach, and then refreshes the ancestors bottom-up so
-    // their SDF corners/type/LoD still describe the whole subtree. Falls back
-    // to the full root descent (shape()) whenever no chunk is hit or the stored
-    // tree does not satisfy the invariants the bottom-up refresh relies on.
+    // Chunk-driven apply. Starts at the work units kept in the thread context's
+    // chunk history instead of the world root, does not descend into chunk
+    // subtrees the shape cannot reach, and then refreshes the ancestors
+    // bottom-up so their SDF corners/type/LoD still describe the whole subtree.
+    // Falls back to the full root descent (shape()) whenever no chunk is hit or
+    // the stored tree does not satisfy the invariants the bottom-up refresh
+    // relies on.
     void shapeChunks(
         const ShapeArgs &args,
-        OctreeSessionContext &session,
         OctreeThreadContext * threadContext,
         OctreeNodeDataHandler &updateHandler,
         OctreeNodeDataHandler &deleteHandler

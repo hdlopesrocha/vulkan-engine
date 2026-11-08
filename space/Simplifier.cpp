@@ -25,13 +25,20 @@ SimplificationResult Simplifier::simplify(
     // preserved there.
     for(uint i = 0; i < 8; ++i) {
         NodeOperationResult * child = &children[i];
-        if(child && child->resultType == SpaceType::Surface) {
-            if(brushIndex == DISCARD_BRUSH_INDEX) {
-                brushIndex = child->brushIndex;
-            } else if(child->brushIndex != brushIndex) {
-                return res;   // material boundary: preserve full detail
+        if(child) {
+            
+            if(child->resultType == SpaceType::Surface) {
+                if(child->node->getLod() == 0) {
+                    return res;
+                }
+                if(brushIndex == DISCARD_BRUSH_INDEX) {
+                    brushIndex = child->brushIndex;
+                } else if(child->brushIndex != brushIndex) {
+                    return res;   // material boundary: preserve full detail
+                }
             }
         }
+        
     }
 
 

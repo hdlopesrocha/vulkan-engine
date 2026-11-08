@@ -4018,6 +4018,12 @@ void VulkanApp::drawFrame() {
             waitInfo.semaphoreCount = 1;
             waitInfo.pSemaphores = &frameTimeline;
             waitInfo.pValues = &targetValue;
+            // Snapshot the GPU-side counter so a timeout can distinguish a slow
+            // but healthy GPU (the counter keeps advancing) from a genuinely
+            // stale timeline (the counter never reaches the target).
+            uint64_t observedBefore = 0;
+            const VkResult counterResult =
+                vkGetSemaphoreCounterValue(device, frameTimeline, &observedBefore);
             // Bounded wait: the reliable throttle is the binary in-flight fence
             // below. On some drivers (RADV) the frame timeline can report stale
             // values, so an infinite wait deadlocks the whole app. Cap it and
@@ -4025,12 +4031,30 @@ void VulkanApp::drawFrame() {
             VkResult r = vkWaitSemaphores(device, &waitInfo, 250'000'000ULL);
             if (r == VK_ERROR_DEVICE_LOST) return;
             if (r == VK_TIMEOUT) {
-                // The CPU is N+ frames ahead of the GPU, which during world load
-                // usually means the ring is already stuck. Dump recent submissions
-                // and (via the stall hook) partial query timestamps to attribute it.
-                std::cerr << "[" << wallClockNow() << "] [VulkanApp] WARNING: frameTimeline vkWaitSemaphores timed out (stale timeline) — proceeding to avoid deadlock\n";
-                SubmissionTracker::dump();
-                if (onFrameStall) onFrameStall(currentFrame);
+                uint64_t observedAfter = observedBefore;
+                const bool progressing = counterResult == VK_SUCCESS &&
+                    vkGetSemaphoreCounterValue(device, frameTimeline, &observedAfter) == VK_SUCCESS &&
+                    observedAfter > observedBefore;
+                if (!progressing) {
+                    // No GPU progress in 250 ms: the timeline is genuinely stale
+                    // or the ring is stuck. Dump recent submissions and (via the
+                    // stall hook) partial query timestamps to attribute it. Rate
+                    // limit the dump so a persistent stall cannot flood the log.
+                    static double lastStallDumpTime = -1.0e9;
+                    const double now = glfwGetTime();
+                    if (now - lastStallDumpTime >= 5.0) {
+                        lastStallDumpTime = now;
+                        std::cerr << "[" << wallClockNow()
+                                  << "] [VulkanApp] WARNING: frameTimeline vkWaitSemaphores timed out"
+                                     " (stale timeline: GPU value " << observedAfter
+                                  << " < target " << targetValue << ") — proceeding to avoid deadlock\n";
+                        SubmissionTracker::dump();
+                        if (onFrameStall) onFrameStall(currentFrame);
+                    }
+                }
+                // Otherwise the GPU is advancing toward the target: this is a
+                // slow frame, not a stall. The binary frame-slot fence below is
+                // the authoritative throttle, so proceed silently.
             } else if (r != VK_SUCCESS) {
                 std::cerr << "vkWaitSemaphores (frameTimeline) failed: " << r << std::endl;
                 return;

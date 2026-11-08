@@ -34,11 +34,11 @@ struct ChunkAncestor {
     int32_t parent = -1;
 };
 
-// Session history of the octree's chunk-level work units, owned by
-// OctreeSessionContext (one per octree, not per thread) and refreshed from the
-// tree structure at the start of an apply. It is a history in the sense that
-// the anchor list survives between applies (the vector keeps its capacity and
-// the anchors are reused while the tree structure is unchanged); a chunk
+// Per-thread history of the octree's chunk-level work units, stored in
+// OctreeThreadContext and refreshed from the tree structure at the start of an
+// apply. It is a history in the sense that the anchor list survives between
+// applies (the vector keeps its capacity and the anchors are reused while the
+// tree structure is unchanged); a chunk
 // subtree the new shape cannot reach is not descended into. The anchor node
 // itself still runs its corner combine, because the parent's child
 // materialization writes that result back.

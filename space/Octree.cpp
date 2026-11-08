@@ -356,12 +356,13 @@ void Octree::apply(
     // origin, leaf length and packed index range) is final then.
     configureShapeCache(args);
 
-    // The chunk history is session state (owned by this octree and refreshed
-    // from the tree structure inside shapeChunks), so it survives applies and
-    // is never tied to the thread that happens to run one. Only the shape SDF
-    // cache is per-thread: worker tasks evaluate shape samples in parallel.
+    // The context is reused across applies (thread_local), so the chunk
+    // history's anchor list and the shape cache capacity survive between
+    // brushes. The shape cache is generation-tagged (configureShapeCache above)
+    // and the chunk history is refreshed from the tree structure inside
+    // shapeChunks, so neither can leak state across trees or applies.
     thread_local OctreeThreadContext applyContext;
-    shapeChunks(args, sessionContext, &applyContext, updateHandler, deleteHandler);
+    shapeChunks(args, &applyContext, updateHandler, deleteHandler);
 }
 
 int Octree::heightRootToChunk(int lod, float minSize) const {
@@ -551,12 +552,11 @@ static int inheritedAnchorBrush(const ChunkHistory &history, int32_t parent, glm
 
 void Octree::shapeChunks(
     const ShapeArgs &args,
-    OctreeSessionContext &session,
     OctreeThreadContext * threadContext,
     OctreeNodeDataHandler &updateHandler,
     OctreeNodeDataHandler &deleteHandler
 ) {
-    ChunkHistory &history = session.chunkHistory;
+    ChunkHistory &history = threadContext->chunkHistory;
     history.refresh(*this);
 
     const std::vector<ChunkAnchor> &anchors = history.anchors();
@@ -758,12 +758,12 @@ void Octree::shapeChunks(
                 node->clear(*allocator, NULL);
             }
 
-            uint8_t selectedLod = 0;
-            uint8_t selectedChunkLod = 0;
-            int brushIndex = DISCARD_BRUSH_INDEX;
-            glm::vec3 brushHsv = node->hsv;
-            int textureType = node->textureType;
-            glm::vec2 data = node->data;
+            r.selectedLod = 0;
+            r.selectedChunkLod = 0;
+            r.brushIndex = DISCARD_BRUSH_INDEX;
+            r.brushHsv = node->hsv;
+            r.textureType = node->textureType;
+            r.data = node->data;
 
             for (uint i = 0; i < 8; ++i) {
                 OctreeNode *childNode = children[i];
@@ -773,43 +773,39 @@ void Octree::shapeChunks(
                 const uint8_t childLod = childNode->getLod();
                 const uint8_t childChunkLod = childNode->getChunkLod();
                 if (childLod > 0u) {
-                    selectedLod = selectedLod == 0u ?
-                        childLod : glm::min(selectedLod, childLod);
+                    r.selectedLod = r.selectedLod == 0u ?
+                        childLod : glm::min(r.selectedLod, childLod);
                 }
                 if (childChunkLod > 0u) {
-                    selectedChunkLod = selectedChunkLod == 0u ?
-                        childChunkLod : glm::min(selectedChunkLod, childChunkLod);
+                    r.selectedChunkLod = r.selectedChunkLod == 0u ?
+                        childChunkLod : glm::min(r.selectedChunkLod, childChunkLod);
                 }
                 const int childBrush = childNode->getBrush();
                 if (childBrush > DISCARD_BRUSH_INDEX) {
                     // shape() resets its per-child tally, so the LAST surface
                     // child with a real material wins; keep that exact rule.
-                    brushIndex = childBrush;
-                    brushHsv = childNode->hsv;
-                    textureType = childNode->textureType;
-                    data = childNode->data;
+                    r.brushIndex = childBrush;
+                    r.brushHsv = childNode->hsv;
+                    r.textureType = childNode->textureType;
+                    r.data = childNode->data;
                 }
             }
-            if (selectedLod > 0u) {
-                r.selectedLod = selectedLod + 1u;
+            if (r.selectedLod > 0u) {
+                ++r.selectedLod;
             }
-            if (selectedChunkLod > 0u) {
-                r.selectedChunkLod = selectedChunkLod + 1u;
+            if (r.selectedChunkLod > 0u) {
+                ++r.selectedChunkLod;
             }
-            r.brushIndex = brushIndex;
-            r.brushHsv = brushHsv;
-            r.textureType = textureType;
-            r.data = data;
-
+            
             node->setType(r.resultType);
             node->setSDF(r.resultSDF);
             node->setChunk(isChunkNode(ancestor.cube.getLengthX()));
             node->setLod(r.selectedLod);
             node->setChunkLod(r.selectedChunkLod);
             node->setBrush(r.brushIndex);
-            node->hsv = r.brushHsv;
-            node->textureType = r.textureType;
-            node->data = r.data;
+            node->setHSV(r.brushHsv);
+            node->setTextureType(r.textureType);
+            node->setData(r.data);
 
             if (node->getChunkLod() > 0 && r.resultType == SpaceType::Surface) {
                 ++node->version;
@@ -1213,9 +1209,6 @@ void Octree::reset() {
     // The caller serializes against apply() (the undo path holds treeMutex;
     // scene resets join the tessellation thread first). apply() joins all of
     // its fork tasks before returning, so none can be using the allocator.
-    // The session history points at nodes of the old tree; drop it so nothing
-    // can ever observe those addresses between the reset and the next apply.
-    sessionContext.chunkHistory.clear();
     if(root != NULL) {
         allocator->childAllocator.reset();
         allocator->nodeAllocator.reset();

@@ -149,3 +149,26 @@ void OctreeNode::setBrush(int index) {
 int OctreeNode::getBrush() const {
 	return this->brushIndex;
 }
+
+
+void OctreeNode::setHSV(glm::vec3 value) {
+	this->hsv = value;
+}
+glm::vec3 OctreeNode::getHSV() const {
+	return this->hsv;
+}
+
+void OctreeNode::setTextureType(int value) {
+	this->textureType = value;
+}
+int OctreeNode::getTextureType() const {
+	return this->textureType;
+}
+
+void OctreeNode::setData(glm::vec2 value) {
+	this->data = value;
+}
+glm::vec2 OctreeNode::getData() const {
+	return this->data;
+}
+
