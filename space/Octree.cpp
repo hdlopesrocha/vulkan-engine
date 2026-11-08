@@ -16,8 +16,6 @@
 #include <vector>
 #include <cstdint>
 #include <algorithm>
-#include <unordered_map>
-#include <unordered_set>
 #include "OctreeAllocator.hpp"
 #include "OctreeNode.hpp"
 #include "OctreeNodeData.hpp"
@@ -356,13 +354,10 @@ void Octree::apply(
     // origin, leaf length and packed index range) is final then.
     configureShapeCache(args);
 
-    // The context is reused across applies (thread_local), so the chunk
-    // history's anchor list and the shape cache capacity survive between
-    // brushes. The shape cache is generation-tagged (configureShapeCache above)
-    // and the chunk history is refreshed from the tree structure inside
-    // shapeChunks, so neither can leak state across trees or applies.
-    thread_local OctreeThreadContext applyContext;
-    shapeChunks(args, &applyContext, updateHandler, deleteHandler);
+    OctreeNodeFrame frame = OctreeNodeFrame(root, NULL, *this, root ? root->getType() : SpaceType::Empty, 0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
+    OctreeThreadContext localChunkContext;
+    NodeOperationResult r = NodeOperationResult();
+    shape(r, frame, args, &localChunkContext, updateHandler, deleteHandler);
 }
 
 int Octree::heightRootToChunk(int lod, float minSize) const {
@@ -534,309 +529,13 @@ static void reportDeletedSubtree(OctreeNode* node, const BoundingCube &cube, uin
     }
 }
 
-// The brush a chunk spawns its children with. shapeChildren() falls back to
-// the parent frame's brush whenever the node itself is still DISCARD, and that
-// value is the nearest painted ancestor. Walking the ancestor chain reproduces
-// it without having visited those nodes top-down.
-static int inheritedAnchorBrush(const ChunkHistory &history, int32_t parent, glm::vec3 &hsv) {
-    hsv = glm::vec3(0.0f, 0.5f, 0.5f);
-    for (int32_t index = parent; index >= 0; index = history.ancestors()[size_t(index)].parent) {
-        const OctreeNode *node = history.ancestors()[size_t(index)].node;
-        if (node->brushIndex > DISCARD_BRUSH_INDEX) {
-            hsv = node->hsv;
-            return node->brushIndex;
-        }
-    }
-    return DISCARD_BRUSH_INDEX;
-}
-
-void Octree::shapeChunks(
-    const ShapeArgs &args,
-    OctreeThreadContext * threadContext,
-    OctreeNodeDataHandler &updateHandler,
-    OctreeNodeDataHandler &deleteHandler
-) {
-    ChunkHistory &history = threadContext->chunkHistory;
-    history.refresh(*this);
-
-    const std::vector<ChunkAnchor> &anchors = history.anchors();
-    std::vector<ChunkAncestor> &ancestors = history.ancestors();
-
-    // The bottom-up refresh assumes the tree has at least one chunk below a
-    // root that is strictly above the chunk band, and that every ancestor is a
-    // live surface cell whose eight children are materialized. Anything else
-    // (a tiny tree, a fresh/incomplete tree, a stored structure from an older
-    // build) takes the original root descent.
-    const auto fallback = [&]() {
-        OctreeNodeFrame frame(root, NULL, *this, root ? root->getType() : SpaceType::Empty,
-                              0, root ? root->sdf : nullptr, DISCARD_BRUSH_INDEX, *this);
-        NodeOperationResult r;
-        shape(r, frame, args, threadContext, updateHandler, deleteHandler);
-    };
-
-    if (root == nullptr || anchors.empty() || args.minSize <= 0.0f ||
-        chunkSize <= args.minSize || getLengthX() <= chunkSize) {
-        fallback();
-        return;
-    }
-
-    std::unordered_set<OctreeNode *> known;
-    known.reserve(anchors.size() + ancestors.size());
-    for (const ChunkAnchor &anchor : anchors) {
-        if (anchor.node == nullptr || !known.insert(anchor.node).second) {
-            fallback();
-            return;
-        }
-        const float anchorLength = anchor.cube.getLengthX();
-        if (!isChunkNode(anchorLength) && !anchor.node->isLeaf()) {
-            fallback();
-            return;
-        }
-        if (anchor.parent < -1 || anchor.parent >= static_cast<int32_t>(ancestors.size())) {
-            fallback();
-            return;
-        }
-    }
-    for (size_t i = 0; i < ancestors.size(); ++i) {
-        const ChunkAncestor &ancestor = ancestors[i];
-        if (ancestor.node == nullptr || !known.insert(ancestor.node).second ||
-            ancestor.parent < -1 || ancestor.parent >= static_cast<int32_t>(i) ||
-            ancestor.node->isLeaf() || ancestor.node->getType() != SpaceType::Surface ||
-            ancestor.cube.getLengthX() <= chunkSize) {
-            fallback();
-            return;
-        }
-    }
-    for (const ChunkAncestor &ancestor : ancestors) {
-        OctreeNode *children[8] = { nullptr, nullptr, nullptr, nullptr,
-                                    nullptr, nullptr, nullptr, nullptr };
-        ancestor.node->getChildren(*allocator, children);
-        for (uint i = 0; i < 8; ++i) {
-            if (children[i] == nullptr || known.find(children[i]) == known.end()) {
-                fallback();
-                return;
-            }
-        }
-    }
-
-    // Hit test. A shape that reaches no known chunk has no chunk to start from
-    // (the previous applies left no work unit under it), so the iteration must
-    // begin at the world root instead of assuming the tree is a no-op: the
-    // shape may create geometry in that region.
-    std::vector<uint8_t> hit(anchors.size(), 0u);
-    bool anyHit = false;
-    for (size_t i = 0; i < anchors.size(); ++i) {
-        hit[i] = args.function.check(anchors[i].cube) != ContainmentType::Disjoint ? 1u : 0u;
-        anyHit |= hit[i] != 0u;
-    }
-    if (!anyHit) {
-        fallback();
-        return;
-    }
-
-    // Reachability pass, mirroring the top-down decision shape() makes at an
-    // internal cell: a child is visited only when its parent's process test is
-    // true. Ancestors are stored in pre-order, so a parent's flags are final
-    // before its children are visited.
-    std::vector<uint8_t> ancestorCalled(ancestors.size(), 0u);
-    std::vector<uint8_t> ancestorProcess(ancestors.size(), 0u);
-    for (size_t i = 0; i < ancestors.size(); ++i) {
-        const ChunkAncestor &ancestor = ancestors[i];
-        const bool called = ancestor.parent < 0 ||
-            (ancestorCalled[static_cast<size_t>(ancestor.parent)] != 0u &&
-             ancestorProcess[static_cast<size_t>(ancestor.parent)] != 0u);
-        if (!called) {
-            continue;
-        }
-        ancestorCalled[i] = 1u;
-        const float halfDiagonal = ancestor.cube.getLengthX() * 0.866025403784439f;
-        const float shapeSdfCenter = evaluateSDF(args, threadContext, ancestor.cube.getCenter());
-        bool process = shapeSdfCenter <= halfDiagonal;
-        if (process) {
-            process = args.function.check(ancestor.cube) != ContainmentType::Disjoint;
-        }
-        ancestorProcess[i] = process ? 1u : 0u;
-    }
-
-    // Result of every reached work unit, keyed by node. The parent refresh
-    // reads the diagonal child corner (child i's corner i is parent corner i),
-    // exactly the value shape() aggregates in buildResultSDF().
-    std::unordered_map<OctreeNode *, NodeOperationResult> results;
-    results.reserve(anchors.size() + ancestors.size());
-
-    // A reached anchor runs its own node logic. A hit anchor descends into its
-    // subtree; a non-hit anchor stops at the node (allowChildren = false) but
-    // still applies the operation to its eight corners. That corner pass is not
-    // optional: the parent's child materialization writes the combined field
-    // back into the child, which is how the full descent keeps pruned cells
-    // consistent even when check() under-estimates the field's reach.
-    for (size_t i = 0; i < anchors.size(); ++i) {
-        const ChunkAnchor &anchor = anchors[i];
-        const bool called = anchor.parent < 0 ||
-            (ancestorCalled[static_cast<size_t>(anchor.parent)] != 0u &&
-             ancestorProcess[static_cast<size_t>(anchor.parent)] != 0u);
-        if (!called) {
-            continue;
-        }
-        glm::vec3 inheritedHsv;
-        const int inheritedBrush = inheritedAnchorBrush(history, anchor.parent, inheritedHsv);
-        OctreeNodeFrame frame(anchor.node, NULL, anchor.cube, anchor.node->getType(),
-                              anchor.level, anchor.node->sdf, inheritedBrush, anchor.cube);
-        frame.hsv = inheritedHsv;
-        NodeOperationResult r;
-        shape(r, frame, args, threadContext, updateHandler, deleteHandler, hit[i] != 0u);
-        results.emplace(anchor.node, r);
-    }
-
-    // Refresh every reached ancestor deepest-first. A reached ancestor with
-    // process == true aggregates its children (all of which are reached); a
-    // pruned one still returns its own corner-combined field to its parent, but
-    // must not write the node — exactly shape()'s pruned branch.
-    std::vector<uint32_t> order;
-    order.reserve(ancestors.size());
-    for (size_t i = 0; i < ancestors.size(); ++i) {
-        if (ancestorCalled[i]) {
-            order.push_back(static_cast<uint32_t>(i));
-        }
-    }
-    std::sort(order.begin(), order.end(), [&ancestors](uint32_t a, uint32_t b) {
-        return ancestors[a].level > ancestors[b].level;
-    });
-
-    for (uint32_t index : order) {
-        ChunkAncestor &ancestor = ancestors[index];
-        OctreeNode *node = ancestor.node;
-
-        OctreeNode *children[8] = { nullptr, nullptr, nullptr, nullptr,
-                                    nullptr, nullptr, nullptr, nullptr };
-        node->getChildren(*allocator, children);
-
-        NodeOperationResult r;
-        r.node = node;
-        const bool process = ancestorProcess[index] != 0u;
-
-        if (process) {
-            bool childResultSolid = true;
-            bool childResultEmpty = true;
-            NodeOperationResult childResults[8];
-            for (uint i = 0; i < 8; ++i) {
-                // A child of a reached ancestor is reached by definition: the
-                // reachability pass marks every child of a process==true node.
-                childResults[i] = results.at(children[i]);
-                childResultEmpty &= childResults[i].resultType == SpaceType::Empty;
-                childResultSolid &= childResults[i].resultType == SpaceType::Solid;
-                r.resultSDF[i] = childResults[i].resultSDF[i];
-            }
-            r.resultType = childToParent(childResultSolid, childResultEmpty);
-
-            // shape() materializes the non-surface children BEFORE it runs the
-            // parent's ladder/brush tally. They therefore receive the parent's
-            // stored (pre-apply) material and the child's own pre-tally LoD.
-            if (r.resultType == SpaceType::Surface) {
-                const int previousBrush = node->brushIndex;
-                const int previousTextureType = node->textureType;
-                const glm::vec2 previousData = node->data;
-                for (uint i = 0; i < 8; ++i) {
-                    OctreeNode *childNode = children[i];
-                    if (childResults[i].resultType == SpaceType::Surface) {
-                        continue;
-                    }
-                    childNode->setType(childResults[i].resultType);
-                    childNode->setSDF(childResults[i].resultSDF);
-                    childNode->setChunk(false);
-                    childNode->setBrush(previousBrush);
-                    childNode->textureType = previousTextureType;
-                    childNode->data = previousData;
-                    childNode->setLod(childResults[i].selectedLod);
-                    childNode->setChunkLod(childResults[i].selectedChunkLod);
-                    childNode->hsv = childResults[i].brushHsv;
-                }
-            } else {
-                if (deleteHandler) {
-                    reportDeletedSubtree(node, ancestor.cube, ancestor.level, *allocator, deleteHandler);
-                }
-                node->clear(*allocator, NULL);
-            }
-
-            r.selectedLod = 0;
-            r.selectedChunkLod = 0;
-            r.brushIndex = DISCARD_BRUSH_INDEX;
-            r.brushHsv = node->hsv;
-            r.textureType = node->textureType;
-            r.data = node->data;
-
-            for (uint i = 0; i < 8; ++i) {
-                OctreeNode *childNode = children[i];
-                if (childNode->getType() != SpaceType::Surface) {
-                    continue;
-                }
-                const uint8_t childLod = childNode->getLod();
-                const uint8_t childChunkLod = childNode->getChunkLod();
-                if (childLod > 0u) {
-                    r.selectedLod = r.selectedLod == 0u ?
-                        childLod : glm::min(r.selectedLod, childLod);
-                }
-                if (childChunkLod > 0u) {
-                    r.selectedChunkLod = r.selectedChunkLod == 0u ?
-                        childChunkLod : glm::min(r.selectedChunkLod, childChunkLod);
-                }
-                const int childBrush = childNode->getBrush();
-                if (childBrush > DISCARD_BRUSH_INDEX) {
-                    // shape() resets its per-child tally, so the LAST surface
-                    // child with a real material wins; keep that exact rule.
-                    r.brushIndex = childBrush;
-                    r.brushHsv = childNode->hsv;
-                    r.textureType = childNode->textureType;
-                    r.data = childNode->data;
-                }
-            }
-            if (r.selectedLod > 0u) {
-                ++r.selectedLod;
-            }
-            if (r.selectedChunkLod > 0u) {
-                ++r.selectedChunkLod;
-            }
-            
-            node->setType(r.resultType);
-            node->setSDF(r.resultSDF);
-            node->setChunk(isChunkNode(ancestor.cube.getLengthX()));
-            node->setLod(r.selectedLod);
-            node->setChunkLod(r.selectedChunkLod);
-            node->setBrush(r.brushIndex);
-            node->setHSV(r.brushHsv);
-            node->setTextureType(r.textureType);
-            node->setData(r.data);
-
-            if (node->getChunkLod() > 0 && r.resultType == SpaceType::Surface) {
-                ++node->version;
-                if (updateHandler) {
-                    updateHandler(OctreeNodeData(ancestor.level, node, ancestor.cube, nullptr));
-                }
-            }
-        } else {
-            // Pruned ancestor: shape() combines its own corners and does not
-            // write the node, so the stored field and type stay unchanged.
-            const glm::vec3 cubeMin = ancestor.cube.getMin();
-            const glm::vec3 cubeLength = ancestor.cube.getLength();
-            r.resultType = node->getType();
-            for (uint i = 0; i < 8; ++i) {
-                const float corner = evaluateSDF(args, threadContext,
-                                                 cubeMin + cubeLength * getShift(i));
-                r.resultSDF[i] = args.operation->combine(node->sdf[i], corner);
-            }
-        }
-        results.emplace(node, r);
-    }
-}
-
 void Octree::shape(
     NodeOperationResult &r,
     OctreeNodeFrame frame, 
     const ShapeArgs &args, 
     OctreeThreadContext * threadContext,
     OctreeNodeDataHandler &updateHandler,
-    OctreeNodeDataHandler &deleteHandler,
-    bool allowChildren
+    OctreeNodeDataHandler &deleteHandler
 ) {    
     r.node = frame.node;
     const float nodeLength = frame.cube.getLengthX();
@@ -980,11 +679,7 @@ void Octree::shape(
         }
 
         if(!processed) {
-            // The chunk-driven apply passes allowChildren=false for a reached
-            // anchor that the shape cannot hit: its own corners still need the
-            // combine (the parent's child materialization writes them back),
-            // but its subtree must not be visited.
-            process = allowChildren && shapeSdfCenter <= halfDiagonal;
+            process = shapeSdfCenter <= halfDiagonal;
 
             if(process) {
                 const ContainmentType check = args.function.check(frame.cube);
