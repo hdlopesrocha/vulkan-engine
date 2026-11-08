@@ -610,15 +610,10 @@ void Octree::shape(
                 if(r.node != NULL) {
                     // Painters work on the node directly; the octree build never
                     // computes the surface position/normal (no SDF::getPosition).
-                    r.brushIndex = args.painter.paint(*r.node);
-                    r.brushHsv = args.painter.paintHSV(*r.node);
-                    r.textureType = static_cast<int>(args.coordPainter.textureType());
-                    r.data = args.coordPainter.paintUV(*r.node);
-                    r.node->hsv = r.brushHsv;
-                    r.node->brushIndex = r.brushIndex;
-                    r.node->textureType = r.textureType;
-                    r.node->data = r.data;
-                    r.node->setBrush(r.brushIndex);
+                    r.node->setHSV(r.brushHsv = args.painter.paintHSV(*r.node));
+                    r.node->setTextureType(r.textureType = static_cast<int>(args.coordPainter.textureType()));
+                    r.node->setData(r.data = args.coordPainter.paintUV(*r.node));
+                    r.node->setBrush(r.brushIndex = args.painter.paint(*r.node));
                 }
             }
             for(uint i = 0; i < 8; ++i) {
@@ -661,15 +656,10 @@ void Octree::shape(
                 r.resultType = SpaceType::Solid;
                 if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
                     if(r.node != NULL) {
-                        r.brushIndex = args.painter.paint(*r.node);
-                        r.brushHsv = args.painter.paintHSV(*r.node);
-                        r.textureType = static_cast<int>(args.coordPainter.textureType());
-                        r.data = args.coordPainter.paintUV(*r.node);
-                        r.node->hsv = r.brushHsv;
-                        r.node->brushIndex = r.brushIndex;
-                        r.node->textureType = r.textureType;
-                        r.node->data = r.data;
-                        r.node->setBrush(r.brushIndex);
+                        r.node->setHSV(r.brushHsv = args.painter.paintHSV(*r.node));
+                        r.node->setTextureType(r.textureType = static_cast<int>(args.coordPainter.textureType()));
+                        r.node->setData(r.data = args.coordPainter.paintUV(*r.node));
+                        r.node->setBrush(r.brushIndex = args.painter.paint(*r.node));
                     }
                 }
                 processed = true;
@@ -731,14 +721,10 @@ void Octree::shape(
                 if(isLeaf) {
                     if(r.shapeType != SpaceType::Empty) {
                         // Painters work on the node directly; no SDF::getPosition.
-                        r.brushIndex = args.painter.paint(*r.node);
-                        r.node->hsv = args.painter.paintHSV(*r.node);
-                        r.node->brushIndex = r.brushIndex;
-                        r.node->textureType = static_cast<int>(args.coordPainter.textureType());
-                        r.node->data = args.coordPainter.paintUV(*r.node);
-                        r.textureType = r.node->textureType;
-                        r.data = r.node->data;
-                        r.brushHsv = r.node->hsv;
+                        r.node->setHSV(r.brushHsv = args.painter.paintHSV(*r.node));
+                        r.node->setBrush(r.brushIndex = args.painter.paint(*r.node));
+                        r.node->setTextureType(r.textureType = static_cast<int>(args.coordPainter.textureType()));
+                        r.node->setData(r.data = args.coordPainter.paintUV(*r.node));
                     }  
                 } else  {
                 
@@ -770,11 +756,11 @@ void Octree::shape(
                                 childNode->setSDF(child.resultSDF);
                                 childNode->setChunk(false);
                                 childNode->setBrush(r.brushIndex);
-                                childNode->textureType = r.textureType;
-                                childNode->data = r.data;
+                                childNode->setTextureType(r.textureType);
+                                childNode->setData(r.data);
                                 childNode->setLod(child.selectedLod);
                                 childNode->setChunkLod(child.selectedChunkLod);
-                                childNode->hsv = child.brushHsv;
+                                childNode->setHSV(child.brushHsv);
                             }
 
                             if(frame.node != NULL && childNode == r.node) {
@@ -873,15 +859,9 @@ void Octree::shape(
         r.node->setLod(r.selectedLod);
         r.node->setChunkLod(r.selectedChunkLod);
         r.node->setBrush(r.brushIndex);
-        r.node->hsv = r.brushHsv;
-        // Mapping state must land on the node too: the tessellators read it
-        // back per vertex (Vertex::texCoord = UV scale, Vertex::textureType).
-        // Internal cells are never painted (painting runs at the shape leaf),
-        // so without this every chunkLod > 1 mesh — which is built from cells
-        // at lod > 1 — sampled its textures with a zero UV scale, collapsing
-        // to one texel. This is the dominant painted child's mapping state.
-        r.node->textureType = r.textureType;
-        r.node->data = r.data;
+        r.node->setHSV(r.brushHsv);
+        r.node->setTextureType(r.textureType);
+        r.node->setData(r.data);
 
         if(r.node->getChunkLod() > 0 && r.resultType == SpaceType::Surface) {
             ++r.node->version;
