@@ -198,7 +198,7 @@ public:
             case TestShape::PerlinCarve: {
                 std::cout << "\topaqueLayer.add(perlinCarve)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, noiseAmp, noiseFreq, 0.1f, kEffectOffset, kEffectBrightness, kEffectContrast, model, tileSize);
+                PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, noiseAmp, noiseFreq, kEffectOffset, kEffectBrightness, kEffectContrast, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
