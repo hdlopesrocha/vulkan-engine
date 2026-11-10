@@ -296,14 +296,10 @@ vec3 cellPosCached(Cell c) {
     return p;
 }
 
-// Final material of a node, the same value the old CPU painters stored on the
-// node before tessellation:
-//   LandBrush::paint(Vertex) classified the node from SDF::getPosition /
-//   getNormalFromPosition of its cube and returned DISCARD_BRUSH_INDEX for
-//   underground (normal.y <= 0.01).
-// Every gate below uses this resolved material, so a discarded node is never
-// scanned, never owns a ring segment and never emits a triangle — the GPU
-// equivalent of the old CPU Tesselator::handle check.
+// Shading material of a node: the stored brush with the two sentinels resolved
+// from the node's GPU-solved surface point/normal. This is the value written
+// into the vertex payload; it is NOT a topology decision (see
+// nodeTopologyAllowed below).
 int nodeResolvedBrush(uint id) {
     const int raw = nodeBrush(id);
     if (raw != LAND_BRUSH_INDEX && raw != NORMAL_BRUSH) return raw;
@@ -317,6 +313,27 @@ int nodeResolvedBrush(uint id) {
     if (raw == LAND_BRUSH_INDEX) return landMaterialIndex(p, n);
     // NormalBrush: the old paint(Vertex) kept only +Y-facing nodes.
     return (dot(normalize(n), vec3(0.0, 1.0, 0.0)) > 0.0) ? 0 : DISCARD_BRUSH;
+}
+
+// Topology gate: does this node take part in the mesh (scan list, ring polygon,
+// triangle)? The stored paint decides, exactly like the host compaction in
+// GpuTopologyBuilder::collectCells and the CPU walker's EdgeCell::isSurface.
+//
+// Resolving LAND_BRUSH_INDEX here was the regression that opened sawtooth holes
+// along steep terrain: only true leaves were classified by the CPU painter, so
+// coarse ladder cells inherit the LAND sentinel and were never underground.
+// Their QEF position falls back to the cube centre when the cell has no
+// crossing (Surface-typed parents), so the "normal" used for the underground
+// test is not a surface normal. Removing one such quadrant drops the whole ring
+// segment (pcount < 3) — a hole at the lower edge of a coarse chunk, precisely
+// where the surface turns downward.
+//
+// NormalBrush is a genuine per-node orientation test (keep +Y) and the water
+// volume relies on it to remain a top surface, so it still discards.
+bool nodeTopologyAllowed(uint id) {
+    const int raw = nodeBrush(id);
+    if (raw == NORMAL_BRUSH) return nodeResolvedBrush(id) > DISCARD_BRUSH;
+    return raw > DISCARD_BRUSH;
 }
 
 // ------------------------------------------------------------- findCellAt
@@ -397,11 +414,12 @@ Cell findCellAt(vec3 pos) {
 // shared edge drop the same non-crossing cells.
 //
 // A discard-brush cell is never a ring vertex either: it was never painted, so
-// it must not be tessellated or borrow a material. The host also removes it
-// from the scan list and the dense vertex slots.
+// it must not be tessellated or borrow a material. `nodeTopologyAllowed` keeps
+// painted LAND/NORMAL sentinel cells in the ring and drops only raw unpainted
+// cells, matching the host scan-list filter and the CPU walker.
 bool isSurfaceCell(Cell c) {
     return c.valid && nodeType(c.id) == TYPE_SURFACE && evalSdfType(c.id) == TYPE_SURFACE
-        && nodeResolvedBrush(c.id) > DISCARD_BRUSH;
+        && nodeTopologyAllowed(c.id);
 }
 
 // ownerLess: cube size, then min, then identity (CPU uses pointer order; the
@@ -544,12 +562,12 @@ void emitTriangle(Cell c0, Cell c1, Cell c2, float eps) {
     if (samePosition(p1, p2, eps)) return;
     if (samePosition(p2, p0, eps)) return;
 
-    // The old CPU Tesselator::handle dropped a triangle when any corner NODE
-    // carried DISCARD_BRUSH_INDEX after painting. nodeResolvedBrush() is that
-    // same node material (LandBrush already classified).
-    if (nodeResolvedBrush(c0.id) <= DISCARD_BRUSH) return;
-    if (nodeResolvedBrush(c1.id) <= DISCARD_BRUSH) return;
-    if (nodeResolvedBrush(c2.id) <= DISCARD_BRUSH) return;
+    // A raw never-painted node (stored DISCARD_BRUSH_INDEX) must not produce
+    // geometry. Painted LAND/NORMAL sentinel nodes are kept: their runtime
+    // classification only chooses the shading material, never the topology.
+    if (!nodeTopologyAllowed(c0.id)) return;
+    if (!nodeTopologyAllowed(c1.id)) return;
+    if (!nodeTopologyAllowed(c2.id)) return;
 
     // Append the triangle's three indices. The counter advances by 3 even
     // when the triangle does not fit, so the host reads back the exact number
@@ -857,10 +875,10 @@ void emitSegment(EdgeSpan edge, float start, float end, bool sign0, bool sign1) 
 
 // Octree::iterateTriangles::scanCell
 void scanCell(uint cellId) {
-    // A node the painter discarded (LandBrush underground, NormalBrush
-    // non-+Y faces) must not be tessellated at all: no corner read, edge walk,
-    // break collection or segment emission.
-    if (nodeResolvedBrush(cellId) <= DISCARD_BRUSH) return;
+    // A raw never-painted cell must not be tessellated at all: no corner read,
+    // edge walk, break collection or segment emission. Sentinels stay in the
+    // walk; only their shading material is resolved later.
+    if (!nodeTopologyAllowed(cellId)) return;
 
     Cell cell;
     cell.id = cellId;
@@ -964,9 +982,17 @@ void writeVertexOnce(uint node, int slot) {
     vec3 p = cellPos(c);
     vec3 n = cellNormal(c, p);
     int brush = nodeResolvedBrush(node);
-    // Defensive only: emitTriangle never emits a triangle with a discarded
-    // node, so a referenced node always has a real material.
-    if (brush <= DISCARD_BRUSH) brush = pc.fromBrush;
+    // A LAND cell that classifies as underground is still meshed (topology no
+    // longer drops it), so it needs a real material: the renderer treats a
+    // negative index as "no texture" and would darken every triangle touching
+    // the contour. Use the steep-terrain material instead.
+    if (brush == LAND_UNDERGROUND) {
+        brush = LAND_ROCK;
+    } else if (brush <= DISCARD_BRUSH) {
+        // Defensive only: nodeTopologyAllowed() rejects raw unpainted cells and
+        // non-+Y NormalBrush cells, so this cannot be reached from emitTriangle.
+        brush = pc.fromBrush;
+    }
     residentWriteVertex(uint(slot), p, n, brush, nodeHsvOf(node), nodeTextureType(node), nodeData(node));
 }
 
