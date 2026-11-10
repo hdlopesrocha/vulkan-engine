@@ -10,6 +10,10 @@ class Simplifier {
     float toleranceMultiplier;
 public:
     Simplifier(float toleranceMultiplier);
+    // Aggregates the material of the eight surface children into the state the
+    // parent inherits. Allocation-free; also used by Octree::shape for cells
+    // that are not simplification candidates.
+    static BrushTally tallyBrushes(const NodeOperationResult * children);
     // `chunkCube` is the bounding cube of the GPU-upload chunk that this node
     // belongs to.  Direct children of the chunk root are never simplified to
     // guarantee consistent detail at chunk boundaries.

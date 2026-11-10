@@ -560,6 +560,21 @@ void Octree::shape(
         NodeOperationResult(), NodeOperationResult() 
     };
 
+    // Filled only when this cell is a simplification candidate. The brush
+    // tally it carries is reused below instead of scanning the children twice.
+    std::optional<SimplificationResult> simplificationResult;
+
+    // Material painters only fill r here; the node is written once by the
+    // materialization block at the end of this function. Painting directly on
+    // the node in every branch would apply the same setters twice and make
+    // each painter observe a partially updated node.
+    auto paintNode = [&args, &r]() {
+        r.brushHsv = args.painter.paintHSV(*r.node);
+        r.textureType = static_cast<int>(args.coordPainter.textureType());
+        r.data = args.coordPainter.paintUV(*r.node);
+        r.brushIndex = args.painter.paint(*r.node);
+    };
+
     buildShapeSDF(args, frame, r, children, threadContext, true);
 
     const glm::vec3 center = frame.cube.getCenter();
@@ -608,12 +623,9 @@ void Octree::shape(
 
             if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
                 if(r.node != NULL) {
-                    // Painters work on the node directly; the octree build never
+                    // Painters only read the node; the octree build never
                     // computes the surface position/normal (no SDF::getPosition).
-                    r.node->setHSV(r.brushHsv = args.painter.paintHSV(*r.node));
-                    r.node->setTextureType(r.textureType = static_cast<int>(args.coordPainter.textureType()));
-                    r.node->setData(r.data = args.coordPainter.paintUV(*r.node));
-                    r.node->setBrush(r.brushIndex = args.painter.paint(*r.node));
+                    paintNode();
                 }
             }
             for(uint i = 0; i < 8; ++i) {
@@ -656,10 +668,7 @@ void Octree::shape(
                 r.resultType = SpaceType::Solid;
                 if(args.operation->paintsVertices() && r.shapeType != SpaceType::Empty) {
                     if(r.node != NULL) {
-                        r.node->setHSV(r.brushHsv = args.painter.paintHSV(*r.node));
-                        r.node->setTextureType(r.textureType = static_cast<int>(args.coordPainter.textureType()));
-                        r.node->setData(r.data = args.coordPainter.paintUV(*r.node));
-                        r.node->setBrush(r.brushIndex = args.painter.paint(*r.node));
+                        paintNode();
                     }
                 }
                 processed = true;
@@ -720,11 +729,8 @@ void Octree::shape(
                 // Simplification & Painting
                 if(isLeaf) {
                     if(r.shapeType != SpaceType::Empty) {
-                        // Painters work on the node directly; no SDF::getPosition.
-                        r.node->setHSV(r.brushHsv = args.painter.paintHSV(*r.node));
-                        r.node->setBrush(r.brushIndex = args.painter.paint(*r.node));
-                        r.node->setTextureType(r.textureType = static_cast<int>(args.coordPainter.textureType()));
-                        r.node->setData(r.data = args.coordPainter.paintUV(*r.node));
+                        // Painters only read the node; no SDF::getPosition.
+                        paintNode();
                     }  
                 } else  {
                 
@@ -736,8 +742,8 @@ void Octree::shape(
                         // its whole rung (`lod == targetLod` finds nothing).
                         if (!isChunk && nodeLength < chunkSize) {
                             // Pass frame.chunkCube so the simplifier can guard chunk borders.
-                            SimplificationResult simplificationResult = args.simplifier.simplify(frame.cube, r.resultSDF, children, frame.chunkCube);
-                            if(simplificationResult.isSimplified) {
+                            simplificationResult.emplace(args.simplifier.simplify(frame.cube, r.resultSDF, children, frame.chunkCube));
+                            if(simplificationResult->isSimplified) {
                                 r.selectedLod = 1u;
                             }
                         }
@@ -778,25 +784,9 @@ void Octree::shape(
     if(!isLeaf) {
         uint8_t selectedLod = 0;
         uint8_t selectedChunkLod = 0;
-        // The tally below is authoritative for an internal cell: if no surface
-        // child carries a painted brush, this node is unpainted and must stay
-        // DISCARD instead of keeping a stale/default material index.
-        r.brushIndex = DISCARD_BRUSH_INDEX;
 
         for(uint i =0 ; i < 8 ; ++i) {
-            NodeOperationResult &child = children[i];
-            OctreeNode * childNode = child.node;
-            // Brush tally. The original std::unordered_map was declared here,
-            // inside the per-child loop, so it never held more than one entry:
-            // every surface child with a valid brush won with count 1 and the
-            // last one's mapping state stayed on the parent. The tally is kept
-            // per child (reset here) to preserve that exact result; hoisting it
-            // across the eight children would turn it into a majority vote and
-            // change r.brushIndex/hsv/textureType/data, hence the mesh.
-            struct BrushTally { int brush; int count; };
-            BrushTally brushCounts[8];
-            int brushCountSize = 0;
-            int bestCount = 0;
+            OctreeNode * childNode = children[i].node;
             if(childNode != NULL && childNode->getType() == SpaceType::Surface) {
                 const uint8_t childLod = childNode->getLod();
                 const uint8_t childChunkLod = childNode->getChunkLod();
@@ -808,27 +798,21 @@ void Octree::shape(
                     selectedChunkLod = selectedChunkLod == 0u ?
                         childChunkLod : glm::min(selectedChunkLod, childChunkLod);
                 }
-                const int childBrush = childNode->getBrush();
-                if(childBrush > DISCARD_BRUSH_INDEX) {
-                    // Linear scan over at most eight entries (perf report 29,
-                    // H4): no hash table construction per child.
-                    int slot = 0;
-                    while(slot < brushCountSize && brushCounts[slot].brush != childBrush) {
-                        ++slot;
-                    }
-                    if(slot == brushCountSize) {
-                        brushCounts[brushCountSize++] = BrushTally{childBrush, 0};
-                    }
-                    const int count = ++brushCounts[slot].count;
-                    if(count > bestCount) {
-                        bestCount = count;
-                        r.brushIndex = childBrush;
-                        r.brushHsv = childNode->hsv;
-                        r.textureType = childNode->textureType;
-                        r.data = childNode->data;
-                    }
-                }
             }    
+        }
+
+        // The tally is authoritative for an internal cell: if no surface child
+        // carries a painted brush, this node is unpainted and must stay
+        // DISCARD instead of keeping a stale/default material index. Reuse the
+        // simplifier's tally when it ran for this cell (same surface children).
+        const BrushTally tally = simplificationResult
+            ? simplificationResult->brushTally
+            : Simplifier::tallyBrushes(children);
+        r.brushIndex = tally.brush;
+        if(tally.brush > DISCARD_BRUSH_INDEX) {
+            r.brushHsv = tally.hsv;
+            r.textureType = tally.textureType;
+            r.data = tally.data;
         }
         // A node the simplifier accepted is a terminal cell of the ladder
         // (stored lod 1). Do not overwrite that decision with min(child)+1:

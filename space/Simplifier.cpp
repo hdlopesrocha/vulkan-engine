@@ -1,5 +1,6 @@
 #include "Simplifier.hpp"
 #include "NodeOperationResult.hpp"
+#include "OctreeNode.hpp"
 #include "Octree.hpp"
 #include "../sdf/SDF.hpp"
 #include <cmath>
@@ -10,14 +11,45 @@ Simplifier::Simplifier(float tm) {
 }	
 
 
+BrushTally Simplifier::tallyBrushes(const NodeOperationResult * children) {
+    BrushTally tally;
+    for(uint i = 0; i < 8; ++i) {
+        OctreeNode * childNode = children[i].node;
+        if(childNode == NULL || childNode->getType() != SpaceType::Surface) {
+            continue;
+        }
+        const int childBrush = childNode->getBrush();
+        if(childBrush <= DISCARD_BRUSH_INDEX) {
+            continue;
+        }
+        // The original tally map was declared inside the per-child loop, so it
+        // never held more than one entry: every painted surface child won with
+        // count 1 and the last one's mapping state stayed on the parent. Keep
+        // this last-writer-wins selection instead of turning it into a majority
+        // vote, which would change the parent's material and therefore its mesh.
+        tally.brush = childBrush;
+        tally.hsv = childNode->hsv;
+        tally.textureType = childNode->textureType;
+        tally.data = childNode->data;
+    }
+    return tally;
+}
+
+
 SimplificationResult Simplifier::simplify(
         const BoundingCube &cube,
         const float * sdf,
         NodeOperationResult * children,
         const BoundingCube& chunkCube) const 
 {
-    SimplificationResult res(0u);
+    SimplificationResult res(false);
+    // The parent material tally does not depend on the collapse decision, so
+    // fill it before any early return below.
+    res.brushTally = tallyBrushes(children);
     int brushIndex = DISCARD_BRUSH_INDEX;
+    
+    //TODO: fix simplification logic.
+    return res;
 
     // --- 1. Brush consistency ---
     // Every surface child must share the same brush index: a collapse that
