@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -25,7 +26,58 @@ struct TopologyPC {
     uint32_t indexCapacity;  // index pool elements reserved for this chunk
     uint32_t nodeCount;      // node-table entries (nodeWritten[] bound)
     uint32_t diag;           // 1 = accumulate findCellAt/reuse counters
+    uint32_t refine;         // 1 = read OctreeVirtualRefine.comp positions
 };
+
+// Mirrors the push constant block in OctreeVirtualRefine.comp.
+struct RefinePC {
+    uint32_t nodeCount;
+    uint32_t maxDepth;      // 1..3
+    uint32_t budget;        // 1..8
+    float minPriority;
+    float featureSlope;     // [0, 1]; 1 disables the blend
+    float tolerance;        // normalized by node size
+    uint32_t flags;         // bit0 = final gradient projection
+    uint32_t reserved;
+};
+
+// OctreeVirtualRefine.comp statistics layout.
+enum RefineStatIndex : uint32_t {
+    kRefNodes = 0,
+    kRefRefined = 1,
+    kRefVirtualCells = 2,
+    kRefSdfEvals = 3,
+    kRefIntersections = 4,
+    kRefSelected = 5,
+    kRefMaxDepth = 6,
+    kRefBaseResidual = 7,
+    kRefRefResidual = 8,
+    kRefBaseDist = 9,
+    kRefRefDist = 10,
+    kRefAbsSdf = 11,
+    kRefSkippedAccurate = 12,
+    kRefSkippedUnsupported = 13,
+    kRefOverflow = 14,
+    kRefStatCount = 16,
+};
+
+uint32_t envUInt(const char* name, uint32_t fallback, uint32_t lo, uint32_t hi) {
+    const char* v = std::getenv(name);
+    if (v == nullptr || *v == '\0') return fallback;
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(v, &end, 10);
+    if (end == v) return fallback;
+    return static_cast<uint32_t>(std::clamp<unsigned long>(parsed, lo, hi));
+}
+
+float envFloat(const char* name, float fallback, float lo, float hi) {
+    const char* v = std::getenv(name);
+    if (v == nullptr || *v == '\0') return fallback;
+    char* end = nullptr;
+    const float parsed = std::strtof(v, &end);
+    if (end == v || !std::isfinite(parsed)) return fallback;
+    return std::clamp(parsed, lo, hi);
+}
 
 // A span overflow is resolved by releasing the chunk's reservation and asking
 // the provider for the exact capacity the shader reported. Two retries are
@@ -41,6 +93,31 @@ OctreeTopologyCompute::OctreeTopologyCompute() {
     // Cached once: every timing site below is guarded by this flag, so the
     // normal path does no clock reads, no string work and no output.
     setupDiag = std::getenv("VULKAN_SETUP_DIAG") != nullptr;
+
+    // Virtual adaptive refinement is on by default; VULKAN_VIRTUAL_REFINE=0
+    // restores the exact pre-refinement Dual-Contouring vertex positions.
+    // The remaining knobs are bounded here so the shader's local work-queue
+    // capacities (depth <= 3, budget <= 8) can never overflow.
+    if (const char* v = std::getenv("VULKAN_VIRTUAL_REFINE")) {
+        refineEnabled.store(!(v[0] == '0' && v[1] == '\0'));
+    }
+    refineMaxDepth = envUInt("VULKAN_REFINE_DEPTH", 2, 0, 3);
+    refineBudget = envUInt("VULKAN_REFINE_BUDGET", 8, 1, 8);
+    refineMinPriority = envFloat("VULKAN_REFINE_MIN_PRIORITY", 0.35f, 0.0f, 1.0f);
+    refineFeatureSlope = envFloat("VULKAN_REFINE_SLOPE", 0.90f, 0.0f, 1.0f);
+    refineTolerance = envFloat("VULKAN_REFINE_TOL", 0.010f, 1e-5f, 0.5f);
+    if (const char* v = std::getenv("VULKAN_REFINE_PROJECT")) {
+        refineProject = !(v[0] == '0' && v[1] == '\0');
+    }
+
+    std::cerr << "[OctreeTopology] virtual refinement "
+              << (refineEnabled.load() ? "on" : "off")
+              << " depth=" << refineMaxDepth
+              << " budget=" << refineBudget
+              << " minPriority=" << refineMinPriority
+              << " featureSlope=" << refineFeatureSlope
+              << " tol=" << refineTolerance
+              << " project=" << (refineProject ? 1 : 0) << "\n";
 }
 
 OctreeTopologyCompute::~OctreeTopologyCompute() {
@@ -56,8 +133,9 @@ void OctreeTopologyCompute::init(VulkanApp* vkApp) {
     if (pipeline != VK_NULL_HANDLE) return;
     VkDevice device = vkApp->getDevice();
 
-    // 7 node tables + cells + counters + node-written flags + the two pools.
-    constexpr uint32_t kBindingCount = 12;
+    // 7 node tables + cells + counters + node-written flags + the two pools
+    // + refined positions + refinement diagnostics.
+    constexpr uint32_t kBindingCount = 14;
     VkDescriptorSetLayoutBinding bindings[kBindingCount] = {};
     for (uint32_t b = 0; b < kBindingCount; ++b) {
         bindings[b].binding = b;
@@ -104,6 +182,52 @@ void OctreeTopologyCompute::init(VulkanApp* vkApp) {
         throw std::runtime_error("OctreeTopologyCompute: pipeline");
     vkApp->resources.addPipeline(pipeline, "OctreeTopologyCompute: pipeline");
 
+    // Virtual-refinement pass: same descriptor set layout, different push
+    // constants.  The descriptor set is compatible because it is allocated
+    // from the same VkDescriptorSetLayout.
+    VkPushConstantRange refineRange{};
+    refineRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    refineRange.offset = 0;
+    refineRange.size = sizeof(RefinePC);
+
+    VkPipelineLayoutCreateInfo refinePli{};
+    refinePli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    refinePli.setLayoutCount = 1;
+    refinePli.pSetLayouts = &descLayout;
+    refinePli.pushConstantRangeCount = 1;
+    refinePli.pPushConstantRanges = &refineRange;
+    if (vkCreatePipelineLayout(device, &refinePli, nullptr, &refineLayout) != VK_SUCCESS)
+        throw std::runtime_error("OctreeTopologyCompute: refine pipeline layout");
+    vkApp->resources.addPipelineLayout(refineLayout, "OctreeTopologyCompute: refineLayout");
+    initRefinePipeline(device, "shaders/computation/octree/OctreeVirtualRefine.comp.spv");
+
+    // Diagnostic GPU timestamps (VULKAN_SETUP_DIAG only).  The query pool is
+    // created per diagnostic chunk, so no lifetime tracking is needed and the
+    // normal path never touches a query.
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(vkApp->getPhysicalDevice(), &props);
+    timestampPeriodNs = props.limits.timestampPeriod;
+    uint32_t familyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(vkApp->getPhysicalDevice(), &familyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> families(familyCount);
+    if (familyCount > 0) {
+        vkGetPhysicalDeviceQueueFamilyProperties(vkApp->getPhysicalDevice(), &familyCount, families.data());
+    }
+    bool timestampQueue = false;
+    for (const VkQueueFamilyProperties& family : families) {
+        if ((family.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 && family.timestampValidBits > 0) {
+            timestampQueue = true;
+            break;
+        }
+    }
+    refineTimestamps = timestampPeriodNs > 0.0f &&
+                       props.limits.timestampComputeAndGraphics == VK_TRUE &&
+                       timestampQueue;
+    if (setupDiag && !refineTimestamps) {
+        std::cerr << "[OctreeTopology] refine GPU timestamps unavailable on this device; "
+                     "reporting host dispatch time only\n";
+    }
+
     VkDescriptorPoolSize ps{};
     ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     ps.descriptorCount = kBindingCount;
@@ -125,6 +249,23 @@ void OctreeTopologyCompute::init(VulkanApp* vkApp) {
     if (vkAllocateDescriptorSets(device, &ai, &descSet) != VK_SUCCESS)
         throw std::runtime_error("OctreeTopologyCompute: alloc desc set");
     vkApp->resources.addDescriptorSet(descSet, "OctreeTopologyCompute: descSet");
+}
+
+void OctreeTopologyCompute::initRefinePipeline(VkDevice device, const char* modulePath) {
+    VkShaderModule sm = app->getOrCreateShaderModule(modulePath);
+    VkPipelineShaderStageCreateInfo ssi{};
+    ssi.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ssi.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ssi.module = sm;
+    ssi.pName = "main";
+
+    VkComputePipelineCreateInfo cpi{};
+    cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    cpi.stage = ssi;
+    cpi.layout = refineLayout;
+    if (vkCreateComputePipelines(device, app->getPipelineCache(), 1, &cpi, nullptr, &refinePipeline) != VK_SUCCESS)
+        throw std::runtime_error("OctreeTopologyCompute: refine pipeline");
+    app->resources.addPipeline(refinePipeline, "OctreeTopologyCompute: refinePipeline");
 }
 
 void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount) {
@@ -157,6 +298,12 @@ void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount) {
                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        // Device-local refined positions: written by OctreeVirtualRefine.comp,
+        // read by OctreeTriangles.comp in the same submission.  Never read back.
+        app->destroyBuffer(bRefinedPos);
+        bRefinedPos = app->createBuffer(sizeof(float) * 4 * nodeCount,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         nodeCap = nodeCount;
         recreated = true;
     }
@@ -173,6 +320,11 @@ void OctreeTopologyCompute::ensureCapacity(size_t nodeCount, size_t cellCount) {
         // 9 distinct vertex payloads written. (12 uints keeps the buffer a
         // multiple of the 4-byte fill alignment and leaves headroom.)
         bCounter = app->createBuffer(sizeof(uint32_t) * 12, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
+        recreated = true;
+    }
+    if (bRefineStats.buffer == VK_NULL_HANDLE) {
+        bRefineStats = app->createBuffer(sizeof(uint32_t) * kRefStatCount,
+                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
         recreated = true;
     }
     if (recreated) ++bufferGeneration;
@@ -239,6 +391,10 @@ void OctreeTopologyCompute::uploadInput(const OctreeTopologyInput& input) {
     for (size_t i = 0; i < cellCount; ++i) cells[i] = input.cells[i];
     uint32_t* counters = (uint32_t*)bCounter.mappedData;
     for (int i = 0; i < 12; ++i) counters[i] = 0;
+    if (bRefineStats.mappedData != nullptr) {
+        uint32_t* refineStats = (uint32_t*)bRefineStats.mappedData;
+        for (uint32_t i = 0; i < kRefStatCount; ++i) refineStats[i] = 0;
+    }
 }
 
 // Points the descriptor set at the resident target's pools and the per-chunk
@@ -283,14 +439,27 @@ static PoolSpanBinding makePoolSpanBinding(const OctreeTopologyTarget& target,
 }
 
 void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget& target) {
-    constexpr uint32_t kBindingCount = 12;
+    constexpr uint32_t kBindingCount = 14;
     constexpr uint32_t kInputBindingCount = 10; // 0..9: node tables, cells, counters, node flags
     VkDescriptorBufferInfo infos[kBindingCount]{};
     VkWriteDescriptorSet writes[kBindingCount] = {};
+    uint32_t writeCount = 0;
 
-    // Bindings 0-9 name buffers that only change when ensureCapacity()
-    // recreates one (bufferGeneration). Write them once per capacity change;
-    // on the steady-state path they keep the descriptors from the first call.
+    auto addWrite = [&](uint32_t binding, VkBuffer buf, VkDeviceSize offset, VkDeviceSize range) {
+        infos[binding] = {buf, offset, range};
+        VkWriteDescriptorSet& w = writes[writeCount++];
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = descSet;
+        w.dstBinding = binding;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        w.pBufferInfo = &infos[binding];
+    };
+
+    // Bindings 0-9 and 12/13 name buffers that only change when
+    // ensureCapacity() recreates one (bufferGeneration). Write them once per
+    // capacity change; on the steady-state path they keep the descriptors
+    // from the first call.
     const bool rewriteInputs = bufferGeneration != lastWrittenGeneration;
     if (rewriteInputs) {
         VkBuffer bufs[kInputBindingCount] = {bSdf0.buffer, bSdf1.buffer, bCube.buffer, bMeta.buffer,
@@ -302,38 +471,26 @@ void OctreeTopologyCompute::writeDescriptors(const OctreeTopologyTarget& target)
             if (bufs[b] == VK_NULL_HANDLE) bufs[b] = bCells.buffer;
         }
         for (uint32_t b = 0; b < kInputBindingCount; ++b) {
-            infos[b] = {bufs[b], 0, app->getClampedWholeSizeRange(bufs[b])};
-            writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[b].dstSet = descSet;
-            writes[b].dstBinding = b;
-            writes[b].descriptorCount = 1;
-            writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[b].pBufferInfo = &infos[b];
+            addWrite(b, bufs[b], 0, app->getClampedWholeSizeRange(bufs[b]));
+        }
+        VkBuffer extra[2] = {bRefinedPos.buffer, bRefineStats.buffer};
+        for (uint32_t i = 0; i < 2; ++i) {
+            const uint32_t b = 12u + i;
+            if (extra[i] == VK_NULL_HANDLE) extra[i] = bCells.buffer;
+            addWrite(b, extra[i], 0, app->getClampedWholeSizeRange(extra[i]));
         }
         lastWrittenGeneration = bufferGeneration;
     }
 
     // Bindings 10/11 are the renderer's packed pools and change per chunk.
-    for (uint32_t b = kInputBindingCount; b < kBindingCount; ++b) {
-        const VkBuffer buf = (b == 10) ? target.vertexBuffer : target.indexBuffer;
-        infos[b] = {buf, 0, app->getClampedWholeSizeRange(buf)};
-        writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[b].dstSet = descSet;
-        writes[b].dstBinding = b;
-        writes[b].descriptorCount = 1;
-        writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[b].pBufferInfo = &infos[b];
-    }
     // Bind this chunk's span (offset+range) so the descriptor stays inside
     // every device's maxStorageBufferRange; the shader indexes it span-relative.
     const PoolSpanBinding span = makePoolSpanBinding(
         target, app->getMinStorageBufferOffsetAlignment());
-    infos[10] = {target.vertexBuffer, span.vertexOffset, span.vertexRange};
-    infos[11] = {target.indexBuffer, span.indexOffset, span.indexRange};
+    addWrite(10, target.vertexBuffer, span.vertexOffset, span.vertexRange);
+    addWrite(11, target.indexBuffer, span.indexOffset, span.indexRange);
 
-    const uint32_t firstWrite = rewriteInputs ? 0u : kInputBindingCount;
-    const uint32_t writeCount = kBindingCount - firstWrite;
-    vkUpdateDescriptorSets(app->getDevice(), writeCount, writes + firstWrite, 0, nullptr);
+    vkUpdateDescriptorSets(app->getDevice(), writeCount, writes, 0, nullptr);
     statDescriptorWrites += writeCount;
 }
 
@@ -383,6 +540,22 @@ void OctreeTopologyCompute::recordProfile(const ProfileSample& s) {
         a.vertexOverflow += b.vertexOverflow;
         a.findCellCalls += b.findCellCalls;
         a.reuseHits += b.reuseHits;
+        a.refineGpuMs += b.refineGpuMs;
+        a.refineNodes += b.refineNodes;
+        a.refineRefined += b.refineRefined;
+        a.refineCells += b.refineCells;
+        a.refineEvals += b.refineEvals;
+        a.refineIntersections += b.refineIntersections;
+        a.refineSelected += b.refineSelected;
+        a.refineMaxDepth = std::max(a.refineMaxDepth, b.refineMaxDepth);
+        a.refineSkippedAccurate += b.refineSkippedAccurate;
+        a.refineSkippedUnsupported += b.refineSkippedUnsupported;
+        a.refineOverflow += b.refineOverflow;
+        a.refineBaseResidual += b.refineBaseResidual;
+        a.refineRefResidual += b.refineRefResidual;
+        a.refineBaseDist += b.refineBaseDist;
+        a.refineRefDist += b.refineRefDist;
+        a.refineAbsSdf += b.refineAbsSdf;
         ++a.chunks;
     };
     add(profTotal, s);
@@ -419,6 +592,32 @@ void OctreeTopologyCompute::recordProfile(const ProfileSample& s) {
               << " retries=" << profWindow.retries
               << " idxOverflow=" << profWindow.indexOverflow
               << " vtxOverflow=" << profWindow.vertexOverflow << "\n";
+    {
+        const double measuredNodes = double(std::max<uint64_t>(
+            profTotal.refineNodes > profTotal.refineSkippedUnsupported
+                ? profTotal.refineNodes - profTotal.refineSkippedUnsupported : uint64_t(0),
+            uint64_t(1)));
+        const double invMeasured = 1.0 / measuredNodes;
+        std::cerr << "[OctreeTopology][setup-diag] refine: gpu="
+                  << (profTotal.refineGpuMs * inv * 1000.0) << "us/chunk"
+                  << " nodes=" << (double(profTotal.refineNodes) * inv)
+                  << " refined=" << (double(profTotal.refineRefined) * inv)
+                  << " cells=" << (double(profTotal.refineCells) * inv)
+                  << " evals=" << (double(profTotal.refineEvals) * inv)
+                  << " inter=" << (double(profTotal.refineIntersections) * inv)
+                  << " selected=" << (double(profTotal.refineSelected) * inv)
+                  << " depth=" << profTotal.refineMaxDepth
+                  << " skipAcc=" << (double(profTotal.refineSkippedAccurate) * inv)
+                  << " skipUnsup=" << (double(profTotal.refineSkippedUnsupported) * inv)
+                  << "\n";
+        std::cerr << "[OctreeTopology][setup-diag] refine quality: resBase="
+                  << (double(profTotal.refineBaseResidual) * invMeasured * 1e-3)
+                  << " resRef=" << (double(profTotal.refineRefResidual) * invMeasured * 1e-3)
+                  << " sdfBase=" << (double(profTotal.refineBaseDist) * invMeasured * 1e-3)
+                  << " sdfRef=" << (double(profTotal.refineRefDist) * invMeasured * 1e-3)
+                  << " absSdf=" << (double(profTotal.refineAbsSdf) * invMeasured * 1e-3)
+                  << " overflow=" << profTotal.refineOverflow << "\n";
+    }
     profWindow = ProfileSample{};
 }
 
@@ -448,6 +647,26 @@ void OctreeTopologyCompute::printProfileSummary() {
               << " vtxOverflow=" << profTotal.vertexOverflow
               << " findCell=" << profTotal.findCellCalls
               << " reuse=" << profTotal.reuseHits << "\n";
+    const uint64_t measured = profTotal.refineNodes > profTotal.refineSkippedUnsupported
+        ? profTotal.refineNodes - profTotal.refineSkippedUnsupported : 0u;
+    const double invMeasured = measured ? 1.0 / double(measured) : 0.0;
+    std::cerr << "[OctreeTopology][setup-diag] refine totals: gpuMs="
+              << profTotal.refineGpuMs
+              << " nodes=" << profTotal.refineNodes
+              << " refined=" << profTotal.refineRefined
+              << " cells=" << profTotal.refineCells
+              << " evals=" << profTotal.refineEvals
+              << " inter=" << profTotal.refineIntersections
+              << " selected=" << profTotal.refineSelected
+              << " maxDepth=" << profTotal.refineMaxDepth
+              << " skipAcc=" << profTotal.refineSkippedAccurate
+              << " skipUnsup=" << profTotal.refineSkippedUnsupported
+              << " resBase=" << (double(profTotal.refineBaseResidual) * invMeasured * 1e-3)
+              << " resRef=" << (double(profTotal.refineRefResidual) * invMeasured * 1e-3)
+              << " sdfBase=" << (double(profTotal.refineBaseDist) * invMeasured * 1e-3)
+              << " sdfRef=" << (double(profTotal.refineRefDist) * invMeasured * 1e-3)
+              << " absSdf=" << (double(profTotal.refineAbsSdf) * invMeasured * 1e-3)
+              << " overflow=" << profTotal.refineOverflow << "\n";
 }
 
 // Single geometry submission per chunk:
@@ -524,6 +743,7 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
 
     // Per-phase setup timings (VULKAN_SETUP_DIAG only; zero otherwise).
     double uploadMs = 0.0, descriptorMs = 0.0, providerMs = 0.0, dispatchMs = 0.0;
+    double refineGpuMs = 0.0; // timestamp query around the refine dispatch
     uint32_t attempts = 0;
     // Worst attempt across retries: a successful grown retry resets the shader
     // counters, but the profile must still report the overflow that caused the
@@ -581,6 +801,26 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
         pc.nodeCount = static_cast<uint32_t>(nodeCount);
         pc.diag = setupDiag ? 1u : 0u;
 
+        const bool doRefine = refineEnabled.load() && refineMaxDepth > 0 &&
+                              refinePipeline != VK_NULL_HANDLE && bRefinedPos.buffer != VK_NULL_HANDLE;
+        pc.refine = doRefine ? 1u : 0u;
+
+        // Diagnostic GPU timestamp around only the refinement dispatch.  A
+        // per-chunk query pool keeps the lifetime local; this path is gated by
+        // VULKAN_SETUP_DIAG and is never used by the normal renderer.
+        VkQueryPool timestampPool = VK_NULL_HANDLE;
+        const bool wantTimestamp = doRefine && setupDiag && refineTimestamps;
+        if (wantTimestamp) {
+            VkQueryPoolCreateInfo qp{};
+            qp.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+            qp.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            qp.queryCount = 2;
+            if (vkCreateQueryPool(app->getDevice(), &qp, nullptr, &timestampPool) != VK_SUCCESS) {
+                timestampPool = VK_NULL_HANDLE;
+            }
+        }
+        refineGpuMs = 0.0;
+
         timed(dispatchMs, [&] {
             app->runSingleTimeCommands([&](VkCommandBuffer cmd) {
                 // Clear the per-node "payload already written" flags. Filling
@@ -606,6 +846,57 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
                     dep.bufferMemoryBarrierCount = 1;
                     dep.pBufferMemoryBarriers = &fill;
                     vkCmdPipelineBarrier2(cmd, &dep);
+                }
+
+                if (doRefine) {
+                    // Virtual refinement writes refinedPos[] for every node
+                    // entry (usable or fallback).  It must complete before the
+                    // geometry pass reads a position, hence the compute ->
+                    // compute buffer barrier below.
+                    if (timestampPool != VK_NULL_HANDLE) {
+                        vkCmdResetQueryPool(cmd, timestampPool, 0, 2);
+                        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                             timestampPool, 0);
+                    }
+
+                    RefinePC rpc{};
+                    rpc.nodeCount = static_cast<uint32_t>(nodeCount);
+                    rpc.maxDepth = refineMaxDepth;
+                    rpc.budget = refineBudget;
+                    rpc.minPriority = refineMinPriority;
+                    rpc.featureSlope = refineFeatureSlope;
+                    rpc.tolerance = refineTolerance;
+                    rpc.flags = refineProject ? 1u : 0u;
+
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, refinePipeline);
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, refineLayout, 0, 1,
+                                            &descSet, 0, nullptr);
+                    vkCmdPushConstants(cmd, refineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                       sizeof(RefinePC), &rpc);
+                    const uint32_t refineGroups = static_cast<uint32_t>((nodeCount + 63) / 64);
+                    vkCmdDispatch(cmd, refineGroups, 1, 1);
+
+                    if (timestampPool != VK_NULL_HANDLE) {
+                        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                             timestampPool, 1);
+                    }
+
+                    VkBufferMemoryBarrier2 refined{};
+                    refined.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                    refined.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                    refined.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+                    refined.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                    refined.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+                    refined.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    refined.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    refined.buffer = bRefinedPos.buffer;
+                    refined.offset = 0;
+                    refined.size = VK_WHOLE_SIZE;
+                    VkDependencyInfo refineDep{};
+                    refineDep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                    refineDep.bufferMemoryBarrierCount = 1;
+                    refineDep.pBufferMemoryBarriers = &refined;
+                    vkCmdPipelineBarrier2(cmd, &refineDep);
                 }
 
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -650,6 +941,19 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
                 hostReadBarrier(cmd);
             });
         });
+
+        if (timestampPool != VK_NULL_HANDLE) {
+            uint64_t stamps[2] = {0u, 0u};
+            const VkResult qr = vkGetQueryPoolResults(
+                app->getDevice(), timestampPool, 0, 2, sizeof(stamps), stamps,
+                sizeof(uint64_t),
+                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+            if (qr == VK_SUCCESS && stamps[1] >= stamps[0]) {
+                refineGpuMs = double(stamps[1] - stamps[0]) * double(timestampPeriodNs) / 1e6;
+            }
+            vkDestroyQueryPool(app->getDevice(), timestampPool, nullptr);
+            timestampPool = VK_NULL_HANDLE;
+        }
 
         const uint32_t* counters = (const uint32_t*)bCounter.mappedData;
         const uint32_t attemptedIndices = counters[0];
@@ -738,6 +1042,25 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
         s.vertexOverflow = res.vertexOverflow;
         s.findCellCalls = ((const uint32_t*)bCounter.mappedData)[4];
         s.reuseHits = ((const uint32_t*)bCounter.mappedData)[5];
+        if (bRefineStats.mappedData != nullptr) {
+            const uint32_t* rs = (const uint32_t*)bRefineStats.mappedData;
+            s.refineGpuMs = refineGpuMs;
+            s.refineNodes = rs[kRefNodes];
+            s.refineRefined = rs[kRefRefined];
+            s.refineCells = rs[kRefVirtualCells];
+            s.refineEvals = rs[kRefSdfEvals];
+            s.refineIntersections = rs[kRefIntersections];
+            s.refineSelected = rs[kRefSelected];
+            s.refineMaxDepth = rs[kRefMaxDepth];
+            s.refineSkippedAccurate = rs[kRefSkippedAccurate];
+            s.refineSkippedUnsupported = rs[kRefSkippedUnsupported];
+            s.refineOverflow = rs[kRefOverflow];
+            s.refineBaseResidual = rs[kRefBaseResidual];
+            s.refineRefResidual = rs[kRefRefResidual];
+            s.refineBaseDist = rs[kRefBaseDist];
+            s.refineRefDist = rs[kRefRefDist];
+            s.refineAbsSdf = rs[kRefAbsSdf];
+        }
         recordProfile(s);
     }
     return res;

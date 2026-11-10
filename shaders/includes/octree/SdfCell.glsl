@@ -5,9 +5,10 @@
 //   SDF::getNormalFromPosition() -> sdfCellNormal()
 //   Math::solveLinearSystem()    -> sdfSolveLinearSystem() (Cramer, glm::det order)
 //
-// This is the runtime's ONLY Cartesian cell solver (OctreeTriangles.comp calls
-// it). The CPU implementations exist for the offline Blender exporter only;
-// the engine never solves a chunk vertex on the host and never reads one back.
+// This is the runtime's ONLY Cartesian cell solver (OctreeTriangles.comp and
+// OctreeVirtualRefine.comp call it). The CPU implementations exist for the
+// offline Blender exporter only; the engine never solves a chunk vertex on the
+// host and never reads one back.
 //
 // The functions are pure (they take the 8 stored corner values and the cell
 // cube, not a node table), so a caller with any storage layout can use them.

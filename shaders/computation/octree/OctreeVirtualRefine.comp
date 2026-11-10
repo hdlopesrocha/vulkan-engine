@@ -1,0 +1,718 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : enable
+
+// GPU virtual adaptive refinement for the Dual-Contouring vertex of one
+// octree node.  This pass is dispatched before OctreeTriangles.comp; it refines
+// the QEF position of every surface node that received a vertex slot and
+// writes the result into OutRefinedPos.  Nothing is added to the octree: the
+// virtual cells exist only in this invocation's bounded local work queue.
+//
+// Field model
+// -----------
+// The GPU only has the node's eight stored SDF corner samples.  The sample
+// field inside the node is therefore the trilinear reconstruction of those
+// corners (exactly the field OctreeTriangles.comp's edge walker and the CPU
+// SDF::interpolate() already assume).  Virtual corners are evaluated from that
+// field by trimming the 3x3x3 half-resolution lattice: 19 new samples per
+// subdivided parent, the 8 parent corners are reused.  This never reads back
+// to the host and never allocates a persistent node.
+//
+// The algorithm
+// -------------
+//   level 0: the node's 12 edges, QEF vertex.
+//   level d: subdivide the selected level-(d-1) cells into 8 children, add
+//            every child's *owned* edge intersections to the running QEF,
+//            rank children by intersection density + normal variation + QEF
+//            residual + distance to the sampled zero set + dispersion, and
+//            keep the best child per parent plus the highest-priority remainder
+//            for the next level.
+//
+// Every intersected cell contributes its intersections to the QEF, whether or
+// not it is selected for deeper refinement.  Selection only decides where the
+// next level spends samples; it never drops a surface component.
+//
+// Determinism
+// -----------
+// One invocation owns one node.  Children are visited in a fixed order, edge
+// ownership is a pure function of the (level, ijk) lattice, and selection is a
+// stable insertion sort with a key tie-break.  No cross-invocation dependency
+// exists, so the result is independent of execution/dispatch order.
+
+layout(local_size_x = 64) in;
+
+// Shared bit-exact cell math: sdfEvalType, sdfCellNormal, sdfDet3,
+// sdfSolveLinearSystem, sdfCellPosition and the SDF_CELL_* tables.
+#include "../../includes/octree/SdfCell.glsl"
+
+layout(set = 0, binding = 0, scalar) readonly buffer InSdf0 { vec4 sdf0[]; };
+layout(set = 0, binding = 1, scalar) readonly buffer InSdf1 { vec4 sdf1[]; };
+layout(set = 0, binding = 2, scalar) readonly buffer InCube { vec4 cubeMinSize[]; };
+layout(set = 0, binding = 3, scalar) readonly buffer InMeta { ivec4 meta[]; };
+// xyz = refined QEF position, w = 1 when this entry is usable.  Entries with
+// w = 0 keep the exact OctreeTriangles.comp / SdfCell.glsl fallback.  The
+// buffer is device-local and is written for every node before the geometry
+// pass reads it.
+layout(set = 0, binding = 12, scalar) writeonly buffer OutRefinedPos { vec4 refinedPos[]; };
+// Diagnostic counters, host-visible.  Reset by the host before every dispatch;
+// the geometry pass never reads this buffer.
+layout(set = 0, binding = 13, scalar) buffer RefineStats { uint stats[]; };
+
+layout(push_constant) uniform PC {
+    uint nodeCount;
+    uint maxDepth;       // 1..3 after host clamping
+    uint budget;         // max cells selected for the next level (1..8)
+    float minPriority;   // child refinement threshold
+    float featureSlope;  // edge-normal blend threshold in [0, 1]; 1 disables
+    float tolerance;     // normalized geometric error tolerance
+    uint flags;          // bit0: final gradient projection
+    uint reserved;
+} pc;
+
+// Local work-queue capacities.  8 * 8 = 64 is the exact worst case for one
+// level; the host clamps budget to 8 and depth to 3.  Keeping these small is
+// intentional: the queue is invocation-private scratch, not a global arena.
+const int VR_MAX_CUR = 8;
+const int VR_MAX_NEXT = 64;
+const int VR_MAX_DEPTH = 3;
+
+// Statistics layout (see OctreeTopologyCompute.cpp).
+const int ST_NODES = 0;
+const int ST_REFINED = 1;
+const int ST_VIRTUAL_CELLS = 2;
+const int ST_SDF_EVALS = 3;
+const int ST_INTERSECTIONS = 4;
+const int ST_SELECTED = 5;
+const int ST_MAX_DEPTH = 6;
+const int ST_BASE_RESIDUAL = 7;   // fixed-point 1e3, normalized by node size
+const int ST_REF_RESIDUAL = 8;
+const int ST_BASE_SDF_DIST = 9;
+const int ST_REF_SDF_DIST = 10;
+const int ST_FINAL_ABS_SDF = 11;
+const int ST_SKIPPED_ACCURATE = 12;
+const int ST_SKIPPED_UNSUPPORTED = 13;
+const int ST_OVERFLOW = 14;
+
+// SDF_CELL_EDGES order: 0,1,3,2 z-edges; 4,5,7,6 z-edges; 8..11 x-edges.
+const int VR_EDGE_AXIS[12] = int[12](2, 1, 2, 1, 2, 1, 2, 1, 0, 0, 0, 0);
+
+struct VCell {
+    vec4 s0;   // sdf[0..3]
+    vec4 s1;   // sdf[4..7]
+    vec4 info; // x = priority, y = packed key, z = unique crossings, w = must
+};
+
+float vcSdf(VCell c, int i) { return (i < 4) ? c.s0[i] : c.s1[i - 4]; }
+int vcKey(VCell c) { return int(c.info.y + 0.5); }
+void vcSetInfo(inout VCell c, float priority, int key, int count, bool must) {
+    c.info = vec4(priority, float(key), float(count), must ? 1.0 : 0.0);
+}
+
+// key = level << 12 | x << 8 | y << 4 | z (4 bits per lattice coordinate)
+int vrKey(int level, ivec3 ijk) {
+    return (level << 12) | ((ijk.x & 15) << 8) | ((ijk.y & 15) << 4) | (ijk.z & 15);
+}
+int vrLevel(int key) { return key >> 12; }
+ivec3 vrIJK(int key) { return ivec3((key >> 8) & 15, (key >> 4) & 15, key & 15); }
+float vrCellSize(int key, float rootSz) { return rootSz / float(1 << vrLevel(key)); }
+vec3 vrCellMin(int key, vec3 rootMn, float rootSz) {
+    return rootMn + vec3(vrIJK(key)) * vrCellSize(key, rootSz);
+}
+
+// SDF::interpolate's guarded lerp (finite corners only in this pass).
+float vrLerp(float a, float b, float t) {
+    if (t <= 0.0) return a;
+    if (t >= 1.0) return b;
+    return a + (b - a) * t;
+}
+
+// Trilinear reconstruction of the node field, local coordinates in [0,1]^3.
+// Same z-then-y-then-x order as SDF::interpolate.
+float vrTri(float sdf[8], vec3 l) {
+    float v000 = vrLerp(sdf[0], sdf[1], l.z);
+    float v010 = vrLerp(sdf[2], sdf[3], l.z);
+    float v100 = vrLerp(sdf[4], sdf[5], l.z);
+    float v110 = vrLerp(sdf[6], sdf[7], l.z);
+    float v00 = vrLerp(v000, v010, l.y);
+    float v10 = vrLerp(v100, v110, l.y);
+    return vrLerp(v00, v10, l.x);
+}
+
+// SDF::getNormalFromPosition's analytic trilinear gradient, unnormalized and in
+// world units (the /sz division is part of the existing helper).
+vec3 vrGradRaw(float sdf[8], vec3 l, float sz) {
+    precise float dx = (
+        (1.0 - l.y) * (1.0 - l.z) * (sdf[4] - sdf[0]) +
+        (1.0 - l.y) * l.z * (sdf[5] - sdf[1]) +
+        l.y * (1.0 - l.z) * (sdf[6] - sdf[2]) +
+        l.y * l.z * (sdf[7] - sdf[3])
+    );
+    precise float dy = (
+        (1.0 - l.x) * (1.0 - l.z) * (sdf[2] - sdf[0]) +
+        l.x * (1.0 - l.z) * (sdf[3] - sdf[1]) +
+        (1.0 - l.x) * l.z * (sdf[6] - sdf[4]) +
+        l.x * l.z * (sdf[7] - sdf[5])
+    );
+    precise float dz = (
+        (1.0 - l.x) * (1.0 - l.y) * (sdf[1] - sdf[0]) +
+        (1.0 - l.x) * l.y * (sdf[3] - sdf[2]) +
+        l.x * (1.0 - l.y) * (sdf[5] - sdf[4]) +
+        l.x * l.y * (sdf[7] - sdf[6])
+    );
+    return vec3(dx, dy, dz) / sz;
+}
+
+vec3 vrNormalAt(float sdf[8], vec3 l, float sz) {
+    vec3 g = vrGradRaw(sdf, l, sz);
+    float gl = length(g);
+    return (gl > 1e-6 && sdfIsFinite(gl)) ? g / gl : vec3(0.0, 1.0, 0.0);
+}
+
+// Feature-preserving normal estimator.  `slope = |d1-d0| / edgeLength` is the
+// derivative of the reconstructed field along the edge; near 1 the edge is
+// perpendicular to a locally planar/sharp feature and its direction is a much
+// better normal than the trilinear gradient, which smears a corner over the
+// whole parent cell.  Below the threshold the existing gradient is kept.
+vec3 vrSharpNormal(vec3 gradN, vec3 p0, vec3 p1, float d0, float d1, float slopeThreshold) {
+    if (slopeThreshold >= 1.0) return gradN; // blend disabled
+    float el = length(p1 - p0);
+    if (el <= 1e-12) return gradN;
+    vec3 e = (p1 - p0) / el;
+    // orient negative -> non-negative: outward
+    if (d0 >= 0.0) e = -e;
+    float denom = max(1.0 - slopeThreshold, 1e-3);
+    float s = clamp((abs(d1 - d0) / el - slopeThreshold) / denom, 0.0, 1.0);
+    vec3 blended = (1.0 - s) * gradN + s * e;
+    float bl = length(blended);
+    return (bl > 1e-6 && sdfIsFinite(bl)) ? blended / bl : gradN;
+}
+
+// Which one of the four cells sharing a lattice edge owns it?  The owner has
+// the edge on its minimum face in both perpendicular axes; on the domain's
+// maximum boundary the last cell takes the edge.  This makes every unique
+// lattice edge contribute exactly once per level, so shared edges do not get
+// 2x/4x weight in the QEF.
+bool vrOwned(int edgeIndex, ivec3 ijk, int N) {
+    const int axis = VR_EDGE_AXIS[edgeIndex];
+    const ivec3 a = ivec3(SDF_CELL_CORNERS[SDF_CELL_EDGES[edgeIndex].x]);
+    for (int p = 0; p < 3; ++p) {
+        if (p == axis) continue;
+        int f = ijk[p] + a[p];
+        if (f != ijk[p] && !(f == N && ijk[p] == N - 1)) return false;
+    }
+    return true;
+}
+
+void vrAccum(inout mat3 A, inout vec3 b, inout float c, inout vec3 mass,
+             inout int count, vec3 p, vec3 n) {
+    A += mat3(n * n.x, n * n.y, n * n.z);
+    b += n * dot(n, p);
+    c += dot(n, p) * dot(n, p);
+    mass += p;
+    ++count;
+}
+
+// Regularized QEF solve (same 0.1 mass-point pull as SDF::getPosition).
+// Returns false only when the cell's normal equations are rank-deficient; the
+// caller then leaves the cell out of the refinement selection (a single vertex
+// cannot be improved from that sample set).  The global QEF keeps the
+// mass-point fallback instead.
+bool vrSolveCell(mat3 A, vec3 b, vec3 mass, int count, vec3 mn, float sz, out vec3 x) {
+    x = mass / float(max(count, 1));
+    if (count == 0) return false;
+    const float reg = 1e-1;
+    mat3 AA = A;
+    vec3 bb = b + (mass / float(count)) * reg;
+    AA[0][0] += reg;
+    AA[1][1] += reg;
+    AA[2][2] += reg;
+    if (abs(sdfDet3(AA)) < 1e-6) return false;
+    vec3 solved = sdfSolveLinearSystem(AA, bb);
+    if (any(isnan(solved)) || any(isinf(solved))) return false;
+    x = clamp(solved, mn, mn + vec3(sz));
+    return true;
+}
+
+bool vrSolveGlobal(mat3 A, vec3 b, vec3 mass, int count, vec3 mn, float sz, out vec3 x) {
+    x = mass / float(max(count, 1));
+    if (count == 0) return false;
+    const float reg = 1e-1;
+    mat3 AA = A;
+    vec3 bb = b + (mass / float(count)) * reg;
+    AA[0][0] += reg;
+    AA[1][1] += reg;
+    AA[2][2] += reg;
+    if (abs(sdfDet3(AA)) >= 1e-6) {
+        vec3 solved = sdfSolveLinearSystem(AA, bb);
+        if (!any(isnan(solved)) && !any(isinf(solved))) x = solved;
+    }
+    x = clamp(x, mn, mn + vec3(sz));
+    return true;
+}
+
+float vrSurfaceDistance(float sdf[8], vec3 mn, float sz, vec3 p) {
+    vec3 l = (p - mn) / sz;
+    float f = vrTri(sdf, l);
+    vec3 g = vrGradRaw(sdf, l, sz);
+    float gl = length(g);
+    return (gl > 1e-9 && sdfIsFinite(gl)) ? abs(f) / gl / sz : 1.0;
+}
+
+// A cell's intersections, its own QEF quality metrics, and (when addGlobal)
+// its owned edge samples contributed to the running global QEF.  The priority
+// uses gradient normals only: the sharp normal blend is a *placement*
+// estimator and must not make a planar surface look feature-rich.
+void vrEvalCell(VCell cell, vec3 rootMn, float rootSz, float slopeThreshold, bool addGlobal,
+                inout mat3 gA, inout vec3 gb, inout float gc, inout vec3 gmass, inout int gcount,
+                out float priority, out int nIntersections, out vec3 qefPos,
+                out float qefResidual, out float surfDist, out float normalVar) {
+    priority = 0.0;
+    nIntersections = 0;
+    qefPos = vec3(0.0);
+    qefResidual = 0.0;
+    surfDist = 0.0;
+    normalVar = 0.0;
+
+    const int key = vcKey(cell);
+    const int N = 1 << vrLevel(key);
+    const ivec3 ijk = vrIJK(key);
+    const float csz = vrCellSize(key, rootSz);
+    const vec3 cmn = vrCellMin(key, rootMn, rootSz);
+
+    float sdf[8];
+    for (int i = 0; i < 8; ++i) sdf[i] = vcSdf(cell, i);
+
+    precise mat3 A = mat3(0.0);
+    precise vec3 b = vec3(0.0);
+    precise vec3 mass = vec3(0.0);
+    precise float c = 0.0;
+    int count = 0;
+
+    vec3 sumN = vec3(0.0);
+    vec3 sumP = vec3(0.0);
+    float sumP2 = 0.0;
+
+    // Coincident crossings (a zero-valued corner produces t=0 on every
+    // incident edge) must be counted once.
+    vec3 seen[12];
+    int nSeen = 0;
+    const float dedupEps = max(csz * 1e-5, 1e-9);
+
+    for (int e = 0; e < 12; ++e) {
+        ivec2 ec = SDF_CELL_EDGES[e];
+        float d0 = sdf[ec.x];
+        float d1 = sdf[ec.y];
+        if (!sdfIsFinite(d0) || !sdfIsFinite(d1)) continue;
+        if ((d0 < 0.0) == (d1 < 0.0)) continue;
+
+        vec3 p0 = cmn + SDF_CELL_CORNERS[ec.x] * csz;
+        vec3 p1 = cmn + SDF_CELL_CORNERS[ec.y] * csz;
+        float denom = d0 - d1;
+        float t = (denom != 0.0) ? clamp(d0 / denom, 0.0, 1.0) : 0.5;
+        vec3 p = p0 * (1.0 - t) + p1 * t;
+
+        bool duplicate = false;
+        for (int k = 0; k < nSeen; ++k) {
+            vec3 d = p - seen[k];
+            if (dot(d, d) <= dedupEps * dedupEps) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) continue;
+        if (nSeen < 12) seen[nSeen++] = p;
+
+        vec3 l = (p - cmn) / csz;
+        vec3 gn = vrNormalAt(sdf, l, csz);
+
+        vrAccum(A, b, c, mass, count, p, gn);
+        sumN += gn;
+        sumP += p;
+        sumP2 += dot(p, p);
+        ++nIntersections;
+
+        if (addGlobal && vrOwned(e, ijk, N)) {
+            vec3 sn = vrSharpNormal(gn, p0, p1, d0, d1, slopeThreshold);
+            vrAccum(gA, gb, gc, gmass, gcount, p, sn);
+        }
+    }
+
+    if (count == 0) {
+        qefPos = cmn + vec3(csz * 0.5);
+        return;
+    }
+
+    if (!vrSolveCell(A, b, mass, count, cmn, csz, qefPos)) return;
+
+    // QEF residual: RMS plane distance at the cell solution.
+    float resid = dot(qefPos, A * qefPos) - 2.0 * dot(qefPos, b) + c;
+    qefResidual = sqrt(max(resid, 0.0) / float(count)) / csz;
+
+    // Distance from the QEF solution to the reconstructed zero set, in cell
+    // units.  First-order Newton distance, not an absolute SDF pick.
+    surfDist = vrSurfaceDistance(sdf, cmn, csz, qefPos);
+
+    float meanLen = length(sumN) / float(count);
+    normalVar = 1.0 - clamp(meanLen, 0.0, 1.0);
+
+    vec3 centerP = sumP / float(count);
+    float spread2 = max(sumP2 / float(count) - dot(centerP, centerP), 0.0);
+    float spread = sqrt(spread2) / csz;
+
+    // Priority: density is deliberately only 30%.  A plane has many crossings
+    // but zero normal variation/residual/surface error; a sharp corner has few
+    // crossings and a large variation/residual, so it wins.
+    float density = clamp(float(count) / 6.0, 0.0, 1.0);
+    float variation = clamp(normalVar * 2.0, 0.0, 1.0);
+    float residual = clamp(qefResidual * 4.0, 0.0, 1.0);
+    float distance = clamp(surfDist * 2.0, 0.0, 1.0);
+    float dispersion = clamp(spread, 0.0, 1.0);
+    priority = 0.30 * density + 0.30 * variation + 0.20 * residual
+             + 0.15 * distance + 0.05 * dispersion;
+}
+
+vec3 vrProject(vec3 p, float sdf[8], vec3 mn, float sz) {
+    for (int i = 0; i < 2; ++i) {
+        vec3 l = (p - mn) / sz;
+        float f = vrTri(sdf, l);
+        vec3 g = vrGradRaw(sdf, l, sz);
+        float g2 = dot(g, g);
+        if (g2 < 1e-12 || !sdfIsFinite(g2)) break;
+        vec3 step = (-f / g2) * g;
+        float sl = length(step);
+        if (sl > 0.125 * sz) step *= (0.125 * sz) / sl;
+        vec3 candidate = clamp(p + step, mn, mn + vec3(sz));
+        float f2 = vrTri(sdf, (candidate - mn) / sz);
+        if (abs(f2) < abs(f) && sdfIsFinite(f2)) {
+            p = candidate;
+        } else {
+            break;
+        }
+    }
+    return p;
+}
+
+uint vrFixed(float v) {
+    // 1e-3 resolution keeps the uint accumulators safe for thousands of nodes.
+    return uint(clamp(v, 0.0, 4000.0) * 1e3 + 0.5);
+}
+
+void main() {
+    const uint id = gl_GlobalInvocationID.x;
+    if (id >= pc.nodeCount) return;
+
+    const ivec4 m = meta[id];
+    const int type = m.y;
+    const int slot = int(uint(m.w) >> 1) - 1;
+    const vec3 mn = cubeMinSize[id].xyz;
+    const float sz = cubeMinSize[id].w;
+
+    // Not a slot-bearing surface node: the geometry pass falls back to the
+    // exact baseline (and never references this entry for a triangle).
+    if (type != SDF_TYPE_SURFACE || slot < 0 || !(sz > 0.0)) {
+        refinedPos[id] = vec4(0.0);
+        return;
+    }
+
+    float sdf[8];
+    bool unsupported = false;
+    bool exactZero = false;
+    for (int i = 0; i < 8; ++i) {
+        float v = (i < 4) ? sdf0[id][i] : sdf1[id][i - 4];
+        sdf[i] = v;
+        if (!sdfIsFinite(v)) unsupported = true;
+        if (v == 0.0) exactZero = true;
+    }
+
+    // Conservative default: the geometry pass computes the existing position.
+    refinedPos[id] = vec4(0.0);
+    atomicAdd(stats[ST_NODES], 1u);
+
+    if (sdfEvalType(sdf) != SDF_TYPE_SURFACE) {
+        atomicAdd(stats[ST_SKIPPED_UNSUPPORTED], 1u);
+        return;
+    }
+    // INFINITY corners have no field data; a zero node corner is the exact
+    // corner snap that keeps shared-cell vertices bit-identical.  Both keep the
+    // existing Dual-Contouring path.
+    if (unsupported || exactZero) {
+        atomicAdd(stats[ST_SKIPPED_UNSUPPORTED], 1u);
+        return;
+    }
+
+    VCell root;
+    root.s0 = vec4(sdf[0], sdf[1], sdf[2], sdf[3]);
+    root.s1 = vec4(sdf[4], sdf[5], sdf[6], sdf[7]);
+    vcSetInfo(root, 0.0, vrKey(0, ivec3(0)), 0, false);
+
+    precise mat3 gA = mat3(0.0);
+    precise vec3 gb = vec3(0.0);
+    precise vec3 gmass = vec3(0.0);
+    precise float gc = 0.0;
+    int gcount = 0;
+
+    float rootPriority;
+    int rootIntersections;
+    vec3 rootQef;
+    float rootResidual, rootDist, rootVar;
+    vrEvalCell(root, mn, sz, pc.featureSlope, true,
+               gA, gb, gc, gmass, gcount,
+               rootPriority, rootIntersections, rootQef, rootResidual, rootDist, rootVar);
+    atomicAdd(stats[ST_INTERSECTIONS], uint(rootIntersections));
+    vcSetInfo(root, rootPriority, vrKey(0, ivec3(0)), rootIntersections, false);
+
+    // The level-0 cell QEF is the "before" sample for the diagnostics; the
+    // geometry pass still uses the exact sdfCellPosition() baseline for every
+    // node that is not refined.
+    const float baseResidual = rootResidual;
+    const float baseDist = rootDist;
+
+    // Already accurate: no refinement.  An exact local plane (no normal
+    // variation, no QEF residual, vertex on the field) is skipped explicitly;
+    // otherwise the error tolerance decides.  This is the only sufficiency gate
+    // applied before level 1; priority alone is too coarse to decide whether
+    // one cheap half-resolution sample pass is worthwhile.
+    if ((rootVar < 0.01 && rootResidual < 1e-5 && rootDist < 1e-3)
+        || rootDist <= pc.tolerance * 0.5) {
+        atomicAdd(stats[ST_SKIPPED_ACCURATE], 1u);
+        atomicAdd(stats[ST_BASE_RESIDUAL], vrFixed(baseResidual));
+        atomicAdd(stats[ST_BASE_SDF_DIST], vrFixed(baseDist));
+        atomicAdd(stats[ST_REF_RESIDUAL], vrFixed(baseResidual));
+        atomicAdd(stats[ST_REF_SDF_DIST], vrFixed(baseDist));
+        atomicAdd(stats[ST_FINAL_ABS_SDF], vrFixed(baseDist));
+        return;
+    }
+
+    vec3 pPrev;
+    if (!vrSolveGlobal(gA, gb, gmass, gcount, mn, sz, pPrev)) {
+        atomicAdd(stats[ST_SKIPPED_UNSUPPORTED], 1u);
+        return;
+    }
+
+    VCell cur[VR_MAX_CUR];
+    cur[0] = root;
+    int curCount = 1;
+    int refinedDepth = 0;
+
+    const uint depthLimit = min(pc.maxDepth, uint(VR_MAX_DEPTH));
+    const int budget = int(min(pc.budget, uint(VR_MAX_CUR)));
+
+    for (uint level = 1u; level <= depthLimit; ++level) {
+        VCell nxt[VR_MAX_NEXT];
+        int nxtCount = 0;
+
+        precise mat3 lA = mat3(0.0);
+        precise vec3 lb = vec3(0.0);
+        precise vec3 lmass = vec3(0.0);
+        precise float lc = 0.0;
+        int lcount = 0;
+
+        for (int ci = 0; ci < curCount; ++ci) {
+            const VCell parent = cur[ci];
+            const int pkey = vcKey(parent);
+            const int pLevel = vrLevel(pkey);
+            const ivec3 pijk = vrIJK(pkey);
+
+            // 3x3x3 half-resolution lattice.  The eight parent corners are
+            // reused; only the 19 new lattice values are interpolated.
+            float grid[27];
+            float parentSdf[8];
+            for (int i = 0; i < 8; ++i) parentSdf[i] = vcSdf(parent, i);
+
+            int sdfEvals = 0;
+            for (int ix = 0; ix < 3; ++ix) {
+                for (int iy = 0; iy < 3; ++iy) {
+                    for (int iz = 0; iz < 3; ++iz) {
+                        const int gi = ix * 9 + iy * 3 + iz;
+                        if (ix != 1 && iy != 1 && iz != 1) {
+                            const int corner = ((ix >> 1) << 2) | ((iy >> 1) << 1) | (iz >> 1);
+                            grid[gi] = parentSdf[corner];
+                        } else {
+                            grid[gi] = vrTri(parentSdf, vec3(float(ix), float(iy), float(iz)) * 0.5);
+                            ++sdfEvals;
+                        }
+                    }
+                }
+            }
+            atomicAdd(stats[ST_SDF_EVALS], uint(sdfEvals));
+
+            int bestChild = -1;
+            float bestPriority = -1.0;
+            for (int cx = 0; cx < 2; ++cx) {
+                for (int cy = 0; cy < 2; ++cy) {
+                    for (int cz = 0; cz < 2; ++cz) {
+                        const ivec3 cijk = pijk * 2 + ivec3(cx, cy, cz);
+                        const int ckey = vrKey(pLevel + 1, cijk);
+
+                        VCell child;
+                        child.s0 = vec4(grid[cx * 9 + cy * 3 + cz],
+                                        grid[cx * 9 + cy * 3 + cz + 1],
+                                        grid[cx * 9 + (cy + 1) * 3 + cz],
+                                        grid[cx * 9 + (cy + 1) * 3 + cz + 1]);
+                        child.s1 = vec4(grid[(cx + 1) * 9 + cy * 3 + cz],
+                                        grid[(cx + 1) * 9 + cy * 3 + cz + 1],
+                                        grid[(cx + 1) * 9 + (cy + 1) * 3 + cz],
+                                        grid[(cx + 1) * 9 + (cy + 1) * 3 + cz + 1]);
+                        vcSetInfo(child, 0.0, ckey, 0, false);
+
+                        float cpriority;
+                        int cintersections;
+                        vec3 cqef;
+                        float cresidual, cdist, cvar;
+                        vrEvalCell(child, mn, sz, pc.featureSlope, true,
+                                   lA, lb, lc, lmass, lcount,
+                                   cpriority, cintersections, cqef, cresidual, cdist, cvar);
+
+                        atomicAdd(stats[ST_INTERSECTIONS], uint(cintersections));
+                        atomicAdd(stats[ST_VIRTUAL_CELLS], 1u);
+                        vcSetInfo(child, cpriority, ckey, cintersections, false);
+
+                        if (nxtCount < VR_MAX_NEXT) {
+                            nxt[nxtCount] = child;
+                            if (cpriority > bestPriority) {
+                                bestPriority = cpriority;
+                                bestChild = nxtCount;
+                            }
+                            ++nxtCount;
+                        } else {
+                            atomicAdd(stats[ST_OVERFLOW], 1u);
+                        }
+                    }
+                }
+            }
+
+            // Guarantee each refined region continues to its best child; the
+            // remaining budget is filled by global priority below.  This is
+            // what keeps a second, lower-priority surface component in the
+            // running QEF and prevents starvation by one dominant feature.
+            if (bestChild >= 0) {
+                vec4 info = nxt[bestChild].info;
+                info.w = 1.0;
+                nxt[bestChild].info = info;
+            }
+        }
+
+        gA += lA;
+        gb += lb;
+        gc += lc;
+        gmass += lmass;
+        gcount += lcount;
+
+        vec3 pNew;
+        if (!vrSolveGlobal(gA, gb, gmass, gcount, mn, sz, pNew)) break;
+
+        refinedDepth = int(level);
+        atomicMax(stats[ST_MAX_DEPTH], level);
+
+        {
+            vec3 l = (pNew - mn) / sz;
+            float f = vrTri(sdf, l);
+            vec3 g = vrGradRaw(sdf, l, sz);
+            float gl = length(g);
+            float err = (gl > 1e-9 && sdfIsFinite(gl)) ? abs(f) / gl / sz : 0.0;
+            float delta = length(pNew - pPrev) / sz;
+            if ((err <= pc.tolerance && delta <= pc.tolerance)
+                || delta <= pc.tolerance * 0.25) {
+                pPrev = pNew;
+                break;
+            }
+        }
+
+        // The selection only schedules work for the next level; at the depth
+        // limit there is no next level, so do not spend the sort or report
+        // cells that would never be refined.
+        if (level == depthLimit) {
+            pPrev = pNew;
+            break;
+        }
+
+        // Stable top-(budget) selection keyed by (must, priority, cell key).
+        int selIdx[VR_MAX_CUR];
+        int selKey[VR_MAX_CUR];
+        float selPri[VR_MAX_CUR];
+        int selMust[VR_MAX_CUR];
+        int selCount = 0;
+
+        for (int i = 0; i < nxtCount; ++i) {
+            const VCell cnd = nxt[i];
+            if (cnd.info.z < 0.5) continue;          // no crossings
+            if (cnd.info.x < pc.minPriority) continue;
+
+            const int must = (cnd.info.w > 0.5) ? 1 : 0;
+            const int ckey = vcKey(cnd);
+            int pos = selCount;
+            if (selCount == budget) {
+                const int last = budget - 1;
+                bool better = (must > selMust[last])
+                           || (must == selMust[last] && cnd.info.x > selPri[last])
+                           || (must == selMust[last] && cnd.info.x == selPri[last] && ckey < selKey[last]);
+                if (!better) continue;
+                pos = last;
+            } else {
+                ++selCount;
+            }
+            while (pos > 0) {
+                bool better = (must > selMust[pos - 1])
+                           || (must == selMust[pos - 1] && cnd.info.x > selPri[pos - 1])
+                           || (must == selMust[pos - 1] && cnd.info.x == selPri[pos - 1]
+                               && ckey < selKey[pos - 1]);
+                if (!better) break;
+                selIdx[pos] = selIdx[pos - 1];
+                selKey[pos] = selKey[pos - 1];
+                selPri[pos] = selPri[pos - 1];
+                selMust[pos] = selMust[pos - 1];
+                --pos;
+            }
+            selIdx[pos] = i;
+            selKey[pos] = ckey;
+            selPri[pos] = cnd.info.x;
+            selMust[pos] = must;
+        }
+
+        atomicAdd(stats[ST_SELECTED], uint(selCount));
+        curCount = min(selCount, VR_MAX_CUR);
+        for (int i = 0; i < curCount; ++i) cur[i] = nxt[selIdx[i]];
+
+        pPrev = pNew;
+        if (curCount == 0) break;
+    }
+
+    // No subdivision level produced a solvable QEF: keep the exact baseline.
+    if (refinedDepth == 0) {
+        atomicAdd(stats[ST_BASE_RESIDUAL], vrFixed(baseResidual));
+        atomicAdd(stats[ST_BASE_SDF_DIST], vrFixed(baseDist));
+        atomicAdd(stats[ST_REF_RESIDUAL], vrFixed(baseResidual));
+        atomicAdd(stats[ST_REF_SDF_DIST], vrFixed(baseDist));
+        atomicAdd(stats[ST_FINAL_ABS_SDF], vrFixed(baseDist));
+        return;
+    }
+
+    vec3 p = pPrev;
+    if ((pc.flags & 1u) != 0u) p = vrProject(p, sdf, mn, sz);
+    p = clamp(p, mn, mn + vec3(sz));
+
+    refinedPos[id] = vec4(p, 1.0);
+    atomicAdd(stats[ST_REFINED], 1u);
+
+    float refResidual = 0.0;
+    if (gcount > 0) {
+        float r = dot(p, gA * p) - 2.0 * dot(p, gb) + gc;
+        refResidual = sqrt(max(r, 0.0) / float(gcount)) / sz;
+    }
+    const float refDist = vrSurfaceDistance(sdf, mn, sz, p);
+    const float finalAbs = abs(vrTri(sdf, (p - mn) / sz)) / sz;
+
+    if (refinedDepth == 0) {
+        // No level ran (e.g. depth 0); report the root quality only.
+        atomicAdd(stats[ST_BASE_RESIDUAL], vrFixed(baseResidual));
+        atomicAdd(stats[ST_BASE_SDF_DIST], vrFixed(baseDist));
+        atomicAdd(stats[ST_REF_RESIDUAL], vrFixed(baseResidual));
+        atomicAdd(stats[ST_REF_SDF_DIST], vrFixed(baseDist));
+        atomicAdd(stats[ST_FINAL_ABS_SDF], vrFixed(baseDist));
+    } else {
+        atomicAdd(stats[ST_BASE_RESIDUAL], vrFixed(baseResidual));
+        atomicAdd(stats[ST_BASE_SDF_DIST], vrFixed(baseDist));
+        atomicAdd(stats[ST_REF_RESIDUAL], vrFixed(refResidual));
+        atomicAdd(stats[ST_REF_SDF_DIST], vrFixed(refDist));
+        atomicAdd(stats[ST_FINAL_ABS_SDF], vrFixed(finalAbs));
+    }
+}

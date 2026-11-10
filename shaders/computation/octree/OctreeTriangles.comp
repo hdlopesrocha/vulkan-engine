@@ -21,7 +21,8 @@ layout(local_size_x = 64) in;
 
 // Bit-exact cell math (SDF::eval / getPosition / getNormalFromPosition). The
 // CPU implementations are used only by the offline Blender exporter; this
-// shader is the runtime's sole Cartesian vertex producer.
+// shader is the runtime's vertex-payload producer. OctreeVirtualRefine.comp
+// may replace the position with a feature-refined QEF result first.
 #include "../../includes/octree/SdfCell.glsl"
 // Terrain material classification (utils/LandBrush.cpp ported to the GPU).
 #include "../../includes/octree/LandBrush.glsl"
@@ -63,6 +64,11 @@ layout(set = 0, binding = 8, scalar) buffer Counters {
 layout(set = 0, binding = 9, scalar) buffer NodeWritten { uint nodeWritten[]; };
 layout(set = 0, binding = 10, scalar) writeonly buffer OutVerts { vec4 poolVerts[]; };
 layout(set = 0, binding = 11, scalar) writeonly buffer OutIdx   { uint poolIdx[]; };
+// Optional virtual-refinement result produced by OctreeVirtualRefine.comp.
+// xyz is the refined QEF position, w = 1 when the entry is valid; w = 0 keeps
+// the original SDF::getPosition result.  Written before this dispatch and
+// read here under a compute -> compute barrier.
+layout(set = 0, binding = 12, scalar) readonly buffer InRefinedPos { vec4 refinedPos[]; };
 
 // Per-invocation fixed-capacity overflow flag. The CPU reference uses unbounded
 // vectors for the break lists and recursion, so a GPU cap hit means the result
@@ -95,6 +101,7 @@ layout(push_constant) uniform PC {
     uint indexCapacity;   // index pool elements reserved for this chunk
     uint nodeCount;       // node-table entries (nodeWritten[] bound)
     uint diag;            // 1 = accumulate findCellAt/reuse counters
+    uint refine;          // 1 = use the OctreeVirtualRefine.comp positions
 } pc;
 
 const int TYPE_EMPTY = 0;
@@ -265,7 +272,15 @@ vec3 solveLinearSystem(mat3 A, vec3 b) {
 }
 
 // SDF::getPosition (QEF with corner snap, sentinel guard and fallbacks).
+// With virtual refinement enabled, OctreeVirtualRefine.comp has already
+// produced a feature-refined QEF position for every supported surface node;
+// unsupported nodes (sentinels, exact-zero corner snap, no slot) keep w = 0
+// and fall through to the exact baseline below.
 vec3 cellPos(Cell c) {
+    if (pc.refine != 0u) {
+        vec4 refined = refinedPos[c.id];
+        if (refined.w > 0.5) return refined.xyz;
+    }
     // SDF::getPosition, shared bit-exact implementation (the CPU's
     // sign-based SDF::eval decides the non-surface early-out).
     float sdf[8];
