@@ -548,8 +548,10 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
     size_t prunedChildren = 0;
     size_t solidChildren = 0;
     size_t emptyChildren = 0;
-    uint32_t maxDepth = 0;
     size_t storedInfNodes = 0;
+    size_t typeSdfMismatches = 0;
+    size_t missingSurfaceChildren = 0;
+    uint32_t maxDepth = 0;
 
     for (const auto& layer : layers) {
         std::shared_ptr<Octree> tree = layer->octreeRef();
@@ -588,15 +590,40 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
             queue.pop_front();
 
             OctreeNode* children[8] = {};
-            if (!cur.node->isLeaf())
+            const bool nodeIsLeaf = cur.node->isLeaf();
+            if (!nodeIsLeaf)
                 cur.node->getChildren(*tree->allocator, children);
 
             for (int i = 0; i < 8; ++i) {
                 OctreeNode* child = children[i];
-                if (child == nullptr) continue;
+                if (child == nullptr) {
+                    // An absent slot is normally Empty/Solid by construction.
+                    // If the parent's interpolated field still crosses zero in
+                    // that child, the shape pass failed to materialize a real
+                    // surface node: report it instead of silently leaving a
+                    // hole the raymarch can never fill. Leaf nodes are not
+                    // subdivided in the table; the shader samples their own
+                    // field and ignores the child slots entirely.
+                    if (!nodeIsLeaf) {
+                        float childSDF[8];
+                        SDF::getChildSDF(cur.node->sdf, static_cast<unsigned>(i), childSDF);
+                        if (SDF::eval(childSDF) == SpaceType::Surface) {
+                            ++missingSurfaceChildren;
+                        }
+                    }
+                    continue;
+                }
 
                 const SpaceType childType = child->getType();
                 if (childType != SpaceType::Surface) {
+                    // Non-surface leaves cannot contain a crossing. A node
+                    // whose stored corners cross but whose type says Empty or
+                    // Solid is a shape-pass classification bug; the raymarch
+                    // table has to skip the whole subtree, so surface it here
+                    // for the build log.
+                    if (SDF::eval(child->sdf) == SpaceType::Surface) {
+                        ++typeSdfMismatches;
+                    }
                     // Leaf that cannot contain the isosurface: the shader
                     // treats Empty children as skipped regions and Solid
                     // children as skipped too (both are crossing-free).
@@ -634,6 +661,13 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
               << " pruned=" << prunedChildren << " solidChildren=" << solidChildren
               << " emptyChildren=" << emptyChildren << " maxDepth=" << maxDepth
               << " infCornerNodes=" << storedInfNodes << std::endl;
+    if (typeSdfMismatches > 0 || missingSurfaceChildren > 0) {
+        std::cerr << "[LocalScene] SDF raymarch table: WARNING "
+                  << typeSdfMismatches << " non-surface node(s) have a crossing SDF and "
+                  << missingSurfaceChildren << " absent child slot(s) interpolate to a "
+                     "surface; those regions are skipped by the raymarch (Octree::shape "
+                     "classification bug)" << std::endl;
+    }
     return true;
 }
 

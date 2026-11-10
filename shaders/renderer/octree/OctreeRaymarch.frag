@@ -97,7 +97,11 @@ bool aoEnabled = (ubo.ambientOcclusionEnabled != 0u);
 #include "../../includes/solid/SolidSurface.glsl"
 
 const int RAYMARCH_DISCARD_BRUSH = -1;
-const int RM_MAX_STEPS = 320;
+// Grazing rays through the depth-12 terrain leaf lattice can need ~800
+// iteration steps (descent + empty/solid skips) before reaching the surface;
+// 320 left visible holes wherever the budget ran out. The cost is only paid by
+// pixels that actually take that many steps.
+const int RM_MAX_STEPS = 1024;
 const int RM_MAX_STACK = 40;
 const int RM_BISECT_STEPS = 7;
 
@@ -156,14 +160,18 @@ vec3 rmCellLocal(uint node, vec3 p) {
     return clamp((p - rmNodeMin(node)) / max(rmNodeSize(node), 1e-8), 0.0, 1.0);
 }
 
-// Grid lines at multiples of 1/divisions in cell-local space. The l=0 and l=1
-// lines coincide with the leaf faces shared by sibling cells, so the lattice
-// exposes both the cell size and its alignment.
-float rmCellGrid(vec3 l, float divisions) {
-    vec3 f = fract(l * divisions);
-    vec3 d = min(f, 1.0 - f);
-    float m = min(d.x, min(d.y, d.z));
-    return 1.0 - smoothstep(0.0, 0.045, m);
+// Distance to the nearest of the 12 leaf-cube edges in cell-local space. Using
+// edges (not the 6 faces) is deliberate: a surface that lies exactly on a cell
+// face would otherwise cover the whole face with a "grid line". An edge is
+// close only where the two nearest face distances are both small, so the
+// lattice stays a thin outline along the surface patch's cell rim.
+float rmCellEdge(vec3 l) {
+    vec3 f = min(l, 1.0 - l); // distances to the six faces
+    float a = min(f.x, min(f.y, f.z));
+    float c = max(f.x, max(f.y, f.z));
+    float b = f.x + f.y + f.z - a - c;
+    float edgeDist = sqrt(a * a + b * b);
+    return 1.0 - smoothstep(0.0, 0.06, edgeDist);
 }
 
 // Refinement depth: 0 at the layer root, 1 for cells 2^16 smaller. Deeper
@@ -397,10 +405,11 @@ void main() {
         // locally flat ground.
         color *= rmNodeIsLeaf(nearestNode) ? (0.70 + 0.30 * rmHash01(nearestNode)) : 0.55;
 
-        // Leaf-cell lattice: four subdivisions per axis; the outer lines are
-        // the shared cell faces.
+        // Leaf-cell outline: the edge of the cell's surface patch. The outer
+        // lines are the shared cell edges, so the lattice exposes the cell size
+        // without turning whole axis-aligned faces white.
         vec3 cell = rmCellLocal(nearestNode, hitPos);
-        color = mix(color, vec3(1.0), 0.60 * rmCellGrid(cell, 4.0));
+        color = mix(color, vec3(1.0), 0.65 * rmCellEdge(cell));
 
         // Non-leaf hits only occur when a surface child was pruned by NODE_CAP
         // (or the stack budget ran out): the march falls back to this node's

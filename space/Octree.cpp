@@ -712,23 +712,45 @@ void Octree::shape(
         buildResultSDF(false, args, frame, r, children, threadContext);
     }
 
+    // The stored result field is authoritative. Several fast paths classify a
+    // cell from its center/type (preserve-solid, preserve-empty, the
+    // all-INFINITY seed) and write a combined result SDF afterwards; when the
+    // shape is not a perfect distance field, or the existing node was already
+    // type/SDF-inconsistent, those two can disagree. A cell whose stored field
+    // crosses zero MUST be Surface, otherwise both the mesh walk and the SDF
+    // raymarch table skip the node (and its whole subtree) as empty/solid and
+    // leave a hole in the rendered surface.
+    bool promotedSurface = false;
+    if(r.resultType != SpaceType::Surface
+       && SDF::eval(r.resultSDF) == SpaceType::Surface) {
+        r.resultType = SpaceType::Surface;
+        promotedSurface = true;
+    }
+
     bool interpolatedSurface = (frame.node == NULL)
                                 && SDF::eval(frame.sdf) == SpaceType::Surface 
                                 && frame.type == SpaceType::Surface
                                 ;
 
-
-    if(r.shapeType != SpaceType::Empty || interpolatedSurface || r.node != NULL) {
+    // A result crossing always needs a node, even when the shape itself is
+    // empty here: the existing/interpolated field can still carry the surface
+    // (Delete over an existing tree is the common case). Without this, a
+    // Surface result could be linked into the parent's child block as NULL,
+    // leaving a hole the mesh walk and the SDF raymarch both skip.
+    bool createdNode = false;
+    if(r.shapeType != SpaceType::Empty || interpolatedSurface
+       || r.resultType == SpaceType::Surface || r.node != NULL) {
         if(r.resultType == SpaceType::Surface) {
             // Create nodes for surface results if they don't exist
             if(r.node == NULL) {
                 r.node = allocator->allocate()->init(Vertex(frame.cube.getCenter()));   
+                createdNode = true;
             }
 
             if(r.node!= NULL) {
                 // Simplification & Painting
-                if(isLeaf) {
-                    if(r.shapeType != SpaceType::Empty) {
+                if(isLeaf || promotedSurface) {
+                    if(isLeaf && r.shapeType != SpaceType::Empty) {
                         // Painters only read the node; no SDF::getPosition.
                         paintNode();
                     }  
@@ -751,10 +773,10 @@ void Octree::shape(
                         for(uint i =0 ; i < 8 ; ++i) {
                             NodeOperationResult &child = children[i];
                             OctreeNode * childNode = child.node;
+                            const BoundingCube childCube = frame.cube.getChild(i);
 
                             if(child.resultType != SpaceType::Surface) {
                                 if(childNode == NULL) {
-                                    BoundingCube childCube = frame.cube.getChild(i);
                                     childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
                                     children[i].node = childNode;
                                 }
@@ -764,6 +786,23 @@ void Octree::shape(
                                 childNode->setBrush(r.brushIndex);
                                 childNode->setTextureType(r.textureType);
                                 childNode->setData(r.data);
+                                childNode->setLod(child.selectedLod);
+                                childNode->setChunkLod(child.selectedChunkLod);
+                                childNode->setHSV(child.brushHsv);
+                            } else if(childNode == NULL) {
+                                // Defensive: a Surface child must always own a
+                                // node. The child shape call materializes one
+                                // (see createdNode above), but linking NULL
+                                // here would silently delete the child's whole
+                                // surface subtree from the mesh and raymarch.
+                                childNode = allocator->allocate()->init(Vertex(childCube.getCenter()));
+                                children[i].node = childNode;
+                                childNode->setType(SpaceType::Surface);
+                                childNode->setSDF(child.resultSDF);
+                                childNode->setChunk(child.selectedChunkLod > 0);
+                                childNode->setBrush(child.brushIndex);
+                                childNode->setTextureType(child.textureType);
+                                childNode->setData(child.data);
                                 childNode->setLod(child.selectedLod);
                                 childNode->setChunkLod(child.selectedChunkLod);
                                 childNode->setHSV(child.brushHsv);
@@ -826,8 +865,32 @@ void Octree::shape(
         }
     }
 
+    // Collapse a promoted cell now that the children metadata above (LOD
+    // aggregation and the brush tally) has been consumed. The node's own field
+    // is the only representation left: keeping the non-surface children would
+    // make the mesh and raymarch walkers descend into them and skip the
+    // crossing that lives in this node's trilinear field.
+    if(promotedSurface && r.node != NULL && !r.node->isLeaf()) {
+        OctreeNode* oldChildren[8] = {};
+        r.node->getChildren(*allocator, oldChildren);
+        for(int c = 0; c < 8; ++c) {
+            if(oldChildren[c] != NULL && deleteHandler) {
+                reportDeletedSubtree(oldChildren[c], frame.cube.getChild(c),
+                                     frame.level + 1, *allocator, deleteHandler);
+            }
+        }
+        r.node->clear(*allocator, NULL);
+    }
+
     // Materialize this node's properties for both subdivided and terminal nodes.
-    if(process && r.node != NULL) {
+    // `createdNode` also covers cells allocated on the process==false path
+    // (interpolated existing surface / Surface result with no shape crossing),
+    // and `promotedSurface` covers cells whose type is reconciled from their
+    // result SDF after a center-based fast path. Without either, a fresh node
+    // would keep init()'s all-INF SDF and a stale type, and both the
+    // tessellator and the SDF raymarch would treat a real surface region as
+    // empty.
+    if((process || createdNode || promotedSurface) && r.node != NULL) {
         if(r.resultType != SpaceType::Surface) {
             // The node stops being a surface chunk and its children are about
             // to be recycled: report the whole subtree deleted first so the
