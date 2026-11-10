@@ -303,6 +303,6 @@ makes the selection more inclusive; raising it makes it more conservative.
 | `services/OctreeTopologyCompute.{hpp,cpp}` | pipeline, buffers, descriptor bindings 12/13, dispatch/barrier, env settings, diagnostics |
 | `docs/virtual_refinement.md` | this report |
 
-The CPU/offline exporter path (`sdf/SDF.cpp`, `space/OctreeTriangleTessellator`)
+The CPU/offline exporter path (`sdf/core/SDF.cpp`, `space/OctreeTriangleTessellator`)
 is untouched. With `VULKAN_VIRTUAL_REFINE=0` the runtime geometry pass is the
 previous implementation, including its bit-exact CPU parity.

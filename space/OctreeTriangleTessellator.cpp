@@ -4,7 +4,7 @@
 #include "Octree.hpp"
 #include "OctreeNode.hpp"
 #include "OctreeSharedLock.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include <algorithm>
 #include <cmath>
 #include <vector>

@@ -1,6 +1,6 @@
 #pragma once
-#include "../SignedDistanceFunction.hpp"
-#include "../RoadSpline.hpp"
+#include "../core/SignedDistanceFunction.hpp"
+#include "RoadSpline.hpp"
 #include <glm/glm.hpp>
 #include "../../math/geometry/BoundingSphere.hpp"
 

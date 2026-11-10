@@ -1,5 +1,5 @@
 #pragma once
-#include "../SignedDistanceFunction.hpp"
+#include "../core/SignedDistanceFunction.hpp"
 #include "../../math/geometry/BoundingSphere.hpp"
 #include <glm/glm.hpp>
 

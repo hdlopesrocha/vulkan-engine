@@ -37,7 +37,7 @@ const vec3 SDF_CELL_CORNERS[8] = vec3[](
     vec3(0, 0, 0), vec3(0, 0, 1), vec3(0, 1, 0), vec3(0, 1, 1),
     vec3(1, 0, 0), vec3(1, 0, 1), vec3(1, 1, 0), vec3(1, 1, 1)
 );
-// SDF_EDGES (sdf/SDF.hpp) — same order as the CPU QEF loop.
+// SDF_EDGES (sdf/core/SDF.hpp) — same order as the CPU QEF loop.
 const ivec2 SDF_CELL_EDGES[12] = ivec2[](
     ivec2(0, 1), ivec2(1, 3), ivec2(2, 3), ivec2(0, 2),
     ivec2(4, 5), ivec2(5, 7), ivec2(6, 7), ivec2(4, 6),
@@ -213,7 +213,7 @@ vec3 sdfCellPosition(float sdf[8], vec3 mn, float sz) {
     // spike. 0.1 (was 1e-2): keeps each vertex near its own crossing centroid
     // instead of letting neighbouring cells park on the same cube corner on
     // surfaces nearly parallel to a lattice plane (beaches, waterline), where
-    // they formed long thin triangles. MUST match sdf/SDF.cpp.
+    // they formed long thin triangles. MUST match sdf/core/SDF.cpp.
     ATA[0][0] += 1e-1;
     ATA[1][1] += 1e-1;
     ATA[2][2] += 1e-1;

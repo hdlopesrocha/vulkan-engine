@@ -1,7 +1,7 @@
 #include "EdgeCell.hpp"
 #include "OctreeNode.hpp"
 #include "../math/BrushMode.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include <functional>
 
 bool EdgeCell::isSurface() const {

@@ -27,7 +27,7 @@
 #include "../space/OctreeNode.hpp"
 #include "../space/OctreeTriangleTessellator.hpp"
 #include "../space/Tesselator.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include "Scene.hpp"
 
 namespace blender_export {

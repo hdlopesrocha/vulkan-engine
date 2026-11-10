@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 #include <glm/glm.hpp>
-#include "../math/geometry/BoundingSphere.hpp"
+#include "../../math/geometry/BoundingSphere.hpp"
 
 class RoadSpline {
 public:

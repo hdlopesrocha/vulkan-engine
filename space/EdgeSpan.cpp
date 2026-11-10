@@ -1,5 +1,5 @@
 #include "EdgeSpan.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include <cmath>
 #include <limits>
 

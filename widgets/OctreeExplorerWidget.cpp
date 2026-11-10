@@ -4,7 +4,7 @@
 #include "components/ImGuiHelpers.hpp"
 #include "../math/Camera.hpp"
 #include "../math/geometry/Ray.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include <glm/glm.hpp>
 #include <limits>
 #include <string>

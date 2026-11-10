@@ -22,12 +22,12 @@ static const glm::ivec2 SDF_EDGES[12] = {
     {3, 7}
 };
 
-#include "../math/geometry/BoundingCube.hpp"
-#include "../space/SpaceType.hpp"
+#include "../../math/geometry/BoundingCube.hpp"
+#include "../../space/SpaceType.hpp"
 
 // Generic SDF lattice helpers shared by the octree, the tessellator and the
 // offline Blender exporter. Primitive and effect distance fields live in their
-// own classes (sdf/primitives/*DistanceFunction.* and sdf/*DistanceEffect.*); this class
+// own classes (sdf/primitives/*DistanceFunction.* and sdf/effects/*DistanceEffect.*); this class
 // deliberately contains no shape-specific code.
 class SDF
 {

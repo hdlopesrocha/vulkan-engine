@@ -47,10 +47,10 @@
 #include "../sdf/effects/PerlinCarveDistanceEffect.hpp"
 #include "../sdf/effects/SineDistortDistanceEffect.hpp"
 #include "../sdf/effects/VoronoiCarveDistanceEffect.hpp"
-#include "../sdf/RoadSpline.hpp"
+#include "../sdf/primitives/RoadSpline.hpp"
 #include "../sdf/primitives/RoadDistanceFunction.hpp"
 #include "../sdf/primitives/TriangleStripDistanceFunction.hpp"
-#include "../sdf/SvgShape.hpp"
+#include "../sdf/primitives/SvgShape.hpp"
 #include "../sdf/primitives/SvgPolygonDistanceFunction.hpp"
 
 

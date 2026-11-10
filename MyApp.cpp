@@ -42,7 +42,7 @@
 #include "utils/OctreeRaymarchTable.hpp"
 #include "brushPainters/SvgBrush.hpp"
 #include "sdf/primitives/SvgPolygonDistanceFunction.hpp"
-#include "sdf/SvgShape.hpp"
+#include "sdf/primitives/SvgShape.hpp"
 #include "utils/BlenderExport.hpp"
 #include "utils/SceneMaterialTable.hpp"
 #include "utils/RemoteScene.hpp"

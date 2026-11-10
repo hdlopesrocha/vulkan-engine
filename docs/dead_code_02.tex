@@ -515,7 +515,7 @@ Accessor for the texture root; no reader.
 \label{sec:sdf}
 
 \textbf{\code{SvgShape::rgbToHsvDegrees(const glm::vec3&)}} (14 lines,
-\code{sdf/SvgShape.cpp:492--505}) and \textbf{\code{SvgShape::contains(const
+\code{sdf/primitives/SvgShape.cpp:492--505}) and \textbf{\code{SvgShape::contains(const
 glm::vec2&)}} (3 lines, \code{:507--509}). The HSV conversion was for brush
 tinting on the SVG path; the live tint path is the Nunchuk colour subpage,
 which has its own conversion. \code{contains} is a point-in-polygon test; the
@@ -1097,8 +1097,8 @@ Location & Symbol & Lines \\
 \code{utils/RemoteScene.cpp:275--283} & \code{RemoteScene::killStub} & 9 \\
 \code{server/ChunkProtocol.cpp:99--101} & \code{buildRequestAllMeshes()} & 3 \\
 \code{server/ChunkProtocol.cpp:90--97} & \code{buildRequestMesh} & 8 \\
-\code{sdf/SvgShape.cpp:492--505} & \code{SvgShape::rgbToHsvDegrees} & 14 \\
-\code{sdf/SvgShape.cpp:507--509} & \code{SvgShape::contains} & 3 \\
+\code{sdf/primitives/SvgShape.cpp:492--505} & \code{SvgShape::rgbToHsvDegrees} & 14 \\
+\code{sdf/primitives/SvgShape.cpp:507--509} & \code{SvgShape::contains} & 3 \\
 \code{sdf/SvgPolygonDistanceFunction.cpp:88--93} & \code{SvgPolygonDistanceFunction::localProfilePoint} & 6 \\
 \code{sdf/types/SdfScene.cpp:363--420} & \code{SdfScene::createFireDemo} & 58 \\
 \code{math/geometry/BoundingBox.cpp:48--50} & \code{BoundingBox::setMaxX} & 3 \\

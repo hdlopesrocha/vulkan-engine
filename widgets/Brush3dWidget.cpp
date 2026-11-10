@@ -13,7 +13,7 @@
 #include <memory>
 #include <string>
 #include "components/ImGuiHelpers.hpp"
-#include "../sdf/SvgShape.hpp"
+#include "../sdf/primitives/SvgShape.hpp"
 
 // Static label arrays for combo boxes
 const char* Brush3dWidget::sdfTypeNames[] = {

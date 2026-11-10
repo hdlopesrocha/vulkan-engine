@@ -6,7 +6,7 @@
 
 #include "../math/BrushPainter.hpp"
 #include "../math/geometry/Transformation.hpp"
-#include "../sdf/SvgShape.hpp"
+#include "../sdf/primitives/SvgShape.hpp"
 
 // Per-vertex painter for the SVG brush: the world position is mapped into the
 // SVG's normalized profile space with the same transform the SDF uses

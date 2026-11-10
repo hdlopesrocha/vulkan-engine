@@ -1,5 +1,5 @@
 #pragma once
-#include "../SignedDistanceFunction.hpp"
+#include "../core/SignedDistanceFunction.hpp"
 #include <array>
 #include <glm/glm.hpp>
 #include "../../math/geometry/Transformation.hpp"

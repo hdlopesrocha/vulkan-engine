@@ -2,7 +2,7 @@
 #include "OctreeAllocator.hpp"
 #include "OctreeNodeData.hpp"
 #include "../math/BrushMode.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include <cmath>
 #include <cstring>
 

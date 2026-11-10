@@ -3,7 +3,7 @@
 #include "OctreeNode.hpp"
 #include "OctreeAllocator.hpp"
 #include "ChildBlock.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include "../math/Math.hpp"
 #include <fstream>
 #include <sstream>

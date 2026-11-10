@@ -19,7 +19,7 @@
 #include "OctreeAllocator.hpp"
 #include "OctreeNode.hpp"
 #include "OctreeNodeData.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include "../math/geometry/Ray.hpp"
 
 

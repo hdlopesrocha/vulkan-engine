@@ -52,7 +52,7 @@ vec3 brushRotateInv(vec3 v, vec4 q) {
     return brushRotate(v, vec4(-q.xyz, q.w));
 }
 
-// ── Primitives (exact mirrors of sdf/SDF.cpp) ───────────────────────────────
+// ── Primitives (exact mirrors of sdf/core/SDF.cpp) ───────────────────────────────
 float brushSdBox(vec3 p, vec3 halfExtents) {
     vec3 q = abs(p) - halfExtents;
     return length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);

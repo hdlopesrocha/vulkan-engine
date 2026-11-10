@@ -1,5 +1,5 @@
 #pragma once
-#include "../SignedDistanceFunction.hpp"
+#include "../core/SignedDistanceFunction.hpp"
 #include "../../math/geometry/BoundingBox.hpp"
 #include "../../math/geometry/Transformation.hpp"
 #include "../../space/Octree.hpp"

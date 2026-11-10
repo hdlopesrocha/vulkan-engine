@@ -386,9 +386,9 @@ Location & Method & Lines & Note \\
 \file{math/Frustum.cpp:14--41,80--87} & \code{m\_points[8]}, \code{intersection<>}, \code{ij2k}, \code{crosses} & $\sim$40 & written eight times in the constructor, never read \\
 \file{math/RoadSpline.cpp:133--136} & \code{closestPoint}, \code{totalLength}, \code{center}, \code{boundingRadius} & $\sim$30 & plus the ctor work that feeds them \\
 \file{math/Geometry.cpp} & \code{calculateTangents} (no-op), \code{getNormal}, \code{getCenter} & 15 & no callers \\
-\file{sdf/SDF.cpp} & \code{opXor}, smooth ops, \code{distortPerlin}, \code{getAveragePosition2}, \code{getNormal}, \code{isSurfaceNet/2} & $\sim$110 & static helpers with no callers \\
-\file{sdf/SignedDistanceFunction.hpp} & \code{getType} + 15 overrides + \code{SdfType} & $\sim$15 & tags set in constructors, never read \\
-\file{sdf/SignedDistanceFunction.hpp} & \code{getLabel} + 15 overrides & $\sim$60 & zero call sites \\
+\file{sdf/core/SDF.cpp} & \code{opXor}, smooth ops, \code{distortPerlin}, \code{getAveragePosition2}, \code{getNormal}, \code{isSurfaceNet/2} & $\sim$110 & static helpers with no callers \\
+\file{sdf/core/SignedDistanceFunction.hpp} & \code{getType} + 15 overrides + \code{SdfType} & $\sim$15 & tags set in constructors, never read \\
+\file{sdf/core/SignedDistanceFunction.hpp} & \code{getLabel} + 15 overrides & $\sim$60 & zero call sites \\
 \file{sdf/RoadDistanceFunction.hpp} & seven accessors & 7 & no callers \\
 \file{utils/AtlasManager.cpp} & I/O family (\code{save/load/export}) + 6-arg \code{addTile} & $\sim$110 & \code{clear(int)} is live, do not remove \\
 \file{utils/BillboardManager.cpp} & sampling + I/O family & $\sim$140 & \code{clear()} is live, do not remove \\
@@ -1260,14 +1260,14 @@ Location & Method & Lines \\
 \texttt{math/Light.cpp:92} & \texttt{Light::setTarget} & 4 \\
 \texttt{math/Math.cpp:134} & \texttt{Math::randomFloat} & 5 \\
 \texttt{sdf/PyramidDistanceFunction.cpp:19} & \texttt{PyramidDistanceFunction::boundingSphereRadius} & 3 \\
-\texttt{sdf/SDF.cpp:166} & \texttt{SDF::getAveragePosition2} & 6 \\
-\texttt{sdf/SDF.cpp:244} & \texttt{SDF::opXor} & 3 \\
-\texttt{sdf/SDF.cpp:515} & \texttt{SDF::distortPerlin} & 6 \\
-\texttt{sdf/SDF.cpp:591} & \texttt{SDF::opSmoothUnion} & 4 \\
-\texttt{sdf/SDF.cpp:596} & \texttt{SDF::opSmoothSubtraction} & 4 \\
-\texttt{sdf/SDF.cpp:601} & \texttt{SDF::opSmoothIntersection} & 4 \\
-\texttt{sdf/SDF.cpp:692} & \texttt{SDF::isSurfaceNet} & 13 \\
-\texttt{sdf/SDF.cpp:706} & \texttt{SDF::isSurfaceNet2} & 3 \\
+\texttt{sdf/core/SDF.cpp:166} & \texttt{SDF::getAveragePosition2} & 6 \\
+\texttt{sdf/core/SDF.cpp:244} & \texttt{SDF::opXor} & 3 \\
+\texttt{sdf/core/SDF.cpp:515} & \texttt{SDF::distortPerlin} & 6 \\
+\texttt{sdf/core/SDF.cpp:591} & \texttt{SDF::opSmoothUnion} & 4 \\
+\texttt{sdf/core/SDF.cpp:596} & \texttt{SDF::opSmoothSubtraction} & 4 \\
+\texttt{sdf/core/SDF.cpp:601} & \texttt{SDF::opSmoothIntersection} & 4 \\
+\texttt{sdf/core/SDF.cpp:692} & \texttt{SDF::isSurfaceNet} & 13 \\
+\texttt{sdf/core/SDF.cpp:706} & \texttt{SDF::isSurfaceNet2} & 3 \\
 \texttt{sdf/effects/SignedDistanceEffect.cpp:11} & \texttt{SignedDistanceEffect::setFunction} & 3 \\
 \texttt{services/BillboardService.cpp:42} & \texttt{BillboardService::createBillboardArrayTextures} & 25 \\
 \texttt{services/TextureMixer.cpp:54} & \texttt{TextureMixer::setOnTextureGenerated} & 3 \\

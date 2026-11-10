@@ -4,7 +4,7 @@
 #include "../math/BrushMode.hpp"
 #include "../math/geometry/ContainmentType.hpp"
 #include "../math/Math.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include <glm/glm.hpp>
 class OctreeNode;
 

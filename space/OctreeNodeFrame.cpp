@@ -1,7 +1,7 @@
 #include "OctreeNodeFrame.hpp"
 #include <cstring>
 #include <cmath>
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 
 
 OctreeNodeFrame::OctreeNodeFrame()

@@ -4,7 +4,7 @@
 #include "../math/geometry/Transformation.hpp"
 #include "../math/BrushPainter.hpp"
 #include "../math/TextureCoordPainter.hpp"
-#include "../sdf/SignedDistanceFunction.hpp"
+#include "../sdf/core/SignedDistanceFunction.hpp"
 #include "../sdf/operations/SignedDistanceOperation.hpp"
 #include "Simplifier.hpp"
 #include "OctreeNodeData.hpp"

@@ -6,7 +6,7 @@
 #include "../services/OctreeTopologyTypes.hpp"
 #include "../services/OctreeTopologyCapacity.hpp"
 #include "../space/IteratorHandler.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include "../math/Math.hpp"
 #include <iostream>
 #include <chrono>

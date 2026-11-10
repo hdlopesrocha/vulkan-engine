@@ -1,5 +1,5 @@
 #include "SDF.hpp"
-#include "../math/Math.hpp"
+#include "../../math/Math.hpp"
 #include <cmath>
 #include <cstring>
 
