@@ -2,7 +2,7 @@
 #include <cmath>
 #include <stb/stb_perlin.h>
 
-VoronoiCarveDistanceEffect::VoronoiCarveDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias) : SignedDistanceEffect(function_, model, bias + amplitude_), amplitude(amplitude_), cellSize(cellSize_), offset(offset_), brightness(brightness_), contrast(contrast_) {
+VoronoiCarveDistanceEffect::VoronoiCarveDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float cellSize_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias) : SignedDistanceEffect(function_, model, bias + std::abs(amplitude_ * contrast_)), amplitude(amplitude_), cellSize(cellSize_), offset(offset_), brightness(brightness_), contrast(contrast_) {
 }
 
 float VoronoiCarveDistanceEffect::randFromPerlin(const glm::ivec3& cell, float seed) {
@@ -55,6 +55,17 @@ float VoronoiCarveDistanceEffect::voronoi3D(const glm::vec3& p, float cellSize, 
 }
 
 float VoronoiCarveDistanceEffect::distance(const glm::vec3 &p) const {
+    // VoronoiCarve is a metric perturbation, not an exact isometry: the
+    // returned field is a conservative (1-Lipschitz) world-space SDF, so
+    // sphere tracing and the octree half-diagonal tests are safe. The scale
+    // below must include every factor that can change the carved field's
+    // gradient: the Voronoi value itself (1/sqrt(3) per cell in normalized
+    // lattice space), the 0.3 Perlin domain warp (bounded by kDomainWarpGrad)
+    // and the painter's contrast (brightness is a constant offset).
+    if (!(cellSize > 1e-6f)) {
+        return function.distance(p); // degenerate/NaN settings: leave the base SDF
+    }
+
     glm::vec3 localP = p - m_model.translate;
     glm::vec3 pp = localP + offset;
     float d = function.distance(p);
@@ -62,7 +73,12 @@ float VoronoiCarveDistanceEffect::distance(const glm::vec3 &p) const {
     float noise = voronoi3D(pp, cellSize, 0);
     float carved = d - amplitude * Math::brightnessAndContrast(noise, brightness, contrast);
 
-    float maxGrad = 2.0f * amplitude / cellSize;
+    // Derivative of minDist/sqrt(3) w.r.t. q is at most 1/sqrt(3); the
+    // domain warp q + 0.3*perlin(q) multiplies it by at most
+    // kDomainWarpGrad = 2 (a conservative bound for stb_perlin's Jacobian).
+    constexpr float kDomainWarpGrad = 2.0f;
+    const float noiseGradPerWorld = kDomainWarpGrad / (std::sqrt(3.0f) * cellSize);
+    const float maxGrad = std::abs(amplitude * contrast) * noiseGradPerWorld;
     float L = 1.0f + maxGrad;
     return carved / L;
 }

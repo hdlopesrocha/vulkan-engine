@@ -306,10 +306,17 @@ float brushDistance(vec3 p) {
         vec3 np = localP + (amp * 0.5) * vec3(dx, dy, dz);
         return brushRawDistance(np + translate) / (1.0 + 1.5 * amp * freq);
     }
-    // VoronoiCarve
+    // VoronoiCarve: conservative world-space SDF (matches the CPU
+    // VoronoiCarveDistanceEffect). The 1/sqrt(3) Voronoi value gradient and
+    // the 0.3 Perlin domain warp (bounded by 2x) both scale the carve; the
+    // contrast also scales the noise, so it must be part of the Lipschitz
+    // bound. Brightness is only an offset.
+    if (!(brush.xEffect0.w > 1e-6)) return brushRawDistance(p);
+    float cell = brush.xEffect0.w;
     float d = brushRawDistance(p);
-    float noise = brushBc(brushVoronoi3D(localP, brush.xEffect0.w), brightness, contrast);
-    return (d - amp * noise) / (1.0 + 2.0 * amp / max(brush.xEffect0.w, 1e-6));
+    float noise = brushBc(brushVoronoi3D(localP, cell), brightness, contrast);
+    float maxGrad = abs(amp * contrast) * 2.0 / (sqrt(3.0) * cell);
+    return (d - amp * noise) / (1.0 + maxGrad);
 }
 
 // Bounding-sphere early-out shared by the preview, the solid PAINT/REMOVE

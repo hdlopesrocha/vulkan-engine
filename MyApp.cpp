@@ -4865,7 +4865,7 @@ static void computeBrushBounds(const BrushEntry& entry, const glm::vec3& sweepSt
     if (entry.useEffect) {
         float pad = entry.effectAmplitude * 1.97f;
         if (entry.effectType == 2) pad = entry.effectAmplitude * 0.5f;
-        else if (entry.effectType == 3) pad = entry.effectAmplitude;
+        else if (entry.effectType == 3) pad = std::abs(entry.effectAmplitude * entry.effectContrast);
         bounds.radius += pad;
     }
     boundsRadius = std::max(bounds.radius, 0.1f) * 1.05f;

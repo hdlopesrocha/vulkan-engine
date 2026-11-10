@@ -194,14 +194,21 @@ public:
             case TestShape::VoronoiDistort: {
                 std::cout << "\topaqueLayer.add(voronoiDistort)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, tileSize*2.0f, 0.1f/tileSize, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
+                // VoronoiCarve's second parameter is a world-unit cell size,
+                // unlike the Perlin/Sine frequency. The old 0.1/tileSize value
+                // is a frequency: as a cell size it created sub-millimetre
+                // cells and a ~1/cellSize Lipschitz normalization that flattened
+                // the field. 1/frequency keeps the intended ~80-unit cells.
+                const float voronoiCellSize = 1.0f / (0.1f / tileSize);
+                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, tileSize*2.0f, voronoiCellSize, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::VoronoiDistortInverse: {
-                std::cout << "\topaqueLayer.add(voronoiDistort)"<< std::endl;
+                std::cout << "\topaqueLayer.add(voronoiDistortInverse)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, tileSize*2.0f, 0.1f/tileSize, glm::vec3(0), 0.0f, -1.0f, model, tileSize);
+                const float voronoiCellSize = 1.0f / (0.1f / tileSize);
+                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, tileSize*2.0f, voronoiCellSize, glm::vec3(0), 0.0f, -1.0f, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
