@@ -8,8 +8,10 @@
 // Represents one SDF brush entry with all parameters needed to populate the scene
 struct BrushEntry {
     // SDF primitive: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,
-    // 6=Cone,7=Cylinder,8=TaperedCylinder,9=TaperedCapsule,10=SVG extrusion
-    // (profile ∩ box: the SVG is extruded along local Y and clipped to Scale).
+    // 6=Cone,7=Cylinder,8=TaperedCylinder,9=TaperedCapsule,10=SvgExtrusion,
+    // 11=Tetrahedron.
+    // SVG extrusion (sdfType 10): profile from an uploaded SVG file,
+    // extruded along local Y and clipped to Scale.
     int sdfType = 3;
     // Operation: 0=ADD, 1=REMOVE
     int brushMode = 0;

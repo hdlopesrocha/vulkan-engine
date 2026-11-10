@@ -72,8 +72,9 @@ inline bool applyControllerAction(const ControllerContext &ctx, EventManager *em
         changed = true;
     }
     if (ctrl == PageControl::ATTRIBUTE && a.attributeDelta != 0) {
-        be->sdfType = (be->sdfType + a.attributeDelta) % 8;
-        if (be->sdfType < 0) be->sdfType += 8;
+        constexpr int kSdfTypeCount = 12; // keep in sync with Brush3dWidget::sdfTypeNames
+        be->sdfType = (be->sdfType + a.attributeDelta) % kSdfTypeCount;
+        if (be->sdfType < 0) be->sdfType += kSdfTypeCount;
         changed = true;
     }
     return changed;

@@ -4775,6 +4775,9 @@ static void forEachBrushSDF(const BrushEntry& entry, const Transformation& model
                                                        callback, shape);
             break;
         }
+        case 11: // Tetrahedron
+            applyPrimitive<TetrahedronDistanceFunction>(entry, model, sweepStart, minSize, callback);
+            break;
         default:
             std::cerr << logPrefix << " Unknown sdfType " << entry.sdfType << ", skipping" << std::endl;
             break;

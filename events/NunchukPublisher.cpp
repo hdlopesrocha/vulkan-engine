@@ -319,7 +319,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             if (wctx.activeCategory() == PageCategory::BRUSH) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) {
-                    be->sdfType = (be->sdfType + 1) % 10;
+                    be->sdfType = (be->sdfType + 1) % 12;
                     fprintf(stderr, "[Wiimote] Brush SDF type -> %d\n", be->sdfType);
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }
@@ -329,7 +329,7 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
             if (wctx.activeCategory() == PageCategory::BRUSH) {
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) {
-                    be->sdfType = (be->sdfType - 1 + 10) % 10;
+                    be->sdfType = (be->sdfType - 1 + 12) % 12;
                     fprintf(stderr, "[Wiimote] Brush SDF type -> %d\n", be->sdfType);
                     em->queue(std::make_shared<RebuildBrushEvent>());
                 }

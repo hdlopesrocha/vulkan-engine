@@ -14,6 +14,10 @@
 //     bit-identical.
 //   * The VoronoiCarve cell offsets use integer hash noise (sdfHashU) instead
 //     of perlin-at-lattice; same cell structure, deterministic and cheap.
+//   * Pyramid and tetrahedron are evaluated from the same world-space face
+//     triangles and outward normals as the CPU (non-uniform scale included).
+//   * SVG extrusion (sdfType 10) is CPU-only: the contour stream is not part
+//     of this UBO, so the preview uses the tapered-capsule fallback.
 // Layout must stay in sync with vulkan/ubo/BrushSdfUBO.hpp.
 layout(std140, set = 1, binding = 0) uniform BrushSdfBlock {
     vec4  xTranslate;
@@ -126,14 +130,32 @@ float brushSdTriangle(vec3 p, vec3 a, vec3 b, vec3 c) {
     return min(brushSdSegment(p, a, b), min(brushSdSegment(p, b, c), brushSdSegment(p, c, a)));
 }
 
-// CPU SDF::pyramid: square base, apex at (0, h, 0), signed by inside test.
-float brushSdPyramid(vec3 p, float h, float a) {
-    vec3 apex = vec3(0.0, h, 0.0);
-    vec3 v0 = vec3(-a, 0.0, -a);
-    vec3 v1 = vec3( a, 0.0, -a);
-    vec3 v2 = vec3( a, 0.0,  a);
-    vec3 v3 = vec3(-a, 0.0,  a);
-    vec3 geoCenter = (apex + v0 + v1 + v2 + v3) / 5.0;
+// World-space face inside test (outward normal from the face winding, flipped
+// toward the convex centroid). Matches the CPU cached normal test.
+bool brushFaceInside(vec3 p, vec3 a, vec3 b, vec3 c, vec3 geoCenter) {
+    vec3 n = normalize(cross(b - a, c - a));
+    if (dot(n, geoCenter - a) > 0.0) n = -n;
+    return dot(p - a, n) <= 0.0;
+}
+
+// Primitive-local unit vertex -> world, using the brush model transform. The
+// same transform order as the CPU: translate + rotation * (local * scale).
+vec3 brushModelVertex(vec3 local, vec3 xlate, vec3 s) {
+    return xlate + brushRotate(local * s, brush.xRotation);
+}
+
+// Exact world-space pyramid SDF (CPU PyramidDistanceFunction). The old shader
+// evaluated the unit pyramid in local space and multiplied by min(scale),
+// which only matches the CPU for uniform scale.
+float brushSdPyramidWorld(vec3 p, vec3 xlate) {
+    const float a = 0.70710678;
+    vec3 s = max(abs(brush.xScale.xyz), vec3(1e-6));
+    vec3 apex = brushModelVertex(vec3(0.0, 1.0, 0.0), xlate, s);
+    vec3 v0 = brushModelVertex(vec3(-a, 0.0, -a), xlate, s);
+    vec3 v1 = brushModelVertex(vec3( a, 0.0, -a), xlate, s);
+    vec3 v2 = brushModelVertex(vec3( a, 0.0,  a), xlate, s);
+    vec3 v3 = brushModelVertex(vec3(-a, 0.0,  a), xlate, s);
+    vec3 geoCenter = (apex + v0 + v1 + v2 + v3) * 0.2;
 
     float d0 = brushSdTriangle(p, apex, v0, v1);
     float d1 = brushSdTriangle(p, apex, v1, v2);
@@ -143,23 +165,39 @@ float brushSdPyramid(vec3 p, float h, float a) {
     float db1 = brushSdTriangle(p, v2, v3, v0);
     float dist = min(min(min(d0, d1), min(d2, d3)), min(db0, db1));
 
-    vec3 n0 = normalize(cross(v0 - apex, v1 - apex));
-    if (dot(n0, geoCenter - apex) > 0.0) n0 = -n0;
-    vec3 n1 = normalize(cross(v1 - apex, v2 - apex));
-    if (dot(n1, geoCenter - apex) > 0.0) n1 = -n1;
-    vec3 n2 = normalize(cross(v2 - apex, v3 - apex));
-    if (dot(n2, geoCenter - apex) > 0.0) n2 = -n2;
-    vec3 n3 = normalize(cross(v3 - apex, v0 - apex));
-    if (dot(n3, geoCenter - apex) > 0.0) n3 = -n3;
-    vec3 nb0 = normalize(cross(v1 - v0, v2 - v0));
-    if (dot(nb0, geoCenter - v0) > 0.0) nb0 = -nb0;
-    vec3 nb1 = normalize(cross(v3 - v2, v0 - v2));
-    if (dot(nb1, geoCenter - v2) > 0.0) nb1 = -nb1;
+    bool inside =
+        brushFaceInside(p, apex, v0, v1, geoCenter) &&
+        brushFaceInside(p, apex, v1, v2, geoCenter) &&
+        brushFaceInside(p, apex, v2, v3, geoCenter) &&
+        brushFaceInside(p, apex, v3, v0, geoCenter) &&
+        brushFaceInside(p, v0, v1, v2, geoCenter) &&
+        brushFaceInside(p, v2, v3, v0, geoCenter);
+    return inside ? -dist : dist;
+}
+
+// Exact world-space regular-tetrahedron SDF (CPU TetrahedronDistanceFunction).
+// The four vertices are on the unit sphere, so the model sphere bound is
+// |scale| as well.
+float brushSdTetrahedronWorld(vec3 p, vec3 xlate) {
+    const float k = 0.577350269;
+    vec3 s = max(abs(brush.xScale.xyz), vec3(1e-6));
+    vec3 v0 = brushModelVertex(vec3( k,  k,  k), xlate, s);
+    vec3 v1 = brushModelVertex(vec3( k, -k, -k), xlate, s);
+    vec3 v2 = brushModelVertex(vec3(-k,  k, -k), xlate, s);
+    vec3 v3 = brushModelVertex(vec3(-k, -k,  k), xlate, s);
+    vec3 geoCenter = (v0 + v1 + v2 + v3) * 0.25;
+
+    float d0 = brushSdTriangle(p, v0, v1, v2);
+    float d1 = brushSdTriangle(p, v0, v3, v1);
+    float d2 = brushSdTriangle(p, v0, v2, v3);
+    float d3 = brushSdTriangle(p, v1, v3, v2);
+    float dist = min(min(d0, d1), min(d2, d3));
 
     bool inside =
-        (dot(p - apex, n0) <= 0.0) && (dot(p - apex, n1) <= 0.0) &&
-        (dot(p - apex, n2) <= 0.0) && (dot(p - apex, n3) <= 0.0) &&
-        (dot(p - v0, nb0) <= 0.0) && (dot(p - v2, nb1) <= 0.0);
+        brushFaceInside(p, v0, v1, v2, geoCenter) &&
+        brushFaceInside(p, v0, v3, v1, geoCenter) &&
+        brushFaceInside(p, v0, v2, v3, geoCenter) &&
+        brushFaceInside(p, v1, v3, v2, geoCenter);
     return inside ? -dist : dist;
 }
 
@@ -180,8 +218,8 @@ float brushPrimitiveAt(vec3 p, vec3 xlate, vec4 params0, vec4 params1) {
         return brushSdCapsule(pos / s, params0.xyz, params1.xyz, params0.w) * minS;
     } else if (type == 3u) {   // Octahedron
         return brushSdOctahedron(pos / s, 1.0) * minS;
-    } else if (type == 4u) {   // Pyramid
-        return brushSdPyramid(pos / s, 1.0, sqrt(0.5)) * minS;
+    } else if (type == 4u) {   // Pyramid (exact world-space convex SDF)
+        return brushSdPyramidWorld(p, xlate);
     } else if (type == 5u) {   // Torus
         return brushSdTorus(pos / s, params0.xy) * minS;
     } else if (type == 6u) {   // Cone
@@ -190,7 +228,9 @@ float brushPrimitiveAt(vec3 p, vec3 xlate, vec4 params0, vec4 params1) {
         return brushSdCylinder(pos / s, 0.5, 1.0) * minS;
     } else if (type == 8u) {   // Tapered cylinder
         return brushSdTaperedCylinder(pos / s, params0.x, params0.y, 0.5) * minS;
-    }                          // 9 = Tapered capsule
+    } else if (type == 11u) {  // Tetrahedron (exact world-space convex SDF)
+        return brushSdTetrahedronWorld(p, xlate);
+    }                          // 9 = Tapered capsule, 10 = SVG (unsupported preview)
     return brushSdTaperedCapsule(pos / s, params0.xyz, params1.xyz, params0.w, params1.w) * minS;
 }
 

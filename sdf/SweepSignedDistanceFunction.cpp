@@ -4,6 +4,7 @@
 #include "CapsuleDistanceFunction.hpp"
 #include "OctahedronDistanceFunction.hpp"
 #include "PyramidDistanceFunction.hpp"
+#include "TetrahedronDistanceFunction.hpp"
 #include "TorusDistanceFunction.hpp"
 #include "ConeDistanceFunction.hpp"
 #include "CylinderDistanceFunction.hpp"
@@ -89,6 +90,7 @@ template class SweepSignedDistanceFunction<BoxDistanceFunction>;
 template class SweepSignedDistanceFunction<CapsuleDistanceFunction>;
 template class SweepSignedDistanceFunction<OctahedronDistanceFunction>;
 template class SweepSignedDistanceFunction<PyramidDistanceFunction>;
+template class SweepSignedDistanceFunction<TetrahedronDistanceFunction>;
 template class SweepSignedDistanceFunction<TorusDistanceFunction>;
 template class SweepSignedDistanceFunction<ConeDistanceFunction>;
 template class SweepSignedDistanceFunction<CylinderDistanceFunction>;

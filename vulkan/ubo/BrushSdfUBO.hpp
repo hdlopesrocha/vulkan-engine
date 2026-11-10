@@ -21,7 +21,7 @@
 //   xEffect1   : brightness, contrast, unused, unused
 //   xSweepStart: xyz = previous world translate (sweep trail start)
 //   xBounds    : xyz = world bounding sphere center, w = radius
-//   xFlags     : x = sdfType (0..9), y = effectType + 1 (0 = no effect),
+//   xFlags     : x = sdfType (0..11), y = effectType + 1 (0 = no effect),
 //                z = material index (texture array layer), w = sweepMode
 //   xHsv       : xyz = paint tint HSV
 //   xViewport  : xy = target size in pixels (ray reconstruction)

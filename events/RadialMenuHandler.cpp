@@ -322,9 +322,11 @@ bool RadialMenuHandler::update(uint32_t loadedTextureLayers) {
                     } else if (stackPage == 1 && hs == 3) {
                         labelRingKind = LabelRingKind::SHAPE;
                         menu_->PushLabelRing({"Sphere", "Box", "Capsule", "Octahedron", "Pyramid",
-                                              "Torus", "Cone", "Cylinder", "Tapered Cylinder", "Tapered Capsule"},
+                                              "Torus", "Cone", "Cylinder", "Tapered Cylinder", "Tapered Capsule",
+                                              "SVG Extrusion", "Tetrahedron"},
                                              {"Sphere", "Box", "Capsule", "Octahedron", "Pyramid",
-                                              "Torus", "Cone", "Cylinder", "Tapered Cylinder", "Tapered Capsule"});
+                                              "Torus", "Cone", "Cylinder", "Tapered Cylinder", "Tapered Capsule",
+                                              "SVG Extrusion", "Tetrahedron"});
                         BrushEntry* be = brush_->getSelectedEntry();
                         menu_->SetCurrentItem(be ? be->sdfType : -1);
                     } else if (stackPage == 1 && hs == 4) {

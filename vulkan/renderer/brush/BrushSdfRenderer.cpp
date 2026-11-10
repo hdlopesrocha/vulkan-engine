@@ -182,7 +182,7 @@ void BrushSdfRenderer::updateParams(uint32_t frameIndex, const BrushEntry& entry
     u.sweepStart = glm::vec4(sweepStart, 1.0f);
     u.bounds = glm::vec4(boundsCenter, boundsRadius);
     u.flags = glm::uvec4(
-        static_cast<uint32_t>(std::clamp(entry.sdfType, 0, 9)),
+        static_cast<uint32_t>(std::clamp(entry.sdfType, 0, 11)),
         entry.useEffect ? static_cast<uint32_t>(std::clamp(entry.effectType, 0, 3)) + 1u : 0u,
         static_cast<uint32_t>(entry.materialIndex < 0 ? 0 : entry.materialIndex),
         entry.sweepMode ? 1u : 0u);

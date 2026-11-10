@@ -83,7 +83,8 @@ void ControllerParametersWidget::render() {
                 ImGui::DragInt("Material Index", &be->materialIndex, 1.0f, 0, 63);
                 break;
             case PageControl::ATTRIBUTE: {
-                const char* types[] = {"Sphere","Box","Capsule","Octahedron","Pyramid","Torus","Cone","Cylinder"};
+                const char* types[] = {"Sphere","Box","Capsule","Octahedron","Pyramid","Torus","Cone","Cylinder",
+                                       "Tapered Cylinder","Tapered Capsule","SVG Extrusion","Tetrahedron"};
                 int t = be->sdfType;
                 if (ImGui::Combo("SDF Type", &t, types, IM_ARRAYSIZE(types))) be->sdfType = t;
                 ImGui::Checkbox("Use Effect", &be->useEffect);

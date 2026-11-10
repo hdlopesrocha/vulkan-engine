@@ -18,7 +18,7 @@
 // Static label arrays for combo boxes
 const char* Brush3dWidget::sdfTypeNames[] = {
     "Sphere", "Box", "Capsule", "Octahedron", "Pyramid", "Torus", "Cone", "Cylinder",
-    "Tapered Cylinder", "Tapered Capsule", "SVG Extrusion"
+    "Tapered Cylinder", "Tapered Capsule", "SVG Extrusion", "Tetrahedron"
 };
 const char* Brush3dWidget::brushModeNames[] = { "Add", "Remove", "Paint" };
 const char* Brush3dWidget::layerNames[] = { "Opaque", "Transparent" };

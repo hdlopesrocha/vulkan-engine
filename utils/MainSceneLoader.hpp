@@ -25,6 +25,7 @@
 #include "../sdf/CapsuleDistanceFunction.hpp"
 #include "../sdf/OctahedronDistanceFunction.hpp"
 #include "../sdf/PyramidDistanceFunction.hpp"
+#include "../sdf/TetrahedronDistanceFunction.hpp"
 #include "../sdf/TorusDistanceFunction.hpp"
 #include "../sdf/ConeDistanceFunction.hpp"
 #include "../sdf/CylinderDistanceFunction.hpp"
@@ -118,6 +119,12 @@ public:
         Transformation model = Transformation(objectSize*0.5f, center, 0,0,0);
 
         switch (shape) {
+            case TestShape::Tetrahedron: {
+                std::cout << "\topaqueLayer.add(tetrahedron)"<< std::endl;
+                TetrahedronDistanceFunction function = TetrahedronDistanceFunction(model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
             case TestShape::Octrahedron: {
                 std::cout << "\topaqueLayer.add(octahedron)"<< std::endl;
                 OctahedronDistanceFunction function = OctahedronDistanceFunction(model, tileSize);
