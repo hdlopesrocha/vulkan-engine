@@ -143,7 +143,7 @@ bool OctreeRaymarchRenderer::ensureSlotBuffers(uint32_t fi) {
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     rootBuffers_[fi] = app_->createBuffer(
-        static_cast<VkDeviceSize>(ROOT_CAP * sizeof(uint32_t)),
+        static_cast<VkDeviceSize>(ROOT_CAP * sizeof(OctreeRaymarchRoot)),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -184,7 +184,7 @@ void OctreeRaymarchRenderer::upload(uint32_t frameIndex, const OctreeRaymarchTab
     const size_t rootCount = std::min(table.layerRoots.size(), ROOT_CAP);
     if (rootCount > 0) {
         memcpy(rootBuffers_[fi].mappedData, table.layerRoots.data(),
-               rootCount * sizeof(uint32_t));
+               rootCount * sizeof(OctreeRaymarchRoot));
     }
 
     rootCounts_[fi] = static_cast<uint32_t>(rootCount);

@@ -32,6 +32,18 @@ static_assert(sizeof(OctreeRaymarchNode) == 128,
               "OctreeRaymarchNode must stay 128 bytes (8 x vec4) to match the "
               "std430 RaymarchNode in RaymarchTable.glsl");
 
+// One rendered layer root: the node index the shader starts from plus the
+// layer's stable id. The id only feeds the debug view's per-layer hue (and
+// any future per-layer diagnostics); the march itself ignores it.
+struct OctreeRaymarchRoot {
+    uint32_t nodeIndex = 0;
+    int32_t layerId = -1;
+};
+
+static_assert(sizeof(OctreeRaymarchRoot) == 8,
+              "OctreeRaymarchRoot must match the std430 RaymarchRoot in "
+              "RaymarchTable.glsl");
+
 // CPU-side owner of one raymarch table revision. The owner (MyApp) rebuilds it
 // on a debounce and hands it to OctreeRaymarchRenderer, which uploads the same
 // revision into each frame slot exactly once (version match = already there).
@@ -57,9 +69,10 @@ public:
     void setChildType(uint32_t parent, int slot, uint32_t type);
 
     std::vector<OctreeRaymarchNode> nodes;
-    // Root node index per rendered layer. The shader ray-boxes each root cube
-    // and keeps the nearest hit across all of them.
-    std::vector<uint32_t> layerRoots;
+    // Root entry per rendered layer (node index + stable Layer::Id). The
+    // shader ray-boxes each root cube and keeps the nearest hit across all of
+    // them; the id feeds the per-layer debug tint.
+    std::vector<OctreeRaymarchRoot> layerRoots;
     // Monotonic revision. Bumped by the owner on every rebuild (including an
     // empty result) so stale per-slot uploads are cleared.
     uint64_t version = 0;

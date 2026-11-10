@@ -10,6 +10,8 @@
 // surface simply fall through to that surface's normal shading, so e.g.
 // "Roughness" only tints terrain while water keeps rendering water, and
 // "Water Noise" only tints water while terrain keeps rendering terrain.
+// The OctreeSdfRaymarch view is special: it is produced only by the octree
+// SDF raymarch pass and forces that path when selected.
 enum class DebugMode : int {
     None = 0,             // normal render
     // Normals
@@ -78,6 +80,11 @@ enum class DebugMode : int {
     CloudShadows,         // cloudShadowAt at the probe point, grayscale
     CloudSteps,           // ray-march density-evaluation heat (red)
     CloudSkip,            // fraction marched via SDF empty-space jumps (green)
+    // Octree SDF raymarch inspection (solid raymarch path only). Tints each
+    // solid layer with a stable hue and overlays the leaf-cell structure of
+    // the cell that produced the hit, so the per-layer octree refinement is
+    // visible directly on the raymarched isosurface.
+    OctreeSdfRaymarch,    // per-layer color + leaf-cell grid/LOD + fallback flags
     Count
 };
 
@@ -133,6 +140,7 @@ inline constexpr const char* kDebugModeNames[] = {
     "Cloud Shadows",
     "Cloud Ray Steps",
     "Cloud Empty-Space Skip",
+    "Octree SDF Raymarch (per layer)",
 };
 
 static_assert(sizeof(kDebugModeNames) / sizeof(kDebugModeNames[0])
@@ -142,6 +150,14 @@ constexpr DebugMode debugModeFromInt(int value) {
     return (value > 0 && value < static_cast<int>(DebugMode::Count))
         ? static_cast<DebugMode>(value)
         : DebugMode::None;
+}
+
+// Views that are produced by the octree SDF raymarch pass. Selecting one must
+// take the raymarch path even when Settings::octreeRaymarchEnabled is off,
+// otherwise the solid surface would rasterize and the view would fall through
+// to normal shading.
+constexpr bool debugModeForcesOctreeRaymarch(DebugMode mode) {
+    return mode == DebugMode::OctreeSdfRaymarch;
 }
 
 // Views whose displayed value is produced by traced reflection/refraction

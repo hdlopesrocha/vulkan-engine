@@ -4,8 +4,9 @@
 // GPU mirror of utils/OctreeRaymarchTable.hpp.
 //
 // One flat node array per frame slot (set=2 binding=0) plus the per-layer root
-// indices (binding=1). The table stores surface octree nodes only; the parent's
-// meta.w packs the information the descent needs for absent children:
+// entries (binding=1: node index + stable Layer::Id). The table stores surface
+// octree nodes only; the parent's meta.w packs the information the descent
+// needs for absent children:
 //   bit0       leaf
 //   bits8..15  surface children pruned by the node cap (per corner slot)
 //   bits16..31 two-bit SpaceType per child slot (Empty / Surface / Solid)
@@ -27,11 +28,17 @@ struct RaymarchNode {
     vec4  hsv1;        // data.xy, 0, 0
 };
 
+// Root entry: node index + stable Layer::Id. Must match OctreeRaymarchRoot.
+struct RaymarchRoot {
+    uint node;
+    int  layerId;
+};
+
 layout(std430, set = 2, binding = 0) readonly buffer RaymarchNodes {
     RaymarchNode rmNodes[];
 };
 layout(std430, set = 2, binding = 1) readonly buffer RaymarchRoots {
-    uint rmRoots[];
+    RaymarchRoot rmRoots[];
 };
 
 const int RM_TYPE_EMPTY = 0;

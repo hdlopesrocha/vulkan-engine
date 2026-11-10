@@ -1,6 +1,7 @@
 #include "LayersWidget.hpp"
 #include "../vulkan/renderer/SceneRenderer.hpp"
 #include <imgui.h>
+#include <cmath>
 #include "components/ImGuiHelpers.hpp"
 
 LayersWidget::LayersWidget(Scene* scene, SceneRenderer* renderer,
@@ -23,10 +24,11 @@ void LayersWidget::render() {
 
     // Header
     ImGui::Separator();
-    ImGui::Columns(5, "layers_cols", false);
+    ImGui::Columns(6, "layers_cols", false);
     ImGui::TextDisabled("#"); ImGui::NextColumn();
     ImGui::TextDisabled("Enabled"); ImGui::NextColumn();
     ImGui::TextDisabled("Name"); ImGui::NextColumn();
+    ImGui::TextDisabled("SDF Hue"); ImGui::NextColumn();
     ImGui::TextDisabled("Renderer"); ImGui::NextColumn();
     ImGui::TextDisabled("Chunks"); ImGui::NextColumn();
     ImGui::Separator();
@@ -59,6 +61,23 @@ void LayersWidget::render() {
         snprintf(buf, sizeof(buf), "%s", name.c_str());
         if (ImGui::InputText("##name", buf, sizeof(buf))) {
             layer->setName(buf);
+        }
+        ImGui::NextColumn();
+
+        // Same stable golden-ratio hue the octree SDF raymarch debug view
+        // derives from Layer::Id, so the per-layer colours in that view can
+        // be matched back to this list without a separate legend.
+        {
+            const float hue = fmodf(static_cast<float>(layerId) * 0.618033988749895f, 1.0f);
+            float r = 0.0f, g = 0.0f, b = 0.0f;
+            ImGui::ColorConvertHSVtoRGB(hue, 0.68f, 0.95f, r, g, b);
+            ImGui::ColorButton("##sdfhue", ImVec4(r, g, b, 1.0f),
+                               ImGuiColorEditFlags_NoTooltip |
+                               ImGuiColorEditFlags_NoPicker |
+                               ImGuiColorEditFlags_NoDragDrop,
+                               ImVec2(16.0f, 16.0f));
+            ImGuiHelpers::SetTooltipIfHovered(
+                "Hue this layer uses in the 'Octree SDF Raymarch (per layer)' debug view.");
         }
         ImGui::NextColumn();
 

@@ -32,6 +32,7 @@
 #include "vulkan/ubo/UniformObject.hpp"
 #include "vulkan/ubo/SkyUniform.hpp"
 #include "vulkan/core/VulkanApp.hpp"
+#include "vulkan/includes/debug/DebugModes.hpp"
 #include "vulkan/streaming/PublishTarget.hpp"
 #include "vulkan/renderer/SceneRenderer.hpp"
 #include "vulkan/renderer/SceneDescriptorLayout.hpp"
@@ -2401,7 +2402,8 @@ public:
                 // transition below still runs in both modes (Instance 2 needs
                 // it when Instance 1 is skipped).
                 const bool solidRaymarch = settings.renderSolid
-                    && settings.octreeRaymarchEnabled
+                    && (settings.octreeRaymarchEnabled
+                        || debugModeForcesOctreeRaymarch(debugModeFromInt(settings.debugMode)))
                     && !useRemote
                     && this->sceneRenderer->octreeRaymarchRenderer
                     && this->sceneRenderer->brushRenderer
@@ -4557,7 +4559,12 @@ void MyApp::refreshRaymarchTable(float deltaTime) {
         raymarchDirty_ = true;
         raymarchDirtyTime_ = 0.0f;
     }
-    if (!raymarchDirty_ || !settings.octreeRaymarchEnabled) return;
+    if (!raymarchDirty_) return;
+    // The debug view forces the raymarch path on its own, so build the table
+    // even while Settings::octreeRaymarchEnabled is off.
+    const bool raymarchRequested = settings.octreeRaymarchEnabled
+        || debugModeForcesOctreeRaymarch(debugModeFromInt(settings.debugMode));
+    if (!raymarchRequested) return;
 
     raymarchDirtyTime_ += std::max(deltaTime, 0.0f);
     if (raymarchDirtyTime_ < 0.4f) return;

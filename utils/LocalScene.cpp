@@ -564,11 +564,13 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
         // root cube and descends from there; non-surface roots would have no
         // surface to shade, so they are skipped.
         const BoundingCube rootCube = static_cast<const BoundingCube&>(*tree);
-        std::cout << "[LocalScene] SDF raymarch root cube: min=(" << rootCube.getMin().x << ", "
+        std::cout << "[LocalScene] SDF raymarch root cube (layer " << layer->id()
+                  << " '" << layer->name() << "'): min=(" << rootCube.getMin().x << ", "
                   << rootCube.getMin().y << ", " << rootCube.getMin().z << ") size="
                   << rootCube.getLengthX() << std::endl;
         const uint32_t rootIndex = out.append(makeRecord(root, rootCube));
-        out.layerRoots.push_back(rootIndex);
+        out.layerRoots.push_back(OctreeRaymarchRoot{
+            rootIndex, static_cast<int32_t>(layer->id())});
         queue.push_back(PendingNode{root, rootCube, rootIndex, 0});
         {
             bool anyInf = false;

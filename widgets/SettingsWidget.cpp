@@ -367,7 +367,7 @@ void SettingsWidget::render() {
         if (ImGui::Checkbox("Octree SDF Raymarch", &settings.octreeRaymarchEnabled)) {
             // toggled globally; the node table is rebuilt on the next debounce
         }
-        ImGuiComponents::TooltipOnHover("Replaces the tessellated solid chunks with a fullscreen raymarch of the octree's stored SDF cells. Off = normal tessellated terrain. Falls back to raster when the scene has no local octree or no solid layers.");
+        ImGuiComponents::TooltipOnHover("Replaces the tessellated solid chunks with a fullscreen raymarch of the octree's stored SDF cells. Off = normal tessellated terrain. Falls back to raster when the scene has no local octree or no solid layers. The 'Octree SDF Raymarch (per layer)' debug view enables this path automatically.");
         ImGuiComponents::FieldLabel("Tessellation Factor", "Multiplies per-material min/max tess levels globally");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Tessellation Factor", &settings.tessellationFactor, 0.0f, 8.0f, "%.2f");
@@ -410,6 +410,16 @@ void SettingsWidget::render() {
         ImGui::SetNextItemWidth(kSettingsColWidth);
         if (ImGui::Combo("##Debug Mode", &current, kDebugModeNames, modeCount)) {
             settings.debugMode = current;
+        }
+        ImGuiComponents::TooltipOnHover(
+            "Shader diagnostic views. The Octree SDF Raymarch view is produced "
+            "by the octree raymarch pass and auto-enables that path even when "
+            "'Octree SDF Raymarch' is unchecked: each enabled Solid layer gets "
+            "a stable hue (see the Layers widget), leaf cells show their "
+            "lattice/refinement depth, magenta marks node-cap fallback cells "
+            "and blue marks cells with missing corners.");
+        if (current == static_cast<int>(DebugMode::OctreeSdfRaymarch)) {
+            ImGui::TextDisabled("Uses the octree SDF raymarch pass (auto-enabled).");
         }
 
         if (ImGui::Checkbox("Show Mesh Bounding Boxes", &settings.showBoundingBoxes)) {

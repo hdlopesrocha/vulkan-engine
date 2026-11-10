@@ -55,6 +55,7 @@ const int DEBUG_MODE_CLOUD_LIGHTING = 47;
 const int DEBUG_MODE_CLOUD_SHADOWS = 48;
 const int DEBUG_MODE_CLOUD_STEPS = 49;
 const int DEBUG_MODE_CLOUD_SKIP = 50;
+const int DEBUG_MODE_OCTREE_SDF_RAYMARCH = 51;
 
 // Views whose displayed value is produced by traced reflection/refraction
 // rays force the full-quality reference path (full-rate + dual-trace) so the

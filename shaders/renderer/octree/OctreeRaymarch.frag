@@ -20,6 +20,10 @@
 // Surface hits are depth-tested and write gl_FragDepth, so the water pass, the
 // composite and the droplet pass keep their existing solid-depth dependency.
 // Misses discard (no color, no depth).
+//
+// Debug view: DEBUG_MODE_OCTREE_SDF_RAYMARCH bypasses shading and paints the
+// hit with its owning layer's hue plus the leaf-cell lattice/refinement data,
+// so the per-layer octree SDF structure can be inspected directly.
 
 // The node-table interface (set=2 bindings) comes first so the table struct is
 // visible before the shading includes below.
@@ -125,6 +129,50 @@ vec3 rmNodeNormal(uint id, vec3 p) {
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
     return sdfCellNormal(sdf, rmNodeMin(id), rmNodeSize(id), p);
+}
+
+// ── Octree SDF debug view helpers (DEBUG_MODE_OCTREE_SDF_RAYMARCH) ─────────
+// Stable per-layer hue: Layer::Id is a stable handle, so a layer keeps its
+// colour across table rebuilds. Golden-ratio hue spacing keeps neighbouring
+// ids far apart.
+vec3 rmLayerDebugColor(int layerId) {
+    float hue = fract(float(layerId) * 0.618033988749895) * 360.0;
+    return hsvToRgb(vec3(hue, 0.68, 0.95));
+}
+
+// Cheap integer hash in [0,1) so adjacent leaf cells get different tints.
+float rmHash01(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return float(x & 0x00ffffffu) * (1.0 / 16777216.0);
+}
+
+// Cell-local coordinates (0..1 per axis) of the leaf cube that produced the
+// hit. rmNodeMin/rmNodeSize are the exact cube the CPU stored for this node.
+vec3 rmCellLocal(uint node, vec3 p) {
+    return clamp((p - rmNodeMin(node)) / max(rmNodeSize(node), 1e-8), 0.0, 1.0);
+}
+
+// Grid lines at multiples of 1/divisions in cell-local space. The l=0 and l=1
+// lines coincide with the leaf faces shared by sibling cells, so the lattice
+// exposes both the cell size and its alignment.
+float rmCellGrid(vec3 l, float divisions) {
+    vec3 f = fract(l * divisions);
+    vec3 d = min(f, 1.0 - f);
+    float m = min(d.x, min(d.y, d.z));
+    return 1.0 - smoothstep(0.0, 0.045, m);
+}
+
+// Refinement depth: 0 at the layer root, 1 for cells 2^16 smaller. Deeper
+// leaves are brighter so the refinement gradient is visible.
+float rmCellDepth(uint rootNode, uint node) {
+    float rootSize = rmNodeSize(rootNode);
+    float nodeSize = rmNodeSize(node);
+    if (rootSize <= 0.0 || nodeSize <= 0.0) return 0.0;
+    return clamp(log2(rootSize / max(nodeSize, 1e-8)) / 16.0, 0.0, 1.0);
 }
 
 // March one layer root. Adaptive descent: the ray is confined to the current
@@ -290,15 +338,17 @@ void main() {
     // Nearest hit across every visible Solid layer root.
     float nearestT = 1.0e30;
     uint nearestNode = 0u;
+    uint nearestRoot = 0u;
     int nearestBrush = RAYMARCH_DISCARD_BRUSH;
     bool found = false;
     for (uint i = 0u; i < pc.rootCount; ++i) {
         uint node;
         float t;
         int brush;
-        if (rmMarchRoot(rmRoots[i], ro, rd, node, t, brush) && t < nearestT) {
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, node, t, brush) && t < nearestT) {
             nearestT = t;
             nearestNode = node;
+            nearestRoot = i;
             nearestBrush = brush;
             found = true;
         }
@@ -331,6 +381,49 @@ void main() {
 
     vec4 clip = ubo.viewProjection * vec4(hitPos, 1.0);
     gl_FragDepth = (clip.w > 1e-6) ? clamp(clip.z / clip.w, 0.0, 1.0) : 1.0;
+
+    // Per-layer SDF inspection: tint the raymarched isosurface with the owning
+    // layer's hue and overlay the leaf cell that produced the hit. This view
+    // deliberately bypasses shading so the octree discretization (cell size,
+    // per-leaf identity, pruned-node fallback, missing corners) is what the
+    // image shows. Only the solid raymarch path can produce it (the mode
+    // forces that path in MyApp).
+    if (ubo.debugMode == DEBUG_MODE_OCTREE_SDF_RAYMARCH) {
+        vec3 layerColor = rmLayerDebugColor(rmRoots[nearestRoot].layerId);
+        float depth = rmCellDepth(rmRoots[nearestRoot].node, nearestNode);
+        vec3 color = layerColor * (0.60 + 0.40 * depth);
+
+        // Per-leaf identity so neighbouring cells are distinguishable even on
+        // locally flat ground.
+        color *= rmNodeIsLeaf(nearestNode) ? (0.70 + 0.30 * rmHash01(nearestNode)) : 0.55;
+
+        // Leaf-cell lattice: four subdivisions per axis; the outer lines are
+        // the shared cell faces.
+        vec3 cell = rmCellLocal(nearestNode, hitPos);
+        color = mix(color, vec3(1.0), 0.60 * rmCellGrid(cell, 4.0));
+
+        // Non-leaf hits only occur when a surface child was pruned by NODE_CAP
+        // (or the stack budget ran out): the march falls back to this node's
+        // trilinear field. Flag them magenta with a diagonal hatch so coarsened
+        // regions cannot be mistaken for real leaf detail.
+        if (!rmNodeIsLeaf(nearestNode)) {
+            float hatch = step(0.5, fract((cell.x + cell.y + cell.z) * 8.0));
+            color = mix(color, vec3(1.0, 0.05, 0.85), 0.55 + 0.20 * hatch);
+        }
+
+        // Cells with INFINITY corner sentinels interpolate over their finite
+        // corners only; tint them blue by how much data is missing.
+        int finiteCorners = 0;
+        for (int c = 0; c < 8; ++c)
+            finiteCorners += rmIsFinite(rmNodeSdf(nearestNode, c)) ? 1 : 0;
+        if (finiteCorners < 8) {
+            float missing = float(8 - finiteCorners) / 8.0;
+            color = mix(color, vec3(0.10, 0.40, 1.00), 0.55 * missing);
+        }
+
+        outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+        return;
+    }
 
     outColor = vec4(0.0);
     shadeSolidSurface(normal);
