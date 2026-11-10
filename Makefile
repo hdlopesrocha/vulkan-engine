@@ -245,7 +245,7 @@ SHADER_FILES := $(shell find shaders -type f \( \
 	-name '*.vert' -o -name '*.frag' -o -name '*.geom' -o -name '*.comp' \
 	-o -name '*.tesc' -o -name '*.tese' -o -name '*.rgen' -o -name '*.rmiss' \
 	-o -name '*.rchit' -o -name '*.rint' -o -name '*.rahit' -o -name '*.rcallable' \))
-SHADER_INCLUDES = $(wildcard shaders/includes/*.glsl shaders/includes/*/*.glsl shaders/ubo/*.glsl shaders/ssbo/*.glsl shaders/types/*.glsl)
+SHADER_INCLUDES = $(wildcard shaders/includes/*.glsl shaders/includes/*/*.glsl shaders/includes/*/*/*.glsl shaders/ubo/*.glsl shaders/ssbo/*.glsl shaders/types/*.glsl)
 # glslc optimization flag for the WATER shader modules: -O runs the SPIR-V
 # optimizer (DCE, constant folding, register-friendly codegen) on the modules
 # whose per-pixel cost matters most. It is deliberately NOT applied to the
