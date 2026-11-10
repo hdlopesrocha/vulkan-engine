@@ -91,7 +91,9 @@ void BrushInterpolationWidget::render() {
     }
 
     ImGui::SeparatorText("Target Sweep");
-    ImGui::Checkbox("Sweep Mode##target", &target.sweepMode);
+    if (ImGui::Checkbox("Sweep Mode##target", &target.sweepMode)) {
+        if (target.sweepMode) target.previousTranslate = target.translate;
+    }
     if (target.sweepMode) {
         ImGui::Text("Prev: %.1f, %.1f, %.1f -> Cur: %.1f, %.1f, %.1f",
                     target.previousTranslate.x, target.previousTranslate.y,
