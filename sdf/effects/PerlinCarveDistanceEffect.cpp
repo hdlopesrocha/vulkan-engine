@@ -1,7 +1,15 @@
 #include "PerlinCarveDistanceEffect.hpp"
 #include <stb/stb_perlin.h>
 
-PerlinCarveDistanceEffect::PerlinCarveDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float frequency_, float threshold_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias) : SignedDistanceEffect(function_, model, bias + amplitude_ * 1.97f), amplitude(amplitude_), frequency(frequency_), threshold(threshold_), offset(offset_), brightness(brightness_), contrast(contrast_) {
+PerlinCarveDistanceEffect::PerlinCarveDistanceEffect(
+    SignedDistanceFunction &function_, 
+    float amplitude_, 
+    float frequency_, 
+    glm::vec3 offset_, 
+    float brightness_, 
+    float contrast_, 
+    const Transformation &model, 
+    float bias) : SignedDistanceEffect(function_, model, bias + amplitude_ * 1.97f), amplitude(amplitude_), frequency(frequency_), offset(offset_), brightness(brightness_), contrast(contrast_) {
 
 }
 

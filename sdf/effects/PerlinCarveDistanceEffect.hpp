@@ -7,11 +7,14 @@ class PerlinCarveDistanceEffect : public SignedDistanceEffect {
     public:
     float amplitude;
     float frequency;
-    float threshold;
+    // Threshold is not a constructor argument (matching PerlinDistort); it
+    // defaults to the catalogue/brush default and can still be overridden
+    // through the member (the brush path keeps its UI value in sync).
+    float threshold = 0.1f;
     glm::vec3 offset;
     float brightness;
     float contrast;
-    PerlinCarveDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float frequency_, float threshold_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias);
+    PerlinCarveDistanceEffect(SignedDistanceFunction &function_, float amplitude_, float frequency_, glm::vec3 offset_, float brightness_, float contrast_, const Transformation &model, float bias);
     float distance(const glm::vec3 &p) const override;
 
     private:
