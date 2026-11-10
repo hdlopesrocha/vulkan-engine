@@ -22,6 +22,8 @@ MAKE_JOBS ?= 8
 # with ffmpeg), so edit SOUND_PHRASES and run `make sounds` to change them.
 # Phrases whose text is only known at run time (e.g. the cloc number) are
 # synthesized on demand by sounds/say.sh with the same voice and pipeline.
+# A missing or broken edge-tts leaves the alert silent instead of falling back
+# to a robotic voice.
 # Playback goes through sounds/play.sh: each request is enqueued
 # synchronously with `play.sh --enqueue` (so queue order matches make's
 # recipe order, even across nested makes) and only the drainer is
@@ -88,58 +90,36 @@ SOUND_PHRASES = \
 	"run-success=Run finished successfully" \
 	"run-error=Run failed"
 
-# Neural voice for `make sounds` (needs edge-tts: pipx install edge-tts).
-# List choices with `edge-tts --list-voices`; the Multilingual voices
-# (Ava/Emma/Andrew) are the most natural. Without edge-tts the target falls
-# back to ffmpeg's built-in flite voice (offline, but robotic).
-SOUND_VOICE ?= en-US-AvaMultilingualNeural
+# Neural voice for `make sounds` and runtime alert speech (needs edge-tts:
+# pipx install edge-tts). The default is the same English voice the
+# opencode-talk project uses, so build diagnostics and agent replies share one
+# voice. List choices with `edge-tts --list-voices`; the Multilingual voices
+# (Ava/Emma/Andrew) are the most natural.
+SOUND_VOICE ?= en-US-AriaNeural
 # Export the voice so sounds/say.sh (compiler diagnostics, cloc count, commit
 # subject) uses the same voice as the checked-in alerts, including when
 # SOUND_VOICE is overridden on the make command line.
 export SOUND_VOICE
+# Optional rate override (-100..100) shared by regeneration and runtime speech.
+export SOUND_TTS_RATE
 
 .PHONY: sounds
-# Regenerate the checked-in alert sounds. Preferred path: edge-tts neural
-# synthesis, loudness-normalized and encoded to mono 24 kHz MP3 with ffmpeg.
-# Fallback path (edge-tts unavailable, e.g. offline): ffmpeg flite. Phrases
-# go through temporary textfiles because flite's textfile option avoids
-# filtergraph escaping issues with multi-word/punctuated text.
+# Regenerate the checked-in alert sounds through sounds/say.sh --save, the same
+# Edge neural pipeline used at runtime, so the checked-in phase alerts and the
+# dynamic diagnostics are always rendered with the same voice. There is no
+# flite fallback: if edge-tts is unavailable the target fails instead of
+# committing robotic audio.
 sounds:
 	@command -v ffmpeg >/dev/null 2>&1 || { \
 		echo "ffmpeg is required to generate the alert sounds (apt install ffmpeg)."; \
 		exit 1; }
 	@mkdir -p $(SOUND_DIR)
-	@trap 'rm -f $(SOUND_DIR)/.tts_*' EXIT; \
-	edge="$$(command -v edge-tts 2>/dev/null)"; \
-	if [ -z "$$edge" ] && [ -x "$${HOME:-/nonexistent}/.local/bin/edge-tts" ]; then \
-		edge="$${HOME}/.local/bin/edge-tts"; \
-	fi; \
-	if [ -n "$$edge" ] && "$$edge" --version >/dev/null 2>&1; then \
-		echo "Generating alert sounds with edge-tts ($$edge) voice $(SOUND_VOICE)"; \
-		for pair in $(SOUND_PHRASES); do \
-			name=$${pair%%=*}; phrase=$${pair#*=}; \
-			echo "  $$name.mp3: \"$$phrase\""; \
-			"$$edge" --voice $(SOUND_VOICE) --text "$$phrase" \
-				--write-media $(SOUND_DIR)/.tts_$$name.raw.mp3 || exit 1; \
-			ffmpeg -hide_banner -loglevel error -y \
-				-i $(SOUND_DIR)/.tts_$$name.raw.mp3 \
-				-af "loudnorm=I=-16:TP=-1.5:LRA=11" \
-				-ac 1 -ar 24000 -c:a libmp3lame -b:a 64k \
-				$(SOUND_DIR)/$$name.mp3 || exit 1; \
-		done; \
-	else \
-		echo "edge-tts is missing or broken (repair with: pipx install --force edge-tts)"; \
-		echo "using the robotic flite fallback"; \
-		for pair in $(SOUND_PHRASES); do \
-			name=$${pair%%=*}; phrase=$${pair#*=}; \
-			echo "  $$name.mp3: \"$$phrase\""; \
-			printf '%s' "$$phrase" > $(SOUND_DIR)/.tts_$$name.txt || exit 1; \
-			ffmpeg -hide_banner -loglevel error -y \
-				-f lavfi -i "flite=textfile=$(SOUND_DIR)/.tts_$$name.txt:voice=slt" \
-				-ac 1 -ar 24000 -c:a libmp3lame -b:a 64k \
-				$(SOUND_DIR)/$$name.mp3 || exit 1; \
-		done; \
-	fi
+	@echo "Generating alert sounds with edge-tts voice $(SOUND_VOICE)"
+	@for pair in $(SOUND_PHRASES); do \
+		name=$${pair%%=*}; phrase=$${pair#*=}; \
+		echo "  $$name.mp3: \"$$phrase\""; \
+		sh "$(SOUND_DIR)/say.sh" --save "$(SOUND_DIR)/$$name.mp3" "$$phrase" || exit 1; \
+	done
 
 # Minimal Makefile: assumes ImGui is installed system-wide and enables it
 CC = g++
