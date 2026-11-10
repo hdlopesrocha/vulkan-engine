@@ -115,6 +115,9 @@ public:
         const glm::vec3 objectSize(128.0f, 128.0f, 128.0f);
         const glm::vec3 objectMargin(32.0f, 32.0f, 32.0f);
         const glm::vec3 objectOrigin(0.0f, 256.0f, 0.0f);
+        const float noiseFreq = 0.1f/tileSize;
+        const float noiseAmp = tileSize*2.0f;
+        const float voronoiCellSize = 10.0f * tileSize;
 
         glm::vec3 center = getCenter(shape, objectOrigin, objectSize, objectMargin);
         Transformation model = Transformation(objectSize*0.5f, center, 0,0,0);
@@ -186,21 +189,21 @@ public:
             case TestShape::PerlinDistort: {
                 std::cout << "\topaqueLayer.add(perlinDistort)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, tileSize*2.0f, 0.1f/tileSize, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
+                PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, noiseAmp, noiseFreq, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::PerlinCarve: {
                 std::cout << "\topaqueLayer.add(perlinCarve)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, tileSize*2.0f, 0.1f/tileSize, 0.1f, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
+                PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, noiseAmp, noiseFreq, 0.1f, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::SineDistort: {
                 std::cout << "\topaqueLayer.add(sineDistort)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                SineDistortDistanceEffect carvedFunction = SineDistortDistanceEffect(function, tileSize*2.0f, 0.1f/tileSize, glm::vec3(0), model, tileSize);
+                SineDistortDistanceEffect carvedFunction = SineDistortDistanceEffect(function, noiseAmp, noiseFreq, glm::vec3(0), model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
@@ -212,16 +215,14 @@ public:
                 // is a frequency: as a cell size it created sub-millimetre
                 // cells and a ~1/cellSize Lipschitz normalization that flattened
                 // the field. 1/frequency keeps the intended ~80-unit cells.
-                const float voronoiCellSize = 1.0f / (0.1f / tileSize);
-                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, tileSize*2.0f, voronoiCellSize, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
+                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, noiseAmp, voronoiCellSize, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::VoronoiDistortInverse: {
                 std::cout << "\topaqueLayer.add(voronoiDistortInverse)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                const float voronoiCellSize = 1.0f / (0.1f / tileSize);
-                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, tileSize*2.0f, voronoiCellSize, glm::vec3(0), 0.0f, -1.0f, model, tileSize);
+                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, noiseAmp, voronoiCellSize, glm::vec3(0), 0.0f, -1.0f, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }

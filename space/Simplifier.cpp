@@ -2,7 +2,7 @@
 #include "NodeOperationResult.hpp"
 #include "OctreeNode.hpp"
 #include "Octree.hpp"
-#include "../sdf/SDF.hpp"
+#include "../sdf/core/SDF.hpp"
 #include <cmath>
 
 
@@ -49,7 +49,7 @@ SimplificationResult Simplifier::simplify(
     int brushIndex = DISCARD_BRUSH_INDEX;
     
     //TODO: fix simplification logic.
-    return res;
+    //return res;
 
     // --- 1. Brush consistency ---
     // Every surface child must share the same brush index: a collapse that
