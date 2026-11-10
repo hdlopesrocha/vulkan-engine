@@ -31,22 +31,22 @@
 #include "../sdf/primitives/CylinderDistanceFunction.hpp"
 #include "../sdf/primitives/TaperedCylinderDistanceFunction.hpp"
 #include "../sdf/primitives/TaperedCapsuleDistanceFunction.hpp"
-#include "../sdf/OctreeDifferenceFunction.hpp"
+#include "../sdf/primitives/OctreeDifferenceFunction.hpp"
 
 // SDF sweep
-#include "../sdf/SweepSignedDistanceFunction.hpp"
-#include "../sdf/InterpolatedDistanceFunction.hpp"
+#include "../sdf/operations/SweepSignedDistanceFunction.hpp"
+#include "../sdf/operations/InterpolatedDistanceFunction.hpp"
 
 // SDF operations
-#include "../sdf/AddSignedDistanceOperation.hpp"
-#include "../sdf/DeleteSignedDistanceOperation.hpp"
-#include "../sdf/PaintSignedDistanceOperation.hpp"
+#include "../sdf/operations/AddSignedDistanceOperation.hpp"
+#include "../sdf/operations/DeleteSignedDistanceOperation.hpp"
+#include "../sdf/operations/PaintSignedDistanceOperation.hpp"
 
 // SDF effects
-#include "../sdf/PerlinDistortDistanceEffect.hpp"
-#include "../sdf/PerlinCarveDistanceEffect.hpp"
-#include "../sdf/SineDistortDistanceEffect.hpp"
-#include "../sdf/VoronoiCarveDistanceEffect.hpp"
+#include "../sdf/effects/PerlinDistortDistanceEffect.hpp"
+#include "../sdf/effects/PerlinCarveDistanceEffect.hpp"
+#include "../sdf/effects/SineDistortDistanceEffect.hpp"
+#include "../sdf/effects/VoronoiCarveDistanceEffect.hpp"
 #include "../sdf/RoadSpline.hpp"
 #include "../sdf/primitives/RoadDistanceFunction.hpp"
 #include "../sdf/primitives/TriangleStripDistanceFunction.hpp"
@@ -122,8 +122,13 @@ public:
         switch (shape) {
             case TestShape::Tetrahedron: {
                 std::cout << "\topaqueLayer.add(tetrahedron)"<< std::endl;
-                TetrahedronDistanceFunction function = TetrahedronDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                // The base-anchored tetrahedron has a flat base and slanted
+                // side edges; the catalogue's 8-unit default leaves visible
+                // stair-steps on those edges, so use the same finer resolution
+                // as the other sharp-edged test primitives.
+                const float tetraMinSize = tileSize * 0.5f;
+                TetrahedronDistanceFunction function = TetrahedronDistanceFunction(model, tetraMinSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tetraMinSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Octrahedron: {

@@ -5,10 +5,11 @@
 #include "../../math/geometry/Transformation.hpp"
 #include "../../math/geometry/BoundingSphere.hpp"
 
-// Exact Euclidean SDF of a regular tetrahedron whose four vertices lie on the
-// unit sphere. The world-space faces and outward normals are cached at
-// construction time, so the distance is exact for any affine model transform
-// (including non-uniform scale and rotation).
+// Exact Euclidean SDF of a regular tetrahedron in the conventional
+// base-anchored orientation: an equilateral base on y=0 and the apex at y=1.
+// The world-space faces and outward normals are cached at construction time,
+// so the distance is exact for any affine model transform (including
+// non-uniform scale and rotation).
 class TetrahedronDistanceFunction : public SignedDistanceFunction {
 public:
     TetrahedronDistanceFunction(const Transformation &model, float bias);

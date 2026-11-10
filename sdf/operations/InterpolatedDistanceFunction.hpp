@@ -1,7 +1,7 @@
 #pragma once
-#include "SignedDistanceFunction.hpp"
-#include "../math/geometry/Transformation.hpp"
-#include "../math/geometry/BoundingSphere.hpp"
+#include "../SignedDistanceFunction.hpp"
+#include "../../math/geometry/Transformation.hpp"
+#include "../../math/geometry/BoundingSphere.hpp"
 
 // Linear interpolation between two signed distance fields:
 //   distance(p) = mix(source.distance(p), target.distance(p), factor).

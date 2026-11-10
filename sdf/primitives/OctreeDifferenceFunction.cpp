@@ -1,5 +1,5 @@
 #include "OctreeDifferenceFunction.hpp"
-#include "primitives/BoxDistanceFunction.hpp"
+#include "BoxDistanceFunction.hpp"
 
 OctreeDifferenceFunction::OctreeDifferenceFunction(Octree * tree_, BoundingBox box_, float bias_, const Transformation &model)
     : SignedDistanceFunction(box_.getCenter(), model), tree(tree_), box(box_), bias(bias_)

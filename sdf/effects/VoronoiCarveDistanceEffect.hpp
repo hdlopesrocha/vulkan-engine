@@ -1,10 +1,10 @@
 #pragma once
 #include "SignedDistanceEffect.hpp"
 #include <glm/glm.hpp>
-#include "../math/Math.hpp"
-#include "../math/geometry/BoundingCube.hpp"
-#include "../math/geometry/BoundingSphere.hpp"
-#include "../math/geometry/Transformation.hpp"
+#include "../../math/Math.hpp"
+#include "../../math/geometry/BoundingCube.hpp"
+#include "../../math/geometry/BoundingSphere.hpp"
+#include "../../math/geometry/Transformation.hpp"
 
 class VoronoiCarveDistanceEffect : public SignedDistanceEffect {
     public:

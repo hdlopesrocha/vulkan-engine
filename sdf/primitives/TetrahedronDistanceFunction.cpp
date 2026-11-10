@@ -6,16 +6,18 @@
 #include <limits>
 
 namespace {
-// Regular tetrahedron inscribed in the unit sphere. The even-parity sign
-// pattern gives four vertices at distance 1 from the origin, so the transformed
-// vertices stay within |scale| of the model centre.
+// Regular tetrahedron in the conventional base-anchored orientation: an
+// equilateral base on y=0 and the apex at y=1. The base circumradius is
+// 1/sqrt(2), so every vertex stays within the unit sphere around the base
+// centre (the model translate).
 std::array<glm::vec3, 4> unitTetrahedronVertices() {
-    const float k = 1.0f / std::sqrt(3.0f);
+    const float r = 1.0f / std::sqrt(2.0f);
+    const float s = std::sqrt(3.0f) * 0.5f * r;
     return {
-        glm::vec3( k,  k,  k),
-        glm::vec3( k, -k, -k),
-        glm::vec3(-k,  k, -k),
-        glm::vec3(-k, -k,  k)
+        glm::vec3(0.0f, 1.0f, 0.0f),   // apex
+        glm::vec3(0.0f, 0.0f, r),      // base
+        glm::vec3(-s,   0.0f, -0.5f * r),
+        glm::vec3( s,   0.0f, -0.5f * r)
     };
 }
 } // namespace
@@ -29,7 +31,7 @@ TetrahedronDistanceFunction::TetrahedronDistanceFunction(const Transformation &m
     }
 
     static constexpr int kFaces[4][3] = {
-        {0, 1, 2}, {0, 3, 1}, {0, 2, 3}, {1, 3, 2}
+        {0, 1, 2}, {0, 2, 3}, {0, 3, 1}, {1, 2, 3}
     };
     centroid_ = (world[0] + world[1] + world[2] + world[3]) / 4.0f;
     for (int f = 0; f < 4; ++f) {
@@ -60,8 +62,8 @@ float TetrahedronDistanceFunction::distance(const glm::vec3 &p) const {
 }
 
 BoundingSphere TetrahedronDistanceFunction::getSphere(const Transformation &model, float bias) const {
-    // Every unit-tetrahedron vertex is on the unit sphere, so the transformed
-    // vertices are within |scale| of the model centre under any rotation and
-    // non-uniform scale.
+    // The base circumradius is < 1 and the apex is at distance 1, so the
+    // transformed vertices are within |scale| of the base centre under any
+    // rotation and non-uniform scale.
     return BoundingSphere(getCenter(), glm::length(model.scale) + bias);
 }

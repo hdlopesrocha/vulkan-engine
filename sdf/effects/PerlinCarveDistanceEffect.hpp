@@ -1,7 +1,7 @@
 #pragma once
 #include "SignedDistanceEffect.hpp"
 #include <glm/glm.hpp>
-#include "../math/Math.hpp"
+#include "../../math/Math.hpp"
 
 class PerlinCarveDistanceEffect : public SignedDistanceEffect {
     public:

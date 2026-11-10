@@ -3,6 +3,7 @@
 
 #include "../noise/Perlin.glsl"
 #include "../sdf/SdfNoise.glsl"
+#include "../sdf/effects/Effects.glsl"
 
 // ── Brush SDF (set=1 binding=0) ────────────────────────────────────────────
 // Shared by the brush preview raymarcher (BrushSdf.frag) and the solid
@@ -187,24 +188,27 @@ float brushSdPyramidWorld(vec3 p, vec3 xlate, vec3 s, vec4 rot) {
 // The four vertices are on the unit sphere, so the model sphere bound is
 // |scale| as well.
 float brushSdTetrahedronWorld(vec3 p, vec3 xlate, vec3 s, vec4 rot) {
-    const float k = 0.577350269;
-    vec3 v0 = brushModelVertex(vec3( k,  k,  k), xlate, s, rot);
-    vec3 v1 = brushModelVertex(vec3( k, -k, -k), xlate, s, rot);
-    vec3 v2 = brushModelVertex(vec3(-k,  k, -k), xlate, s, rot);
-    vec3 v3 = brushModelVertex(vec3(-k, -k,  k), xlate, s, rot);
+    // Conventional base-anchored regular tetrahedron: equilateral base on
+    // y=0, apex at y=1, base circumradius 1/sqrt(2).
+    const float r = 0.70710678;
+    const float r3 = 0.61237244; // sqrt(3)/2 * base circumradius
+    vec3 v0 = brushModelVertex(vec3(0.0, 1.0, 0.0), xlate, s, rot);
+    vec3 v1 = brushModelVertex(vec3(0.0, 0.0, r), xlate, s, rot);
+    vec3 v2 = brushModelVertex(vec3(-r3, 0.0, -0.5 * r), xlate, s, rot);
+    vec3 v3 = brushModelVertex(vec3( r3, 0.0, -0.5 * r), xlate, s, rot);
     vec3 geoCenter = (v0 + v1 + v2 + v3) * 0.25;
 
     float d0 = brushSdTriangle(p, v0, v1, v2);
-    float d1 = brushSdTriangle(p, v0, v3, v1);
-    float d2 = brushSdTriangle(p, v0, v2, v3);
-    float d3 = brushSdTriangle(p, v1, v3, v2);
+    float d1 = brushSdTriangle(p, v0, v2, v3);
+    float d2 = brushSdTriangle(p, v0, v3, v1);
+    float d3 = brushSdTriangle(p, v1, v2, v3);
     float dist = min(min(d0, d1), min(d2, d3));
 
     bool inside =
         brushFaceInside(p, v0, v1, v2, geoCenter) &&
-        brushFaceInside(p, v0, v3, v1, geoCenter) &&
         brushFaceInside(p, v0, v2, v3, geoCenter) &&
-        brushFaceInside(p, v1, v3, v2, geoCenter);
+        brushFaceInside(p, v0, v3, v1, geoCenter) &&
+        brushFaceInside(p, v1, v2, v3, geoCenter);
     return inside ? -dist : dist;
 }
 
@@ -291,66 +295,6 @@ float brushRawDistanceMixed(vec3 p) {
     return mix(d, brushTargetRawDistance(p), t);
 }
 
-// ── Effects (CPU parity, see approximation note at the top) ─────────────────
-float brushBc(float c, float brightness, float contrast) {
-    c = clamp(c + brightness, -1.0, 1.0);
-    return clamp(c * contrast, -1.0, 1.0);
-}
-
-vec3 brushPerlinFractal(vec3 p, float frequency) {
-    vec3 total = vec3(0.0);
-    float freq = frequency;
-    float amp = 1.0;
-    for (int i = 0; i < 6; ++i) {
-        total += amp * vec3(
-            perlinNoise3D(p * freq + vec3(0.0)),
-            perlinNoise3D(p * freq + vec3(100.0)),
-            perlinNoise3D(p * freq + vec3(200.0)));
-        freq *= 2.0;
-        amp *= 0.5;
-    }
-    return total;
-}
-
-float brushCarveFractal(vec3 p, float threshold, float frequency) {
-    float noiseValue = 0.0;
-    float freq = frequency;
-    float amp = 1.0;
-    for (int i = 0; i < 6; ++i) {
-        noiseValue += amp * perlinNoise3D(p * freq);
-        freq *= 2.0;
-        amp *= 0.5;
-    }
-    if (noiseValue > threshold) return noiseValue - threshold;
-    return 0.0;
-}
-
-float brushCellRand(ivec3 cell, uint channel) {
-    uvec3 c = uvec3(cell) + uvec3(13u, 29u, 43u) * (channel + 1u);
-    return float(sdfHashU(c)) * (1.0 / 4294967295.0);
-}
-
-float brushVoronoi3D(vec3 p, float cellSize) {
-    if (cellSize <= 0.0) return 0.0;
-    vec3 q = p / cellSize;
-    q += 0.3 * vec3(perlinNoise3D(q), perlinNoise3D(q.yzx), perlinNoise3D(q.zxy));
-    ivec3 baseCell = ivec3(floor(q));
-    float minDist = 1e10;
-    for (int k = -1; k <= 1; ++k) {
-        for (int j = -1; j <= 1; ++j) {
-            for (int i = -1; i <= 1; ++i) {
-                ivec3 neighbor = baseCell + ivec3(i, j, k);
-                vec3 cellSeed = vec3(neighbor) + vec3(
-                    brushCellRand(neighbor, 0u),
-                    brushCellRand(neighbor, 1u),
-                    brushCellRand(neighbor, 2u));
-                minDist = min(minDist, length(q - cellSeed));
-            }
-        }
-    }
-    return minDist / sqrt(3.0);
-}
-
 // ── Public field evaluation ─────────────────────────────────────────────────
 // World-space signed distance of the brush volume. Effects wrap the primitive
 // (or its sweep) exactly like applyBrushWithEffect does on the CPU.
@@ -366,21 +310,15 @@ float brushDistance(vec3 p) {
     float contrast = brush.xEffect1.y;
 
     if (effect == 1u) {  // PerlinDistort
-        vec3 n = brushPerlinFractal(localP, freq);
-        n = vec3(brushBc(n.x, brightness, contrast),
-                 brushBc(n.y, brightness, contrast),
-                 brushBc(n.z, brightness, contrast));
+        vec3 n = sdfEffectPerlinDistort(localP, freq, brightness, contrast);
         vec3 np = localP + amp * n;
         return brushRawDistanceMixed(np + translate) / (1.0 + 18.0 * amp * freq);
     } else if (effect == 2u) {  // PerlinCarve
         float d = brushRawDistanceMixed(p);
-        float noise = brushBc(brushCarveFractal(localP, brush.xEffect0.z, freq), brightness, contrast);
+        float noise = sdfEffectBc(sdfEffectCarveFractal(localP, brush.xEffect0.z, freq), brightness, contrast);
         return (d + noise * amp) / (1.0 + amp * freq * 6.0);
     } else if (effect == 3u) {  // SineDistort
-        float dx = sin(localP.x * freq) * cos(localP.y * freq) * sin(localP.z * freq);
-        float dy = cos(localP.x * freq) * sin(localP.y * freq) * cos(localP.z * freq);
-        float dz = sin(localP.x * freq) * sin(localP.y * freq) * cos(localP.z * freq);
-        vec3 np = localP + (amp * 0.5) * vec3(dx, dy, dz);
+        vec3 np = localP + (amp * 0.5) * sdfEffectSineDisplacement(localP, freq);
         return brushRawDistanceMixed(np + translate) / (1.0 + 1.5 * amp * freq);
     }
     // VoronoiCarve: conservative world-space SDF (matches the CPU
@@ -391,7 +329,7 @@ float brushDistance(vec3 p) {
     if (!(brush.xEffect0.w > 1e-6)) return brushRawDistanceMixed(p);
     float cell = brush.xEffect0.w;
     float d = brushRawDistanceMixed(p);
-    float noise = brushBc(brushVoronoi3D(localP, cell), brightness, contrast);
+    float noise = sdfEffectBc(sdfEffectVoronoi3D(localP, cell), brightness, contrast);
     float maxGrad = abs(amp * contrast) * 2.0 / (sqrt(3.0) * cell);
     return (d - amp * noise) / (1.0 + maxGrad);
 }

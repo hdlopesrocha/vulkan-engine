@@ -5,7 +5,7 @@
 #include "../math/BrushPainter.hpp"
 #include "../math/TextureCoordPainter.hpp"
 #include "../sdf/SignedDistanceFunction.hpp"
-#include "../sdf/SignedDistanceOperation.hpp"
+#include "../sdf/operations/SignedDistanceOperation.hpp"
 #include "Simplifier.hpp"
 #include "OctreeNodeData.hpp"
 #include <atomic>

@@ -1,9 +1,9 @@
 #pragma once
-#include "SignedDistanceFunction.hpp"
+#include "../SignedDistanceFunction.hpp"
 #include <glm/glm.hpp>
-#include "../math/geometry/Transformation.hpp"
-#include "../math/geometry/BoundingSphere.hpp"
-#include "../math/geometry/BoundingBox.hpp"
+#include "../../math/geometry/Transformation.hpp"
+#include "../../math/geometry/BoundingSphere.hpp"
+#include "../../math/geometry/BoundingBox.hpp"
 
 template<typename T>
 class SweepSignedDistanceFunction : public SignedDistanceFunction {

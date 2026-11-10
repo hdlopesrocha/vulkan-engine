@@ -1,8 +1,8 @@
 #pragma once
-#include "SignedDistanceFunction.hpp"
-#include "../math/geometry/BoundingBox.hpp"
-#include "../math/geometry/Transformation.hpp"
-#include "../space/Octree.hpp"
+#include "../SignedDistanceFunction.hpp"
+#include "../../math/geometry/BoundingBox.hpp"
+#include "../../math/geometry/Transformation.hpp"
+#include "../../space/Octree.hpp"
 
 class OctreeDifferenceFunction : public SignedDistanceFunction {
     public:
