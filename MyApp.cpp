@@ -4813,8 +4813,11 @@ static void applyBrushWithEffect(const BrushEntry& entry, SignedDistanceFunction
             }
             case 1: {
                 PerlinCarveDistanceEffect effect(func,
-                    entry.effectAmplitude, entry.effectFrequency, entry.effectThreshold,
+                    entry.effectAmplitude, entry.effectFrequency,
                     glm::vec3(0), entry.effectBrightness, entry.effectContrast, model, minSize);
+                // Keep the brush's UI threshold in effect while the constructor
+                // stays aligned with PerlinDistortDistanceEffect.
+                effect.threshold = entry.effectThreshold;
                 octree.apply(op, effect, model, brush, TriplanarMappingPainter(), minSize, simplifier, updateHandler, deleteHandler);
                 break;
             }
