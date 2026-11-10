@@ -64,6 +64,12 @@
 class MainSceneLoader : public SceneLoaderCallback {
 public:
 
+    // Identity effect parameters: brightness/contrast are passed explicitly so
+    // the test-catalogue effects show their raw shape without an extra
+    // brightness shift or contrast scale. The offset is also neutral.
+    static constexpr float kEffectBrightness = 0.0f;
+    static constexpr float kEffectContrast = 1.0f;
+    inline static const glm::vec3 kEffectOffset{0.0f};
 
     // angle=0.95 (cos≈18°): normals within 18° → flat surface → full distance tolerance.
     // distance=0.2: flat patches may have up to 20% cube-size SDF error (curved gets 10%).
@@ -115,9 +121,9 @@ public:
         const glm::vec3 objectSize(128.0f, 128.0f, 128.0f);
         const glm::vec3 objectMargin(32.0f, 32.0f, 32.0f);
         const glm::vec3 objectOrigin(0.0f, 256.0f, 0.0f);
-        const float noiseFreq = 0.1f/tileSize;
+        const float noisePeriod = 10.0f*tileSize; 
+        const float noiseFreq = 1.0f/noisePeriod;
         const float noiseAmp = tileSize*2.0f;
-        const float voronoiCellSize = 10.0f * tileSize;
 
         glm::vec3 center = getCenter(shape, objectOrigin, objectSize, objectMargin);
         Transformation model = Transformation(objectSize*0.5f, center, 0,0,0);
@@ -125,13 +131,8 @@ public:
         switch (shape) {
             case TestShape::Tetrahedron: {
                 std::cout << "\topaqueLayer.add(tetrahedron)"<< std::endl;
-                // The base-anchored tetrahedron has a flat base and slanted
-                // side edges; the catalogue's 8-unit default leaves visible
-                // stair-steps on those edges, so use the same finer resolution
-                // as the other sharp-edged test primitives.
-                const float tetraMinSize = tileSize * 0.5f;
-                TetrahedronDistanceFunction function = TetrahedronDistanceFunction(model, tetraMinSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tetraMinSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                TetrahedronDistanceFunction function = TetrahedronDistanceFunction(model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Octrahedron: {
@@ -181,7 +182,8 @@ public:
             case TestShape::Mirror: {
                 std::cout << "\topaqueLayer.add(mirror)"<< std::endl;
                 glm::vec3 len = glm::vec3(objectSize.x*0.125f, objectSize.y, objectSize.z);
-                Transformation customModel = Transformation(BoundingBox(center - len * 0.5f, center + len * 0.5f), 0.0f, 0.0f, 0.0f);
+                BoundingBox mirror(center - len * 0.5f, center + len * 0.5f);
+                Transformation customModel = Transformation(mirror, 0.0f, 0.0f, 0.0f);
                 BoxDistanceFunction function = BoxDistanceFunction(customModel, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, customModel, SimpleBrush(6), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
@@ -189,40 +191,35 @@ public:
             case TestShape::PerlinDistort: {
                 std::cout << "\topaqueLayer.add(perlinDistort)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, noiseAmp, noiseFreq, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
+                PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, noiseAmp, noiseFreq, kEffectOffset, kEffectBrightness, kEffectContrast, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::PerlinCarve: {
                 std::cout << "\topaqueLayer.add(perlinCarve)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, noiseAmp, noiseFreq, 0.1f, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
+                PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, noiseAmp, noiseFreq, 0.1f, kEffectOffset, kEffectBrightness, kEffectContrast, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::SineDistort: {
                 std::cout << "\topaqueLayer.add(sineDistort)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                SineDistortDistanceEffect carvedFunction = SineDistortDistanceEffect(function, noiseAmp, noiseFreq, glm::vec3(0), model, tileSize);
+                SineDistortDistanceEffect carvedFunction = SineDistortDistanceEffect(function, noiseAmp, noiseFreq, kEffectOffset, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::VoronoiDistort: {
                 std::cout << "\topaqueLayer.add(voronoiDistort)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                // VoronoiCarve's second parameter is a world-unit cell size,
-                // unlike the Perlin/Sine frequency. The old 0.1/tileSize value
-                // is a frequency: as a cell size it created sub-millimetre
-                // cells and a ~1/cellSize Lipschitz normalization that flattened
-                // the field. 1/frequency keeps the intended ~80-unit cells.
-                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, noiseAmp, voronoiCellSize, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
+                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, noiseAmp, noisePeriod, kEffectOffset, kEffectBrightness, kEffectContrast, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::VoronoiDistortInverse: {
                 std::cout << "\topaqueLayer.add(voronoiDistortInverse)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, noiseAmp, voronoiCellSize, glm::vec3(0), 0.0f, -1.0f, model, tileSize);
+                VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, noiseAmp, noisePeriod, kEffectOffset, kEffectBrightness, -kEffectContrast, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
@@ -429,7 +426,7 @@ public:
             glm::vec3 b = glm::vec3(0,500,0);
             float r = 256.0f;
             CapsuleDistanceFunction function(a, b, r, model, tileSize);
-            PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, 64.0f, 0.1f/32.0f, glm::vec3(0), 0.0f, 1.0f, model, tileSize);
+            PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, 64.0f, 0.1f/32.0f, kEffectOffset, kEffectBrightness, kEffectContrast, model, tileSize);
             opaqueLayer.apply(DeleteSignedDistanceOperation(), distortedFunction, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
