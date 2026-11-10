@@ -5,6 +5,29 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+// SDF-only description used as the target of BrushEntry interpolation. It is a
+// value member (not an index) so undo snapshots and copies stay self-contained:
+// editing or removing another brush entry cannot invalidate it.
+struct BrushSdfTarget {
+    // Primitive ids: see BrushEntry::sdfType.
+    int sdfType = 3;
+    glm::vec3 scale = glm::vec3(256.0f);
+    glm::vec3 translate = glm::vec3(0.0f);
+    float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
+    glm::quat rot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    float minSize = 30.0f;
+    glm::vec3 capsuleA = glm::vec3(0.0f, -1.0f, 0.0f);
+    glm::vec3 capsuleB = glm::vec3(0.0f, 1.0f, 0.0f);
+    float capsuleRadius = 0.5f;
+    glm::vec2 torusRadii = glm::vec2(0.5f, 0.25f);
+    glm::vec2 taperedCylinderRadii = glm::vec2(0.25f, 0.5f);
+    glm::vec2 taperedCapsuleRadii = glm::vec2(0.5f, 0.25f);
+    bool sweepMode = false;
+    glm::vec3 previousTranslate = glm::vec3(0.0f);
+    std::string svgPath = "svg/test_logo.svg";
+    bool svgTintFromFill = true;
+};
+
 // Represents one SDF brush entry with all parameters needed to populate the scene
 struct BrushEntry {
     // SDF primitive: 0=Sphere,1=Box,2=Capsule,3=Octahedron,4=Pyramid,5=Torus,
@@ -61,4 +84,63 @@ struct BrushEntry {
     // takes the fill colour of the SVG contour containing it.
     std::string svgPath = "svg/test_logo.svg";
     bool svgTintFromFill = true;
+
+    // ── Two-SDF interpolation ──────────────────────────────────────────────
+    // When enabled, this entry's SDF is the source and `interpolationTarget`
+    // is the target: distance = mix(source, target, interpolationFactor).
+    // The source effect is applied after the mix; the target's SDF-only
+    // description is edited in the "Brush Target SDF" window.
+    bool useInterpolation = false;
+    float interpolationFactor = 0.5f;
+    BrushSdfTarget interpolationTarget{};
 };
+
+// Copy SDF-relevant fields from a brush entry into an interpolation target.
+inline BrushSdfTarget brushTargetFromEntry(const BrushEntry& e) {
+    BrushSdfTarget t;
+    t.sdfType = e.sdfType;
+    t.scale = e.scale;
+    t.translate = e.translate;
+    t.yaw = e.yaw;
+    t.pitch = e.pitch;
+    t.roll = e.roll;
+    t.rot = e.rot;
+    t.minSize = e.minSize;
+    t.capsuleA = e.capsuleA;
+    t.capsuleB = e.capsuleB;
+    t.capsuleRadius = e.capsuleRadius;
+    t.torusRadii = e.torusRadii;
+    t.taperedCylinderRadii = e.taperedCylinderRadii;
+    t.taperedCapsuleRadii = e.taperedCapsuleRadii;
+    t.sweepMode = e.sweepMode;
+    t.previousTranslate = e.previousTranslate;
+    t.svgPath = e.svgPath;
+    t.svgTintFromFill = e.svgTintFromFill;
+    return t;
+}
+
+// Build a transient BrushEntry for the existing primitive factory. Only the
+// SDF-relevant fields are populated; brush mode/layer/material are unused by
+// forEachBrushSDF and are deliberately left at their defaults.
+inline BrushEntry brushEntryFromTarget(const BrushSdfTarget& t) {
+    BrushEntry e;
+    e.sdfType = t.sdfType;
+    e.scale = t.scale;
+    e.translate = t.translate;
+    e.yaw = t.yaw;
+    e.pitch = t.pitch;
+    e.roll = t.roll;
+    e.rot = t.rot;
+    e.minSize = t.minSize;
+    e.capsuleA = t.capsuleA;
+    e.capsuleB = t.capsuleB;
+    e.capsuleRadius = t.capsuleRadius;
+    e.torusRadii = t.torusRadii;
+    e.taperedCylinderRadii = t.taperedCylinderRadii;
+    e.taperedCapsuleRadii = t.taperedCapsuleRadii;
+    e.sweepMode = t.sweepMode;
+    e.previousTranslate = t.previousTranslate;
+    e.svgPath = t.svgPath;
+    e.svgTintFromFill = t.svgTintFromFill;
+    return e;
+}

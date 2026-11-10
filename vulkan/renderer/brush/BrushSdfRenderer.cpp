@@ -145,7 +145,8 @@ void BrushSdfRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32
 void BrushSdfRenderer::updateParams(uint32_t frameIndex, const BrushEntry& entry,
                                     const glm::vec3& sweepStart,
                                     const glm::vec3& boundsCenter, float boundsRadius,
-                                    uint32_t width, uint32_t height) {
+                                    uint32_t width, uint32_t height,
+                                    const glm::vec3& targetSweepStart) {
     const uint32_t fi = frameIndex % BRUSH_FRAMES;
     if (paramsBuffers[fi].mappedData == nullptr) return;
 
@@ -188,6 +189,37 @@ void BrushSdfRenderer::updateParams(uint32_t frameIndex, const BrushEntry& entry
         entry.sweepMode ? 1u : 0u);
     u.hsv = glm::vec4(entry.hsv, 1.0f);
     u.viewport = glm::vec4(static_cast<float>(width), static_cast<float>(height), 0.0f, 0.0f);
+
+    // Target SDF for the two-SDF interpolation. Target effects are ignored;
+    // only the primitive/transform/sweep are needed by the shader.
+    const BrushSdfTarget& target = entry.interpolationTarget;
+    u.interp = glm::vec4(entry.interpolationFactor,
+                         entry.useInterpolation ? 1.0f : 0.0f, 0.0f, 0.0f);
+    u.targetTranslate = glm::vec4(target.translate, 1.0f);
+    u.targetScale = glm::vec4(target.scale, 0.0f);
+    u.targetRotation = glm::vec4(target.rot.x, target.rot.y, target.rot.z, target.rot.w);
+    switch (target.sdfType) {
+        case 2:  // Capsule
+            u.targetParams0 = glm::vec4(target.capsuleA, target.capsuleRadius);
+            u.targetParams1 = glm::vec4(target.capsuleB, 0.0f);
+            break;
+        case 5:  // Torus
+            u.targetParams0 = glm::vec4(target.torusRadii, 0.0f, 0.0f);
+            break;
+        case 8:  // Tapered cylinder
+            u.targetParams0 = glm::vec4(target.taperedCylinderRadii, 0.0f, 0.0f);
+            break;
+        case 9:  // Tapered capsule
+            u.targetParams0 = glm::vec4(target.capsuleA, target.taperedCapsuleRadii.x);
+            u.targetParams1 = glm::vec4(target.capsuleB, target.taperedCapsuleRadii.y);
+            break;
+        default:
+            break;
+    }
+    u.targetSweepStart = glm::vec4(target.sweepMode ? targetSweepStart : target.translate, 1.0f);
+    u.targetFlags = glm::uvec4(
+        static_cast<uint32_t>(std::clamp(target.sdfType, 0, 11)), 0u, 0u,
+        target.sweepMode ? 1u : 0u);
 
     memcpy(paramsBuffers[fi].mappedData, &u, sizeof(u));
 }

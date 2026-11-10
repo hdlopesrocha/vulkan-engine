@@ -1,5 +1,5 @@
 #include "PyramidDistanceFunction.hpp"
-#include "TriangleDistanceFunction.hpp"
+#include "../TriangleDistanceFunction.hpp"
 
 #include <algorithm>
 #include <cmath>

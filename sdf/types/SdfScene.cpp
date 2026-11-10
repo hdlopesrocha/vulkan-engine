@@ -1,6 +1,6 @@
 // CPU-side SDF scene builder. Stores the canonical GPU-layout structs
 // directly (sdf/types/*GPU.hpp) so the renderer uploads them verbatim.
-// Keeps no dependency on space/Octree, on sdf/*DistanceFunction, or on
+// Keeps no dependency on space/Octree, on sdf/primitives/*DistanceFunction, or on
 // vulkan/; only standard C++23 + GLM + sdf/types + math/BoundingBox.
 #include "sdf/types/SdfScene.hpp"
 

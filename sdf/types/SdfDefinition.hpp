@@ -42,7 +42,7 @@ struct SdfDefinition {
     SdfPrimitiveType prim = SdfPrimitiveType::Sphere; // offset 32
     SdfOpType op = SdfOpType::Union;                  // offset 36
     uint32_t deformFlags = 0u;                        // offset 40 (SdfDeformFlags bits)
-    float smoothK = 0.5f;                             // offset 44 (smooth-op blend radius)
+    float smoothK = 0.5f;                             // offset 44 (smooth blend radius; interpolation weight for Interpolation)
 };
 static_assert(sizeof(SdfDefinition) == 48, "SdfDefinition must be 48 bytes");
 static_assert(offsetof(SdfDefinition, params0) == 0, "params0 offset");

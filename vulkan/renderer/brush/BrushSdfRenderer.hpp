@@ -47,7 +47,8 @@ public:
     void updateParams(uint32_t frameIndex, const BrushEntry& entry,
                       const glm::vec3& sweepStart,
                       const glm::vec3& boundsCenter, float boundsRadius,
-                      uint32_t width, uint32_t height);
+                      uint32_t width, uint32_t height,
+                      const glm::vec3& targetSweepStart = glm::vec3(0.0f));
 
     // Params descriptor set (set=1) consumed by both the preview pipeline and
     // SolidRenderer's draws.

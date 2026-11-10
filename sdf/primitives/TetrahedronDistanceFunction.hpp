@@ -1,9 +1,9 @@
 #pragma once
-#include "SignedDistanceFunction.hpp"
+#include "../SignedDistanceFunction.hpp"
 #include <array>
 #include <glm/glm.hpp>
-#include "../math/geometry/Transformation.hpp"
-#include "../math/geometry/BoundingSphere.hpp"
+#include "../../math/geometry/Transformation.hpp"
+#include "../../math/geometry/BoundingSphere.hpp"
 
 // Exact Euclidean SDF of a regular tetrahedron whose four vertices lie on the
 // unit sphere. The world-space faces and outward normals are cached at

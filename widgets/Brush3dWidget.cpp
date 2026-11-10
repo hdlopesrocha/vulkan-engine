@@ -160,6 +160,26 @@ void Brush3dWidget::renderEntry(int index) {
         dirty = true;
     }
 
+    // Two-SDF interpolation: this entry is the source, the target SDF lives in
+    // the separate "Brush Target SDF" window.
+    ImGui::SeparatorText("SDF Interpolation");
+    if (ImGui::Checkbox("Interpolate with target SDF", &e.useInterpolation)) {
+        if (e.useInterpolation) e.interpolationTarget = brushTargetFromEntry(e);
+        dirty = true;
+    }
+    if (e.useInterpolation) {
+        if (ImGui::SliderFloat("Interpolation (source -> target)",
+                               &e.interpolationFactor, 0.0f, 1.0f, "%.3f")) {
+            dirty = true;
+        }
+        if (ImGui::Button("Copy Source SDF to Target")) {
+            e.interpolationTarget = brushTargetFromEntry(e);
+            dirty = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Target controls: 'Brush Target SDF' window");
+    }
+
     // Brush Mode
     if (ImGui::Combo("Mode", &e.brushMode, brushModeNames, IM_ARRAYSIZE(brushModeNames))) {
         BrushPaintMode pm = BrushPaintMode::ADD;

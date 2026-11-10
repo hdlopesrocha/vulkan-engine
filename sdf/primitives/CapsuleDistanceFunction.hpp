@@ -1,8 +1,8 @@
 #pragma once
-#include "SignedDistanceFunction.hpp"
+#include "../SignedDistanceFunction.hpp"
 #include <glm/glm.hpp>
-#include "../math/geometry/Transformation.hpp"
-#include "../math/geometry/BoundingSphere.hpp"
+#include "../../math/geometry/Transformation.hpp"
+#include "../../math/geometry/BoundingSphere.hpp"
 
 class CapsuleDistanceFunction : public SignedDistanceFunction {
 public:

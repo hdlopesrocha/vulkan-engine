@@ -7,7 +7,7 @@
 // ── Brush SDF (set=1 binding=0) ────────────────────────────────────────────
 // Shared by the brush preview raymarcher (BrushSdf.frag) and the solid
 // shader's PAINT/REMOVE intersection test (SolidSurface.glsl). The field is a
-// GLSL mirror of the CPU brush stack (sdf/*DistanceFunction + *DistanceEffect
+// GLSL mirror of the CPU brush stack (sdf/primitives/*DistanceFunction + *DistanceEffect
 // + SweepSignedDistanceFunction), with these documented approximations:
 //   * Perlin effects use the engine's classic gradient noise (Perlin.glsl)
 //     instead of stb_perlin; the fields are visually equivalent but not
@@ -32,6 +32,15 @@ layout(std140, set = 1, binding = 0) uniform BrushSdfBlock {
     uvec4 xFlags;        // x=sdfType, y=effectType+1 (0=off), z=material, w=sweep
     vec4  xHsv;          // xyz = paint tint HSV
     vec4  xViewport;     // xy = target size in pixels
+    // Two-SDF interpolation (appended after xViewport; existing offsets stable).
+    vec4  xInterp;       // x = factor, y = enabled
+    vec4  xTargetTranslate;
+    vec4  xTargetScale;
+    vec4  xTargetRotation; // quaternion xyzw
+    vec4  xTargetParams0;
+    vec4  xTargetParams1;
+    vec4  xTargetSweepStart;
+    uvec4 xTargetFlags;  // x = sdfType, w = sweepMode
 } brush;
 
 // ── Transform helpers (CPU parity: inverse(quat) * (p - translate)) ─────────
@@ -140,21 +149,20 @@ bool brushFaceInside(vec3 p, vec3 a, vec3 b, vec3 c, vec3 geoCenter) {
 
 // Primitive-local unit vertex -> world, using the brush model transform. The
 // same transform order as the CPU: translate + rotation * (local * scale).
-vec3 brushModelVertex(vec3 local, vec3 xlate, vec3 s) {
-    return xlate + brushRotate(local * s, brush.xRotation);
+vec3 brushModelVertex(vec3 local, vec3 xlate, vec3 s, vec4 rot) {
+    return xlate + brushRotate(local * s, rot);
 }
 
 // Exact world-space pyramid SDF (CPU PyramidDistanceFunction). The old shader
 // evaluated the unit pyramid in local space and multiplied by min(scale),
 // which only matches the CPU for uniform scale.
-float brushSdPyramidWorld(vec3 p, vec3 xlate) {
+float brushSdPyramidWorld(vec3 p, vec3 xlate, vec3 s, vec4 rot) {
     const float a = 0.70710678;
-    vec3 s = max(abs(brush.xScale.xyz), vec3(1e-6));
-    vec3 apex = brushModelVertex(vec3(0.0, 1.0, 0.0), xlate, s);
-    vec3 v0 = brushModelVertex(vec3(-a, 0.0, -a), xlate, s);
-    vec3 v1 = brushModelVertex(vec3( a, 0.0, -a), xlate, s);
-    vec3 v2 = brushModelVertex(vec3( a, 0.0,  a), xlate, s);
-    vec3 v3 = brushModelVertex(vec3(-a, 0.0,  a), xlate, s);
+    vec3 apex = brushModelVertex(vec3(0.0, 1.0, 0.0), xlate, s, rot);
+    vec3 v0 = brushModelVertex(vec3(-a, 0.0, -a), xlate, s, rot);
+    vec3 v1 = brushModelVertex(vec3( a, 0.0, -a), xlate, s, rot);
+    vec3 v2 = brushModelVertex(vec3( a, 0.0,  a), xlate, s, rot);
+    vec3 v3 = brushModelVertex(vec3(-a, 0.0,  a), xlate, s, rot);
     vec3 geoCenter = (apex + v0 + v1 + v2 + v3) * 0.2;
 
     float d0 = brushSdTriangle(p, apex, v0, v1);
@@ -178,13 +186,12 @@ float brushSdPyramidWorld(vec3 p, vec3 xlate) {
 // Exact world-space regular-tetrahedron SDF (CPU TetrahedronDistanceFunction).
 // The four vertices are on the unit sphere, so the model sphere bound is
 // |scale| as well.
-float brushSdTetrahedronWorld(vec3 p, vec3 xlate) {
+float brushSdTetrahedronWorld(vec3 p, vec3 xlate, vec3 s, vec4 rot) {
     const float k = 0.577350269;
-    vec3 s = max(abs(brush.xScale.xyz), vec3(1e-6));
-    vec3 v0 = brushModelVertex(vec3( k,  k,  k), xlate, s);
-    vec3 v1 = brushModelVertex(vec3( k, -k, -k), xlate, s);
-    vec3 v2 = brushModelVertex(vec3(-k,  k, -k), xlate, s);
-    vec3 v3 = brushModelVertex(vec3(-k, -k,  k), xlate, s);
+    vec3 v0 = brushModelVertex(vec3( k,  k,  k), xlate, s, rot);
+    vec3 v1 = brushModelVertex(vec3( k, -k, -k), xlate, s, rot);
+    vec3 v2 = brushModelVertex(vec3(-k,  k, -k), xlate, s, rot);
+    vec3 v3 = brushModelVertex(vec3(-k, -k,  k), xlate, s, rot);
     vec3 geoCenter = (v0 + v1 + v2 + v3) * 0.25;
 
     float d0 = brushSdTriangle(p, v0, v1, v2);
@@ -204,11 +211,11 @@ float brushSdTetrahedronWorld(vec3 p, vec3 xlate) {
 // ── Primitive dispatch (sdfType → local-space field) ────────────────────────
 // `xlate` is the primitive's own world translate so the sweep path can
 // evaluate the START placement with the same routine.
-float brushPrimitiveAt(vec3 p, vec3 xlate, vec4 params0, vec4 params1) {
-    vec3 pos = brushRotateInv(p - xlate, brush.xRotation);
-    vec3 s = max(abs(brush.xScale.xyz), vec3(1e-6));
+float brushPrimitiveAt(vec3 p, vec3 xlate, vec3 scale, vec4 rot,
+                       uint type, vec4 params0, vec4 params1) {
+    vec3 pos = brushRotateInv(p - xlate, rot);
+    vec3 s = max(abs(scale), vec3(1e-6));
     float minS = min(min(s.x, s.y), s.z);
-    uint type = brush.xFlags.x;
     if (type == 0u) {          // Sphere (scale = radii)
         vec3 q = abs(pos) / s;
         return (length(q) - 1.0) * minS;
@@ -219,7 +226,7 @@ float brushPrimitiveAt(vec3 p, vec3 xlate, vec4 params0, vec4 params1) {
     } else if (type == 3u) {   // Octahedron
         return brushSdOctahedron(pos / s, 1.0) * minS;
     } else if (type == 4u) {   // Pyramid (exact world-space convex SDF)
-        return brushSdPyramidWorld(p, xlate);
+        return brushSdPyramidWorld(p, xlate, s, rot);
     } else if (type == 5u) {   // Torus
         return brushSdTorus(pos / s, params0.xy) * minS;
     } else if (type == 6u) {   // Cone
@@ -229,7 +236,7 @@ float brushPrimitiveAt(vec3 p, vec3 xlate, vec4 params0, vec4 params1) {
     } else if (type == 8u) {   // Tapered cylinder
         return brushSdTaperedCylinder(pos / s, params0.x, params0.y, 0.5) * minS;
     } else if (type == 11u) {  // Tetrahedron (exact world-space convex SDF)
-        return brushSdTetrahedronWorld(p, xlate);
+        return brushSdTetrahedronWorld(p, xlate, s, rot);
     }                          // 9 = Tapered capsule, 10 = SVG (unsupported preview)
     return brushSdTaperedCapsule(pos / s, params0.xyz, params1.xyz, params0.w, params1.w) * minS;
 }
@@ -237,21 +244,51 @@ float brushPrimitiveAt(vec3 p, vec3 xlate, vec4 params0, vec4 params1) {
 // Sweep trail (CPU SweepSignedDistanceFunction): the start/end transforms
 // share scale and rotation, so the inverse-mix collapses to evaluating the
 // START placement at the point offset from the start center.
-float brushRawDistance(vec3 p) {
-    if (brush.xFlags.w == 0u) {
-        return brushPrimitiveAt(p, brush.xTranslate.xyz, brush.xParams0, brush.xParams1);
+float brushRawDistanceShape(vec3 p, vec3 translate, vec3 sweepStart,
+                           vec3 scale, vec4 rot, uint type,
+                           vec4 params0, vec4 params1, bool sweep)
+{
+    if (!sweep) {
+        return brushPrimitiveAt(p, translate, scale, rot, type, params0, params1);
     }
-    vec3 posA = brush.xSweepStart.xyz;
-    vec3 posB = brush.xTranslate.xyz;
+    vec3 posA = sweepStart;
+    vec3 posB = translate;
     vec3 seg = posB - posA;
     float segLenSq = dot(seg, seg);
     if (segLenSq < 1e-8) {
-        return brushPrimitiveAt(p, posB, brush.xParams0, brush.xParams1);
+        return brushPrimitiveAt(p, posB, scale, rot, type, params0, params1);
     }
     float t = clamp(dot(p - posA, seg) / segLenSq, 0.0, 1.0);
     vec3 closest = posA + t * seg;
-    vec3 q = posA + brushRotate(brushRotateInv(p - closest, brush.xRotation), brush.xRotation);
-    return brushPrimitiveAt(q, posA, brush.xParams0, brush.xParams1);
+    vec3 q = posA + brushRotate(brushRotateInv(p - closest, rot), rot);
+    return brushPrimitiveAt(q, posA, scale, rot, type, params0, params1);
+}
+
+float brushRawDistance(vec3 p) {
+    return brushRawDistanceShape(p, brush.xTranslate.xyz, brush.xSweepStart.xyz,
+                                 brush.xScale.xyz, brush.xRotation, brush.xFlags.x,
+                                 brush.xParams0, brush.xParams1,
+                                 brush.xFlags.w != 0u);
+}
+
+// Target operand for two-SDF interpolation. Its effect parameters are unused:
+// the source entry's effect is applied to the mixed field in brushDistance().
+float brushTargetRawDistance(vec3 p) {
+    return brushRawDistanceShape(p, brush.xTargetTranslate.xyz,
+                                 brush.xTargetSweepStart.xyz,
+                                 brush.xTargetScale.xyz, brush.xTargetRotation,
+                                 brush.xTargetFlags.x, brush.xTargetParams0,
+                                 brush.xTargetParams1, brush.xTargetFlags.w != 0u);
+}
+
+// Raw field used by the effect path: source field, or the blended source/target
+// when interpolation is enabled. The interpolation factor is clamped so the
+// mixed field stays 1-Lipschitz.
+float brushRawDistanceMixed(vec3 p) {
+    float d = brushRawDistance(p);
+    if (brush.xInterp.y < 0.5) return d;
+    float t = clamp(brush.xInterp.x, 0.0, 1.0);
+    return mix(d, brushTargetRawDistance(p), t);
 }
 
 // ── Effects (CPU parity, see approximation note at the top) ─────────────────
@@ -319,7 +356,7 @@ float brushVoronoi3D(vec3 p, float cellSize) {
 // (or its sweep) exactly like applyBrushWithEffect does on the CPU.
 float brushDistance(vec3 p) {
     uint effect = brush.xFlags.y;
-    if (effect == 0u) return brushRawDistance(p);
+    if (effect == 0u) return brushRawDistanceMixed(p);
 
     vec3 translate = brush.xTranslate.xyz;
     vec3 localP = p - translate;
@@ -334,9 +371,9 @@ float brushDistance(vec3 p) {
                  brushBc(n.y, brightness, contrast),
                  brushBc(n.z, brightness, contrast));
         vec3 np = localP + amp * n;
-        return brushRawDistance(np + translate) / (1.0 + 18.0 * amp * freq);
+        return brushRawDistanceMixed(np + translate) / (1.0 + 18.0 * amp * freq);
     } else if (effect == 2u) {  // PerlinCarve
-        float d = brushRawDistance(p);
+        float d = brushRawDistanceMixed(p);
         float noise = brushBc(brushCarveFractal(localP, brush.xEffect0.z, freq), brightness, contrast);
         return (d + noise * amp) / (1.0 + amp * freq * 6.0);
     } else if (effect == 3u) {  // SineDistort
@@ -344,16 +381,16 @@ float brushDistance(vec3 p) {
         float dy = cos(localP.x * freq) * sin(localP.y * freq) * cos(localP.z * freq);
         float dz = sin(localP.x * freq) * sin(localP.y * freq) * cos(localP.z * freq);
         vec3 np = localP + (amp * 0.5) * vec3(dx, dy, dz);
-        return brushRawDistance(np + translate) / (1.0 + 1.5 * amp * freq);
+        return brushRawDistanceMixed(np + translate) / (1.0 + 1.5 * amp * freq);
     }
     // VoronoiCarve: conservative world-space SDF (matches the CPU
     // VoronoiCarveDistanceEffect). The 1/sqrt(3) Voronoi value gradient and
     // the 0.3 Perlin domain warp (bounded by 2x) both scale the carve; the
     // contrast also scales the noise, so it must be part of the Lipschitz
     // bound. Brightness is only an offset.
-    if (!(brush.xEffect0.w > 1e-6)) return brushRawDistance(p);
+    if (!(brush.xEffect0.w > 1e-6)) return brushRawDistanceMixed(p);
     float cell = brush.xEffect0.w;
-    float d = brushRawDistance(p);
+    float d = brushRawDistanceMixed(p);
     float noise = brushBc(brushVoronoi3D(localP, cell), brightness, contrast);
     float maxGrad = abs(amp * contrast) * 2.0 / (sqrt(3.0) * cell);
     return (d - amp * noise) / (1.0 + maxGrad);

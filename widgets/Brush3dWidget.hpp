@@ -43,6 +43,11 @@ public:
     }
     void setOnBrushMapChanged(std::function<void(size_t)> cb) { onBrushMapChanged_ = std::move(cb); }
 
+    // Shared primitive labels for the main brush editor and the interpolation
+    // target window. Index = BrushEntry::sdfType.
+    static constexpr int kSdfTypeCount = 12;
+    static const char* sdfTypeNames[];
+
     // Note: widget now publishes a `RebuildBrushEvent` via the provided EventManager
 
 private:
@@ -67,7 +72,6 @@ private:
     std::string svgStatus_;
     // selected index is owned by the manager
 
-    static const char* sdfTypeNames[];
     static const char* brushModeNames[];
     static const char* layerNames[];
     static const char* effectTypeNames[];

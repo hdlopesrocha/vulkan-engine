@@ -5,8 +5,8 @@
 
 #include <glm/glm.hpp>
 
-#include "SignedDistanceFunction.hpp"
-#include "SvgShape.hpp"
+#include "../SignedDistanceFunction.hpp"
+#include "../SvgShape.hpp"
 
 // SVG profile extruded along the model's local Y axis and intersected with the
 // brush's box ("cookie-cutter" SDF brush).

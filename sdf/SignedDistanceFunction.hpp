@@ -35,6 +35,9 @@ public:
     virtual ContainmentType check(const BoundingCube &cube) const { return m_sphere.test(cube); }
     virtual bool isContained(const BoundingCube &cube) const { return cube.contains(m_sphere); }
     virtual BoundingSphere getSphere(const Transformation &model, float bias) const { return BoundingSphere(); }
+    // Conservative bound already computed by the constructor. Composition
+    // wrappers use this to merge child bounds without knowing their models.
+    const BoundingSphere& getBoundingSphere() const { return m_sphere; }
     virtual BoundingBox getBox(float bias) const { return BoundingBox(); }
 };
 

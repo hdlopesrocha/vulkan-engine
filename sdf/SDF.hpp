@@ -27,7 +27,7 @@ static const glm::ivec2 SDF_EDGES[12] = {
 
 // Generic SDF lattice helpers shared by the octree, the tessellator and the
 // offline Blender exporter. Primitive and effect distance fields live in their
-// own classes (sdf/*DistanceFunction.* and sdf/*DistanceEffect.*); this class
+// own classes (sdf/primitives/*DistanceFunction.* and sdf/*DistanceEffect.*); this class
 // deliberately contains no shape-specific code.
 class SDF
 {

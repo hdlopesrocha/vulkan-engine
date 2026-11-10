@@ -4,7 +4,7 @@
 // the renderer uploads the vectors verbatim with no conversion step.
 // CPU-only helpers (flame anchors/shapes, stats, config) stay separate; the
 // per-container instance membership is derived from Instance::containerIdx.
-// Independent from space/Octree, from sdf/*DistanceFunction, and from
+// Independent from space/Octree, from sdf/primitives/*DistanceFunction, and from
 // vulkan/ (no Vulkan headers here).
 #include <cstdint>
 #include <vector>

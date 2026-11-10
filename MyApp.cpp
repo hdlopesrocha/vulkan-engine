@@ -41,7 +41,7 @@
 #include "utils/LocalScene.hpp"
 #include "utils/OctreeRaymarchTable.hpp"
 #include "brushPainters/SvgBrush.hpp"
-#include "sdf/SvgPolygonDistanceFunction.hpp"
+#include "sdf/primitives/SvgPolygonDistanceFunction.hpp"
 #include "sdf/SvgShape.hpp"
 #include "utils/BlenderExport.hpp"
 #include "utils/SceneMaterialTable.hpp"
@@ -74,6 +74,7 @@
 #include "sdf/types/SdfScene.hpp"
 #include "widgets/OctreeExplorerWidget.hpp"
 #include "widgets/Brush3dWidget.hpp"
+#include "widgets/BrushInterpolationWidget.hpp"
 #include "widgets/LayersWidget.hpp"
 #include "widgets/MusicWidget.hpp"
 #include "widgets/components/FilePicker.hpp"
@@ -81,6 +82,7 @@
 #include "sdf/DeleteSignedDistanceOperation.hpp"
 #include "sdf/PaintSignedDistanceOperation.hpp"
 #include "sdf/SweepSignedDistanceFunction.hpp"
+#include "sdf/InterpolatedDistanceFunction.hpp"
 #include "utils/MainSceneLoader.hpp"
 #include "space/UniqueChangeCollector.hpp"
 #include "space/OctreeFile.hpp"
@@ -283,10 +285,14 @@ public:
     std::string remoteEndpoint = "127.0.0.1:8080";
     bool remoteDisabled = false;
     std::shared_ptr<Brush3dWidget> brush3dWidget;
+    std::shared_ptr<BrushInterpolationWidget> brushInterpolationWidget;
+    bool brushInterpolationWasEnabled_ = false;
     // Shared brush entries edited by Brush3dWidget (owned by MyApp)
     Brush3dManager brushManager;
     // Cached sweep start position so applyBrushToScene uses the same pair as the preview
     glm::vec3 cachedSweepStart = glm::vec3(0.0f);
+    // Same, for the interpolation target's independent sweep trail.
+    glm::vec3 cachedTargetSweepStart_ = glm::vec3(0.0f);
 
     // ── Brush undo history (per layer) ─────────────────────────────────────
     // The layer's octree is a pure result of its base scene plus the brushes
@@ -1184,6 +1190,10 @@ public:
             if (idx < brushMap.size()) materialManager.updateBrushMap(idx, brushMap[idx], this);
         });
         widgetManager.addWidget(brush3dWidget);
+
+        // Separate target-SDF window for two-SDF interpolation.
+        brushInterpolationWidget = std::make_shared<BrushInterpolationWidget>(brushManager);
+        widgetManager.addWidget(brushInterpolationWidget);
 
         // Dynamic scene layers + per-layer renderer selection.
         layersWidget = std::make_shared<LayersWidget>(&world->activeScene(), sceneRenderer,
@@ -4832,39 +4842,61 @@ static void applyBrushWithEffect(const BrushEntry& entry, SignedDistanceFunction
 
 // Bounds of one brush application (union of the current and, in sweep mode,
 // the previous placement), padded for the optional effect displacement. Shared
+// Bounds for one primitive (or its sweep trail), using the same fixed
+// non-sweep placement the GPU preview sees. `sweepStart` is ignored when
+// `entry.sweepMode` is off.
+static BoundingSphere brushEntryBounds(const BrushEntry& entry, const glm::vec3& sweepStart) {
+    BoundingSphere s;
+    s.center = entry.translate;
+    s.radius = glm::length(entry.scale);
+    BrushEntry noSweep = entry;
+    noSweep.sweepMode = false;
+    auto sphereFor = [&](const glm::vec3& where) {
+        Transformation m(entry.scale, where, entry.rot);
+        forEachBrushSDF(noSweep, m, where, entry.minSize, "[computeBrushBounds]",
+            [&](SignedDistanceFunction& func) {
+                BoundingSphere bs = func.getSphere(m, entry.minSize);
+                if (bs.radius > 0.0f) s = bs;
+                else { s.center = func.getCenter(); s.radius = glm::length(entry.scale); }
+            });
+    };
+    sphereFor(entry.translate);
+    if (entry.sweepMode) {
+        const BoundingSphere current = s;
+        sphereFor(sweepStart);
+        const BoundingSphere prev = s;
+        const glm::vec3 delta = current.center - prev.center;
+        const float dist = glm::length(delta);
+        const float radius = (dist + current.radius + prev.radius) * 0.5f;
+        s.center = (dist < 1e-6f) ? current.center
+            : prev.center + delta * ((radius - prev.radius) / dist);
+        s.radius = radius;
+    }
+    return s;
+}
+
+static BoundingSphere unionBoundingSpheres(const BoundingSphere& a, const BoundingSphere& b) {
+    const glm::vec3 delta = b.center - a.center;
+    const float dist = glm::length(delta);
+    if (dist + b.radius <= a.radius) return a;
+    if (dist + a.radius <= b.radius) return b;
+    const float radius = 0.5f * (dist + a.radius + b.radius);
+    const glm::vec3 center = (dist > 1e-6f)
+        ? a.center + delta * ((radius - a.radius) / dist)
+        : a.center;
+    return BoundingSphere(center, radius);
+}
+
 // by the GPU preview and the undo history intersection tests.
 static void computeBrushBounds(const BrushEntry& entry, const glm::vec3& sweepStart,
                                glm::vec3& boundsCenter, float& boundsRadius) {
-    BoundingSphere bounds = [&]() {
-        // Fallback for a brush whose primitive reports no sphere.
-        BoundingSphere s;
-        s.center = entry.translate;
-        s.radius = glm::length(entry.scale);
-        BrushEntry noSweep = entry;
-        noSweep.sweepMode = false;
-        auto sphereFor = [&](const glm::vec3& where) {
-            Transformation m(entry.scale, where, entry.rot);
-            forEachBrushSDF(noSweep, m, where, entry.minSize, "[computeBrushBounds]",
-                [&](SignedDistanceFunction& func) {
-                    BoundingSphere bs = func.getSphere(m, entry.minSize);
-                    if (bs.radius > 0.0f) s = bs;
-                    else { s.center = func.getCenter(); s.radius = glm::length(entry.scale); }
-                });
-        };
-        sphereFor(entry.translate);
-        if (entry.sweepMode) {
-            const BoundingSphere current = s;
-            sphereFor(sweepStart);
-            const BoundingSphere prev = s;
-            const glm::vec3 delta = current.center - prev.center;
-            const float dist = glm::length(delta);
-            const float radius = (dist + current.radius + prev.radius) * 0.5f;
-            s.center = (dist < 1e-6f) ? current.center
-                : prev.center + delta * ((radius - prev.radius) / dist);
-            s.radius = radius;
-        }
-        return s;
-    }();
+    BoundingSphere bounds = brushEntryBounds(entry, sweepStart);
+    if (entry.useInterpolation) {
+        const BrushEntry target = brushEntryFromTarget(entry.interpolationTarget);
+        const glm::vec3 targetSweepStart = target.sweepMode ? target.previousTranslate
+                                                            : target.translate;
+        bounds = unionBoundingSpheres(bounds, brushEntryBounds(target, targetSweepStart));
+    }
     if (entry.useEffect) {
         float pad = entry.effectAmplitude * 1.97f;
         if (entry.effectType == 2) pad = entry.effectAmplitude * 0.5f;
@@ -4884,6 +4916,10 @@ void MyApp::updateBrushPreview(uint32_t frameIndex) {
 
     BrushEntry* entry = brushManager.getSelectedEntry();
     if (!entry) {
+        if (brushInterpolationWidget) {
+            if (brushInterpolationWasEnabled_) brushInterpolationWidget->hide();
+            brushInterpolationWasEnabled_ = false;
+        }
         // No brush: zero-radius bounds disable both the preview and the
         // solid PAINT/REMOVE evaluation.
         sceneRenderer->brushRenderer->updateParams(frameIndex, BrushEntry{}, glm::vec3(0.0f),
@@ -4891,6 +4927,15 @@ void MyApp::updateBrushPreview(uint32_t frameIndex) {
                                                    getWidth(), getHeight());
         return;
     }
+
+    // Open/close the target-SDF window on interpolation transitions.
+    if (brushInterpolationWidget) {
+        if (entry->useInterpolation && !brushInterpolationWasEnabled_)
+            brushInterpolationWidget->show();
+        else if (!entry->useInterpolation && brushInterpolationWasEnabled_)
+            brushInterpolationWidget->hide();
+    }
+    brushInterpolationWasEnabled_ = entry->useInterpolation;
 
     // Sweep start = the position captured on the previous frame (the same pair
     // applyBrushToScene consumes via cachedSweepStart).
@@ -4912,6 +4957,9 @@ void MyApp::updateBrushPreview(uint32_t frameIndex) {
     }
 
     cachedSweepStart = entry->sweepMode ? entry->previousTranslate : entry->translate;
+    const BrushSdfTarget& target = entry->interpolationTarget;
+    cachedTargetSweepStart_ = target.sweepMode ? target.previousTranslate : target.translate;
+    const glm::vec3 targetSweepStart = cachedTargetSweepStart_;
 
     // Bounding sphere: union of the current and (for sweep mode) start
     // placements, each evaluated as a non-sweep primitive with its matching
@@ -4919,17 +4967,21 @@ void MyApp::updateBrushPreview(uint32_t frameIndex) {
     // (SweepSignedDistanceFunction::getSphere reuses the outer model for both
     // ends, which collapses the trail for capsule-likes — so it is not used
     // here.) Padded for the optional effect displacement like the CPU effect
-    // constructors (bias += amplitude * factor).
+    // constructors (bias += amplitude * factor). The target's current/sweep
+    // bounds are merged when interpolation is enabled.
     glm::vec3 boundsCenter(entry->translate);
     float boundsRadius = glm::length(entry->scale);
     computeBrushBounds(*entry, cachedSweepStart, boundsCenter, boundsRadius);
 
     sceneRenderer->brushRenderer->updateParams(frameIndex, *entry, cachedSweepStart,
                                                boundsCenter, boundsRadius,
-                                               getWidth(), getHeight());
+                                               getWidth(), getHeight(), targetSweepStart);
 
     // Advance the sweep start for the next frame's trail.
     if (entry->sweepMode) entry->previousTranslate = entry->translate;
+    if (entry->useInterpolation && entry->interpolationTarget.sweepMode) {
+        entry->interpolationTarget.previousTranslate = entry->interpolationTarget.translate;
+    }
 }
 
 void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& sweepStart, Layer::Id targetLayer) {
@@ -4978,9 +5030,32 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
                  : static_cast<const BrushPainter&>(simpleBrush);
 
     Simplifier simplifier(0.05f);
-    auto applyEntry = [&](SignedDistanceFunction& wrappedFunc) {
-        applyBrushWithEffect(entry, wrappedFunc, octree, brushOp, model, brush, simplifier,
-                             updateHandler, deleteHandler);
+    auto applyEntry = [&](SignedDistanceFunction& sourceFunc) {
+        if (!entry.useInterpolation) {
+            applyBrushWithEffect(entry, sourceFunc, octree, brushOp, model, brush, simplifier,
+                                 updateHandler, deleteHandler);
+            return;
+        }
+
+        const BrushEntry target = brushEntryFromTarget(entry.interpolationTarget);
+        const Transformation targetModel(target.scale, target.translate, target.rot);
+        const glm::vec3 targetSweepStart = target.sweepMode ? target.previousTranslate
+                                                            : target.translate;
+        bool mixedApplied = false;
+        auto applyTarget = [&](SignedDistanceFunction& targetFunc) {
+            InterpolatedDistanceFunction mixed(sourceFunc, targetFunc,
+                                               entry.interpolationFactor, model, entry.minSize);
+            applyBrushWithEffect(entry, mixed, octree, brushOp, model, brush, simplifier,
+                                 updateHandler, deleteHandler);
+            mixedApplied = true;
+        };
+        forEachBrushSDF(target, targetModel, targetSweepStart, target.minSize,
+                        "[applyBrushEventToLayer:target]", applyTarget);
+        if (!mixedApplied) {
+            // Invalid target SDF (e.g. an unreadable SVG): keep the source.
+            applyBrushWithEffect(entry, sourceFunc, octree, brushOp, model, brush, simplifier,
+                                 updateHandler, deleteHandler);
+        }
     };
     forEachBrushSDF(entry, model, sweepStart, entry.minSize, "[applyBrushEventToLayer]", applyEntry);
 
@@ -5174,7 +5249,11 @@ void MyApp::applyBrushToScene() {
 
     const BrushEntry* selectedEntry = brushManager.getSelectedEntry();
     if (!selectedEntry) return;
-    const BrushEntry entry = *selectedEntry;
+    BrushEntry entry = *selectedEntry;
+    if (entry.useInterpolation) {
+        // Use the same start placement the preview captured this frame.
+        entry.interpolationTarget.previousTranslate = cachedTargetSweepStart_;
+    }
     const Layer::Id targetLayer = entry.targetLayer;
     if (!world->activeScene().validLayer(targetLayer)) {
         std::cerr << "[MyApp::applyBrushToScene] invalid targetLayer " << entry.targetLayer << std::endl;
@@ -5203,6 +5282,13 @@ void MyApp::applyBrushToScene() {
     if (entry.sweepMode) {
         BrushEntry* mutableEntry = brushManager.getSelectedEntry();
         if (mutableEntry) mutableEntry->previousTranslate = mutableEntry->translate;
+    }
+    if (entry.useInterpolation && entry.interpolationTarget.sweepMode) {
+        BrushEntry* mutableEntry = brushManager.getSelectedEntry();
+        if (mutableEntry) {
+            mutableEntry->interpolationTarget.previousTranslate =
+                mutableEntry->interpolationTarget.translate;
+        }
     }
 }
 

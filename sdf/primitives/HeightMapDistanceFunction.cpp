@@ -1,6 +1,6 @@
 #include "HeightMapDistanceFunction.hpp"
 #include "BoxDistanceFunction.hpp"
-#include "../math/HeightMap.hpp"
+#include "../../math/HeightMap.hpp"
 
 HeightMapDistanceFunction::HeightMapDistanceFunction(HeightMap * map_, float bias, const Transformation &model)
     : SignedDistanceFunction(map_->getCenter(), model), map(map_)

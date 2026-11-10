@@ -8,7 +8,7 @@
 #include "SvgContour.hpp"
 
 // Minimal dependency-free SVG loader for the SVG brush
-// (sdf/SvgPolygonDistanceFunction + utils/SvgBrush).
+// (sdf/primitives/SvgPolygonDistanceFunction + utils/SvgBrush).
 //
 // Supported elements: <path> (M/m L/l H/h V/v C/c S/s Q/q T/t A/a Z/z),
 // <rect>, <circle>, <ellipse>, <polygon>, <polyline>, <line>. Group elements

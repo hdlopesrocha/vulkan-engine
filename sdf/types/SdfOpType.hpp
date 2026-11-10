@@ -10,5 +10,8 @@ enum class SdfOpType : uint32_t {
     Subtraction = 2,
     SmoothUnion = 3,
     SmoothIntersection = 4,
-    SmoothSubtraction = 5
+    SmoothSubtraction = 5,
+    // Linear blend between the accumulated field and the current primitive:
+    // mix(accumulated, primitive, smoothK), with smoothK clamped to [0,1].
+    Interpolation = 6
 };

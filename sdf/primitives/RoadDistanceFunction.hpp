@@ -1,8 +1,8 @@
 #pragma once
-#include "SignedDistanceFunction.hpp"
-#include "RoadSpline.hpp"
+#include "../SignedDistanceFunction.hpp"
+#include "../RoadSpline.hpp"
 #include <glm/glm.hpp>
-#include "../math/geometry/BoundingSphere.hpp"
+#include "../../math/geometry/BoundingSphere.hpp"
 
 class RoadDistanceFunction : public SignedDistanceFunction {
 public:

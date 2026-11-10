@@ -1,5 +1,5 @@
 #include "TriangleStripDistanceFunction.hpp"
-#include "TriangleDistanceFunction.hpp"
+#include "../TriangleDistanceFunction.hpp"
 #include <algorithm>
 
 TriangleStripDistanceFunction::TriangleStripDistanceFunction(

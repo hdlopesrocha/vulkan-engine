@@ -38,7 +38,17 @@ struct BrushSdfUBO {
     glm::uvec4 flags       = glm::uvec4(0u);
     glm::vec4  hsv         = glm::vec4(0.0f, 0.5f, 0.5f, 1.0f);
     glm::vec4  viewport    = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f);
+    // Two-SDF interpolation (appended after viewport so existing offsets stay
+    // stable). interp.x = factor, interp.y = enabled.
+    glm::vec4  interp      = glm::vec4(0.0f);
+    glm::vec4  targetTranslate = glm::vec4(0.0f);
+    glm::vec4  targetScale     = glm::vec4(1.0f);
+    glm::vec4  targetRotation  = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    glm::vec4  targetParams0   = glm::vec4(0.0f);
+    glm::vec4  targetParams1   = glm::vec4(0.0f);
+    glm::vec4  targetSweepStart= glm::vec4(0.0f);
+    glm::uvec4 targetFlags     = glm::uvec4(0u); // x=sdfType, w=sweep
 };
 
-static_assert(sizeof(BrushSdfUBO) == 12 * 16,
-              "BrushSdfUBO must match the std140 GLSL block layout (12 x vec4)");
+static_assert(sizeof(BrushSdfUBO) == 20 * 16,
+              "BrushSdfUBO must match the std140 GLSL block layout (20 x vec4)");

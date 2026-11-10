@@ -19,22 +19,23 @@
 #include "../math/GradientPerlinSurface.hpp"
 
 // SDF primitives
-#include "../sdf/HeightMapDistanceFunction.hpp"
-#include "../sdf/BoxDistanceFunction.hpp"
-#include "../sdf/SphereDistanceFunction.hpp"
-#include "../sdf/CapsuleDistanceFunction.hpp"
-#include "../sdf/OctahedronDistanceFunction.hpp"
-#include "../sdf/PyramidDistanceFunction.hpp"
-#include "../sdf/TetrahedronDistanceFunction.hpp"
-#include "../sdf/TorusDistanceFunction.hpp"
-#include "../sdf/ConeDistanceFunction.hpp"
-#include "../sdf/CylinderDistanceFunction.hpp"
-#include "../sdf/TaperedCylinderDistanceFunction.hpp"
-#include "../sdf/TaperedCapsuleDistanceFunction.hpp"
+#include "../sdf/primitives/HeightMapDistanceFunction.hpp"
+#include "../sdf/primitives/BoxDistanceFunction.hpp"
+#include "../sdf/primitives/SphereDistanceFunction.hpp"
+#include "../sdf/primitives/CapsuleDistanceFunction.hpp"
+#include "../sdf/primitives/OctahedronDistanceFunction.hpp"
+#include "../sdf/primitives/PyramidDistanceFunction.hpp"
+#include "../sdf/primitives/TetrahedronDistanceFunction.hpp"
+#include "../sdf/primitives/TorusDistanceFunction.hpp"
+#include "../sdf/primitives/ConeDistanceFunction.hpp"
+#include "../sdf/primitives/CylinderDistanceFunction.hpp"
+#include "../sdf/primitives/TaperedCylinderDistanceFunction.hpp"
+#include "../sdf/primitives/TaperedCapsuleDistanceFunction.hpp"
 #include "../sdf/OctreeDifferenceFunction.hpp"
 
 // SDF sweep
 #include "../sdf/SweepSignedDistanceFunction.hpp"
+#include "../sdf/InterpolatedDistanceFunction.hpp"
 
 // SDF operations
 #include "../sdf/AddSignedDistanceOperation.hpp"
@@ -47,10 +48,10 @@
 #include "../sdf/SineDistortDistanceEffect.hpp"
 #include "../sdf/VoronoiCarveDistanceEffect.hpp"
 #include "../sdf/RoadSpline.hpp"
-#include "../sdf/RoadDistanceFunction.hpp"
-#include "../sdf/TriangleStripDistanceFunction.hpp"
+#include "../sdf/primitives/RoadDistanceFunction.hpp"
+#include "../sdf/primitives/TriangleStripDistanceFunction.hpp"
 #include "../sdf/SvgShape.hpp"
-#include "../sdf/SvgPolygonDistanceFunction.hpp"
+#include "../sdf/primitives/SvgPolygonDistanceFunction.hpp"
 
 
 #include "../brushPainters/LandBrush.hpp"
@@ -290,6 +291,14 @@ public:
                 std::cout << "\topaqueLayer.add(cube angular)"<< std::endl;
                 BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), AngularMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::Interpolation: {
+                std::cout << "\topaqueLayer.add(interpolation octahedron <-> cube t=0.5)" << std::endl;
+                OctahedronDistanceFunction source(model, tileSize);
+                BoxDistanceFunction target(model, tileSize);
+                InterpolatedDistanceFunction mixed(source, target, 0.5f, model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), mixed, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             default:

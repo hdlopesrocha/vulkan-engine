@@ -1,7 +1,7 @@
 #pragma once
-#include "SignedDistanceFunction.hpp"
+#include "../SignedDistanceFunction.hpp"
 #include <glm/glm.hpp>
-#include "../math/geometry/BoundingBox.hpp"
+#include "../../math/geometry/BoundingBox.hpp"
 
 class HeightMap;
 

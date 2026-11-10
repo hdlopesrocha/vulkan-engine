@@ -12,6 +12,7 @@
 #include "SmoothUnion.glsl"
 #include "SmoothIntersection.glsl"
 #include "SmoothSubtraction.glsl"
+#include "Interpolation.glsl"
 
 // Combines two fields with the op selector from SdfDefinition.op.
 float sdfCombine(float a, float b, uint op, float k) {
@@ -29,6 +30,9 @@ float sdfCombine(float a, float b, uint op, float k) {
     }
     if (op == SDF_OP_SMOOTH_SUBTRACTION) {
         return opSmoothSubtraction(a, b, k);
+    }
+    if (op == SDF_OP_INTERPOLATION) {
+        return opInterpolation(a, b, k);
     }
     return opUnion(a, b);
 }
