@@ -266,6 +266,7 @@ struct RmSurfaceBlend {
     vec3 weights;  // slot blend weights (sum = 1)
     vec2 uv;       // interpolated per-vertex UV scale
     vec3 hsv;      // interpolated per-vertex HSV tint
+    vec3 normal;   // interpolated per-vertex base normal (zero = use march normal)
 };
 
 // Same root descent as OctreeTriangles.comp findCellAt, over the flattened
@@ -379,6 +380,7 @@ RmSurfaceBlend rmDefaultBlend(uint id) {
     b.weights = vec3(1.0, 0.0, 0.0);
     b.uv = rmNodes[id].hsv1.xy;
     b.hsv = rmNodes[id].hsv0.xyz;
+    b.normal = vec3(0.0); // caller keeps the march's analytic normal
     return b;
 }
 
@@ -450,6 +452,7 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
     uint ringId[4];
     vec3 ringBase[4];
     vec3 ringPos[4];
+    vec3 ringNormal[4];
     int ringMat[4];
     int ringType[4];
     vec2 ringUv[4];
@@ -483,6 +486,7 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
             ringId[ringCount] = id;
             ringBase[ringCount] = qp;
             ringPos[ringCount] = qp + n * disp;
+            ringNormal[ringCount] = n;
             ringMat[ringCount] = m;
             ringType[ringCount] = int(rmNodes[id].hsv0.w + 0.5);
             ringUv[ringCount] = rmNodes[id].hsv1.xy;
@@ -500,13 +504,14 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
         if (rmOwnerLess(ringId[i], ringId[owner])) owner = i;
     }
     if (owner > 0) {
-        uint rid[4]; vec3 rbase[4]; vec3 rpos[4];
+        uint rid[4]; vec3 rbase[4]; vec3 rpos[4]; vec3 rnorm[4];
         int rmat[4]; int rtype[4]; vec2 ruv[4]; vec3 rhsv[4];
         for (int i = 0; i < ringCount; ++i) {
             int k = (i + owner) % ringCount;
             rid[i] = ringId[k];
             rbase[i] = ringBase[k];
             rpos[i] = ringPos[k];
+            rnorm[i] = ringNormal[k];
             rmat[i] = ringMat[k];
             rtype[i] = ringType[k];
             ruv[i] = ringUv[k];
@@ -516,6 +521,7 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
             ringId[i] = rid[i];
             ringBase[i] = rbase[i];
             ringPos[i] = rpos[i];
+            ringNormal[i] = rnorm[i];
             ringMat[i] = rmat[i];
             ringType[i] = rtype[i];
             ringUv[i] = ruv[i];
@@ -621,6 +627,9 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
     outBlend.weights = slotW;
     outBlend.uv = uvs[0] * w.x + uvs[1] * w.y + uvs[2] * w.z;
     outBlend.hsv = hsvs[0] * w.x + hsvs[1] * w.y + hsvs[2] * w.z;
+    // Raster fragNormal is the barycentric interpolation of the per-vertex
+    // cell normals; blend the same corner normals here.
+    outBlend.normal = ringNormal[ci0] * w.x + ringNormal[ci1] * w.y + ringNormal[ci2] * w.z;
     return outBlend;
 }
 
@@ -911,8 +920,6 @@ void main() {
         hitDisplacement = rmDisplacement(nearestNode, material, basePos);
         basePos = hitPos - sdfNormal * hitDisplacement;
     }
-    vec3 normal = sdfNormal;
-    if (dot(normal, rd) > 0.0) normal = -normal; // front surface only
 
     // The raster material blend belongs to the base (undisplaced) cell: use
     // that cell when it is in the table, otherwise the bumped hit's own cell.
@@ -921,6 +928,13 @@ void main() {
     uint blendCell = rmFindNodeAt(rootNode, basePos, baseCellNonSurface);
     if (blendCell == RM_INVALID_NODE || baseCellNonSurface) blendCell = nearestNode;
     RmSurfaceBlend blend = rmBlendAtHit(rootNode, blendCell, basePos, hitPos);
+
+    // Raster fragNormal is the barycentric interpolation of the per-vertex
+    // cell normals; use the blend's normal when the ring reconstructed it and
+    // fall back to the marched cell's analytic normal otherwise.
+    vec3 normal = (dot(blend.normal, blend.normal) > 1e-12)
+        ? normalize(blend.normal) : sdfNormal;
+    if (dot(normal, rd) > 0.0) normal = -normal; // front surface only
 
     fragPosWorld = hitPos;
     fragPosWorldNotDisplaced = basePos;
