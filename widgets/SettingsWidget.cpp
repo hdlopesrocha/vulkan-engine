@@ -364,10 +364,8 @@ void SettingsWidget::render() {
             // toggled globally; takes effect on the next frame
         }
         ImGuiComponents::TooltipOnHover("Off = single forward pass with depth write (perf report 21 C2). Consider off when tessellation is on; forced on while solid RT paths run.");
-        if (ImGui::Checkbox("Octree SDF Raymarch", &settings.octreeRaymarchEnabled)) {
-            // toggled globally; the node table is rebuilt on the next debounce
-        }
-        ImGuiComponents::TooltipOnHover("Replaces the tessellated solid chunks with a fullscreen raymarch of the octree's stored SDF cells. Off = normal tessellated terrain. Falls back to raster when the scene has no local octree or no solid layers. The 'Octree SDF Raymarch (per layer)' debug view enables this path automatically.");
+        ImGui::Checkbox("Octree SDF Raymarch", &settings.octreeRaymarchEnabled);
+        ImGuiComponents::TooltipOnHover("Replaces the tessellated solid chunks with a fullscreen raymarch of the octree's stored SDF cells (also selectable in the Ray Marching widget). Off = normal tessellated terrain. Falls back to raster when the scene has no local octree or no solid layers. Tessellation height displacement is folded into the marched SDF, so the raymarched surface matches the displaced raster surface. The 'Octree SDF Raymarch (per layer)' debug view enables this path automatically.");
         ImGuiComponents::FieldLabel("Tessellation Factor", "Multiplies per-material min/max tess levels globally");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Tessellation Factor", &settings.tessellationFactor, 0.0f, 8.0f, "%.2f");

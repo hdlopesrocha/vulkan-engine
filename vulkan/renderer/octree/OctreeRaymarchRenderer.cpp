@@ -98,6 +98,31 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
 
         pipeline_ = pipe;
         pipelineLayout_ = layout;
+
+        // Hardware-RT twin: identical march with the inline reflection /
+        // contact-shadow paths the raster solid shader uses. Built in its own
+        // try/catch AFTER the base pipeline so a missing/stale RT module only
+        // disables the RT variant (draw() falls back to the base one) instead
+        // of disabling the whole raymarch path.
+        if (app->rayTracingEnabled()) {
+            try {
+                ShaderStage fragRtStage(
+                    app->getOrCreateShaderModule("shaders/renderer/octree/OctreeRaymarchRT.frag.spv"),
+                    VK_SHADER_STAGE_FRAGMENT_BIT);
+                pipelineRt_ = app->createGraphicsPipelineWithLayout(
+                    { vertStage.info, fragRtStage.info },
+                    std::vector<VkVertexInputBindingDescription>{},
+                    std::vector<VkVertexInputAttributeDescription>{},
+                    setLayouts, &pushRange, cfg, pipelineLayout_);
+                fragRtStage.info.module = VK_NULL_HANDLE;
+            } catch (const std::exception& e) {
+                std::cerr << "[OctreeRaymarchRenderer] RT variant unavailable ("
+                          << e.what() << "); using the non-RT shading fallback."
+                          << std::endl;
+                pipelineRt_ = VK_NULL_HANDLE;
+            }
+        }
+
         // The app owns the modules; do not destroy them with the stage holder.
         vertStage.info.module = VK_NULL_HANDLE;
         fragStage.info.module = VK_NULL_HANDLE;
@@ -125,7 +150,9 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     // renderers).
     setLayout_ = VK_NULL_HANDLE;
     pipeline_ = VK_NULL_HANDLE;
+    pipelineRt_ = VK_NULL_HANDLE;
     pipelineLayout_ = VK_NULL_HANDLE;
+    rtShadingEnabled_ = false;
     maxNodes_ = 0;
 }
 
@@ -235,8 +262,10 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
     // Note: the caller records recordHostWriteBarrier() before beginning the
     // solid color pass (HOST barriers are illegal inside a render scope).
 
-    if (cmdState) cmdState->bindGraphicsPipeline(cmd, pipeline_);
-    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    const VkPipeline activePipeline =
+        (rtShadingEnabled_ && pipelineRt_ != VK_NULL_HANDLE) ? pipelineRt_ : pipeline_;
+    if (cmdState) cmdState->bindGraphicsPipeline(cmd, activePipeline);
+    else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
 
     // The solid pass helper already set this, but the sky renderer between
     // them may have changed it: pin the viewport/scissor to the solid target

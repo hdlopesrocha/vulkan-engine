@@ -13,6 +13,21 @@ float sampleHeight(vec2 texCoords, int brushIndex) {
     return clamp(h, 0.0, 1.0);
 }
 
+// Explicit-LOD twin of sampleHeight(). The octree raymarch evaluates the
+// tessellation displacement inside a divergent march loop, where implicit-LOD
+// texture() has undefined derivatives; LOD 0 keeps the bump texel-exact.
+float sampleHeightLod(vec2 texCoords, int brushIndex, float lod) {
+    vec2 tc = texCoords;
+    if (materialNamed(materials[brushIndex]).invertHeight) {
+        tc.y = 1.0 - tc.y;
+    }
+    if (materialNamed(materials[brushIndex]).invertWidth) {
+        tc.x = 1.0 - tc.x;
+    }
+    float h = textureLod(heightArray, vec3(tc, float(brushLayer(brushIndex))), lod).r;
+    return clamp(h, 0.0, 1.0);
+}
+
 // Compute triplanar blend weights from a world normal using the global triplanar
 // settings (threshold + exponent). Shared across materials so the abs + threshold
 // + pow + normalize sequence runs only once per vertex/fragment.
@@ -66,4 +81,36 @@ float sampleHeightTriplanarW(vec3 worldPos, vec3 normal, vec3 w, int brushIndex,
 // Convenience wrapper that computes the blend weights from the world normal.
 float sampleHeightTriplanar(vec3 worldPos, vec3 normal, int brushIndex, vec2 scale) {
     return sampleHeightTriplanarW(worldPos, normal, computeTriplanarWeights(normal), brushIndex, scale);
+}
+
+// Explicit-LOD twin of sampleHeightTriplanarW() for non-uniform control flow
+// (the octree raymarch bump). Identical UV math and weight blend; only the
+// texture fetch differs.
+float sampleHeightTriplanarWLod(vec3 worldPos, vec3 normal, vec3 w, int brushIndex, vec2 scale, float lod) {
+    if (materialNamed(materials[brushIndex]).invertHeight) {
+        scale.y = -scale.y;
+    }
+    if (materialNamed(materials[brushIndex]).invertWidth) {
+        scale.x = -scale.x;
+    }
+
+    float hX = 0.0;
+    float hY = 0.0;
+    float hZ = 0.0;
+
+    if (w.x > 0.0) {
+        vec2 uvX = (normal.x >= 0.0) ? vec2(-worldPos.z, -worldPos.y) : vec2(worldPos.z, -worldPos.y);
+        hX = textureLod(heightArray, vec3(uvX * scale, float(brushLayer(brushIndex))), lod).r;
+    }
+    if (w.y > 0.0) {
+        vec2 uvY = (normal.y >= 0.0) ? vec2(worldPos.x, worldPos.z) : vec2(worldPos.x, -worldPos.z);
+        hY = textureLod(heightArray, vec3(uvY * scale, float(brushLayer(brushIndex))), lod).r;
+    }
+    if (w.z > 0.0) {
+        vec2 uvZ = (normal.z >= 0.0) ? vec2(worldPos.x, -worldPos.y) : vec2(-worldPos.x, -worldPos.y);
+        hZ = textureLod(heightArray, vec3(uvZ * scale, float(brushLayer(brushIndex))), lod).r;
+    }
+
+    float h = hX * w.x + hY * w.y + hZ * w.z;
+    return clamp(h, 0.0, 1.0);
 }

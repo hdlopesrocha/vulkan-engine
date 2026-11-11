@@ -133,6 +133,8 @@ public:
     // Solid render mode: raymarch the octree's stored cell SDFs instead of
     // drawing tessellated chunks. Off by default. Falls back to the tessellated
     // path when no node table is available (remote scene, no solid layers).
+    // The raymarch applies the same tessellation height displacement as the
+    // raster path by folding it into the SDF (Settings::tessellationEnabled).
     bool octreeRaymarchEnabled = false;
     bool shadowTessellationEnabled = false;
     // Deferred depth prepass for the solid pass (perf report 21 C2 gate).

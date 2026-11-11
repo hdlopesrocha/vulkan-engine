@@ -3070,6 +3070,10 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
     // including the disabled early-out below (pipeline variant selection).
     if (solidRenderer)
         solidRenderer->setRtShadingEnabled(settings.rtReflections || settings.rtLocalShadows);
+    // Octree raymarch solid path: same selector so both solid paths shade with
+    // the same RT variant (and fall back to the procedural sky with RT off).
+    if (octreeRaymarchRenderer)
+        octreeRaymarchRenderer->setRtShadingEnabled(settings.rtReflections || settings.rtLocalShadows);
     // No ray path enabled: the bound fragment variants compile the RT block
     // out, so nothing samples the params UBO. Skip building RayTracingParams
     // and the per-frame memcpy into the mapped slot (H5).

@@ -264,6 +264,7 @@ OUT_SPVS = \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRT.frag.spv \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv \
+	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchRT.frag.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv \
 	$(OUT_DIR)/shaders/renderer/sdf/SdfRendererSurface.frag.spv \
@@ -326,6 +327,12 @@ $(OUT_DIR)/shaders/renderer/solid/SolidRendererRT.frag.spv: shaders/renderer/sol
 	$(call compile_shader,shaders/renderer/solid/SolidRenderer.frag,$@,-DRT_ENABLED,--D RT_ENABLED,)
 $(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv: shaders/renderer/solid/SolidRenderer.frag $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/solid/SolidRenderer.frag,$@,-DRT_ENABLED -DRT_PROFILE,--D RT_ENABLED --D RT_PROFILE,)
+
+# Octree raymarch RT variant: same march, shadeSolidSurface() with inline ray
+# queries for reflections/contact shadows. Non-RT hardware keeps the base
+# OctreeRaymarch.frag.spv (procedural-sky fallback).
+$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchRT.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DRT_ENABLED,--D RT_ENABLED,)
 
 # WaterRenderer fragment variants: RT (hardware ray tracing) and WATER_NO_BODY
 # (single color attachment, no blur aux outputs). Per-op RT profiling needs the

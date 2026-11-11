@@ -1,21 +1,35 @@
 #version 460
+// RT_ENABLED is defined for the OctreeRaymarchRT.frag.spv variant (hardware
+// RT path). Without it the shader uses the procedural-sky fallback with
+// identical miss baselines, so non-RT hardware stays validation-clean.
+#ifdef RT_ENABLED
+#extension GL_EXT_ray_query : require
+#endif
 
 // ── Octree SDF raymarcher ───────────────────────────────────────────────────
-// Optional solid path (Settings: "Octree SDF Raymarch"): instead of drawing the
-// tessellated solid chunks, this fullscreen pass marches the octree's stored
-// corner SDFs and shades the first isosurface hit with the same
-// shadeSolidSurface() routine the raster path uses.
+// Optional solid path (Settings: "Octree SDF Raymarch", mirrored in the Ray
+// Marching widget): instead of drawing the tessellated solid chunks, this
+// fullscreen pass marches the octree's stored corner SDFs and shades the first
+// isosurface hit with the same shadeSolidSurface() routine the raster path
+// uses (materials/mapping, CSM shadows, RT reflections/contact shadows).
 //
 // The node table (utils/OctreeRaymarchTable.hpp) stores SURFACE cells only,
 // flattened breadth-first per enabled Solid layer. Each layer contributes one
 // root entry covering a cube; roots are marched independently and the nearest
 // hit wins. Non-surface children are not stored: their SpaceType is packed in
 // the parent so Empty children (all corners outside) and Solid children (all
-// corners inside) are both skipped — by construction the isosurface cannot
-// cross either. Only node-cap-pruned Surface children fall back to the
-// parent's trilinear field; that fallback is valid because the surface really
-// does pass through them, whereas sampling a parent field inside a Solid cell
-// invents a crossing (a coarse trilinear patch through solid rock).
+// corners inside) are both skipped — by construction the unbumped isosurface
+// cannot cross either. Only node-cap-pruned Surface children fall back to the
+// parent's trilinear field. With tessellation displacement active the skip is
+// suspended: the bump (below) can move the surface across a child border, so
+// those children are sampled through the parent field to keep the marched
+// surface continuous with the displaced raster triangles.
+//
+// Tessellation parity: the raster TES displaces every tessellated vertex along
+// its smooth cell normal by (height - 0.5) * tessHeightScale. The march folds
+// that offset into the field (f_bumped = f_base - disp), which moves the
+// isosurface by exactly the same amount; both paths therefore show the same
+// bumped terrain with the same material height maps/gates.
 //
 // Surface hits are depth-tested and write gl_FragDepth, so the water pass, the
 // composite and the droplet pass keep their existing solid-depth dependency.
@@ -42,14 +56,19 @@
 #include "../../includes/Common.glsl"
 #include "../../includes/solid/TangentBasis.glsl"
 #include "../../includes/solid/Triplanar.glsl"
+#include "../../includes/solid/Displacement.glsl"
 #include "../../includes/shadow/Shadows.glsl"
 #include "../../includes/Hsv.glsl"
 
-// RT is never enabled for this pass: the raymarch path deliberately skips the
-// hardware-RT reflection branch (the octree SDF is the geometry itself, so
-// secondary visibility would need a TLAS rebuild per edit). RtParams provides
-// the struct/helpers only; the RT uniforms below are compiled out.
+// Hybrid RT: the raymarched surface is shaded by the SAME shadeSolidSurface()
+// body as the raster path, so it must see the same TLAS/params/geometry
+// bindings and reflection helpers. RtParams provides the struct/helpers only;
+// the bindings are compiled out without RT_ENABLED and the shading then falls
+// back to the procedural sky exactly like the non-RT raster variant.
 #include "../../includes/rt/RtParams.glsl"
+#ifdef RT_ENABLED
+#include "../../includes/rt/RtSceneBindings.glsl"
+#endif
 
 // Screen-space reflection refinement (set 0, bindings 19/20) required by
 // shadeSolidSurface(); the RT-less path leaves the env reflection at sky.
@@ -110,9 +129,13 @@ float rmHitEpsilon(float nodeSize) {
 }
 
 // Final material of a node, bit-for-bit the OctreeTriangles.comp
-// nodeResolvedBrush() rule: resolve LAND/NORMAL sentinels from the GPU QEF
-// position + gradient (so terrain classification matches the raster mesh),
-// keep the stored index otherwise. DISCARD_BRUSH means "no surface here".
+// nodeResolvedBrush() + writeVertexOnce() rule: resolve LAND/NORMAL sentinels
+// from the GPU QEF position + gradient (so terrain classification matches the
+// raster mesh), keep the stored index otherwise. A LAND cell that classifies
+// as underground is still meshed by the raster path (topology no longer drops
+// it) and its vertex payload substitutes the steep-terrain material, so the
+// raymarch must do the same instead of discarding the hit. DISCARD_BRUSH
+// (-1) from a NORMAL/unpainted cell means "no surface here".
 int rmResolvedBrush(uint id) {
     int raw = rmNodes[id].meta.z;
     if (raw != LAND_BRUSH_INDEX && raw != NORMAL_BRUSH) return raw;
@@ -124,7 +147,12 @@ int rmResolvedBrush(uint id) {
     vec3 p = sdfCellPosition(sdf, mn, sz);
     vec3 n = sdfCellNormal(sdf, mn, sz, p);
 
-    if (raw == LAND_BRUSH_INDEX) return landMaterialIndex(p, n);
+    if (raw == LAND_BRUSH_INDEX) {
+        // Mirror writeVertexOnce(): LAND_UNDERGROUND is a shading fallback,
+        // not a topology discard.
+        int land = landMaterialIndex(p, n);
+        return (land == LAND_UNDERGROUND) ? LAND_ROCK : land;
+    }
     // NormalBrush keeps only +Y-facing cells, like the old CPU painter.
     return (dot(normalize(n), vec3(0.0, 1.0, 0.0)) > 0.0) ? 0 : RAYMARCH_DISCARD_BRUSH;
 }
@@ -133,6 +161,65 @@ vec3 rmNodeNormal(uint id, vec3 p) {
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
     return sdfCellNormal(sdf, rmNodeMin(id), rmNodeSize(id), p);
+}
+
+// Per-invocation material cache. rmResolvedBrush() runs the QEF solver
+// (sdfCellPosition + sdfCellNormal), so resolve it once per visited node instead
+// of once per march step. GLSL globals here are invocation-local.
+uint rmBrushNode = 0xFFFFFFFFu;
+int rmBrushValue = RAYMARCH_DISCARD_BRUSH;
+int rmCachedBrush(uint id) {
+    if (id != rmBrushNode) {
+        rmBrushNode = id;
+        rmBrushValue = rmResolvedBrush(id);
+    }
+    return rmBrushValue;
+}
+
+// ── Tessellation displacement ("bump the SDF") ─────────────────────────────
+// The raster path displaces every tessellated vertex along its smooth cell
+// normal by (height - 0.5) * tessHeightScale. Fold the same signed offset into
+// the marched field: f_bumped(p) = f_base(p) - disp(p). Since the base field is
+// a signed distance, subtracting the offset moves the isosurface along the
+// normal by exactly disp. The gates mirror the raster TES: displacement is only
+// active when tessellation is enabled and the hit material has mapping on, so
+// switching rasterization <-> raymarch (or tessellation on/off) keeps both
+// surfaces aligned.
+float rmDisplacement(uint id, int material, vec3 p) {
+    if (ubo.tessellationEnabled == 0u || material < 0) return 0.0;
+    if (!materialNamed(materials[material]).mappingEnabled) return 0.0;
+    int texType = int(rmNodes[id].hsv0.w + 0.5);
+    vec2 uv = rmNodes[id].hsv1.xy;
+    vec3 n = rmNodeNormal(id, p);
+    return materialDisplacementLod(material, texType, uv, p, n);
+}
+
+// Bumped trilinear field. `base` receives the unbumped value (used for the
+// conservative advance outside the displacement bound); `maxDisp` is the
+// maximum |offset| this material can produce (0 = no bump).
+float rmField(uint id, vec3 p, int material, out float base, out float maxDisp) {
+    base = rmTrilinear(id, p);
+    maxDisp = 0.0;
+    if (ubo.tessellationEnabled == 0u || material < 0 || !rmIsFinite(base)) return base;
+    MaterialNamed m = materialNamed(materials[material]);
+    if (!m.mappingEnabled) return base;
+    maxDisp = 0.5 * abs(m.tessHeightScale);
+    return base - rmDisplacement(id, material, p);
+}
+
+// Tessellation level the raster TCS would request for this material at this
+// world position (computeEdgeTess with the hit's distance). Feeds the
+// DEBUG_MODE_TESS_HEAT view and sizes the bump's fine march step; the raymarch
+// itself has no tessellated vertices.
+float rmTessLevel(uint id, int material, vec3 p) {
+    if (ubo.tessellationEnabled == 0u || material < 0) return 1.0 / 16.0;
+    MaterialNamed m = materialNamed(materials[material]);
+    if (!m.mappingEnabled) return 1.0 / 16.0;
+    float d = length(p - ubo.viewPosition);
+    float t = clamp(1.0 - smoothstep(ubo.tessNearDist, ubo.tessFarDist, d), 0.0, 1.0);
+    float minLevel = m.minLevel * ubo.tessellationFactor;
+    float maxLevel = m.maxLevel * ubo.tessellationFactor;
+    return clamp((mix(minLevel, maxLevel, t) + m.tessLevel * t) / 16.0, 0.0, 4.0);
 }
 
 // ── Octree SDF debug view helpers (DEBUG_MODE_OCTREE_SDF_RAYMARCH) ─────────
@@ -270,40 +357,76 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
                 }
             } else if (!rmNodeChildPruned(node, slot) &&
                        rmNodeChildType(node, slot) != RM_TYPE_SURFACE) {
-                // Empty (all-outside) or Solid (all-inside): the isosurface
-                // cannot pass through, so skip to the child's ray-box exit
-                // without sampling. Pruned SURFACE children also have no
-                // stored index, but their pruned bit keeps them out of this
-                // branch: they fall through to the parent field below.
-                t = max(cellExit, t + nudge); // nudge guards a zero-length skip
-                continue;
+                // Empty (all-outside) or Solid (all-inside): the unbumped
+                // isosurface cannot pass through, so skip to the child's
+                // ray-box exit without sampling. Pruned SURFACE children also
+                // have no stored index, but their pruned bit keeps them out of
+                // this branch: they fall through to the parent field below.
+                //
+                // Tessellation bump: base - disp CAN cross inside this child
+                // even though the child's own corners are all one sign (the
+                // bump pushes the rasterized surface across cell borders), so
+                // while this node's material is displaced, keep sampling the
+                // parent field instead of skipping. Without an active bump the
+                // skip is exact and stays enabled.
+                int bumpBrush = rmCachedBrush(node);
+                bool bumpActive = ubo.tessellationEnabled != 0u
+                    && bumpBrush >= 0
+                    && materialNamed(materials[bumpBrush]).mappingEnabled
+                    && materialNamed(materials[bumpBrush]).tessHeightScale != 0.0;
+                if (!bumpActive) {
+                    t = max(cellExit, t + nudge); // nudge guards a zero-length skip
+                    continue;
+                }
             }
             // Pruned surface child (also: stack exhausted): keep sampling the
             // parent field, but only up to the end of this child cell.
         }
 
-        float d = rmTrilinear(node, p);
+        int material = rmCachedBrush(node);
+        float baseD;
+        float maxDisp;
+        float d = rmField(node, p, material, baseD, maxDisp);
         if (isnan(d)) d = 1.0; // defensive: never let a bad sample freeze the march
         float eps = rmHitEpsilon(nodeSize);
 
         if (abs(d) <= eps) {
-            int brush = rmResolvedBrush(node);
-            if (brush != RAYMARCH_DISCARD_BRUSH) {
+            if (material != RAYMARCH_DISCARD_BRUSH) {
                 hitNode = node;
                 hitT = t;
-                hitBrush = brush;
+                hitBrush = material;
                 return true;
             }
             t += eps;
             continue;
         }
 
-        // Sphere trace with a safety factor; the field is trilinear, not an
-        // exact metric distance, so a full-step march can overshoot. Stop at
-        // the child-cell exit so the next iteration can descend into it.
-        float stepLen = max(abs(d) * 0.5, eps);
+        // Sphere trace. Without displacement the trilinear field is (locally)
+        // a signed distance and abs(d) * 0.5 is safe. With the tessellation
+        // bump the field is base - disp: outside |base| <= maxDisp it cannot
+        // have crossed yet, so advance by the guaranteed-positive remainder;
+        // inside that band use the material's tessellation spacing (the
+        // density the rasterizer actually resolves) so bump features are not
+        // skipped. The child-cell exit still bounds every step.
+        float stepLen;
+        if (maxDisp > 0.0) {
+            float safe = abs(baseD) - maxDisp;
+            if (safe > eps) {
+                stepLen = max(safe * 0.5, eps);
+            } else {
+                // Match the raster's actual subdivision at this distance:
+                // rmTessLevel is the TCS level / 16 it would write, so
+                // level * 16 is the vertex spacing denominator.
+                float levels = clamp(rmTessLevel(node, material, p) * 16.0, 1.0, 64.0);
+                float fineStep = max(nodeSize / levels, 1e-3);
+                stepLen = max(min(abs(d) * 0.5, fineStep), eps);            }
+        } else {
+            stepLen = max(abs(d) * 0.5, eps);
+        }
         float tNext = min(t + stepLen, cellExit);
-        float dNext = rmTrilinear(node, ro + rd * tNext);
+        float dNextBase;
+        float dNextMax;
+        float dNext = rmField(node, ro + rd * tNext, material, dNextBase, dNextMax);
         if (isnan(dNext)) dNext = -1.0;
 
         // Sign change inside this cell: refine with bisection.
@@ -312,16 +435,17 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
             float hi = tNext;
             for (int b = 0; b < RM_BISECT_STEPS; ++b) {
                 float mid = 0.5 * (lo + hi);
-                float dm = rmTrilinear(node, ro + rd * mid);
+                float bBase;
+                float bMax;
+                float dm = rmField(node, ro + rd * mid, material, bBase, bMax);
                 if (isnan(dm)) break;
                 if (dm > 0.0) lo = mid; else hi = mid;
             }
             float tHit = 0.5 * (lo + hi);
-            int brush = rmResolvedBrush(node);
-            if (brush != RAYMARCH_DISCARD_BRUSH) {
+            if (material != RAYMARCH_DISCARD_BRUSH) {
                 hitNode = node;
                 hitT = tHit;
-                hitBrush = brush;
+                hitBrush = material;
                 return true;
             }
             t = tHit + eps;
@@ -364,8 +488,6 @@ void main() {
     if (!found || nearestBrush == RAYMARCH_DISCARD_BRUSH) discard;
 
     vec3 hitPos = ro + rd * nearestT;
-    vec3 normal = rmNodeNormal(nearestNode, hitPos);
-    if (dot(normal, rd) > 0.0) normal = -normal; // front surface only
 
     // Material / mapping payload of the hit cell (mirrors the per-vertex
     // values the tessellator emits for the same node). The brush index is a
@@ -374,8 +496,27 @@ void main() {
     int material = max(nearestBrush, 0);
     int textureType = int(rmNodes[nearestNode].hsv0.w + 0.5);
 
+    // Tessellation parity: the raster TES samples the height maps at the
+    // UNDISPLACED vertex and moves it along the smooth cell normal. Recover
+    // that base point (and its normal) from the bumped hit so shading and
+    // mapping are evaluated at the same world position the raster path uses.
+    // One fixed-point refinement is enough: the offset is small relative to
+    // the height-map feature scale.
+    vec3 sdfNormal = rmNodeNormal(nearestNode, hitPos);
+    float hitDisplacement = rmDisplacement(nearestNode, material, hitPos);
+    vec3 basePos = hitPos - sdfNormal * hitDisplacement;
+    // Two fixed-point steps; the offset is small relative to the height-map
+    // feature scale, so this converges to the raster's undisplaced vertex.
+    for (int i = 0; i < 2 && hitDisplacement != 0.0; ++i) {
+        sdfNormal = rmNodeNormal(nearestNode, basePos);
+        hitDisplacement = rmDisplacement(nearestNode, material, basePos);
+        basePos = hitPos - sdfNormal * hitDisplacement;
+    }
+    vec3 normal = sdfNormal;
+    if (dot(normal, rd) > 0.0) normal = -normal; // front surface only
+
     fragPosWorld = hitPos;
-    fragPosWorldNotDisplaced = hitPos;
+    fragPosWorldNotDisplaced = basePos;
     fragNormal = normal;
     fragSharpNormal = normal;
     fragTexIndices = ivec3(material);
@@ -385,7 +526,8 @@ void main() {
     // Vertex UV scale (OctreeNode::data) used by custom/projection mapping.
     fragUV = rmNodes[nearestNode].hsv1.xy;
     fragPosLightSpace = ubo.lightSpaceMatrix * vec4(hitPos, 1.0);
-    fragTessLevel = vec3(0.0);
+    // Same feed the TES writes (tess levels / 16, clamped to the heat range).
+    fragTessLevel = vec3(rmTessLevel(nearestNode, material, basePos));
 
     vec4 clip = ubo.viewProjection * vec4(hitPos, 1.0);
     gl_FragDepth = (clip.w > 1e-6) ? clamp(clip.z / clip.w, 0.0, 1.0) : 1.0;
@@ -435,5 +577,8 @@ void main() {
     }
 
     outColor = vec4(0.0);
-    shadeSolidSurface(normal);
+    // Zero override: shadeSolidSurface derives the facet normal from the
+    // marched hit positions, exactly like the raster path derives it from the
+    // displaced triangle positions (triplanar sign/weights match).
+    shadeSolidSurface(vec3(0.0));
 }

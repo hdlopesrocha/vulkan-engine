@@ -5,11 +5,14 @@
 #include <vector>
 
 #include "../math/Camera.hpp"
+#include "../types/Settings.hpp"
 #include "components/ImGuiHelpers.hpp"
 #include "components/ColumnLayout.hpp"
 
-RaymarchWidget::RaymarchWidget(SdfRenderer* sdf, Camera* cam, VegetationRenderer* veg)
-    : Widget("Ray Marching", u8"\uf124"), sdfRenderer(sdf), camera(cam), vegetationRenderer(veg) {
+RaymarchWidget::RaymarchWidget(SdfRenderer* sdf, Camera* cam, VegetationRenderer* veg,
+                               Settings* settings_)
+    : Widget("Ray Marching", u8"\uf124"), sdfRenderer(sdf), camera(cam),
+      vegetationRenderer(veg), settings(settings_) {
     isOpen = false;
 }
 
@@ -49,6 +52,56 @@ void RaymarchWidget::render() {
     const int shapeSel = sdfRenderer->config().smoke.shape;
     const bool cloudShape = (shapeSel == 0);
     const bool fireShape = (shapeSel == 3);
+
+    // Terrain solid path: rasterized tessellated chunks vs. the full-screen
+    // octree SDF raymarch. Both paths share the same cell materials/mapping,
+    // analytic normals, CSM/RT shading and tessellation displacement (the
+    // raymarcher folds the height offset into the marched SDF).
+    addSection(190.0f, [this]() {
+        ImGui::Text("Solid Octree Path");
+        ImGuiComponents::ColSeparator();
+        if (!settings) {
+            ImGui::TextWrapped("No Settings bound to this widget.");
+            return;
+        }
+        ImGui::TextWrapped("The octree SDF raymarch is the ray marched "
+                           "equivalent of the tessellated solid chunks. Both "
+                           "paths shade through shadeSolidSurface(); the "
+                           "raymarch folds the per-material tessellation height "
+                           "offset into the SDF, so the displaced surface "
+                           "matches the raster one.");
+        {
+            ImGuiComponents::FieldLabel("Solid path",
+                "Rasterizer = GPU-tessellated chunk meshes. Ray marched = "
+                "full-screen octree SDF march (falls back to raster when no "
+                "node table is available).");
+            int path = settings->octreeRaymarchEnabled ? 1 : 0;
+            const char* paths[] = {"Rasterizer (tessellated)", "Ray marched octree"};
+            ImGui::SetNextItemWidth(kRaymarchColWidth);
+            ImGui::PushID("SolidPath##octree");
+            if (ImGui::Combo("##v", &path, paths, 2)) {
+                settings->octreeRaymarchEnabled = (path == 1);
+            }
+            ImGui::PopID();
+            ImGuiComponents::TooltipOnHover(
+                "Rasterizer = GPU-tessellated chunk meshes. Ray marched = "
+                "full-screen octree SDF march. The node table rebuilds on the "
+                "next debounce after switching on.");
+        }
+        {
+            bool tess = settings->tessellationEnabled;
+            ImGui::PushID("TessDisplacement##octree");
+            if (ImGui::Checkbox("Tessellation displacement", &tess)) {
+                settings->tessellationEnabled = tess;
+            }
+            ImGui::PopID();
+            ImGuiComponents::TooltipOnHover(
+                "Same gate the raster TES uses. On: the raymarch subtracts the "
+                "per-material height offset from the cell SDF (bumps the SDF), "
+                "so the marched surface matches the displaced raster surface. "
+                "Off: both paths stay undisplaced.");
+        }
+    });
 
     // 0: Shape (generic SDF rig: cloud / sphere / cube + translation,
     // scale, rotation). First section: it picks which SDF is rendered, so

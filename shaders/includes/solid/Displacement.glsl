@@ -63,3 +63,31 @@ vec3 applyDisplacement(vec3 localPos, vec3 localNormal, vec3 worldPos, vec3 worl
     // Move local position along the local-space worldNormal
     return localPos + localNormal * displacement;
 }
+
+// Signed world-space displacement of ONE material at `worldPos` along
+// `worldNormal`, matching the per-corner term applyDisplacement() blends.
+// Explicit-LOD height fetches make this safe inside the octree raymarch's
+// non-uniform march loop. Returns 0 when the material has mapping disabled.
+// Requires: materials[] / materialNamed() (SceneBindings.glsl), Common.glsl
+// (computeTriplanarWeights + sampleHeight*Lod) and TextureMapping.glsl.
+float materialDisplacementLod(int texIndex, int texType, vec2 uv,
+                              vec3 worldPos, vec3 worldNormal) {
+    MaterialNamed mat = materialNamed(materials[texIndex]);
+    if (!mat.mappingEnabled) return 0.0;
+
+    float h = 0.5;
+    if (mappingUsesTriplanar(texType)) {
+        vec3 triplanarWeights = computeTriplanarWeights(worldNormal);
+        h = sampleHeightTriplanarWLod(worldPos, worldNormal, triplanarWeights,
+                                      texIndex, uv, 0.0);
+    } else {
+        vec2 uvX, uvY, uvZ;
+        vec3 mappingWeights;
+        computeMaterialUVs(texType, texIndex, worldPos, worldNormal, uv,
+                           ubo.triplanarThreshold, ubo.triplanarExponent,
+                           uvX, uvY, uvZ, mappingWeights);
+        h = sampleHeightLod(dominantMappingUV(mappingWeights, uvX, uvY, uvZ),
+                            texIndex, 0.0);
+    }
+    return (h - 0.5) * mat.tessHeightScale;
+}

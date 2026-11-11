@@ -1117,7 +1117,7 @@ public:
         windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get());
         raymarchWidget = std::make_shared<RaymarchWidget>(
             sceneRenderer->sdfRenderer.get(), &camera,
-            sceneRenderer->vegetationRenderer.get());
+            sceneRenderer->vegetationRenderer.get(), &settings);
         // Bladed grass tufts (triangle blades + captured impostors).
         grassWidget = std::make_shared<GrassWidget>(sceneRenderer->vegetationRenderer.get());
         // Generic SDF fire volume (spec §19) is the fire path; flame

@@ -101,8 +101,10 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
     bool usedTriplanar = false;
 
     // Geometry normal (world-space) and geometric face normal from derivatives.
-    // Raymarched callers have no displaced raster surface to differentiate, so
-    // they pass the SDF's analytic normal instead (zero = use derivatives).
+    // A raymarched caller may either pass its analytic SDF normal or zero; zero
+    // differentiates the marched hit positions exactly like the raster path
+    // differentiates its displaced triangles (the raymarch uses zero for full
+    // parity, including the tessellation bump).
     vec3 N = normalize(fragNormal);
     vec3 geomN = (dot(geomNormalOverride, geomNormalOverride) > 0.0)
         ? normalize(geomNormalOverride)

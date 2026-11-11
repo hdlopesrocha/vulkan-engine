@@ -14,7 +14,11 @@
 //
 // Owns the set-2 descriptor layout (node table + layer roots), one host-visible
 // buffer pair per frame in flight and the fullscreen raymarch pipeline. The
-// table itself is built by the CPU (Scene::buildRaymarchTable) on a debounce
+// shader shades through the shared solid surface body, including tessellation
+// displacement folded into the marched SDF, CSM/cloud shadows and optional
+// inline RT reflections/contact shadows (the RT fragment twin is bound while
+// Settings::rtReflections / rtLocalShadows are on).
+// The table itself is built by the CPU (Scene::buildRaymarchTable) on a debounce
 // and uploaded here only when its revision differs from the slot's revision.
 // The table buffers are allocated on the first upload: the mode is off by
 // default, so paying ~48 MB per frame slot at startup would be wasteful.
@@ -73,6 +77,13 @@ public:
     // the raster path and its depth prepass.
     bool hasTable(uint32_t frameIndex) const;
 
+    // Runtime RT-shading selector (mirrors SolidRenderer::setRtShadingEnabled).
+    // Binds the ray-query fragment variant while reflections / local shadows
+    // are enabled; otherwise the cheap non-RT variant (procedural-sky fallback)
+    // is used. No-op when the device lacks ray queries (the RT pipeline was
+    // never created).
+    void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
+
     // Make the host writes to this frame slot's mapped table buffers visible
     // to fragment shader reads. MUST be recorded OUTSIDE any dynamic rendering
     // scope: HOST is not a framebuffer-space stage, and vkCmdPipelineBarrier2
@@ -103,6 +114,10 @@ private:
     std::array<uint32_t, RAYMARCH_FRAMES> rootCounts_{};
 
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    // RT fragment variant (same march; shadeSolidSurface with inline ray
+    // queries). Created only when the device supports ray queries.
+    VkPipeline pipelineRt_ = VK_NULL_HANDLE;
+    bool rtShadingEnabled_ = false;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     size_t maxNodes_ = 0;
 };
