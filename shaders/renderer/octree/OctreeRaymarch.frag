@@ -31,6 +31,13 @@
 // isosurface by exactly the same amount; both paths therefore show the same
 // bumped terrain with the same material height maps/gates.
 //
+// Brush blending: a hit rebuilds the local Surface-Nets triangle (the four
+// quadrant cells around the nearest crossing edge, deduped and owner-rotated
+// exactly like OctreeTriangles.comp) and shades with up to three unique brush
+// slots blended by barycentric weights — the same compression the raster TCS
+// performs. Material transitions across cells are therefore smooth instead of
+// snapping to the hit cell's brush.
+//
 // Surface hits are depth-tested and write gl_FragDepth, so the water pass, the
 // composite and the droplet pass keep their existing solid-depth dependency.
 // Misses discard (no color, no depth).
@@ -128,33 +135,44 @@ float rmHitEpsilon(float nodeSize) {
     return max(nodeSize * 2.0e-3, 1.0e-4);
 }
 
-// Final material of a node, bit-for-bit the OctreeTriangles.comp
-// nodeResolvedBrush() + writeVertexOnce() rule: resolve LAND/NORMAL sentinels
-// from the GPU QEF position + gradient (so terrain classification matches the
-// raster mesh), keep the stored index otherwise. A LAND cell that classifies
-// as underground is still meshed by the raster path (topology no longer drops
-// it) and its vertex payload substitutes the steep-terrain material, so the
-// raymarch must do the same instead of discarding the hit. DISCARD_BRUSH
-// (-1) from a NORMAL/unpainted cell means "no surface here".
-int rmResolvedBrush(uint id) {
+// Resolve a node's shading material at a given QEF position. Shared by the
+// march's cache (position solved from the node) and the hit-time material
+// blend (positions solved once for every ring cell).
+int rmResolveMaterialAt(uint id, vec3 qefPos) {
     int raw = rmNodes[id].meta.z;
     if (raw != LAND_BRUSH_INDEX && raw != NORMAL_BRUSH) return raw;
 
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
-    vec3 mn = rmNodeMin(id);
-    float sz = rmNodeSize(id);
-    vec3 p = sdfCellPosition(sdf, mn, sz);
-    vec3 n = sdfCellNormal(sdf, mn, sz, p);
+    vec3 n = sdfCellNormal(sdf, rmNodeMin(id), rmNodeSize(id), qefPos);
 
     if (raw == LAND_BRUSH_INDEX) {
         // Mirror writeVertexOnce(): LAND_UNDERGROUND is a shading fallback,
         // not a topology discard.
-        int land = landMaterialIndex(p, n);
+        int land = landMaterialIndex(qefPos, n);
         return (land == LAND_UNDERGROUND) ? LAND_ROCK : land;
     }
     // NormalBrush keeps only +Y-facing cells, like the old CPU painter.
     return (dot(normalize(n), vec3(0.0, 1.0, 0.0)) > 0.0) ? 0 : RAYMARCH_DISCARD_BRUSH;
+}
+
+// Node QEF vertex position (the same value the raster vertex payload carries).
+vec3 rmCellQef(uint id) {
+    float sdf[8];
+    for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
+    return sdfCellPosition(sdf, rmNodeMin(id), rmNodeSize(id));
+}
+
+// Final material of a node, bit-for-bit the OctreeTriangles.comp
+// nodeResolvedBrush() + writeVertexOnce() rule. A LAND cell that classifies as
+// underground is still meshed by the raster path and its vertex payload
+// substitutes the steep-terrain material, so the raymarch does the same instead
+// of discarding the hit. DISCARD_BRUSH (-1) from a NORMAL/unpainted cell means
+// "no surface here".
+int rmResolvedBrush(uint id) {
+    int raw = rmNodes[id].meta.z;
+    if (raw != LAND_BRUSH_INDEX && raw != NORMAL_BRUSH) return raw;
+    return rmResolveMaterialAt(id, rmCellQef(id));
 }
 
 vec3 rmNodeNormal(uint id, vec3 p) {
@@ -185,13 +203,16 @@ int rmCachedBrush(uint id) {
 // active when tessellation is enabled and the hit material has mapping on, so
 // switching rasterization <-> raymarch (or tessellation on/off) keeps both
 // surfaces aligned.
-float rmDisplacement(uint id, int material, vec3 p) {
+float rmDisplacementN(uint id, int material, vec3 p, vec3 n) {
     if (ubo.tessellationEnabled == 0u || material < 0) return 0.0;
     if (!materialNamed(materials[material]).mappingEnabled) return 0.0;
     int texType = int(rmNodes[id].hsv0.w + 0.5);
     vec2 uv = rmNodes[id].hsv1.xy;
-    vec3 n = rmNodeNormal(id, p);
     return materialDisplacementLod(material, texType, uv, p, n);
+}
+
+float rmDisplacement(uint id, int material, vec3 p) {
+    return rmDisplacementN(id, material, p, rmNodeNormal(id, p));
 }
 
 // Bumped trilinear field. `base` receives the unbumped value (used for the
@@ -220,6 +241,387 @@ float rmTessLevel(uint id, int material, vec3 p) {
     float minLevel = m.minLevel * ubo.tessellationFactor;
     float maxLevel = m.maxLevel * ubo.tessellationFactor;
     return clamp((mix(minLevel, maxLevel, t) + m.tessLevel * t) / 16.0, 0.0, 4.0);
+}
+
+// ── Hit-time brush blending (raster TCS parity) ────────────────────────────
+// The raster path compresses the triangle's up-to-three corner materials into
+// unique slots (SolidRenderer.tesc) and blends them with the barycentric
+// weights of the fragment inside the emitted triangle. A raymarched hit has no
+// vertex stream, so reconstruct the same local Surface-Nets triangle:
+//   * find the cell edge nearest the hit that carries a sign change,
+//   * sample the four quadrant cells around it exactly like sampleQuadrants()
+//     in OctreeTriangles.comp,
+//   * use their QEF vertices — displaced by the same per-vertex tessellation
+//     offset the raster TES applies — as the triangle corners and barycentric
+//     weights, falling back to inverse-distance blending when the hit lands
+//     slightly off the dual mesh.
+// This makes material transitions across cell boundaries as smooth as the
+// raster mesh instead of snapping to the hit cell's brush.
+
+const uint RM_INVALID_NODE = 0xFFFFFFFFu;
+
+struct RmSurfaceBlend {
+    ivec3 indices; // up to three unique material indices (unused = index 0)
+    ivec3 types;   // parallel per-vertex texture types
+    vec3 weights;  // slot blend weights (sum = 1)
+    vec2 uv;       // interpolated per-vertex UV scale
+    vec3 hsv;      // interpolated per-vertex HSV tint
+};
+
+// Same root descent as OctreeTriangles.comp findCellAt, over the flattened
+// raymarch table. Stops at the deepest stored surface node containing `pos`;
+// absent (non-surface/pruned) children stop at the parent, matching the
+// raymarch field's own LoD fallback. `nonSurfaceStop` reports that the descent
+// ended because the point lies in a Solid/Empty/absent child, in which case the
+// caller must not treat the parent as a surface ring vertex (findCellAt would
+// have returned that non-surface cell and isSurfaceCell would have rejected it).
+uint rmFindNodeAt(uint root, vec3 pos, out bool nonSurfaceStop) {
+    nonSurfaceStop = false;
+    vec3 rootMin = rmNodeMin(root);
+    float rootSize = rmNodeSize(root);
+    if (any(lessThan(pos, rootMin)) || any(greaterThan(pos, rootMin + vec3(rootSize)))) {
+        return RM_INVALID_NODE;
+    }
+    uint idx = root;
+    for (int i = 0; i < RM_MAX_STACK; ++i) {
+        if (rmNodeIsLeaf(idx)) break;
+        vec3 mn = rmNodeMin(idx);
+        float halfSize = rmNodeSize(idx) * 0.5;
+        int slot = (pos.x >= mn.x + halfSize ? 4 : 0)
+                 + (pos.y >= mn.y + halfSize ? 2 : 0)
+                 + (pos.z >= mn.z + halfSize ? 1 : 0);
+        int child = rmNodeChild(idx, slot);
+        if (child < 0) {
+            // Absent slot: a pruned Surface child keeps the parent's field
+            // (raymarch fallback); every other absent slot is a non-surface
+            // region (Empty/Solid or a surface-push failure) and is not a ring
+            // vertex, exactly like a non-surface cell in the raster walker.
+            if (!rmNodeChildPruned(idx, slot)) nonSurfaceStop = true;
+            break;
+        }
+        idx = uint(child);
+    }
+    return idx;
+}
+
+// EdgeCell::isSurface() + nodeTopologyAllowed() from OctreeTriangles.comp: a
+// ring vertex must be a Surface node whose own corners cross zero and whose
+// paint is not a raw discard. (Infinity corners are skipped by sdfEvalType.)
+bool rmBlendCellValid(uint id) {
+    if (rmNodes[id].meta.y != RM_TYPE_SURFACE) return false;
+    float sdf[8];
+    for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
+    if (sdfEvalType(sdf) != SDF_TYPE_SURFACE) return false;
+    int raw = rmNodes[id].meta.z;
+    if (raw == NORMAL_BRUSH) return rmResolvedBrush(id) > RAYMARCH_DISCARD_BRUSH;
+    return raw > RAYMARCH_DISCARD_BRUSH;
+}
+
+// ownerLess(): cube size, min, then table identity (OctreeTriangles.comp uses
+// the same rule so both sides of a boundary pick the same owner).
+bool rmOwnerLess(uint a, uint b) {
+    float sa = rmNodeSize(a);
+    float sb = rmNodeSize(b);
+    if (sa != sb) return sa < sb;
+    vec3 ma = rmNodeMin(a);
+    vec3 mb = rmNodeMin(b);
+    if (ma.x != mb.x) return ma.x < mb.x;
+    if (ma.y != mb.y) return ma.y < mb.y;
+    if (ma.z != mb.z) return ma.z < mb.z;
+    return a < b;
+}
+
+void rmEdgeAxes(int axis, out int u, out int v) {
+    if (axis == 0) { u = 1; v = 2; }
+    else if (axis == 1) { u = 0; v = 2; }
+    else { u = 0; v = 1; }
+}
+
+// Quadrant sign pairs (SIGNS in OctreeTriangles.comp).
+void rmQuadrantSigns(int axis, int quadrant, out int su, out int sv) {
+    const int qs[24] = int[24](
+        -1, -1,  -1, 1,   1, 1,   1, -1,
+        -1, -1,   1, -1,  1, 1,  -1, 1,
+        -1, -1,  -1, 1,   1, 1,   1, -1
+    );
+    su = qs[axis * 8 + quadrant * 2 + 0];
+    sv = qs[axis * 8 + quadrant * 2 + 1];
+}
+
+// Barycentric coordinates of p on triangle (a,b,c), least-squares projected
+// onto its plane (works when the hit is slightly off the dual mesh plane).
+bool rmBary(vec3 p, vec3 a, vec3 b, vec3 c, out vec3 w) {
+    vec3 v0 = b - a;
+    vec3 v1 = c - a;
+    vec3 v2 = p - a;
+    float d00 = dot(v0, v0);
+    float d01 = dot(v0, v1);
+    float d11 = dot(v1, v1);
+    float d20 = dot(v2, v0);
+    float d21 = dot(v2, v1);
+    float den = d00 * d11 - d01 * d01;
+    if (abs(den) < 1e-12) {
+        w = vec3(1.0, 0.0, 0.0);
+        return false;
+    }
+    float v = (d11 * d20 - d01 * d21) / den;
+    float u = (d00 * d21 - d01 * d20) / den;
+    w = vec3(1.0 - v - u, v, u);
+    return true;
+}
+
+// Default blend: the hit cell's own material/type/UV/HSV (previous behavior).
+RmSurfaceBlend rmDefaultBlend(uint id) {
+    RmSurfaceBlend b;
+    int m = rmCachedBrush(id);
+    b.indices = ivec3(max(m, 0));
+    b.types = ivec3(int(rmNodes[id].hsv0.w + 0.5));
+    b.weights = vec3(1.0, 0.0, 0.0);
+    b.uv = rmNodes[id].hsv1.xy;
+    b.hsv = rmNodes[id].hsv0.xyz;
+    return b;
+}
+
+RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedHit) {
+    RmSurfaceBlend outBlend = rmDefaultBlend(hitId);
+
+    float sz = rmNodeSize(hitId);
+    vec3 mn = rmNodeMin(hitId);
+
+    // Nearest crossing edge of the hit cell. The hit cell's field crosses zero,
+    // so at least one of the 12 edges has a sign change. The dual polygon that
+    // covers the hit is generated around the edge closest to it. Edge selection
+    // uses the UNDISPLACED base point: the topology/material corners come from
+    // the base mesh, while the barycentric weights below use the displaced
+    // corners the raster actually draws.
+    int bestAxis = -1;
+    int bestU = 0, bestV = 0;
+    float bestFixedU = 0.0, bestFixedV = 0.0;
+    float bestStart = 0.0, bestEnd = 0.0;
+    float bestPos = 0.0;
+    float bestDist = 1e30;
+    for (int e = 0; e < 12; ++e) {
+        ivec2 ec = SDF_CELL_EDGES[e];
+        float d0 = rmNodeSdf(hitId, ec.x);
+        float d1 = rmNodeSdf(hitId, ec.y);
+        if ((d0 < 0.0) == (d1 < 0.0)) continue;
+
+        vec3 p0 = mn + SDF_CELL_CORNERS[ec.x] * sz;
+        vec3 p1 = mn + SDF_CELL_CORNERS[ec.y] * sz;
+        vec3 d = abs(p1 - p0);
+        int axis = (d.x >= d.y && d.x >= d.z) ? 0 : ((d.y >= d.x && d.y >= d.z) ? 1 : 2);
+        int u, v;
+        rmEdgeAxes(axis, u, v);
+
+        float fixedU = p0[u];
+        float fixedV = p0[v];
+        float start = min(p0[axis], p1[axis]);
+        float end = max(p0[axis], p1[axis]);
+        float t = clamp(baseHit[axis], start, end);
+        float du = baseHit[u] - fixedU;
+        float dv = baseHit[v] - fixedV;
+        float dist = du * du + dv * dv;
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestAxis = axis;
+            bestU = u;
+            bestV = v;
+            bestFixedU = fixedU;
+            bestFixedV = fixedV;
+            bestStart = start;
+            bestEnd = end;
+            bestPos = t;
+        }
+    }
+    if (bestAxis < 0) return outBlend;
+
+    // Same nudge as makeEdgeSpan(): small enough to stay inside a cell but
+    // large enough to survive FTZ on the axis planes.
+    float offset = max(sz * 1e-3, 1e-6);
+    float tSample = clamp(bestPos, bestStart + offset, bestEnd - offset);
+    if (bestStart + offset >= bestEnd - offset) {
+        tSample = 0.5 * (bestStart + bestEnd);
+    }
+
+    // sampleQuadrants(): four cells around the edge, deduped by node/position.
+    // Each corner keeps the raster vertex payload (QEF position, material,
+    // type, UV scale, HSV) and its per-vertex tessellation-displaced position,
+    // which is what the raster triangle's corners actually are.
+    uint ringId[4];
+    vec3 ringBase[4];
+    vec3 ringPos[4];
+    int ringMat[4];
+    int ringType[4];
+    vec2 ringUv[4];
+    vec3 ringHsv[4];
+    int ringCount = 0;
+    float dedupEps = max(sz * 1e-4, 1e-6);
+    for (int q = 0; q < 4; ++q) {
+        int su, sv;
+        rmQuadrantSigns(bestAxis, q, su, sv);
+        vec3 sp = vec3(0.0);
+        sp[bestAxis] = tSample;
+        sp[bestU] = bestFixedU + (su < 0 ? -offset : offset);
+        sp[bestV] = bestFixedV + (sv < 0 ? -offset : offset);
+
+        bool nonSurfaceStop;
+        uint id = rmFindNodeAt(root, sp, nonSurfaceStop);
+        if (nonSurfaceStop || id == RM_INVALID_NODE || !rmBlendCellValid(id)) continue;
+        vec3 qp = rmCellQef(id);
+        bool duplicate = false;
+        for (int k = 0; k < ringCount; ++k) {
+            vec3 dq = qp - ringBase[k];
+            if (ringId[k] == id || dot(dq, dq) <= dedupEps * dedupEps) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate && ringCount < 4) {
+            int m = rmResolveMaterialAt(id, qp);
+            vec3 n = rmNodeNormal(id, qp);
+            float disp = rmDisplacementN(id, m, qp, n);
+            ringId[ringCount] = id;
+            ringBase[ringCount] = qp;
+            ringPos[ringCount] = qp + n * disp;
+            ringMat[ringCount] = m;
+            ringType[ringCount] = int(rmNodes[id].hsv0.w + 0.5);
+            ringUv[ringCount] = rmNodes[id].hsv1.xy;
+            ringHsv[ringCount] = rmNodes[id].hsv0.xyz;
+            ++ringCount;
+        }
+    }
+    if (ringCount < 3) return outBlend;
+
+    // Rotate the polygon so the shared owner leads (identical rule to
+    // emitSegment()): both sides of a chunk boundary then pick the same
+    // triangle fan and material slot order.
+    int owner = 0;
+    for (int i = 1; i < ringCount; ++i) {
+        if (rmOwnerLess(ringId[i], ringId[owner])) owner = i;
+    }
+    if (owner > 0) {
+        uint rid[4]; vec3 rbase[4]; vec3 rpos[4];
+        int rmat[4]; int rtype[4]; vec2 ruv[4]; vec3 rhsv[4];
+        for (int i = 0; i < ringCount; ++i) {
+            int k = (i + owner) % ringCount;
+            rid[i] = ringId[k];
+            rbase[i] = ringBase[k];
+            rpos[i] = ringPos[k];
+            rmat[i] = ringMat[k];
+            rtype[i] = ringType[k];
+            ruv[i] = ringUv[k];
+            rhsv[i] = ringHsv[k];
+        }
+        for (int i = 0; i < ringCount; ++i) {
+            ringId[i] = rid[i];
+            ringBase[i] = rbase[i];
+            ringPos[i] = rpos[i];
+            ringMat[i] = rmat[i];
+            ringType[i] = rtype[i];
+            ringUv[i] = ruv[i];
+            ringHsv[i] = rhsv[i];
+        }
+    }
+
+    // Barycentric blend on the same fan the raster emits: (0,1,2) and, for a
+    // four-quadrant ring, (0,2,3). Choose the triangle containing the hit (the
+    // least-negative minimum weight is the fallback when neither strictly does).
+    int ci0 = 0, ci1 = 1, ci2 = 2;
+    vec3 triW = vec3(1.0, 0.0, 0.0);
+    bool haveWeights = false;
+    if (ringCount == 3) {
+        haveWeights = rmBary(displacedHit, ringPos[0], ringPos[1], ringPos[2], triW);
+    } else {
+        vec3 w0, w1;
+        bool ok0 = rmBary(displacedHit, ringPos[0], ringPos[1], ringPos[2], w0);
+        bool ok1 = rmBary(displacedHit, ringPos[0], ringPos[2], ringPos[3], w1);
+        float min0 = ok0 ? min(min(w0.x, w0.y), w0.z) : -1e9;
+        float min1 = ok1 ? min(min(w1.x, w1.y), w1.z) : -1e9;
+        if (ok0 && (min0 >= -0.02 || min1 < min0)) {
+            ci0 = 0; ci1 = 1; ci2 = 2;
+            triW = w0;
+            haveWeights = true;
+        } else if (ok1) {
+            ci0 = 0; ci1 = 2; ci2 = 3;
+            triW = w1;
+            haveWeights = true;
+        }
+    }
+    if (haveWeights && min(min(triW.x, triW.y), triW.z) < -0.5) {
+        haveWeights = false; // wildly off the fan: use IDW below
+    }
+
+    if (!haveWeights) {
+        // Inverse-distance fallback over the ring cells (still blends the
+        // local brushes; only the weight shape differs from barycentrics).
+        float dw[4];
+        float eps2 = dedupEps * dedupEps;
+        for (int i = 0; i < ringCount; ++i) {
+            vec3 dq = ringPos[i] - displacedHit;
+            dw[i] = 1.0 / (dot(dq, dq) + eps2);
+        }
+        // Keep the three strongest quadrants (the raster never blends four).
+        int i0 = 0, i1 = 1, i2 = 2;
+        if (ringCount == 4) {
+            int worst = 0;
+            if (dw[1] < dw[worst]) worst = 1;
+            if (dw[2] < dw[worst]) worst = 2;
+            if (dw[3] > dw[worst]) {
+                if (worst == 0) i0 = 3;
+                else if (worst == 1) i1 = 3;
+                else i2 = 3;
+            }
+        }
+        ci0 = i0; ci1 = i1; ci2 = i2;
+        triW = vec3(dw[i0], dw[i1], dw[i2]);
+        float wsum = triW.x + triW.y + triW.z;
+        if (wsum <= 1e-12) return outBlend;
+        triW /= wsum;
+    }
+
+    // Clamp/renormalize the barycentrics (a hit can sit marginally outside the
+    // dual triangle because the march samples the trilinear field).
+    vec3 w = max(triW, vec3(0.0));
+    float wsum = w.x + w.y + w.z;
+    if (wsum <= 1e-12) return outBlend;
+    w /= wsum;
+
+    int mats[3] = int[3](ringMat[ci0], ringMat[ci1], ringMat[ci2]);
+    int types[3] = int[3](ringType[ci0], ringType[ci1], ringType[ci2]);
+    vec2 uvs[3] = vec2[3](ringUv[ci0], ringUv[ci1], ringUv[ci2]);
+    vec3 hsvs[3] = vec3[3](ringHsv[ci0], ringHsv[ci1], ringHsv[ci2]);
+
+    // Unique-slot compression, mirroring SolidRenderer.tesc exactly: slot 0 is
+    // corner 0, slot 1 the first differing corner 1, slot 2 the first differing
+    // corner 2. Corners with negative material indices get zero weight.
+    int u0 = (mats[0] >= 0) ? mats[0] : -1;
+    int u1 = -1;
+    int u2 = -1;
+    if (mats[1] >= 0 && mats[1] != u0) u1 = mats[1];
+    if (mats[2] >= 0 && mats[2] != u0 && mats[2] != u1) u2 = mats[2];
+
+    vec3 slotW = vec3(0.0);
+    for (int i = 0; i < 3; ++i) {
+        if (mats[i] < 0) continue;
+        if (mats[i] == u0) slotW.x += w[i];
+        else if (mats[i] == u1) slotW.y += w[i];
+        else slotW.z += w[i];
+    }
+    float slotSum = slotW.x + slotW.y + slotW.z;
+    if (slotSum <= 1e-12 || u0 < 0) return outBlend;
+    slotW /= slotSum;
+
+    int type0 = (mats[0] >= 0) ? types[0] : 0;
+    int type1 = (mats[1] >= 0 && mats[1] != u0) ? types[1] : 0;
+    int type2 = (mats[2] >= 0 && mats[2] != u0 && mats[2] != u1) ? types[2] : 0;
+
+    outBlend.indices = ivec3(u0, (u1 >= 0) ? u1 : u0, (u2 >= 0) ? u2 : u0);
+    outBlend.types = ivec3(type0, (u1 >= 0) ? type1 : type0,
+                           (u2 >= 0) ? type2 : type0);
+    outBlend.weights = slotW;
+    outBlend.uv = uvs[0] * w.x + uvs[1] * w.y + uvs[2] * w.z;
+    outBlend.hsv = hsvs[0] * w.x + hsvs[1] * w.y + hsvs[2] * w.z;
+    return outBlend;
 }
 
 // ── Octree SDF debug view helpers (DEBUG_MODE_OCTREE_SDF_RAYMARCH) ─────────
@@ -489,24 +891,21 @@ void main() {
 
     vec3 hitPos = ro + rd * nearestT;
 
-    // Material / mapping payload of the hit cell (mirrors the per-vertex
-    // values the tessellator emits for the same node). The brush index is a
-    // validated material index (the same one the raster vertex would carry),
-    // so it is used directly; brushLayer() clamps the texture-array tap.
+    // Material / mapping payload of the hit cell. Until the local ring is
+    // reconstructed this is the hit cell's own brush; rmBlendAtHit() replaces
+    // it with the same up-to-three-material barycentric blend the raster TCS
+    // produces for the triangle under the hit.
     int material = max(nearestBrush, 0);
-    int textureType = int(rmNodes[nearestNode].hsv0.w + 0.5);
 
     // Tessellation parity: the raster TES samples the height maps at the
     // UNDISPLACED vertex and moves it along the smooth cell normal. Recover
     // that base point (and its normal) from the bumped hit so shading and
     // mapping are evaluated at the same world position the raster path uses.
-    // One fixed-point refinement is enough: the offset is small relative to
-    // the height-map feature scale.
+    // Two fixed-point steps; the offset is small relative to the height-map
+    // feature scale, so this converges to the raster's undisplaced vertex.
     vec3 sdfNormal = rmNodeNormal(nearestNode, hitPos);
     float hitDisplacement = rmDisplacement(nearestNode, material, hitPos);
     vec3 basePos = hitPos - sdfNormal * hitDisplacement;
-    // Two fixed-point steps; the offset is small relative to the height-map
-    // feature scale, so this converges to the raster's undisplaced vertex.
     for (int i = 0; i < 2 && hitDisplacement != 0.0; ++i) {
         sdfNormal = rmNodeNormal(nearestNode, basePos);
         hitDisplacement = rmDisplacement(nearestNode, material, basePos);
@@ -515,19 +914,29 @@ void main() {
     vec3 normal = sdfNormal;
     if (dot(normal, rd) > 0.0) normal = -normal; // front surface only
 
+    // The raster material blend belongs to the base (undisplaced) cell: use
+    // that cell when it is in the table, otherwise the bumped hit's own cell.
+    uint rootNode = rmRoots[nearestRoot].node;
+    bool baseCellNonSurface;
+    uint blendCell = rmFindNodeAt(rootNode, basePos, baseCellNonSurface);
+    if (blendCell == RM_INVALID_NODE || baseCellNonSurface) blendCell = nearestNode;
+    RmSurfaceBlend blend = rmBlendAtHit(rootNode, blendCell, basePos, hitPos);
+
     fragPosWorld = hitPos;
     fragPosWorldNotDisplaced = basePos;
     fragNormal = normal;
     fragSharpNormal = normal;
-    fragTexIndices = ivec3(material);
-    fragTextureTypes = ivec3(textureType);
-    fragTexWeights = vec3(1.0, 0.0, 0.0);
-    fragHSV = rmNodes[nearestNode].hsv0.xyz;
-    // Vertex UV scale (OctreeNode::data) used by custom/projection mapping.
-    fragUV = rmNodes[nearestNode].hsv1.xy;
+    fragTexIndices = blend.indices;
+    fragTextureTypes = blend.types;
+    fragTexWeights = blend.weights;
+    fragHSV = blend.hsv;
+    // Interpolated per-vertex UV scale (OctreeNode::data), matching the
+    // raster's interpolated fragUV.
+    fragUV = blend.uv;
     fragPosLightSpace = ubo.lightSpaceMatrix * vec4(hitPos, 1.0);
     // Same feed the TES writes (tess levels / 16, clamped to the heat range).
-    fragTessLevel = vec3(rmTessLevel(nearestNode, material, basePos));
+    // The raster's tess levels are per base cell, not per bumped hit.
+    fragTessLevel = vec3(rmTessLevel(blendCell, rmCachedBrush(blendCell), basePos));
 
     vec4 clip = ubo.viewProjection * vec4(hitPos, 1.0);
     gl_FragDepth = (clip.w > 1e-6) ? clamp(clip.z / clip.w, 0.0, 1.0) : 1.0;

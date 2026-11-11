@@ -67,7 +67,9 @@ void RaymarchWidget::render() {
         ImGui::TextWrapped("The octree SDF raymarch is the ray marched "
                            "equivalent of the tessellated solid chunks. Both "
                            "paths shade through shadeSolidSurface(); the "
-                           "raymarch folds the per-material tessellation height "
+                           "raymarch reconstructs the local surface triangle "
+                           "for the same up-to-three-brush barycentric blend "
+                           "and folds the per-material tessellation height "
                            "offset into the SDF, so the displaced surface "
                            "matches the raster one.");
         {

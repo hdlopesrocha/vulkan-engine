@@ -14,10 +14,12 @@
 //
 // Owns the set-2 descriptor layout (node table + layer roots), one host-visible
 // buffer pair per frame in flight and the fullscreen raymarch pipeline. The
-// shader shades through the shared solid surface body, including tessellation
-// displacement folded into the marched SDF, CSM/cloud shadows and optional
-// inline RT reflections/contact shadows (the RT fragment twin is bound while
-// Settings::rtReflections / rtLocalShadows are on).
+// shader shades through the shared solid surface body, with raster-style
+// three-brush barycentric blending (the local Surface-Nets triangle is
+// reconstructed at the hit), tessellation displacement folded into the marched
+// SDF, CSM/cloud shadows and optional inline RT reflections/contact shadows
+// (the RT fragment twin is bound while Settings::rtReflections / rtLocalShadows
+// are on).
 // The table itself is built by the CPU (Scene::buildRaymarchTable) on a debounce
 // and uploaded here only when its revision differs from the slot's revision.
 // The table buffers are allocated on the first upload: the mode is off by
