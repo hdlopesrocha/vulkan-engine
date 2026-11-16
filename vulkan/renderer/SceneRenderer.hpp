@@ -38,6 +38,7 @@ class World;
 #include "sdf/SdfRenderer.hpp"
 #include "debug/WireframeRenderer.hpp"
 #include "water/WaterBackFaceRenderer.hpp"
+#include "wind/WindRenderer.hpp"
 #include "brush/BrushSdfRenderer.hpp"
 #include "octree/OctreeRaymarchRenderer.hpp"
 #include "indirect/IndirectRenderer.hpp"
@@ -110,6 +111,11 @@ public:
     // composited by PostProcess after vegetation/water.
     std::unique_ptr<SdfRenderer> sdfRenderer;
     std::unique_ptr<WireframeRenderer> waterWireframe;
+    // Wind-trail particle visualization (Settings::windParticlesEnabled):
+    // GPU particles advected by the shared wind field (binding 27) with fading
+    // trails. Simulated in preRenderPass, drawn as an overlay after the
+    // composite. See WindRenderer.
+    std::unique_ptr<WindRenderer> windRenderer;
 
     // See setWaterRenderScale().
     float waterRenderScale_ = 1.0f;

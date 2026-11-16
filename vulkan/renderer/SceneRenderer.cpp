@@ -167,6 +167,11 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (waterWireframe) {
         waterWireframe->cleanup(app);
     }
+    // Wind trails own persistent state/trail buffers (released here, while the
+    // device is alive); the wind-field UBO itself belongs to VegetationRenderer.
+    if (windRenderer) {
+        windRenderer->cleanup(app);
+    }
 
     // Clear local CPU-side handles; Vulkan objects are destroyed via VulkanResourceManager
     for (auto &b : mainUniformBuffers) {
@@ -447,6 +452,7 @@ SceneRenderer::SceneRenderer() :
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
     waterWireframe(std::make_unique<WireframeRenderer>()),
+    windRenderer(std::make_unique<WindRenderer>()),
     skySettings(std::make_unique<SkySettings>()),
     cloudSettings(std::make_unique<CloudSettings>()),
     // M7 (report 29): debug-walk instrumentation, cached once (getenv is not in
@@ -574,6 +580,13 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     if (vegetationRenderer) {
         vegetationRenderer->destroyRenderTargets(app);
         recreateVegetationTargets(app, initW, initH);
+    }
+
+    // Wind-trail particles: needs the shared wind-field UBO (created by
+    // VegetationRenderer::init above) and the swapchain format for its trail
+    // pipeline, so it initializes after both. Cheap (two small pipelines).
+    if (windRenderer) {
+        windRenderer->init(app);
     }
 
     // Create per-frame main uniform buffers (TRANSFER_DST for vkCmdCopyBuffer from staging)

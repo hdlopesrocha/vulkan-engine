@@ -69,6 +69,7 @@
 #include "widgets/VulkanResourcesManagerWidget.hpp"
 #include "widgets/QueueTimelineWidget.hpp"
 #include "widgets/WindWidget.hpp"
+#include "widgets/WindParticlesWidget.hpp"
 #include "widgets/RaymarchWidget.hpp"
 #include "widgets/GrassWidget.hpp"
 #include "sdf/types/SdfScene.hpp"
@@ -389,6 +390,9 @@ public:
     std::shared_ptr<VulkanResourcesManagerWidget> vulkanResourcesManagerWidget;
     std::shared_ptr<QueueTimelineWidget> queueTimelineWidget;
     std::shared_ptr<WindWidget> windWidget;
+    // Wind-trail particle visualization editor (WindRenderer): trail duration/
+    // color/width + the shared wind parameters.
+    std::shared_ptr<WindParticlesWidget> windParticlesWidget;
     // Generic SDF volumes UI (SDF fire is always on; anchors stream in
     // from lava chunks, so no CPU scene mirror lives here). The ray
     // marching widget covers the generic traversal plus the fire and
@@ -1115,6 +1119,8 @@ public:
         queueTimelineWidget = std::make_shared<QueueTimelineWidget>(this);
         queueTimelineWidget->updateWithApp(this);
         windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get());
+        windParticlesWidget = std::make_shared<WindParticlesWidget>(
+            &settings, sceneRenderer->vegetationRenderer.get());
         raymarchWidget = std::make_shared<RaymarchWidget>(
             sceneRenderer->sdfRenderer.get(), &camera,
             sceneRenderer->vegetationRenderer.get(), &settings);
@@ -1153,6 +1159,7 @@ public:
         widgetManager.addWidget(vulkanResourcesManagerWidget);
         widgetManager.addWidget(queueTimelineWidget);
         widgetManager.addWidget(windWidget);
+        widgetManager.addWidget(windParticlesWidget);
         widgetManager.addWidget(raymarchWidget);
         widgetManager.addWidget(grassWidget);
         widgetManager.addWidget(mp3Widget);
@@ -1936,6 +1943,38 @@ public:
             // M10 (report 25): current view-projection for the CPU container
             // screen-overlap gate on the solid-depth preload copy.
             sceneRenderer->sdfRenderer->setOcclusionViewProj(camera.getViewProjectionMatrix());
+        }
+
+        // ── Wind-trail particles (WindRenderer) ─────────────────────────────
+        // Compute cannot be recorded inside a dynamic-rendering scope, so the
+        // particle step runs HERE on the main command buffer (before the
+        // swapchain scope is opened). The trail draw happens in draw() after
+        // the composite. The simulation reads the SHARED wind field UBO (set=0
+        // binding 27, owned by VegetationRenderer), so these particles follow
+        // the exact same gust/tornado field as the vegetation, fire and clouds.
+        if (sceneRenderer && sceneRenderer->windRenderer) {
+            const VkBuffer windFieldBuffer = sceneRenderer->vegetationRenderer
+                ? sceneRenderer->vegetationRenderer->getWindFieldBuffer().buffer
+                : VK_NULL_HANDLE;
+            const bool windEnabled = sceneRenderer->vegetationRenderer
+                ? sceneRenderer->vegetationRenderer->getWindSettings().enabled
+                : true;
+            // The particle far plane is bounded by the camera far plane
+            // (Settings > Camera). Clamp the authored values every frame so a
+            // camera-far change immediately pulls the band in, even when the
+            // Wind Trails widget is closed.
+            WindParticlesSettings& windParticles = settings.windParticles;
+            const float farPlaneLimit = std::max(settings.farPlane, 1.0f);
+            windParticles.spawnFarDistance =
+                std::clamp(windParticles.spawnFarDistance, 0.0f, farPlaneLimit);
+            windParticles.spawnNearDistance =
+                std::clamp(windParticles.spawnNearDistance, 0.0f, windParticles.spawnFarDistance);
+            sceneRenderer->windRenderer->dispatch(
+                this, commandBuffer, frameIdx, settings.windParticlesEnabled,
+                settings.windParticles, uboStatic.viewProjection, uboStatic.invViewProjection,
+                uboStatic.viewPosition, settings.farPlane,
+                glm::vec2(static_cast<float>(getWidth()), static_cast<float>(getHeight())),
+                mainTime, std::clamp(lastFrameDelta, 0.0f, 0.1f), windFieldBuffer, windEnabled);
         }
 
         const bool waterEnabled = settings.waterEnabled;
@@ -4168,6 +4207,17 @@ public:
         // Brush overlay is composited inside the PostProcess pass using the
         // brush_color and brush_depth targets from the early brush pass, with
         // depth testing against both scene_depth (solids) and water_depth.
+
+        // ── Wind-trail particles (WindRenderer) ──────────────────────────────
+        // Translucent world-space streaks over the composed frame. The
+        // simulation was dispatched in preRenderPass (compute cannot be
+        // recorded inside this rendering scope) and its compute->vertex barrier
+        // is already recorded, so the state read here is this frame's.
+        if (sceneRenderer && sceneRenderer->windRenderer) {
+            sceneRenderer->windRenderer->render(
+                this, commandBuffer, frameIdx, settings.windParticlesEnabled,
+                settings.windParticles);
+        }
 
         // ImGui rendering
         ImDrawData* draw_data = ImGui::GetDrawData();

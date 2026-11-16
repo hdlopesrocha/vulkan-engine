@@ -1,5 +1,7 @@
 #pragma once
 
+#include "WindParticlesSettings.hpp"
+
 class Settings {
 public:
     // Grass representation selector (Settings widget: "Grass"):
@@ -29,6 +31,14 @@ public:
     // Bladed grass (triangle tufts + impostors). Derived from grassMode every
     // frame (MyApp): true unless GrassMode::None.
     bool vegetationEnabled = false;
+    // ── Wind-trail particles (WindRenderer) ────────────────────────────────
+    // GPU-advected particles that follow the shared wind field and draw fading
+    // world-space trails. On by default (it is the wind-field visualization);
+    // toggle it off here or in the Wind Trails widget. Trail duration/color/
+    // width and the particle count live in `windParticles`
+    // (WindParticlesWidget); the wind itself is the shared Wind widget field.
+    bool windParticlesEnabled = true;
+    WindParticlesSettings windParticles;
     // Active grass representation (see GrassMode). Default: bladed grass.
     GrassMode grassMode = GrassMode::Bladed;
     // Ray-cast quality: the SDF raymarcher AND the sky cloud raymarcher cast

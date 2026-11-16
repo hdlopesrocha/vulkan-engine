@@ -1,0 +1,127 @@
+#version 450
+
+// GPU wind-trail particle simulation (WindRenderer).
+//
+// One invocation per particle. Each step:
+//   1. sample the SHARED wind field (set=0 binding 27 -> windSVF, the exact
+//      function the vegetation/fire/cloud shaders use) at the particle's world
+//      position, and advance it with a midpoint (RK2) integration step;
+//   2. append the new position to the particle's time-stamped trail ring at the
+//      FIXED sample interval (WindParticlesUBO.trail.y), so trail length in
+//      seconds is independent of the frame rate;
+//   3. if the new head position left the camera frustum (or crossed the
+//      particle far plane), respawn the particle at a random point INSIDE the
+//      frustum and inside [spawn near, spawn far] (the far plane is clamped to
+//      the camera far plane on the host) and clear its trail so no segment
+//      jumps across the world.
+//
+// The host never touches particle data after init: the state/trail buffers are
+// device-local and persist across frames (one persistent simulation, not a
+// per-frame-in-flight copy — a trail must survive the frame ring).
+
+layout(local_size_x = 64) in;
+
+#include "../../includes/noise/Perlin.glsl"
+#include "../../includes/vegetation/WindField.glsl"
+#include "../../includes/wind/WindParticle.glsl"
+#include "../../ubo/WindParticlesUBO.glsl"
+
+layout(set = 0, binding = 0, std140) uniform WindParticlesBlock {
+    WindParticlesUBO wp;
+};
+layout(set = 0, binding = 1, std430) buffer Particles {
+    WindParticle particles[];
+};
+layout(set = 0, binding = 2, std430) buffer TrailSamples {
+    vec4 trailSamples[]; // xyz = world position, w = absolute sample time (s)
+};
+layout(set = 0, binding = 3, std430) buffer TrailSpeeds {
+    float trailSpeeds[]; // wind speed (m/s) measured at each trail sample
+};
+
+const uint WIND_TRAIL_CAP = uint(WIND_TRAIL_CAPACITY);
+
+// Uniform [0,1) draw from an advancing RNG state (PCG from Perlin.glsl).
+float rand01(inout uint state) {
+    state = pcgHash(state);
+    return uintToUnitFloat(state);
+}
+
+// Respawn inside the view frustum and inside the particle band
+// [spawn.x, spawn.y] (spawn.y is the particle far plane, clamped to the camera
+// far plane on the host). A far-plane point is unprojected at the sampled NDC:
+// it lies on the view ray, so the direction from the CAMERA to it is the exact
+// ray, and the distance can be sampled in metres (uniform in distance, not in
+// NDC depth, which would cluster every particle against the near plane).
+void respawnParticle(uint i, inout uint rng, float now) {
+    vec2 ndc = (vec2(rand01(rng), rand01(rng)) * 2.0 - 1.0) * 0.85;
+    vec4 farPoint = wp.invViewProjection * vec4(ndc, 1.0, 1.0);
+    // Signed perspective divide with a degenerate-width guard.
+    farPoint /= (abs(farPoint.w) > 1e-6 ? farPoint.w : 1e-6);
+    vec3 camPos = wp.cameraPosition.xyz;
+    vec3 dir = normalize(farPoint.xyz - camPos);
+    float nearDist = max(wp.spawn.x, 0.0);
+    float farDist = max(wp.spawn.y, nearDist);
+    vec3 pos = camPos + dir * mix(nearDist, farDist, rand01(rng));
+
+    particles[i].position = vec4(pos, 0.0);
+    particles[i].trail = uvec4(0u, 0u, rng, 1u);
+    particles[i].sampleTime = vec4(now, 0.0, 0.0, 0.0);
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(wp.timing.z + 0.5)) return;
+
+    float now = wp.timing.x;
+    float dt = clamp(wp.timing.y, 0.0, 0.1); // cap: a hitch must not teleport
+    // Per-dispatch seed: every respawn draws fresh random numbers.
+    uint rng = pcgHash(i * 2654435761u + uint(wp.timing.w) * 2246822519u);
+
+    if ((particles[i].trail.w & 1u) == 0u) {
+        // First use (buffer zero-initialised on the host) or after a reset.
+        respawnParticle(i, rng, now);
+        return;
+    }
+
+    vec4 p = particles[i].position;
+    // The shared field always carries its strength; the vegetation "Enable
+    // Wind" gate is forwarded so a disabled wind also holds these particles.
+    float windScale = (wp.extra.z >= 0.5) ? 1.0 : 0.0;
+    vec3 v0 = windSVF(p.xyz, now) * windScale;
+    vec3 vMid = windSVF(p.xyz + v0 * (0.5 * dt), now + 0.5 * dt) * windScale;
+    vec3 nextPos = p.xyz + vMid * dt;
+
+    // Containment of the new head: inside the camera frustum (Vulkan clip
+    // space: w > 0, |x|,|y| <= w, 0 <= z <= w) AND closer than the particle
+    // far plane. `extra.x` widens the lateral test slightly so a particle
+    // grazing the edge is not respawned every frame; the far plane is a hard
+    // cutoff (particles that drift past it respawn inside the band).
+    vec4 clip = wp.viewProjection * vec4(nextPos, 1.0);
+    float margin = max(wp.extra.x, 1.0);
+    bool beyondFarPlane = distance(nextPos, wp.cameraPosition.xyz) > max(wp.spawn.y, 0.0);
+    bool inside = !beyondFarPlane &&
+                  clip.w > 1e-4 &&
+                  abs(clip.x) <= clip.w * margin &&
+                  abs(clip.y) <= clip.w * margin &&
+                  clip.z >= 0.0 && clip.z <= clip.w;
+    if (!inside) {
+        respawnParticle(i, rng, now);
+        return;
+    }
+
+    particles[i].position = vec4(nextPos, p.w + dt);
+
+    if (now - particles[i].sampleTime.x >= wp.trail.y) {
+        uint head = particles[i].trail.x;
+        uint count = particles[i].trail.y;
+        head = (head + 1u) % WIND_TRAIL_CAP;
+        particles[i].trail.x = head;
+        particles[i].trail.y = min(count + 1u, WIND_TRAIL_CAP);
+        particles[i].sampleTime.x = now;
+        trailSamples[i * WIND_TRAIL_CAP + head] = vec4(nextPos, now);
+        // Store the speed with the sample so the trail can be colored by the
+        // local wind speed without re-sampling the field per vertex.
+        trailSpeeds[i * WIND_TRAIL_CAP + head] = length(vMid);
+    }
+}

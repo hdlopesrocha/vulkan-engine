@@ -97,6 +97,17 @@ void SettingsWidget::render() {
             // toggled
         }
         ImGuiComponents::TooltipOnHover("Master toggle for volumetric clouds (sky raymarch + ground shadows + reflections).\nMinimal preset disables; per-tier controls live in the Clouds widget.");
+        // Wind-trail particles (WindRenderer): GPU particles advected by the
+        // shared wind field, drawing fading 2 s trails. Trail duration/color/
+        // width and the wind parameters live in the Wind Trails widget.
+        if (ImGuiComponents::CheckboxField("Wind Trails",
+                &settings.windParticlesEnabled,
+                "GPU particles advected by the shared wind field, each leaving a\n"
+                "fading world-space trail. A particle that leaves the view frustum\n"
+                "respawns at a random point inside it. Configure count/duration/\n"
+                "color/width and the wind parameters in the Wind Trails widget.")) {
+            // toggled; the simulation stops/resumes on the next frame
+        }
         ImGuiComponents::FieldLabel("Vegetation render scale", "Offscreen vegetation resolution");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Vegetation render scale", &settings.vegetationRenderScale, 0.25f, 1.0f, "%.2f");
