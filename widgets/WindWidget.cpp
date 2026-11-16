@@ -4,9 +4,10 @@
 #include <imgui.h>
 #include <string>
 #include "components/ImGuiHelpers.hpp"
+#include "../types/Settings.hpp"
 
-WindWidget::WindWidget(VegetationRenderer* vegetationRenderer_)
-    : Widget("Vegetation Wind", u8"\uf72e"), vegetationRenderer(vegetationRenderer_) {
+WindWidget::WindWidget(VegetationRenderer* vegetationRenderer_, Settings* settings_)
+    : Widget("Vegetation Wind", u8"\uf72e"), vegetationRenderer(vegetationRenderer_), settings(settings_) {
     isOpen = false;
 }
 
@@ -30,6 +31,32 @@ void WindWidget::render() {
         if (ImGui::Button("Reset Wind Defaults")) {
             wind = VegetationRenderer::WindSettings{};
         }
+    }
+
+    // ── Raymarched wind surface (WindRaymarchRenderer) ─────────────────────
+    // Renders the shape where the wind speed equals a chosen value: the field
+    // is isosurfaced per pixel. The target velocity is the main parameter.
+    if (settings && ImGui::CollapsingHeader("Raymarch Surface")) {
+        WindRaymarchSettings& wr = settings->windRaymarch;
+        ImGui::Checkbox("Enable##wind_raymarch", &settings->windRaymarchEnabled);
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Raymarches the shared wind field and renders the shape where the wind\n"
+            "speed equals the target velocity. Clipped by the scene depth.");
+
+        ImGui::SliderFloat("Target Velocity", &wr.targetSpeed, 0.0f, 50.0f, "%.1f m/s");
+        ImGuiHelpers::SetTooltipIfHovered(
+            "The rendered shape is the isosurface where |wind| equals this speed.\n"
+            "Raise it to isolate strong-gust/tornado cores; lower it to reveal the\n"
+            "broader flow structure.");
+
+        ImGui::SliderFloat("Max Distance", &wr.maxDistance, 25.0f, 4000.0f, "%.0f m");
+        ImGuiHelpers::SetTooltipIfHovered("Furthest distance marched per pixel (the solid scene depth clips first).");
+
+        ImGui::SliderInt("March Steps", &wr.steps, 8, 128);
+        ImGuiHelpers::SetTooltipIfHovered("Samples per pixel. Cost scales linearly with this and with the field octaves.");
+
+        ImGui::SliderFloat("Surface Opacity", &wr.opacity, 0.05f, 1.0f, "%.2f");
+        ImGuiHelpers::SetTooltipIfHovered("Alpha of the isosurface overlay.");
     }
 
     // ── Vector fBm wind field ───────────────────────────────────────────────

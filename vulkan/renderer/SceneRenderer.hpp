@@ -39,6 +39,7 @@ class World;
 #include "debug/WireframeRenderer.hpp"
 #include "water/WaterBackFaceRenderer.hpp"
 #include "wind/WindRenderer.hpp"
+#include "wind/WindRaymarchRenderer.hpp"
 #include "brush/BrushSdfRenderer.hpp"
 #include "octree/OctreeRaymarchRenderer.hpp"
 #include "indirect/IndirectRenderer.hpp"
@@ -116,6 +117,9 @@ public:
     // trails. Simulated in preRenderPass, drawn as an overlay after the
     // composite. See WindRenderer.
     std::unique_ptr<WindRenderer> windRenderer;
+    // Wind-ray-march mode: renders |wind| == targetSpeed of the shared field as
+    // a raymarched isosurface overlay (Settings::windRaymarchEnabled).
+    std::unique_ptr<WindRaymarchRenderer> windRaymarchRenderer;
 
     // See setWaterRenderScale().
     float waterRenderScale_ = 1.0f;

@@ -172,6 +172,9 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (windRenderer) {
         windRenderer->cleanup(app);
     }
+    if (windRaymarchRenderer) {
+        windRaymarchRenderer->cleanup(app);
+    }
 
     // Clear local CPU-side handles; Vulkan objects are destroyed via VulkanResourceManager
     for (auto &b : mainUniformBuffers) {
@@ -453,6 +456,7 @@ SceneRenderer::SceneRenderer() :
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
     waterWireframe(std::make_unique<WireframeRenderer>()),
     windRenderer(std::make_unique<WindRenderer>()),
+    windRaymarchRenderer(std::make_unique<WindRaymarchRenderer>()),
     skySettings(std::make_unique<SkySettings>()),
     cloudSettings(std::make_unique<CloudSettings>()),
     // M7 (report 29): debug-walk instrumentation, cached once (getenv is not in
@@ -587,6 +591,11 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // pipeline, so it initializes after both. Cheap (two small pipelines).
     if (windRenderer) {
         windRenderer->init(app);
+    }
+    // Wind raymarch overlay: needs only the swapchain format; its descriptors
+    // (scene depth + shared wind field) are (re)written per frame.
+    if (windRaymarchRenderer) {
+        windRaymarchRenderer->init(app);
     }
 
     // Create per-frame main uniform buffers (TRANSFER_DST for vkCmdCopyBuffer from staging)

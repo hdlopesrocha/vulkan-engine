@@ -822,6 +822,12 @@ public:
             brushManager.addEntry();
         }
 
+        // VULKAN_WIND_RAYMARCH=1 enables the wind-velocity isosurface raymarch
+        // (headless validation of WindRaymarchRenderer; the default stays off).
+        if (const char* env = std::getenv("VULKAN_WIND_RAYMARCH")) {
+            if (env[0] != '0') settings.windRaymarchEnabled = true;
+        }
+
         // VULKAN_SERVE=1: start the scene server for this app's live scene
         // (same as the Settings widget toggle).
         if (const char* env = std::getenv("VULKAN_SERVE")) {
@@ -1118,7 +1124,7 @@ public:
         vulkanResourcesManagerWidget->updateWithApp(this);
         queueTimelineWidget = std::make_shared<QueueTimelineWidget>(this);
         queueTimelineWidget->updateWithApp(this);
-        windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get());
+        windWidget = std::make_shared<WindWidget>(sceneRenderer->vegetationRenderer.get(), &settings);
         windParticlesWidget = std::make_shared<WindParticlesWidget>(
             &settings, sceneRenderer->vegetationRenderer.get());
         raymarchWidget = std::make_shared<RaymarchWidget>(
@@ -1975,6 +1981,20 @@ public:
                 uboStatic.viewPosition, settings.farPlane,
                 glm::vec2(static_cast<float>(getWidth()), static_cast<float>(getHeight())),
                 mainTime, std::clamp(lastFrameDelta, 0.0f, 0.1f), windFieldBuffer, windEnabled);
+        }
+
+        // Wind raymarch overlay: params UBO + host->fragment barrier must be
+        // recorded OUTSIDE the rendering scope (a pipeline barrier inside
+        // dynamic rendering may only use framebuffer-space stages). The draw
+        // itself happens in draw().
+        if (sceneRenderer && sceneRenderer->windRaymarchRenderer) {
+            const VkBuffer windFieldBuffer = sceneRenderer->vegetationRenderer
+                ? sceneRenderer->vegetationRenderer->getWindFieldBuffer().buffer
+                : VK_NULL_HANDLE;
+            sceneRenderer->windRaymarchRenderer->prepare(
+                this, commandBuffer, frameIdx, settings.windRaymarchEnabled,
+                settings.windRaymarch, uboStatic.invViewProjection, uboStatic.viewPosition,
+                sceneRenderer->solidRenderer->getDepthView(frameIdx), windFieldBuffer, mainTime);
         }
 
         const bool waterEnabled = settings.waterEnabled;
@@ -4207,6 +4227,18 @@ public:
         // Brush overlay is composited inside the PostProcess pass using the
         // brush_color and brush_depth targets from the early brush pass, with
         // depth testing against both scene_depth (solids) and water_depth.
+
+        // ── Wind raymarch mode (WindRaymarchRenderer) ────────────────────────
+        // Renders |wind| == target speed of the shared field as a raymarched
+        // isosurface over the composed frame. Its parameters UBO and host->
+        // fragment barrier were recorded in preRenderPass (the barrier is not
+        // legal inside dynamic rendering); the march is clipped by the solid
+        // scene depth. Drawn before the trails so the particle overlay stays on
+        // top.
+        if (sceneRenderer && sceneRenderer->windRaymarchRenderer) {
+            sceneRenderer->windRaymarchRenderer->render(
+                this, commandBuffer, frameIdx, settings.windRaymarchEnabled);
+        }
 
         // ── Wind-trail particles (WindRenderer) ──────────────────────────────
         // Translucent world-space streaks over the composed frame. The

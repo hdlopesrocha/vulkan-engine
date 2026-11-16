@@ -1,6 +1,7 @@
 #pragma once
 
 #include "WindParticlesSettings.hpp"
+#include "WindRaymarchSettings.hpp"
 
 class Settings {
 public:
@@ -39,6 +40,10 @@ public:
     // (WindParticlesWidget); the wind itself is the shared Wind widget field.
     bool windParticlesEnabled = true;
     WindParticlesSettings windParticles;
+    // WindRaymarchRenderer: renders |wind| == targetSpeed as a raymarched
+    // isosurface shape. Off by default (a diagnostic/visualization mode).
+    bool windRaymarchEnabled = false;
+    WindRaymarchSettings windRaymarch;
     // Active grass representation (see GrassMode). Default: bladed grass.
     GrassMode grassMode = GrassMode::Bladed;
     // Ray-cast quality: the SDF raymarcher AND the sky cloud raymarcher cast

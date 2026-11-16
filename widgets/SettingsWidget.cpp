@@ -108,6 +108,14 @@ void SettingsWidget::render() {
                 "color/width and the wind parameters in the Wind Trails widget.")) {
             // toggled; the simulation stops/resumes on the next frame
         }
+        // Raymarched wind-velocity isosurface (WindRaymarchRenderer).
+        if (ImGuiComponents::CheckboxField("Wind Raymarch",
+                &settings.windRaymarchEnabled,
+                "Raymarches the shared wind field and renders the shape where the\n"
+                "wind speed equals a target velocity. The target and march quality\n"
+                "live in the Wind widget (Raymarch Surface).")) {
+            // toggled; the overlay appears on the next frame
+        }
         ImGuiComponents::FieldLabel("Vegetation render scale", "Offscreen vegetation resolution");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Vegetation render scale", &settings.vegetationRenderScale, 0.25f, 1.0f, "%.2f");
