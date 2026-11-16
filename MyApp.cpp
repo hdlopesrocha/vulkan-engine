@@ -839,6 +839,18 @@ public:
             if (env[0] != '0') settings.cloudsEnabled = true;
         }
 
+        // VULKAN_RT=1 enables the hybrid RT paths (solid/water reflections,
+        // water refraction/thickness/depth) for headless validation; the
+        // default keeps the Settings toggle values.
+        if (const char* env = std::getenv("VULKAN_RT")) {
+            if (env[0] != '0') {
+                settings.rtReflections = true;
+                settings.rtWaterReflections = true;
+                settings.rtRefractions = true;
+                settings.rtWaterDepth = true;
+            }
+        }
+
         // VULKAN_SERVE=1: start the scene server for this app's live scene
         // (same as the Settings widget toggle).
         if (const char* env = std::getenv("VULKAN_SERVE")) {

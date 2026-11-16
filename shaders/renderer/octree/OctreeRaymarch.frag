@@ -871,6 +871,63 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
     return false;
 }
 
+// Water shading for a raymarched water-layer hit.
+//
+// The octree raymarch draws water inside the SOLID pass (opaque color+depth),
+// so the raster water renderer's own targets are not involved. This helper
+// reproduces the visible water response from the resources this pass has:
+//   * reflection: procedural sky + the cheap cloud approximation, refined by a
+//     screen-space march over the previous frame's solid color/depth (SSR);
+//   * refraction: the Snell-bent view ray lands on the previous frame's solid
+//     color and the water column is tinted over it (Beer-Lambert-style mix by
+//     the layer transparency); a sample in front of the water surface falls
+//     back to the pure tint;
+//   * Fresnel mixes the two exactly like the raster surface.
+// The RT variant resolves the exact scene instead (see rtResolveWaterHit).
+vec3 shadeRaymarchWaterFallback(WaterParamsNamed wp, vec3 hitPos, vec3 N, vec3 V) {
+    vec3 toSun = normalize(-ubo.lightDirection);
+    float ndv = clamp(dot(N, V), 0.0, 1.0);
+    float fresnel = clamp(pow(1.0 - ndv, max(wp.fresnelPower, 1.0)) *
+                          max(wp.reflectionStrength, 0.0), 0.0, 1.0);
+
+    // ── Reflection: sky + clouds, refined by SSR over the previous frame ──
+    vec3 reflDir = normalize(reflect(-V, N));
+    vec3 skyCol = rtProceduralSky(reflDir, sky.horizonColor, sky.zenithColor, sky.exponent);
+    if (sky.cloudsEnabled != 0u) {
+        float day = smoothstep(-0.2, 0.2, -ubo.lightElevation);
+        skyCol += cloudApproxForReflection(reflDir, toSun, day);
+    }
+    vec2 selfUV = gl_FragCoord.xy / max(pc.viewport.xy, vec2(1.0));
+    vec4 ssr = traceSSR(hitPos + N * 0.05, reflDir, V, ubo.viewProjection, selfUV, hitPos.y);
+    vec3 reflCol = mix(skyCol, ssr.rgb, clamp(ssr.a, 0.0, 1.0));
+
+    // ── Refraction: Snell-bent ray, previous-frame solid color behind ──
+    vec3 refrRay = refract(-V, N, 1.0 / max(wp.waterIor, 1.0));
+    if (dot(refrRay, refrRay) < 1e-6) refrRay = reflect(-V, N); // total internal
+    refrRay = normalize(mix(-V, refrRay, clamp(wp.refractionStrength, 0.0, 1.0)));
+    float probe = clamp(wp.maxThickness, 0.0, 64.0) * 0.5 + 2.0;
+    vec3 behind = wp.waterColor;
+    vec4 clipR = ubo.viewProjection * vec4(hitPos + refrRay * probe, 1.0);
+    if (clipR.w > 0.001) {
+        vec2 ruv = clipR.xy / clipR.w * 0.5 + 0.5;
+        if (ruv.x > 0.001 && ruv.x < 0.999 && ruv.y > 0.001 && ruv.y < 0.999) {
+            float depth = textureLod(ssrDepthTex, ruv, 0.0).r;
+            float eye = (ubo.nearPlane * ubo.farPlane) /
+                        (ubo.farPlane - depth * (ubo.farPlane - ubo.nearPlane));
+            float waterEye = length(hitPos - ubo.viewPosition);
+            // Only scene samples BEHIND the water surface (the bottom) are
+            // bottom content; a foreground sample above the lake is terrain,
+            // not what is seen through the water.
+            if (depth < 1.0 && eye > waterEye - 0.5) {
+                behind = textureLod(ssrColorTex, ruv, 0.0).rgb;
+            }
+        }
+    }
+    vec3 refrCol = mix(wp.waterColor, behind, clamp(wp.transparency, 0.0, 1.0));
+
+    return mix(refrCol, reflCol, fresnel);
+}
+
 void main() {
     vec2 extent = max(pc.viewport.xy, vec2(1.0));
     vec2 ndc = gl_FragCoord.xy / extent * 2.0 - 1.0;
@@ -1002,26 +1059,35 @@ void main() {
         return;
     }
 
-    // Water layers shade with a water-surface branch: the water octree stores
-    // the water volume, so the marched hit is its top surface. The pass is
-    // opaque (it writes the solid color/depth targets), so this is the
-    // diagnostic water look — layer tint + Fresnel + sun specular — rather
-    // than the raster water renderer's refraction/transparency.
+    // Water layers shade through the same reflection/refraction response as
+    // the raster water surface: the octree stores the water volume, so the
+    // marched hit is its top surface. The RT variants resolve the exact scene
+    // (Snell refraction to the real bottom + a mirror chain, composed like the
+    // raster surface); the non-RT / RT-off fallback uses the previous frame's
+    // solid color/depth for screen-space reflection + refraction, with the
+    // procedural sky/clouds as the reflection baseline.
     if (rmRoots[nearestRoot].kind == 1u) {
         WaterParamsNamed wp = waterParamsNamed(waterParams[0]);
-        vec3 N = normal;
+        vec3 N = normalize(normal);
         vec3 V = -rd;
-        float ndv = clamp(dot(N, V), 0.0, 1.0);
-        float fresnel = pow(1.0 - ndv, max(wp.fresnelPower, 1.0));
-        vec3 sunDir = normalize(-ubo.lightDirection); // uniform stores light -> scene
-        float ndl = max(dot(N, sunDir), 0.0);
-        vec3 halfDir = normalize(sunDir + V);
+        vec3 color;
+#ifdef RT_ENABLED
+        // Use the exact RT resolve whenever the RT scene is ready: the
+        // raymarched water has no raster water pass to provide the reflective/
+        // refractive look, so the ray-traced scene is its only exact source.
+        bool rtResolve = (rt.tlasReady != 0u);
+        if (rtResolve) {
+            color = rtResolveWaterHit(wp, hitPos, N, rd);
+        } else
+#endif
+        {
+            color = shadeRaymarchWaterFallback(wp, hitPos, N, V);
+        }
+        // Sun specular highlight (the raster water adds it separately).
+        vec3 toSun = normalize(-ubo.lightDirection);
+        vec3 halfDir = normalize(toSun + V);
         float spec = pow(max(dot(N, halfDir), 0.0), max(wp.specularPower, 1.0)) *
                      max(wp.specularIntensity, 0.0);
-        vec3 deep = wp.waterColor;
-        vec3 color = deep * (0.45 + 0.55 * ndl);
-        // Grazing views pick up a brighter sky-ish sheen.
-        color = mix(color, deep * 0.70 + vec3(0.28, 0.34, 0.40), fresnel * 0.75);
         color += vec3(1.0, 0.97, 0.90) * spec;
         outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
         return;

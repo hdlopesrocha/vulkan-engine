@@ -17,13 +17,17 @@
 // previous frame's view-projection so camera motion does not stipple the hit
 // test. Returns rgb = reflected scene color, a = confidence (0 = no usable
 // hit). Falls back to the proxy/sky result for off-screen occluded rays.
+// `minHitY` rejects hits below a world height (the water raymarch uses the
+// water level, so the lake surface / submerged bed is never painted as its own
+// reflection).
 // Marching front to back, the first depth crossing is the first real
 // intersection, so any crossing counts as a hit and a binary search refines
 // it (step-size independent); the self-UV guard rejects the reflector's own
 // surface. `eyeDir` is the unit vector from the surface to the camera: rays
 // nearly tangent to the view direction (silhouettes) are where screen-space
 // marching is least reliable, so they fade out.
-vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir, mat4 prevVP, vec2 selfUV) {
+vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir, mat4 prevVP, vec2 selfUV,
+              float minHitY) {
     float nearP = ubo.nearPlane;
     float farP  = ubo.farPlane;
     float facing = clamp(abs(dot(dir, eyeDir)), 0.0, 1.0);
@@ -57,13 +61,21 @@ vec4 traceSSR(vec3 origin, vec3 dir, vec3 eyeDir, mat4 prevVP, vec2 selfUV) {
                 // The refined UV may have moved back next to the fragment (a
                 // grazing ray that never truly left its own surface): reject.
                 if (distance(uv, selfUV) < 0.02) { prevT = t; continue; }
+                // Reject hits below the caller's world-height floor.
+                if (minHitY > -1e29) {
+                    float dHit = textureLod(ssrDepthTex, uv, 0.0).r;
+                    vec4 wh = ubo.invViewProjection * vec4(uv * 2.0 - 1.0, dHit, 1.0);
+                    if (wh.w > 1e-6 && (wh.y / wh.w) < minHitY) { prevT = t; continue; }
+                }
                 float edge = smoothstep(0.0, 0.06, uv.x) * smoothstep(0.0, 0.06, 1.0 - uv.x)
                            * smoothstep(0.0, 0.06, uv.y) * smoothstep(0.0, 0.06, 1.0 - uv.y);
                 // Crossings further behind the surface are less certain
                 // (ray nearly parallel to it): soften instead of hard-cutting.
                 float gapFade = 1.0 - clamp((rayEye - sceneEye) / max(1.0, sceneEye * 0.25), 0.0, 0.5);
+                // Grazing reflections are physically the strongest (water), so
+                // the silhouette fade is kept narrow.
                 return vec4(textureLod(ssrColorTex, uv, 0.0).rgb,
-                            edge * gapFade * smoothstep(0.03, 0.35, facing));
+                            edge * gapFade * smoothstep(0.0, 0.08, facing));
             }
         }
         prevT = t;
