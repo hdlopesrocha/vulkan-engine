@@ -26,8 +26,6 @@ std::string formatSeconds(double seconds) {
 
 VideoTextureWidget::VideoTextureWidget(std::shared_ptr<VideoTextureService> videos_)
     : Widget("Video Textures", u8"\uf03d"), videos(std::move(videos_)) {
-    // The panel is the primary video inspector: open it on first run.
-    isOpen = true;
 }
 
 void VideoTextureWidget::render() {
