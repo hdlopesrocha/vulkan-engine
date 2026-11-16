@@ -63,17 +63,36 @@ layout(push_constant) uniform PushConstants {
 #include "../../includes/vegetation/VegetationCommon.glsl"
 #include "../../includes/vegetation/BladeGrass.glsl"
 
-// Copy of applyWindSkew from the old billboard shader (height-weighted).
+// Wind response of one blade vertex (height-weighted).
+//
+// 1) LEAN WITH THE WIND (all speeds): the blade bends along the local wind
+//    vector, with a saturating response — light air barely moves it, strong
+//    wind lays it over. `windLeanSpeed` is the speed that reaches ~63% of the
+//    authored bend (`windStrength`); gust noise modulates the bend so a field
+//    does not move uniformly.
+// 2) SWIRL (only above `windSwirlVelocity`): a cross-wind rotation whose
+//    strength grows with the EXCESS speed over that threshold. Blades in
+//    neighbouring gust cells counter-rotate (the tangential sign follows the
+//    gust noise) and the blade also twists along its width, so strong wind
+//    reads as a swirl instead of a uniform lean.
+//
+// The direction comes from the shared 3D fBm field at this blade — there is
+// no authored direction. The impostor capture path has no shared-field
+// binding (its set 0 is UBO-only) and runs with wind disabled, so its fixed +X
+// fallback never produces displacement.
 vec3 applyWindSkew(vec3 basePos, vec3 right, float heightFactor) {
     if (windEnabled < 0.5) return vec3(0.0);
 
-    vec2 windDirXZ = windParams.windDirection;
-    float dirLen = length(windDirXZ);
-    if (dirLen > 0.0001) {
-        windDirXZ /= dirLen;
-    } else {
-        windDirXZ = vec2(0.0, 0.0);
-    }
+    vec2 windXZ = vec2(0.0);
+#ifndef VEG_CAPTURE
+    windXZ = windSVF(basePos, windTime).xz;
+#endif
+    float windSpeed = length(windXZ);
+    vec2 windDirXZ = (windSpeed > 1e-4) ? windXZ / windSpeed : vec2(1.0, 0.0);
+    // Small direct drag offset from the field (height-weighted below).
+    vec3 sharedWind = vec3(clamp(windXZ.x, -15.0, 15.0), 0.0,
+                           clamp(windXZ.y, -15.0, 15.0)) * 0.2;
+
     float amplitude = windParams.windStrength;
     float baseFreq = windParams.windBaseFrequency;
     float speed = windParams.windSpeed;
@@ -94,22 +113,31 @@ vec3 applyWindSkew(vec3 basePos, vec3 right, float heightFactor) {
     float nGust = perlin2(basePos.xz * (gustFreq * noiseScale) - windMotion * 0.35);
     float nSkew = perlin2(basePos.xz * (baseFreq * noiseScale * 2.7) + vec2(windTime * 0.37, -windTime * 0.29));
 
-    float sway = (nBase + nGust * gustStrength) * amplitude;
+    // 1) Lean downwind, saturating with speed. gustMod can never flip the
+    //    blade backwards (a wind gust leans it harder, it never pulls it
+    //    upwind): floor it at a small positive fraction.
+    float lean = 1.0 - exp(-windSpeed / max(windParams.windLeanSpeed, 0.5));
+    float gustMod = max(1.0 + nGust * gustStrength + nBase * 0.15, 0.15);
+    float sway = amplitude * lean * gustMod;
+
+    // 2) Swirl above the threshold: tangential bend (per-region handedness)
+    //    plus a width twist and a little lift, all scaled by the excess speed.
+    float swirlVel = max(windParams.windSwirlVelocity, 0.0);
+    float swirlExcess = max(windSpeed - swirlVel, 0.0);
+    float swirlRamp = swirlExcess / (swirlExcess + max(swirlVel, 1.0));
+    float swirl = swirlRamp * clamp(turbulence, 0.0, 2.0);
+    vec2 swirlDir = vec2(-windDirXZ.y, windDirXZ.x) * ((nGust >= 0.0) ? 1.0 : -1.0);
+    float swirlLean = amplitude * 1.1 * swirl;
+    float twist = amplitude * 0.6 * swirl * nSkew;
+    float lift = amplitude * 0.25 * swirl * abs(nSkew);
+
+    // Per-blade lateral skew and vertical flutter (existing detail).
     float skew = nSkew * skewAmount * amplitude;
-    vec2 turbulentDir = vec2(-windDirXZ.y, windDirXZ.x) * (nBase * turbulence * 0.35);
     float flutter = nSkew * verticalFlutter * amplitude;
 
-    vec3 horizontal = vec3((windDirXZ + turbulentDir) * sway, 0.0);
-    vec3 skewOffset = right * (skew * bendWeight);
-    vec3 vertical = vec3(0.0, abs(flutter) * bendWeight, 0.0);
-    vec3 sharedWind = vec3(0.0);
-#ifndef VEG_CAPTURE
-    {
-        vec3 svfVeg = windSVF(basePos, windTime);
-        vec2 svfVegXZ = clamp(svfVeg.xz, vec2(-15.0), vec2(15.0));
-        sharedWind = vec3(svfVegXZ.x, 0.0, svfVegXZ.y) * 0.2;
-    }
-#endif
+    vec3 horizontal = vec3(windDirXZ * sway + swirlDir * swirlLean, 0.0);
+    vec3 skewOffset = right * (skew * bendWeight + twist);
+    vec3 vertical = vec3(0.0, (abs(flutter) + lift) * bendWeight, 0.0);
     return (horizontal + sharedWind + skewOffset + vertical) * bendWeight;
 }
 

@@ -1916,19 +1916,23 @@ void VegetationRenderer::updateWindFieldUBO() {
     if (!windFieldMapped) return;
 
     WindField packed{};
-    // Ambient mirrors the vegetation wind sliders at pack time (no duplicate
-    // sliders; same clamps as updateWindParamsUBO).
-    glm::vec2 windDir = windSettings.direction;
-    const float len2 = windDir.x * windDir.x + windDir.y * windDir.y;
-    if (len2 > 1e-8f) {
-        const float invLen = 1.0f / std::sqrt(len2);
-        windDir *= invLen;
-    }
-    packed.ambientA = glm::vec4(windDir.x, windDir.y,
-        std::max(0.0f, windSettings.strength), std::max(0.0f, windSettings.speed));
-    packed.ambientB = glm::vec4(std::max(0.00001f, windSettings.baseFrequency),
-        std::max(0.00001f, windSettings.gustFrequency),
-        std::max(0.0f, windSettings.gustStrength), 0.0f);
+    // No mean flow / authored direction: the wind vector is the fBm field
+    // itself (see windAmbient). ambientA only carries the animation clock
+    // multiplier; its xyz lanes are reserved and packed as zero.
+    packed.ambientA = glm::vec4(0.0f, 0.0f, 0.0f, std::max(0.0f, windSettings.speed));
+    // Vector-fBm gust field parameters. Clamps mirror the shader's
+    // windFbm3(): the octave count is the GLSL loop bound, and frequency/
+    // lacunarity/gain are kept in the ranges the shader assumes.
+    packed.ambientB = glm::vec4(
+        std::clamp(windSettings.fbmFrequency, 0.00001f, 1.0f),
+        static_cast<float>(std::clamp(windSettings.fbmOctaves, 1,
+                                      static_cast<int>(kWindFbmMaxOctaves))),
+        std::clamp(windSettings.fbmLacunarity, 1.0f, 4.0f),
+        std::clamp(windSettings.fbmGain, 0.0f, 0.95f));
+    packed.ambientC = glm::vec4(
+        std::max(0.0f, windSettings.fbmAmplitude),
+        std::clamp(windSettings.fbmVertical, 0.0f, 1.0f),
+        windSettings.fbmSeed, 0.0f);
     // Tornado list: groundY is a per-tornado parameter (default sea level).
     // No runtime CPU heightfield is reachable from this updater (all
     // HeightFunction::getHeightAt implementations are build-time terrain
@@ -1951,7 +1955,7 @@ void VegetationRenderer::updateWindFieldUBO() {
         windFieldSettings.windDebugIso, 0.0f);
 
     // Write-on-change (M11 pattern): bitwise compare is exact — packed is a
-    // plain float vec4 aggregate with no padding (static_asserted 304 bytes).
+    // plain float vec4 aggregate with no padding (static_asserted 320 bytes).
     if (windFieldCacheValid && std::memcmp(&windFieldCache, &packed, sizeof(packed)) == 0)
         return;
     std::memcpy(windFieldMapped, &packed, sizeof(packed));
@@ -1979,12 +1983,13 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
         const DistanceDensitySettings& pd = windParamsSnapDensity;
         if (windParamsSnapValid && cameraPos == windParamsSnapCam &&
             impostorDistance == windParamsSnapImpostor &&
-            sw.enabled == pw.enabled && sw.direction == pw.direction &&
+            sw.enabled == pw.enabled &&
             sw.strength == pw.strength && sw.baseFrequency == pw.baseFrequency &&
             sw.speed == pw.speed && sw.gustFrequency == pw.gustFrequency &&
             sw.gustStrength == pw.gustStrength && sw.skewAmount == pw.skewAmount &&
             sw.trunkStiffness == pw.trunkStiffness && sw.noiseScale == pw.noiseScale &&
             sw.verticalFlutter == pw.verticalFlutter && sw.turbulence == pw.turbulence &&
+            sw.leanVelocity == pw.leanVelocity && sw.swirlVelocity == pw.swirlVelocity &&
             sd.enabled == pd.enabled && sd.fullDensityDistance == pd.fullDensityDistance &&
             sd.minDensityDistance == pd.minDensityDistance &&
             sd.minDensityFactor == pd.minDensityFactor) {
@@ -1994,13 +1999,6 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
 
     WindParamsUBO params{};
 
-    glm::vec2 windDir = windSettings.direction;
-    const float len2 = windDir.x * windDir.x + windDir.y * windDir.y;
-    if (len2 > 1e-8f) {
-        const float invLen = 1.0f / std::sqrt(len2);
-        windDir *= invLen;
-    }
-    params.windDirection = windDir;
     params.windStrength = std::max(0.0f, windSettings.strength);
     params.windBaseFrequency = std::max(0.00001f, windSettings.baseFrequency);
     params.windSpeed = std::max(0.0f, windSettings.speed);
@@ -2027,6 +2025,9 @@ void VegetationRenderer::updateWindParamsUBO(const glm::vec3& cameraPos) {
     params.nearDistance = nearDistance;
     params.farDistance = farDistance;
     params.minFactor = minFactor;
+    // Sway response: the saturating lean speed and the swirl threshold (m/s).
+    params.windLeanSpeed = std::clamp(windSettings.leanVelocity, 0.5f, 200.0f);
+    params.windSwirlVelocity = std::clamp(windSettings.swirlVelocity, 0.0f, 200.0f);
     params.cameraPosition = cameraPos;
     params.densityFalloff = falloff;
 

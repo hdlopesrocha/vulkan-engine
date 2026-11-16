@@ -22,42 +22,118 @@ void WindWidget::render() {
     if (ImGui::CollapsingHeader("Wind", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable Wind", &wind.enabled);
 
-        ImGui::SliderFloat2("Direction (X/Z)", &wind.direction.x, -1.0f, 1.0f, "%.2f");
-        ImGuiHelpers::SetTooltipIfHovered("Wind direction in world XZ plane.");
+        ImGui::TextWrapped(
+            "The wind velocity IS the 3D fBm field below: there is no authored "
+            "direction, the local fBm vector sets it. All consumers (vegetation, "
+            "clouds, fire, wind trails) sample that one field.");
 
-        ImGui::SliderFloat("Strength", &wind.strength, 0.0f, 24.0f, "%.2f");
-        ImGuiHelpers::SetTooltipIfHovered("Overall horizontal bend amount.");
+        if (ImGui::Button("Reset Wind Defaults")) {
+            wind = VegetationRenderer::WindSettings{};
+        }
+    }
 
-        ImGui::SliderFloat("Base Frequency", &wind.baseFrequency, 0.0001f, 0.05f, "%.5f");
-        ImGuiHelpers::SetTooltipIfHovered("Scale of large wind waves.");
+    // ── Vector fBm wind field ───────────────────────────────────────────────
+    // Every axis is its own octave stack over the shared Perlin field, so the
+    // wind velocity is a true 3D vector: its local direction comes from the
+    // noise, nothing is authored.
+    if (ImGui::CollapsingHeader("FBM Field", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextWrapped(
+            "The 3D vector fBm IS the wind velocity, shared by vegetation, clouds, "
+            "fire and the wind trails.");
+
+        ImGui::SliderFloat("Frequency", &wind.fbmFrequency, 0.0002f, 0.05f, "%.5f");
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Spatial frequency of the first octave (1/m). Smaller = larger gust cells\n"
+            "(0.002 ~= 500 m features).");
+
+        ImGui::SliderInt("Octaves", &wind.fbmOctaves, 1,
+                         static_cast<int>(kWindFbmMaxOctaves));
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Number of noise layers. Each octave adds detail at lacunarity x frequency\n"
+            "and gain x amplitude. Cost scales linearly: 3 noise samples per octave\n"
+            "per wind evaluation, so lower this first if the field is too slow.");
+
+        ImGui::SliderFloat("Lacunarity", &wind.fbmLacunarity, 1.0f, 4.0f, "%.2f");
+        ImGuiHelpers::SetTooltipIfHovered("Frequency multiplier between octaves (classic fBm: 2.0).");
+
+        ImGui::SliderFloat("Gain", &wind.fbmGain, 0.0f, 0.95f, "%.2f");
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Amplitude multiplier between octaves (a.k.a. persistence).\n"
+            "0 = only the first octave, 0.5 = classic fBm detail.");
+
+        ImGui::SliderFloat("Amplitude", &wind.fbmAmplitude, 0.0f, 50.0f, "%.2f m/s");
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Peak wind speed of the fBm field, in m/s. 0 disables the wind\n"
+            "(there is no separate mean flow).");
+
+        ImGui::SliderFloat("Vertical Weight", &wind.fbmVertical, 0.0f, 1.0f, "%.2f");
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Authority of the Y (vertical) component: 1 = all three axes equal\n"
+            "(a true 3D field), 0 = horizontal gusts only.");
 
         ImGui::SliderFloat("Speed", &wind.speed, 0.0f, 10.0f, "%.2f");
-        ImGuiHelpers::SetTooltipIfHovered("How fast wind noise advects over time.");
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Temporal evolution speed of the fBm field (0 = frozen pattern).\n"
+            "Also scales the per-blade sway scroll.");
+
+        ImGui::DragFloat("Seed", &wind.fbmSeed, 0.25f, -1000.0f, 1000.0f, "%.2f");
+        ImGuiHelpers::SetTooltipIfHovered("Domain offset; different seeds give a different wind pattern.");
+
+        if (ImGui::Button("Reset FBM Defaults")) {
+            const VegetationRenderer::WindSettings defaults{};
+            wind.fbmFrequency = defaults.fbmFrequency;
+            wind.fbmOctaves = defaults.fbmOctaves;
+            wind.fbmLacunarity = defaults.fbmLacunarity;
+            wind.fbmGain = defaults.fbmGain;
+            wind.fbmAmplitude = defaults.fbmAmplitude;
+            wind.fbmVertical = defaults.fbmVertical;
+            wind.speed = defaults.speed;
+            wind.fbmSeed = defaults.fbmSeed;
+        }
+    }
+
+    // ── Per-blade sway detail (vegetation only) ─────────────────────────────
+    if (ImGui::CollapsingHeader("Vegetation Sway")) {
+        ImGui::SliderFloat("Sway Strength", &wind.strength, 0.0f, 24.0f, "%.2f");
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Blade bend amount (metres) at full lean. The sway DIRECTION is extracted\n"
+            "from the shared fBm wind at each blade — there is no authored direction.");
+
+        ImGui::SliderFloat("Lean Velocity", &wind.leanVelocity, 0.5f, 30.0f, "%.1f m/s");
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Wind speed at which the blade lean reaches ~63% of Sway Strength\n"
+            "(saturating response: light air barely moves the grass, strong wind\n"
+            "lays it over). The lean direction is the local wind direction.");
+
+        ImGui::SliderFloat("Swirl Velocity", &wind.swirlVelocity, 0.0f, 60.0f, "%.1f m/s");
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Below this wind speed blades only lean downwind. Above it they also\n"
+            "swirl: a cross-wind rotation that grows with the EXCESS speed and is\n"
+            "scaled by Turbulence (neighbouring gust cells counter-rotate).");
+
+        ImGui::SliderFloat("Base Frequency", &wind.baseFrequency, 0.0001f, 0.05f, "%.5f");
+        ImGuiHelpers::SetTooltipIfHovered("Scale of the large sway waves.");
 
         ImGui::SliderFloat("Gust Frequency", &wind.gustFrequency, 0.0001f, 0.12f, "%.5f");
-        ImGuiHelpers::SetTooltipIfHovered("Scale of smaller gust patterns.");
+        ImGuiHelpers::SetTooltipIfHovered("Scale of the finer sway patterns.");
 
         ImGui::SliderFloat("Gust Strength", &wind.gustStrength, 0.0f, 2.0f, "%.2f");
-        ImGuiHelpers::SetTooltipIfHovered("How strongly gust noise amplifies sway.");
+        ImGuiHelpers::SetTooltipIfHovered("How strongly the sway gust noise amplifies blade motion.");
 
         ImGui::SliderFloat("Skew Amount", &wind.skewAmount, 0.0f, 10.0f, "%.2f");
-        ImGuiHelpers::SetTooltipIfHovered("Side skew of billboard tops to simulate blade lean.");
+        ImGuiHelpers::SetTooltipIfHovered("Side skew of blade tips to simulate lean.");
 
         ImGui::SliderFloat("Trunk Stiffness", &wind.trunkStiffness, 0.0f, 1.0f, "%.2f");
         ImGuiHelpers::SetTooltipIfHovered("0 = very stiff base, 1 = bends from base to tip.");
 
         ImGui::SliderFloat("Noise Scale", &wind.noiseScale, 0.1f, 6.0f, "%.2f");
-        ImGuiHelpers::SetTooltipIfHovered("Global scale multiplier for both Perlin fields.");
+        ImGuiHelpers::SetTooltipIfHovered("Global scale multiplier for both sway Perlin fields.");
 
         ImGui::SliderFloat("Vertical Flutter", &wind.verticalFlutter, 0.0f, 2.0f, "%.2f");
         ImGuiHelpers::SetTooltipIfHovered("Adds subtle upward flicker at blade tips.");
 
         ImGui::SliderFloat("Turbulence", &wind.turbulence, 0.0f, 2.0f, "%.2f");
         ImGuiHelpers::SetTooltipIfHovered("Cross-wind variation so chunks do not sway uniformly.");
-
-        if (ImGui::Button("Reset Wind Defaults")) {
-            wind = VegetationRenderer::WindSettings{};
-        }
     }
 
     if (ImGui::CollapsingHeader("Tornadoes")) {

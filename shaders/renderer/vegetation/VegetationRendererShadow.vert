@@ -109,35 +109,57 @@ void main() {
     }
     localPos *= scale;
 
-    // Wind (same as the main blade shader)
-    vec2 windDirXZ = windParams.windDirection;
-    float dirLen = length(windDirXZ);
-    if (dirLen > 0.0001) windDirXZ /= dirLen; else windDirXZ = vec2(0.0);
-    float amplitude = windParams.windStrength;
-    float baseFreq = windParams.windBaseFrequency;
-    float speed = windParams.windSpeed;
-    float gustFreq = windParams.gustFrequency;
-    float gustStrength = windParams.gustStrength;
-    float skewAmount = windParams.skewAmount;
-    float trunkStiffness = windParams.trunkStiffness;
-    float noiseScale = windParams.noiseScale;
-    float verticalFlutter = windParams.verticalFlutter;
-    float turbulence = windParams.turbulence;
-    float bendWeight = pow(clamp(heightT, 0.0, 1.0), mix(4.0, 1.0, clamp(trunkStiffness, 0.0, 1.0)));
-    vec2 windMotion = windDirXZ * (windTime * speed);
-    vec2 p = worldPos.xz * (baseFreq * noiseScale);
-    float nBase = perlin2(p + windMotion);
-    float nSkew = perlin2(worldPos.xz * (baseFreq * noiseScale * 2.7) + vec2(windTime * 0.37, -windTime * 0.29));
-    float sway = (nBase + perlin2(worldPos.xz * (gustFreq * noiseScale) - windMotion * 0.35) * gustStrength) * amplitude;
-    float skew = nSkew * skewAmount * amplitude;
-    vec2 turbulentDir = vec2(-windDirXZ.y, windDirXZ.x) * (nBase * turbulence * 0.35);
-    vec3 horizontal = vec3((windDirXZ + turbulentDir) * sway, 0.0);
-    vec3 skewOffset = baseDir * (skew * bendWeight);
-    vec3 vertical = vec3(0.0, abs(nSkew * verticalFlutter * amplitude) * bendWeight, 0.0);
-    vec3 svfSh = (windEnabled >= 0.5) ? windSVF(worldPos, windTime) : vec3(0.0);
-    vec2 svfShXZ = clamp(svfSh.xz, vec2(-15.0), vec2(15.0));
-    vec3 sharedWind = vec3(svfShXZ.x, 0.0, svfShXZ.y) * 0.2;
-    vec3 windOffset = (horizontal + sharedWind + skewOffset + vertical) * bendWeight;
+    // Wind response — must stay identical to applyWindSkew in the main blade
+    // shader so the shadow matches the lit grass. Direction comes from the
+    // shared 3D fBm field; blades lean downwind (saturating with speed) and
+    // only swirl above windSwirlVelocity. Wind disabled = no displacement
+    // (same early-out as the lit blade).
+    vec3 windOffset = vec3(0.0);
+    if (windEnabled >= 0.5) {
+        vec3 svfSh = windSVF(worldPos, windTime);
+        vec2 windXZ = svfSh.xz;
+        float windSpeed = length(windXZ);
+        vec2 windDirXZ = (windSpeed > 1e-4) ? windXZ / windSpeed : vec2(1.0, 0.0);
+        float amplitude = windParams.windStrength;
+        float baseFreq = windParams.windBaseFrequency;
+        float speed = windParams.windSpeed;
+        float gustFreq = windParams.gustFrequency;
+        float gustStrength = windParams.gustStrength;
+        float skewAmount = windParams.skewAmount;
+        float trunkStiffness = windParams.trunkStiffness;
+        float noiseScale = windParams.noiseScale;
+        float verticalFlutter = windParams.verticalFlutter;
+        float turbulence = windParams.turbulence;
+        float bendWeight = pow(clamp(heightT, 0.0, 1.0), mix(4.0, 1.0, clamp(trunkStiffness, 0.0, 1.0)));
+        vec2 windMotion = windDirXZ * (windTime * speed);
+        vec2 p = worldPos.xz * (baseFreq * noiseScale);
+        float nBase = perlin2(p + windMotion);
+        float nGust = perlin2(worldPos.xz * (gustFreq * noiseScale) - windMotion * 0.35);
+        float nSkew = perlin2(worldPos.xz * (baseFreq * noiseScale * 2.7) + vec2(windTime * 0.37, -windTime * 0.29));
+
+        float lean = 1.0 - exp(-windSpeed / max(windParams.windLeanSpeed, 0.5));
+        float gustMod = max(1.0 + nGust * gustStrength + nBase * 0.15, 0.15);
+        float sway = amplitude * lean * gustMod;
+
+        float swirlVel = max(windParams.windSwirlVelocity, 0.0);
+        float swirlExcess = max(windSpeed - swirlVel, 0.0);
+        float swirlRamp = swirlExcess / (swirlExcess + max(swirlVel, 1.0));
+        float swirl = swirlRamp * clamp(turbulence, 0.0, 2.0);
+        vec2 swirlDir = vec2(-windDirXZ.y, windDirXZ.x) * ((nGust >= 0.0) ? 1.0 : -1.0);
+        float swirlLean = amplitude * 1.1 * swirl;
+        float twist = amplitude * 0.6 * swirl * nSkew;
+        float lift = amplitude * 0.25 * swirl * abs(nSkew);
+
+        float skew = nSkew * skewAmount * amplitude;
+        float flutter = nSkew * verticalFlutter * amplitude;
+
+        vec3 horizontal = vec3(windDirXZ * sway + swirlDir * swirlLean, 0.0);
+        vec3 skewOffset = baseDir * (skew * bendWeight + twist);
+        vec3 vertical = vec3(0.0, (abs(flutter) + lift) * bendWeight, 0.0);
+        vec2 svfShXZ = clamp(svfSh.xz, vec2(-15.0), vec2(15.0));
+        vec3 sharedWind = vec3(svfShXZ.x, 0.0, svfShXZ.y) * 0.2;
+        windOffset = (horizontal + sharedWind + skewOffset + vertical) * bendWeight;
+    }
 
     vec3 surfN = inInstanceNormal;
     float surfNLen2 = dot(surfN, surfN);

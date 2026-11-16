@@ -30,10 +30,32 @@ class VegetationRenderer : public Renderer {
 public:
     struct WindSettings {
         bool enabled = true;
-        glm::vec2 direction = glm::vec2(1.0f, 0.0f);
-        float strength = 4.0f;
-        float baseFrequency = 0.003f;
+        // Wind animation clock multiplier: scales the fBm field's temporal
+        // evolution and the per-blade sway scroll.
         float speed = 0.75f;
+
+        // ── Vector-fBm wind velocity (shared WindField UBO: all consumers) ──
+        // The wind velocity IS the fBm field: there is no authored direction,
+        // the local vector points wherever the noise does.
+        float fbmFrequency = 0.002f;  // spatial scale of the first octave (1/m)
+        int fbmOctaves = 3;           // 1..kWindFbmMaxOctaves (cost scales)
+        float fbmLacunarity = 2.0f;   // frequency gain per octave
+        float fbmGain = 0.5f;         // amplitude gain per octave (persistence)
+        float fbmAmplitude = 16.0f;   // peak wind speed (m/s), 0 = no wind
+        float fbmVertical = 1.0f;     // 0..1 authority of the Y component
+        float fbmSeed = 0.0f;         // domain offset (decorrelates fields)
+
+        // ── Per-blade sway detail (WindParamsUBO, vegetation only) ─────────
+        // strength is the sway bend amount (metres); the sway DIRECTION comes
+        // from the local shared field at each blade (no authored direction).
+        float strength = 4.0f;
+        // Wind speed (m/s) at which the lean reaches ~63% of `strength`
+        // (saturating response: light air barely bends, strong wind lays over).
+        float leanVelocity = 6.0f;
+        // Swirl threshold (m/s): below it blades only lean downwind; above it
+        // they also rotate cross-wind, scaled by the excess speed.
+        float swirlVelocity = 12.0f;
+        float baseFrequency = 0.003f;
         float gustFrequency = 0.012f;
         float gustStrength = 0.45f;
         float skewAmount = 1.75f;

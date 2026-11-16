@@ -5,28 +5,31 @@
 // definition shared with the CPU: vulkan/ubo/WindParamsUBO.hpp — same names,
 // fields and offsets.
 // Offset table (verified against the C++ static_asserts):
-//   windDirection 0, windStrength 8, windBaseFrequency 12, windSpeed 16,
-//   gustFrequency 20, gustStrength 24, skewAmount 28, trunkStiffness 32,
-//   noiseScale 36, verticalFlutter 40, turbulence 44, densityEnabled 48,
-//   nearDistance 52, farDistance 56, minFactor 60, cameraPosition 64,
-//   densityFalloff 76.
+//   windStrength 0, windBaseFrequency 4, windSpeed 8, gustFrequency 12,
+//   gustStrength 16, skewAmount 20, trunkStiffness 24, noiseScale 28,
+//   verticalFlutter 32, turbulence 36, densityEnabled 40, nearDistance 44,
+//   farDistance 48, minFactor 52, windLeanSpeed 56, windSwirlVelocity 60,
+//   cameraPosition 64, densityFalloff 76.
+// There is no wind-direction lane: the shared wind velocity is the 3D fBm
+// field and the sway direction is extracted from it at each blade.
 // Booleans are uint flags (compare with == 0u / != 0u).
 struct WindParamsUBO {
-    vec2 windDirection;    // offset  0  normalized wind dir (XZ)
-    float windStrength;    // offset  8
-    float windBaseFrequency;// offset 12
-    float windSpeed;       // offset 16
-    float gustFrequency;   // offset 20
-    float gustStrength;    // offset 24
-    float skewAmount;      // offset 28
-    float trunkStiffness;  // offset 32
-    float noiseScale;      // offset 36
-    float verticalFlutter; // offset 40
-    float turbulence;      // offset 44
-    uint densityEnabled;   // offset 48  1 = distance thinning on
-    float nearDistance;    // offset 52
-    float farDistance;     // offset 56
-    float minFactor;       // offset 60
+    float windStrength;    // offset  0  sway bend amount (m)
+    float windBaseFrequency;// offset  4
+    float windSpeed;       // offset  8  sway noise scroll
+    float gustFrequency;   // offset 12
+    float gustStrength;    // offset 16  0 = laminar
+    float skewAmount;      // offset 20
+    float trunkStiffness;  // offset 24
+    float noiseScale;      // offset 28
+    float verticalFlutter; // offset 32
+    float turbulence;      // offset 36
+    uint densityEnabled;   // offset 40  1 = distance thinning on
+    float nearDistance;    // offset 44
+    float farDistance;     // offset 48
+    float minFactor;       // offset 52
+    float windLeanSpeed;   // offset 56  wind speed for ~63% lean (m/s)
+    float windSwirlVelocity;// offset 60  swirl threshold (m/s)
     vec3 cameraPosition;   // offset 64
     float densityFalloff;  // offset 76
 };

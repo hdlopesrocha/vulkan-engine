@@ -1,15 +1,18 @@
 // Shared wind-field sampling contract (set=0, binding 27).
 //
 // Every consumer (vegetation vertex, fire, SDF, volumetric clouds) includes
-// this file to sample the IDENTICAL field: ambient base flow + Perlin gusts +
-// up to 4 Rankine tornadoes, all GPU-side functions of the consumer's own
-// clock (Bullet pattern: zero per-frame CPU beyond the packed UBO).
+// this file to sample the IDENTICAL field: a VECTOR-VALUED fBm velocity field
+// (all three axes; there is no authored direction or mean flow — the local
+// direction IS the fBm direction) plus up to 4 Rankine tornadoes, all GPU-side
+// functions of the consumer's own clock (Bullet pattern: zero per-frame CPU
+// beyond the packed UBO).
 //
 // Requires perlin.glsl (perlinNoise3D) to be included BEFORE this file.
 // The uniform block is declared here so consumers only need this one include.
 //
 // Consumer API:
-//   vec3 windAmbient(vec3 p, float time)              — base flow + gusts
+//   vec3 windFbm3(vec3 p, float time)                  — raw vector fBm, |v| <= 1
+//   vec3 windAmbient(vec3 p, float time)               — fBm velocity (m/s)
 //   vec3 tornadoVelocity(WindTornado t, vec3 p, float time) — one funnel
 //   vec3 windSVF(vec3 p, float time)                   — ambient + all active
 // UBO field semantics: see shaders/ubo/WindField.glsl (component letters)
@@ -23,27 +26,80 @@ layout(set = 0, binding = 27) uniform WindFieldBlock {
     WindField windField;
 };
 
-// Ambient base flow + Perlin gusts. NaN-safe: direction re-normalized with a
-// degenerate fallback, all divisors floored, inputs clamped (huge world/time
-// coordinates lose float precision and poison the hash otherwise).
-vec3 windAmbient(vec3 p, float time) {
-    vec2 d = windField.ambientA.xy;
-    float dl = length(d);
-    d = (dl > 1e-4) ? d / dl : vec2(1.0, 0.0);
-    float strength = max(windField.ambientA.z, 0.0);
+// Vector-valued fBm gust field: the wind velocity itself.
+//
+// Each component is its own octave stack sampled at a decorrelated domain
+// offset, so the wind velocity varies along X, Y and Z (no axis is
+// privileged) and its local direction comes straight out of the noise field.
+// Parameters live in ambientB/ambientC and are edited in the Wind widget's
+// "FBM Field" section:
+//   ambientB.x frequency   spatial scale of the first octave (1/m)
+//   ambientB.y octaves     active octave count (1..WIND_FBM_MAX_OCTAVES)
+//   ambientB.z lacunarity  frequency multiplier per octave
+//   ambientB.w gain        amplitude multiplier per octave (persistence)
+//   ambientC.z seed        world-space domain offset
+// The result is normalized by the amplitude sum, so |fbm| stays ~<= 1 for any
+// octave count and the m/s amplitude in ambientC.x keeps its meaning.
+//
+// There is no mean flow to advect the domain, so the pattern instead morphs
+// along a fixed diagonal at a rate scaled by the shared wind speed slider
+// (ambientA.w).
+//
+// NaN-safe: inputs are clamped by the caller, frequencies are floored and the
+// octave count is clamped to the compile-time loop bound.
+vec3 windFbm3(vec3 p, float time) {
+    // Decorrelating offsets for the Y and Z components: three far-apart
+    // samples of the same Perlin lattice.
+    const vec3 kComponentOffsetY = vec3(31.416, 17.234, 11.719);
+    const vec3 kComponentOffsetZ = vec3(-13.137, 41.309, 7.913);
+
+    int octaves = int(clamp(windField.ambientB.y, 1.0, float(WIND_FBM_MAX_OCTAVES)) + 0.5);
+    float frequency = clamp(windField.ambientB.x, 1e-6, 1.0);
+    float lacunarity = clamp(windField.ambientB.z, 1.0, 4.0);
+    float gain = clamp(windField.ambientB.w, 0.0, 0.95);
+    float seed = clamp(windField.ambientC.z, -1000.0, 1000.0);
     float speed = max(windField.ambientA.w, 0.0);
+
+    // World-space translation of the gust domain: the field has no mean flow,
+    // so the only motion is a slow morph along a fixed diagonal (scaled by the
+    // shared wind speed slider) plus the seed offset.
+    vec3 worldOffset = vec3(0.7, 0.3, 1.0) * (time * 3.0 * speed)
+                     + vec3(seed * 137.13, seed * 73.31, seed * 39.77);
+
+    vec3 sum = vec3(0.0);
+    float amp = 1.0;
+    float ampSum = 0.0;
+    float f = frequency;
+    for (int i = 0; i < WIND_FBM_MAX_OCTAVES; ++i) {
+        if (i >= octaves) break;
+        // Every octave travels at the same world-space speed: its noise-space
+        // point is scaled by its own frequency, offset included.
+        vec3 q = p * f + worldOffset * f;
+        sum.x += perlinNoise3D(q) * amp;
+        sum.y += perlinNoise3D(q + kComponentOffsetY) * amp;
+        sum.z += perlinNoise3D(q + kComponentOffsetZ) * amp;
+        ampSum += amp;
+        f *= lacunarity;
+        amp *= gain;
+    }
+    return sum / max(ampSum, 1e-6);
+}
+
+// Wind velocity (m/s): the 3D fBm field scaled by ambientC.x. The direction is
+// whatever the local fBm vector points at — nothing is authored. The vertical
+// component is weighted by ambientC.y (1 = all three axes equal). NaN-safe:
+// inputs clamped (huge world/time coordinates lose float precision and poison
+// the hash otherwise).
+vec3 windAmbient(vec3 p, float time) {
+    // 0 = no ambient wind at all (skips the whole fBm; the branch is uniform).
+    float gustAmplitude = clamp(windField.ambientC.x, 0.0, 128.0);
+    if (gustAmplitude <= 0.0) return vec3(0.0);
+
     float t = clamp(time, 0.0, 86400.0);
     vec3 pc = vec3(clamp(p.x, -1e5, 1e5), clamp(p.y, -1e4, 1e4), clamp(p.z, -1e5, 1e5));
-    float bf = max(windField.ambientB.x, 1e-5);
-    float gf = max(windField.ambientB.y, 1e-5);
-    float gs = clamp(windField.ambientB.z, 0.0, 4.0);
-    // Large-scale advected gust + finer cross detail, both time-scrolled.
-    float n1 = perlinNoise3D(vec3(pc.x * bf, pc.z * bf, t * speed * 0.05));
-    float n2 = perlinNoise3D(vec3(pc.x * gf + 37.7, pc.z * gf - 11.3, t * speed * 0.09 + 5.2));
-    vec3 base = vec3(d.x, 0.0, d.y) * strength;
-    vec2 perp = vec2(-d.y, d.x);
-    vec3 gust = (vec3(d.x, 0.0, d.y) * n1 + vec3(perp.x, 0.0, perp.y) * (n2 * 0.6)) * (gs * strength);
-    return base + gust + vec3(0.0, n1 * gs * strength * 0.15, 0.0);
+    vec3 gust = windFbm3(pc, t) * gustAmplitude;
+    gust.y *= clamp(windField.ambientC.y, 0.0, 1.0);
+    return gust;
 }
 
 // Funnel centre, fully GPU-side: base + drift * scaled time + wander orbit.

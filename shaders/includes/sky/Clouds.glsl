@@ -72,36 +72,41 @@
 const float CLOUD_WIND_SHEAR_SECONDS = 90.0;
 const float CLOUD_WIND_SHEAR_MAX = 3.0;
 
-// Shared-field ambient direction, normalized with the same degenerate
-// fallback as windAmbient (the CPU packs ambientA.xy normalized already).
+// Prevailing drift direction, extracted from the fBm field itself: its first
+// octave sampled at the world origin at t=0. That makes it a pure function of
+// the seed/parameters (constant per frame), so the bulk cloud-domain offset
+// (dir * cloudTime) never jitters as the live field evolves. There is no
+// authored wind direction anymore. Falls back to +X on a degenerate sample.
 vec2 cloudWindDir() {
-    vec2 d = windField.ambientA.xy;
+    float freq = clamp(windField.ambientB.x, 1e-6, 1.0);
+    float seed = clamp(windField.ambientC.z, -1000.0, 1000.0);
+    vec3 p0 = vec3(seed * 137.13, seed * 73.31, seed * 39.77) * freq;
+    const vec3 kOffsetZ = vec3(-13.137, 41.309, 7.913);
+    vec2 d = vec2(perlinNoise3D(p0), perlinNoise3D(p0 + kOffsetZ));
     float l = length(d);
     return (l > 1e-4) ? d / l : vec2(1.0, 0.0);
 }
 
-// Bulk cloud-domain drift: the shared field's ambient base flow integrated
-// over the scaled cloud clock. Spatially constant, so the conservative puff
-// SDF and the volume density translate by the exact same offset (the
-// empty-space skip contract is unchanged). Replaces the old private
-// windSpeed/windAngleDeg sliders: direction and strength now mirror the
-// vegetation Wind widget, windResponse is the cloud-side gain.
+// Bulk cloud-domain drift: the prevailing fBm direction integrated over the
+// scaled cloud clock. Spatially constant, so the conservative puff SDF and the
+// volume density translate by the exact same offset (the empty-space skip
+// contract is unchanged). Speed scale = the fBm gust amplitude (m/s), since
+// the shared field no longer has a mean flow.
 vec2 cloudWindVec(float speedMul) {
     float response = clamp(sky.windResponse, 0.0, 10.0);
-    float strength = max(windField.ambientA.z, 0.0);
-    return cloudWindDir() * (strength * response * speedMul * sky.cloudTime);
+    float speed = max(windField.ambientC.x, 0.0);
+    return cloudWindDir() * (speed * response * speedMul * sky.cloudTime);
 }
 
-// Local shared-field shear for the noise domain only: gust + tornado
-// deviation from the ambient base flow, sampled at the cloud point on the
-// shared real-time wind clock. World m/s -> domain units through the tier
-// scale, soft-saturated at CLOUD_WIND_SHEAR_MAX. Applied exactly where
-// cloudWarpOffset is applied (coverage/detail noise, never the puff SDF), so
-// the conservative skip bound still holds.
+// Local shared-field shear for the noise domain only: the 3D fBm velocity
+// sampled at the cloud point on the shared real-time wind clock. World m/s ->
+// domain units through the tier scale, soft-saturated at
+// CLOUD_WIND_SHEAR_MAX. Applied exactly where cloudWarpOffset is applied
+// (coverage/detail noise, never the puff SDF), so the conservative skip bound
+// still holds.
 vec2 cloudWindShear(vec3 p, float tierScale, float speedMul) {
     float response = clamp(sky.windResponse, 0.0, 10.0);
-    vec2 vDev = windSVF(p, sky.windTime).xz
-              - cloudWindDir() * max(windField.ambientA.z, 0.0);
+    vec2 vDev = windSVF(p, sky.windTime).xz;
     vec2 shear = vDev * (response * speedMul * tierScale * CLOUD_WIND_SHEAR_SECONDS);
     float m = length(shear);
     return shear * (CLOUD_WIND_SHEAR_MAX / (CLOUD_WIND_SHEAR_MAX + m));
