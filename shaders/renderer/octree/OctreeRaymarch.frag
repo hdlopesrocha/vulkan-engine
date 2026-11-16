@@ -13,7 +13,8 @@
 // terrain layer (Solid and Water) and shades the nearest isosurface hit. Solid
 // layers go through the same shadeSolidSurface() routine the raster path uses
 // (materials/mapping, CSM shadows, RT reflections/contact shadows); Water
-// layers use a water-surface shading branch (tint + Fresnel + specular).
+// layers use a water-surface shading branch (Snell-refracted lake bed + sky/SSR
+// reflection, composed with the raster surface's Fresnel/strength mix).
 //
 // The node table (utils/OctreeRaymarchTable.hpp) stores SURFACE cells only,
 // flattened breadth-first per enabled terrain layer. Each layer contributes one
@@ -871,61 +872,208 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
     return false;
 }
 
+// ── Hit shading payload (primary surface and underwater bed) ──────────────
+// Reconstruct the same undisplaced base point / material blend / normal the
+// raster TES + TCS produce for the triangle under a marched hit. Shared by the
+// primary hit and by the lake bed traced for water refraction.
+struct RmHitShading {
+    vec3 basePos;
+    vec3 normal;
+    RmSurfaceBlend blend;
+    uint blendCell;
+};
+
+RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
+                                 vec3 hitPos, vec3 rd) {
+    RmHitShading h;
+    // Tessellation parity: the raster TES samples the height maps at the
+    // UNDISPLACED vertex and moves it along the smooth cell normal. Recover
+    // that base point (and its normal) from the bumped hit so shading and
+    // mapping are evaluated at the same world position the raster path uses.
+    // Two fixed-point steps; the offset is small relative to the height-map
+    // feature scale, so this converges to the raster's undisplaced vertex.
+    vec3 sdfNormal = rmNodeNormal(node, hitPos);
+    float hitDisplacement = rmDisplacement(node, material, hitPos);
+    h.basePos = hitPos - sdfNormal * hitDisplacement;
+    for (int i = 0; i < 2 && hitDisplacement != 0.0; ++i) {
+        sdfNormal = rmNodeNormal(node, h.basePos);
+        hitDisplacement = rmDisplacement(node, material, h.basePos);
+        h.basePos = hitPos - sdfNormal * hitDisplacement;
+    }
+
+    // The raster material blend belongs to the base (undisplaced) cell: use
+    // that cell when it is in the table, otherwise the bumped hit's own cell.
+    bool baseCellNonSurface;
+    uint blendCell = rmFindNodeAt(rootNode, h.basePos, baseCellNonSurface);
+    if (blendCell == RM_INVALID_NODE || baseCellNonSurface) blendCell = node;
+    h.blend = rmBlendAtHit(rootNode, blendCell, h.basePos, hitPos);
+
+    // Raster fragNormal is the barycentric interpolation of the per-vertex
+    // cell normals; use the blend's normal when the ring reconstructed it and
+    // fall back to the marched cell's analytic normal otherwise.
+    h.normal = (dot(h.blend.normal, h.blend.normal) > 1e-12)
+        ? normalize(h.blend.normal) : sdfNormal;
+    if (dot(h.normal, rd) > 0.0) h.normal = -h.normal; // front surface only
+    h.blendCell = blendCell;
+    return h;
+}
+
+// Fill the fragment globals shadeSolidSurface() reads. gl_FragDepth is NOT
+// touched here: the primary hit owns the depth of the water/solid surface,
+// while a secondary (underwater bed) shading pass must not overwrite it.
+void rmWriteFragGlobals(vec3 hitPos, RmHitShading h) {
+    fragPosWorld = hitPos;
+    fragPosWorldNotDisplaced = h.basePos;
+    fragNormal = h.normal;
+    fragSharpNormal = h.normal;
+    fragTexIndices = h.blend.indices;
+    fragTextureTypes = h.blend.types;
+    fragTexWeights = h.blend.weights;
+    fragHSV = h.blend.hsv;
+    // Interpolated per-vertex UV scale (OctreeNode::data), matching the
+    // raster's interpolated fragUV.
+    fragUV = h.blend.uv;
+    fragPosLightSpace = ubo.lightSpaceMatrix * vec4(hitPos, 1.0);
+    // Same feed the TES writes (tess levels / 16, clamped to the heat range).
+    // The raster's tess levels are per base cell, not per bumped hit.
+    fragTessLevel = vec3(rmTessLevel(h.blendCell, rmCachedBrush(h.blendCell), h.basePos));
+}
+
+// Nearest hit among the SOLID layer roots only. The water refraction path uses
+// it to reach the lake bed behind the water surface (the primary march stops
+// at the water layer).
+bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
+                       out float hitT, out int hitBrush) {
+    hitT = 1.0e30;
+    hitRoot = 0u;
+    hitNode = 0u;
+    hitBrush = RAYMARCH_DISCARD_BRUSH;
+    bool found = false;
+    for (uint i = 0u; i < pc.rootCount; ++i) {
+        if (rmRoots[i].kind != 0u) continue;
+        uint node;
+        float t;
+        int brush;
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, node, t, brush) && t < hitT) {
+            hitT = t;
+            hitNode = node;
+            hitRoot = i;
+            hitBrush = brush;
+            found = true;
+        }
+    }
+    return found;
+}
+
 // Water shading for a raymarched water-layer hit.
 //
 // The octree raymarch draws water inside the SOLID pass (opaque color+depth),
-// so the raster water renderer's own targets are not involved. This helper
-// reproduces the visible water response from the resources this pass has:
-//   * reflection: procedural sky + the cheap cloud approximation, refined by a
-//     screen-space march over the previous frame's solid color/depth (SSR);
-//   * refraction: the Snell-bent view ray lands on the previous frame's solid
-//     color and the water column is tinted over it (Beer-Lambert-style mix by
-//     the layer transparency); a sample in front of the water surface falls
-//     back to the pure tint;
-//   * Fresnel mixes the two exactly like the raster surface.
+// so the raster water renderer's own targets and its separate underwater pass
+// do not exist here. Instead this helper resolves both lobes against the SDF
+// scene itself:
+//   * refraction: the Snell-bent ray continues through the water to the SOLID
+//     lake bed, which is shaded with the same shadeSolidSurface() the raster
+//     path uses, then attenuated by the water column (absorption + tint);
+//   * reflection: procedural sky + clouds refined by a screen-space march over
+//     the previous frame's solid color/depth (SSR), rejecting hits below the
+//     water level;
+//   * the two are composed with the raster surface's exact Fresnel/strength
+//     mirror mix, and the CSM surface shadow darkens the result.
 // The RT variant resolves the exact scene instead (see rtResolveWaterHit).
 vec3 shadeRaymarchWaterFallback(WaterParamsNamed wp, vec3 hitPos, vec3 N, vec3 V) {
     vec3 toSun = normalize(-ubo.lightDirection);
+    vec3 rd = -V;
     float ndv = clamp(dot(N, V), 0.0, 1.0);
-    float fresnel = clamp(pow(1.0 - ndv, max(wp.fresnelPower, 1.0)) *
-                          max(wp.reflectionStrength, 0.0), 0.0, 1.0);
+    // Raster water Fresnel: Schlick base + refraction/reflection mix.
+    float fresnel = clamp(0.02 + 0.98 * pow(1.0 - ndv,
+                          clamp(wp.fresnelPower, 1.0, 8.0)), 0.0, 1.0);
+
+    // CSM shadow on the water surface (the refracted bed carries its own).
+    float surfaceShadow = 0.0;
+    if (ubo.shadowsEnabled != 0u) {
+        float ndlS = max(dot(N, toSun), 0.0);
+        if (ndlS > 0.01) {
+            float bias = max(0.002 * (1.0 - ndlS), 0.0005);
+            surfaceShadow = ShadowCalculation(
+                ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, bias);
+        }
+    }
+
+    // ── Refraction: Snell-bent ray traced to the solid bed below ──
+    vec3 snellDir = refract(rd, N, 1.0 / max(wp.waterIor, 1.0));
+    if (dot(snellDir, snellDir) < 1e-6) snellDir = reflect(rd, N); // total internal
+    snellDir = normalize(snellDir);
+    // Refraction Strength = amount of bending (0 = straight through).
+    vec3 refrDir = normalize(mix(rd, snellDir,
+                                 clamp(wp.refractionStrength, 0.0, 1.0)));
+    if (!wp.enableRefraction) refrDir = rd;
+
+    float thickness = max(wp.maxThickness, 0.0);
+    vec3 refrCol;
+    vec3 refrOrigin = hitPos - N * 0.02; // just inside the water volume
+    uint bedRoot, bedNode;
+    float bedT;
+    int bedBrush;
+    if (rmMarchSolidRoots(refrOrigin, refrDir, bedRoot, bedNode, bedT, bedBrush)) {
+        thickness = min(bedT, max(wp.maxThickness, 0.0));
+        vec3 bedPos = refrOrigin + refrDir * bedT;
+        // Shade the bed with the shared solid shading body (materials,
+        // triplanar mapping, displacement parity, CSM shadows). It writes
+        // outColor; the water composition below replaces it.
+        RmHitShading bed = rmResolveHitShading(rmRoots[bedRoot].node, bedNode,
+                                               max(bedBrush, 0), bedPos, refrDir);
+        rmWriteFragGlobals(bedPos, bed);
+        shadeSolidSurface(vec3(0.0));
+        vec3 bedColor = outColor.rgb;
+        // Beer-Lambert absorption over the water column, then the same tint
+        // ramp the raster surface uses (shore fade + transparency cap).
+        vec3 transmittance = exp(-min(
+            wp.absorption * max(thickness * wp.absorptionScale, 0.0),
+            vec3(2.5)));
+        float depthFade = 1.0 - exp(-thickness * max(wp.depthFalloff, 1e-4));
+        if (wp.tintShoreFadeDepth > 0.0 && thickness > 1e-4) {
+            depthFade *= smoothstep(0.0, max(wp.tintShoreFadeDepth, 1e-4), thickness);
+        }
+        float tintBlend = clamp(depthFade * wp.waterTint, 0.0,
+                                clamp(1.0 - wp.transparency, 0.0, 1.0));
+        refrCol = mix(bedColor * transmittance, wp.waterColor, tintBlend);
+    } else {
+        // No bed within the layer: deep water, sky along the refracted ray
+        // saturated to the deep tint (raster deep-water continuity).
+        vec3 deep = rtProceduralSky(refrDir, sky.horizonColor,
+                                    sky.zenithColor, sky.exponent);
+        refrCol = mix(deep, wp.waterColor, 0.85);
+    }
 
     // ── Reflection: sky + clouds, refined by SSR over the previous frame ──
-    vec3 reflDir = normalize(reflect(-V, N));
+    vec3 reflDir = normalize(reflect(rd, N));
     vec3 skyCol = rtProceduralSky(reflDir, sky.horizonColor, sky.zenithColor, sky.exponent);
     if (sky.cloudsEnabled != 0u) {
         float day = smoothstep(-0.2, 0.2, -ubo.lightElevation);
         skyCol += cloudApproxForReflection(reflDir, toSun, day);
     }
     vec2 selfUV = gl_FragCoord.xy / max(pc.viewport.xy, vec2(1.0));
-    vec4 ssr = traceSSR(hitPos + N * 0.05, reflDir, V, ubo.viewProjection, selfUV, hitPos.y);
+#ifdef RT_ENABLED
+    // Previous-frame solid color/depth: reproject with the previous VP so the
+    // camera motion does not stipple the hit test.
+    mat4 ssrVP = rt.prevViewProj;
+#else
+    mat4 ssrVP = ubo.viewProjection;
+#endif
+    vec4 ssr = traceSSR(hitPos + N * 0.05, reflDir, V, ssrVP, selfUV, hitPos.y);
     vec3 reflCol = mix(skyCol, ssr.rgb, clamp(ssr.a, 0.0, 1.0));
 
-    // ── Refraction: Snell-bent ray, previous-frame solid color behind ──
-    vec3 refrRay = refract(-V, N, 1.0 / max(wp.waterIor, 1.0));
-    if (dot(refrRay, refrRay) < 1e-6) refrRay = reflect(-V, N); // total internal
-    refrRay = normalize(mix(-V, refrRay, clamp(wp.refractionStrength, 0.0, 1.0)));
-    float probe = clamp(wp.maxThickness, 0.0, 64.0) * 0.5 + 2.0;
-    vec3 behind = wp.waterColor;
-    vec4 clipR = ubo.viewProjection * vec4(hitPos + refrRay * probe, 1.0);
-    if (clipR.w > 0.001) {
-        vec2 ruv = clipR.xy / clipR.w * 0.5 + 0.5;
-        if (ruv.x > 0.001 && ruv.x < 0.999 && ruv.y > 0.001 && ruv.y < 0.999) {
-            float depth = textureLod(ssrDepthTex, ruv, 0.0).r;
-            float eye = (ubo.nearPlane * ubo.farPlane) /
-                        (ubo.farPlane - depth * (ubo.farPlane - ubo.nearPlane));
-            float waterEye = length(hitPos - ubo.viewPosition);
-            // Only scene samples BEHIND the water surface (the bottom) are
-            // bottom content; a foreground sample above the lake is terrain,
-            // not what is seen through the water.
-            if (depth < 1.0 && eye > waterEye - 0.5) {
-                behind = textureLod(ssrColorTex, ruv, 0.0).rgb;
-            }
-        }
+    // ── Compose exactly like the raster water surface ──
+    // Reflection Strength is the mirror amount (1 = full mirror, 0 = physical
+    // Fresnel only), matching WaterSurface.glsl's reflMix.
+    vec3 color = refrCol;
+    if (wp.enableReflection) {
+        float reflMix = wp.uniformReflection
+            ? clamp(wp.reflectionStrength, 0.0, 1.0)
+            : mix(fresnel, 1.0, clamp(wp.reflectionStrength, 0.0, 1.0));
+        color = mix(refrCol, reflCol, reflMix);
     }
-    vec3 refrCol = mix(wp.waterColor, behind, clamp(wp.transparency, 0.0, 1.0));
-
-    return mix(refrCol, reflCol, fresnel);
+    return color * mix(1.0, 0.55, surfaceShadow);
 }
 
 void main() {
@@ -960,57 +1108,17 @@ void main() {
 
     vec3 hitPos = ro + rd * nearestT;
 
-    // Material / mapping payload of the hit cell. Until the local ring is
-    // reconstructed this is the hit cell's own brush; rmBlendAtHit() replaces
-    // it with the same up-to-three-material barycentric blend the raster TCS
-    // produces for the triangle under the hit.
+    // Material / mapping payload of the hit cell. rmResolveHitShading()
+    // reconstructs the same up-to-three-material barycentric blend the raster
+    // TCS produces for the triangle under the hit, at the undisplaced base
+    // point the raster TES samples.
     int material = max(nearestBrush, 0);
-
-    // Tessellation parity: the raster TES samples the height maps at the
-    // UNDISPLACED vertex and moves it along the smooth cell normal. Recover
-    // that base point (and its normal) from the bumped hit so shading and
-    // mapping are evaluated at the same world position the raster path uses.
-    // Two fixed-point steps; the offset is small relative to the height-map
-    // feature scale, so this converges to the raster's undisplaced vertex.
-    vec3 sdfNormal = rmNodeNormal(nearestNode, hitPos);
-    float hitDisplacement = rmDisplacement(nearestNode, material, hitPos);
-    vec3 basePos = hitPos - sdfNormal * hitDisplacement;
-    for (int i = 0; i < 2 && hitDisplacement != 0.0; ++i) {
-        sdfNormal = rmNodeNormal(nearestNode, basePos);
-        hitDisplacement = rmDisplacement(nearestNode, material, basePos);
-        basePos = hitPos - sdfNormal * hitDisplacement;
-    }
-
-    // The raster material blend belongs to the base (undisplaced) cell: use
-    // that cell when it is in the table, otherwise the bumped hit's own cell.
     uint rootNode = rmRoots[nearestRoot].node;
-    bool baseCellNonSurface;
-    uint blendCell = rmFindNodeAt(rootNode, basePos, baseCellNonSurface);
-    if (blendCell == RM_INVALID_NODE || baseCellNonSurface) blendCell = nearestNode;
-    RmSurfaceBlend blend = rmBlendAtHit(rootNode, blendCell, basePos, hitPos);
+    RmHitShading hit = rmResolveHitShading(rootNode, nearestNode, material,
+                                           hitPos, rd);
+    vec3 normal = hit.normal;
 
-    // Raster fragNormal is the barycentric interpolation of the per-vertex
-    // cell normals; use the blend's normal when the ring reconstructed it and
-    // fall back to the marched cell's analytic normal otherwise.
-    vec3 normal = (dot(blend.normal, blend.normal) > 1e-12)
-        ? normalize(blend.normal) : sdfNormal;
-    if (dot(normal, rd) > 0.0) normal = -normal; // front surface only
-
-    fragPosWorld = hitPos;
-    fragPosWorldNotDisplaced = basePos;
-    fragNormal = normal;
-    fragSharpNormal = normal;
-    fragTexIndices = blend.indices;
-    fragTextureTypes = blend.types;
-    fragTexWeights = blend.weights;
-    fragHSV = blend.hsv;
-    // Interpolated per-vertex UV scale (OctreeNode::data), matching the
-    // raster's interpolated fragUV.
-    fragUV = blend.uv;
-    fragPosLightSpace = ubo.lightSpaceMatrix * vec4(hitPos, 1.0);
-    // Same feed the TES writes (tess levels / 16, clamped to the heat range).
-    // The raster's tess levels are per base cell, not per bumped hit.
-    fragTessLevel = vec3(rmTessLevel(blendCell, rmCachedBrush(blendCell), basePos));
+    rmWriteFragGlobals(hitPos, hit);
 
     vec4 clip = ubo.viewProjection * vec4(hitPos, 1.0);
     gl_FragDepth = (clip.w > 1e-6) ? clamp(clip.z / clip.w, 0.0, 1.0) : 1.0;
