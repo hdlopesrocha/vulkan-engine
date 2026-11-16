@@ -136,6 +136,7 @@ void SkyRenderer::init(VulkanApp* app, SkySettings &settings, VkDescriptorSet de
         skySphere = std::make_unique<SkySphere>();
         if (pendingClouds) skySphere->setCloudSettings(pendingClouds);
         skySphere->setCloudTime(pendingCloudTime);
+        skySphere->setCloudWindDrift(pendingCloudWindDrift);
         if (hasPendingCloudsEnabled) skySphere->setCloudsEnabled(pendingCloudsEnabled);
         skySphere->init(app, settings, descriptorSet);
     } else if (descriptorSet != VK_NULL_HANDLE && skySphere) {
@@ -152,6 +153,11 @@ void SkyRenderer::setCloudSettings(CloudSettings* clouds) {
 void SkyRenderer::setCloudTime(float t) {
     pendingCloudTime = t;
     if (skySphere) skySphere->setCloudTime(t);
+}
+
+void SkyRenderer::setCloudWindDrift(const glm::vec2& drift) {
+    pendingCloudWindDrift = drift;
+    if (skySphere) skySphere->setCloudWindDrift(drift);
 }
 
 void SkyRenderer::setCloudsEnabled(bool e) {

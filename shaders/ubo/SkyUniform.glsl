@@ -1,7 +1,7 @@
 #ifndef SKY_UNIFORM_GLSL
 #define SKY_UNIFORM_GLSL
 
-// Canonical sky + volumetric-cloud UBO (std140, 224 B), set=0 binding=6.
+// Canonical sky + volumetric-cloud UBO (std140, 240 B), set=0 binding=6.
 // Single definition shared with the CPU: vulkan/ubo/SkyUniform.hpp — same
 // names, fields and offsets.
 // Offset table (verified against the C++ static_asserts):
@@ -16,8 +16,9 @@
 //   midBaseHeight 160, midThickness 164, highCoverage 168, highDensity 172,
 //   highScale 176, highWindSpeedMul 180, highBaseHeight 184, highThickness 188,
 //   silverLining 192, ambientBoost 196, sunForwardG 200, exposure 204,
-//   timeScale 208, cloudRaycastPixelSize 212, invScreenSize 216.
-// 224 is the std140 block size (multiple of 16).
+//   timeScale 208, cloudRaycastPixelSize 212, invScreenSize 216,
+//   cloudWindDrift 224.
+// 240 is the std140 block size (multiple of 16).
 // Flags are uint (compare with == 0u / != 0u).
 struct SkyUniform {
     vec3 horizonColor;      // offset   0
@@ -67,6 +68,10 @@ struct SkyUniform {
     float timeScale;        // offset 208
     float cloudRaycastPixelSize; // offset 212  one cloud ray per NxN px block
     vec2 invScreenSize;     // offset 216  swapchain inverse size (ray UV)
+    // Accumulated cloud wind displacement (world metres): integrated on the
+    // host from the shared wind field's ambient fBm velocity, so the cloud
+    // pattern drifts with the live wind instead of a fixed direction * time.
+    vec2 cloudWindDrift;    // offset 224
 };
 
 #endif // SKY_UNIFORM_GLSL

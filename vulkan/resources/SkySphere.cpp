@@ -124,6 +124,9 @@ void SkySphere::fillSkyUniform(SkyUniform& out) const {
     // reconstruct the block-center ray; independent of cloud enable so a
     // stale UBO can never produce a zero/NaN inverse size.
     out.cloudRaycastPixelSize = static_cast<float>(raycastPixelSize_);
+    // Accumulated wind drift (world metres): the cloud shader converts it to
+    // domain units per tier and applies the cloud wind response/time scale.
+    out.cloudWindDrift = cloudWindDrift;
 }
 
 void SkySphere::update(VulkanApp* app) {

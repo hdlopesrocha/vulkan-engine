@@ -134,10 +134,10 @@ void CloudWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Wind / Animation");
         ImGuiComponents::ColSeparator();
-        ImGuiComponents::FieldLabel("Wind Response", "Cloud gain on the shared wind field (Wind widget: ambient direction/strength, gusts, tornadoes). 0 = clouds ignore wind.");
+        ImGuiComponents::FieldLabel("Wind Response", "Cloud drift gain on the shared wind field: the bulk motion integrates the same 3D fBm wind velocity the vegetation/water sample, with the local gust/tornado shear on top. 0 = clouds ignore wind.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Wind Response", &settings.windResponse, 0.0f, 10.0f, "%.2f");
-        ImGuiComponents::TooltipOnHover("Cloud gain on the shared wind field (Wind widget: ambient direction/strength, gusts, tornadoes). 0 = clouds ignore wind.");
+        ImGuiComponents::TooltipOnHover("Cloud drift gain on the shared wind field: the bulk motion integrates the same 3D fBm wind velocity the vegetation/water sample, with the local gust/tornado shear on top. 0 = clouds ignore wind.");
         ImGuiComponents::FieldLabel("Time Scale", "Animation speed multiplier.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Time Scale", &settings.timeScale, 0.0f, 4.0f, "%.2f");

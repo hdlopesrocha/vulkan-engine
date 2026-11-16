@@ -27,6 +27,10 @@ public:
     // Attach cloud settings (shares the SkyUBO) + animation clock.
     void setCloudSettings(CloudSettings* clouds);
     void setCloudTime(float t);
+    // Accumulated cloud wind drift (world metres): host-integrated from the
+    // shared wind field's ambient velocity so the cloud pattern travels with
+    // the wind. Forwarded to the SkySphere UBO.
+    void setCloudWindDrift(const glm::vec2& drift);
     void setCloudsEnabled(bool e);
     // Cloud ray-cast quality (Settings::raycastPixelSize): one cloud ray per
     // NxN screen-pixel block; forwarded to the SkySphere UBO.
@@ -79,6 +83,7 @@ private:
     // Cloud attachment staged before SkySphere exists (init order).
     CloudSettings* pendingClouds = nullptr;
     float pendingCloudTime = 0.0f;
+    glm::vec2 pendingCloudWindDrift{0.0f};
     bool pendingCloudsEnabled = true;
     bool hasPendingCloudsEnabled = false;
 

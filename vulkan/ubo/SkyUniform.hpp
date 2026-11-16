@@ -62,8 +62,12 @@ struct alignas(16) SkyUniform {
     // -> UV and is set per frame from the swapchain size.
     float cloudRaycastPixelSize = 2.0f;            // offset 212
     alignas(8) glm::vec2 invScreenSize{0.0f};      // offset 216
+    // Accumulated cloud-domain wind displacement (world metres, integrated on
+    // the host from the SHARED wind field's ambient fBm velocity): the cloud
+    // pattern drifts along the live wind instead of a fixed direction * time.
+    alignas(8) glm::vec2 cloudWindDrift{0.0f};     // offset 224
 };
-static_assert(sizeof(SkyUniform) == 224, "SkyUniform must be 224 bytes (std140 padding)");
+static_assert(sizeof(SkyUniform) == 240, "SkyUniform must be 240 bytes (std140 padding)");
 static_assert(offsetof(SkyUniform, horizonColor) == 0, "horizonColor offset");
 static_assert(offsetof(SkyUniform, warmth) == 12, "warmth offset");
 static_assert(offsetof(SkyUniform, zenithColor) == 16, "zenithColor offset");

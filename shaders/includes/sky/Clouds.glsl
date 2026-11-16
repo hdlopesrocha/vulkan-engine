@@ -72,30 +72,25 @@
 const float CLOUD_WIND_SHEAR_SECONDS = 90.0;
 const float CLOUD_WIND_SHEAR_MAX = 3.0;
 
-// Prevailing drift direction, extracted from the fBm field itself: its first
-// octave sampled at the world origin at t=0. That makes it a pure function of
-// the seed/parameters (constant per frame), so the bulk cloud-domain offset
-// (dir * cloudTime) never jitters as the live field evolves. There is no
-// authored wind direction anymore. Falls back to +X on a degenerate sample.
+// Prevailing drift direction: the host-integrated shared-wind displacement
+// (SkyUniform.cloudWindDrift, accumulated each frame from the SAME 3D fBm
+// field the GPU consumers sample). There is no authored direction; +X is only
+// the degenerate still-air fallback.
 vec2 cloudWindDir() {
-    float freq = clamp(windField.ambientB.x, 1e-6, 1.0);
-    float seed = clamp(windField.ambientC.z, -1000.0, 1000.0);
-    vec3 p0 = vec3(seed * 137.13, seed * 73.31, seed * 39.77) * freq;
-    const vec3 kOffsetZ = vec3(-13.137, 41.309, 7.913);
-    vec2 d = vec2(perlinNoise3D(p0), perlinNoise3D(p0 + kOffsetZ));
+    vec2 d = sky.cloudWindDrift;
     float l = length(d);
     return (l > 1e-4) ? d / l : vec2(1.0, 0.0);
 }
 
-// Bulk cloud-domain drift: the prevailing fBm direction integrated over the
-// scaled cloud clock. Spatially constant, so the conservative puff SDF and the
-// volume density translate by the exact same offset (the empty-space skip
-// contract is unchanged). Speed scale = the fBm gust amplitude (m/s), since
-// the shared field no longer has a mean flow.
+// Bulk cloud-domain drift: the accumulated wind displacement (world metres,
+// integrated on the host from the shared wind velocity) scaled by the cloud
+// wind response, the animation time scale and the per-tier wind multiplier.
+// Spatially constant, so the conservative puff SDF and the volume density
+// translate by the exact same offset (the empty-space skip contract is
+// unchanged). The local gust/tornado variation is added by cloudWindShear().
 vec2 cloudWindVec(float speedMul) {
     float response = clamp(sky.windResponse, 0.0, 10.0);
-    float speed = max(windField.ambientC.x, 0.0);
-    return cloudWindDir() * (speed * response * speedMul * sky.cloudTime);
+    return sky.cloudWindDrift * (response * max(sky.timeScale, 0.0) * speedMul);
 }
 
 // Local shared-field shear for the noise domain only: the 3D fBm velocity

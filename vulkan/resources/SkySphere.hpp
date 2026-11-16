@@ -18,6 +18,9 @@ public:
     // Attach cloud settings + animation clock (clouds share the SkyUBO).
     void setCloudSettings(CloudSettings* clouds) { cloudSettings = clouds; }
     void setCloudTime(float t) { cloudTime = t; }
+    // Accumulated cloud wind displacement (world metres), integrated on the
+    // host from the shared wind field; drives the cloud pattern drift.
+    void setCloudWindDrift(const glm::vec2& d) { cloudWindDrift = d; }
     void setCloudsEnabled(bool e) { cloudsEnabledOverride = e; hasCloudsOverride = true; }
     // Cloud ray-cast quality (Settings::raycastPixelSize): one cloud ray per
     // NxN screen-pixel block (block center). 1 = per pixel.
@@ -42,6 +45,8 @@ private:
     SkySettings* skySettings = nullptr;
     CloudSettings* cloudSettings = nullptr;
     float cloudTime = 0.0f;
+    // Host-integrated cloud drift (world metres) from the shared wind field.
+    glm::vec2 cloudWindDrift{0.0f};
     bool cloudsEnabledOverride = true;
     bool hasCloudsOverride = false;
     // Settings::raycastPixelSize mirror (cloud march block size).

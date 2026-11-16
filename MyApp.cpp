@@ -90,6 +90,7 @@
 #include "types/Settings.hpp"
 #include "types/WaterSettings.hpp"
 #include "utils/GraphicsSettingsCommand.hpp"
+#include "math/WindFieldCpu.hpp"
 #include "widgets/WidgetManager.hpp"
 #include "widgets/RadialMenu.hpp"
 #include "math/Camera.hpp"
@@ -264,6 +265,10 @@ public:
     // frame slot on revision change.
     OctreeRaymarchTable raymarchTable_;
     uint64_t raymarchTableVersion_ = 0;
+    // Accumulated cloud wind displacement (world metres): integrated on the
+    // host from the shared wind field's ambient fBm velocity so the cloud
+    // pattern travels with the wind (SkyUniform::cloudWindDrift).
+    glm::vec2 cloudWindDrift_{0.0f};
     uint64_t raymarchLayerSignature_ = 0;
     bool raymarchSignaturePrimed_ = false;
     bool raymarchDirty_ = false;
@@ -826,6 +831,12 @@ public:
         // (headless validation of WindRaymarchRenderer; the default stays off).
         if (const char* env = std::getenv("VULKAN_WIND_RAYMARCH")) {
             if (env[0] != '0') settings.windRaymarchEnabled = true;
+        }
+
+        // VULKAN_CLOUDS=1 starts with volumetric clouds on (headless validation
+        // of the cloud raymarch and its wind drift; the default stays off).
+        if (const char* env = std::getenv("VULKAN_CLOUDS")) {
+            if (env[0] != '0') settings.cloudsEnabled = true;
         }
 
         // VULKAN_SERVE=1: start the scene server for this app's live scene
@@ -1562,6 +1573,33 @@ public:
         }
         if (sceneRenderer && sceneRenderer->skyRenderer) {
             sceneRenderer->skyRenderer->setCloudTime(mainTime);
+            // Cloud drift: integrate the shared wind field's ambient fBm
+            // velocity at a sky reference point so the cloud pattern travels
+            // with the SAME wind the vegetation/water/fire/trails sample. The
+            // GPU samples the field per pixel; the bulk offset is a path
+            // integral, so the host accumulates it with a CPU mirror of the
+            // field (math/WindFieldCpu.hpp). Reference = the camera's XZ at a
+            // mid-cloud altitude: a local, smooth sample; the accumulated
+            // offset keeps the drift continuous as the camera moves.
+            if (sceneRenderer->vegetationRenderer) {
+                const auto& ws = sceneRenderer->vegetationRenderer->getWindSettings();
+                WindFieldCpu::FbmParams fbm;
+                fbm.frequency = ws.fbmFrequency;
+                fbm.lacunarity = ws.fbmLacunarity;
+                fbm.gain = ws.fbmGain;
+                fbm.amplitude = ws.fbmAmplitude;
+                fbm.vertical = ws.fbmVertical;
+                fbm.seed = ws.fbmSeed;
+                fbm.speed = ws.speed;
+                fbm.octaves = ws.fbmOctaves;
+                const glm::vec3 refPoint(camera.getPosition().x, 3000.0f,
+                                         camera.getPosition().z);
+                const glm::vec3 windVec =
+                    WindFieldCpu::windAmbient(refPoint, mainTime, fbm);
+                cloudWindDrift_ += glm::vec2(windVec.x, windVec.z) *
+                                   std::max(deltaTime, 0.0f);
+                sceneRenderer->skyRenderer->setCloudWindDrift(cloudWindDrift_);
+            }
             sceneRenderer->skyRenderer->setCloudsEnabled(settings.cloudsEnabled);
             // Ray-cast quality also drives the sky cloud raymarch (one cloud
             // ray per NxN screen-pixel block).
