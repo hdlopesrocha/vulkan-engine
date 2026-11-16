@@ -59,6 +59,12 @@ struct WaterParamsNamed {
     float waveSteepness;
     float waveCrestSharpness;
     float rippleHeight;
+    // Wind-wave drive (shared fBm wind field): response 0..1, reference speed
+    // (m/s) at which the response saturates, and the shallow-water direction
+    // blend depth (m; 0 = derive from shoreWaveFade).
+    float windWaveResponse;
+    float windWaveReference;
+    float windWaveShallow;
     vec3 waterColor;
     float waveSpeed;
     float waveAmplitude;

@@ -28,7 +28,11 @@ struct WaterParams {
     vec4 waveShoal;        // xyz reserved, w=breaker tint band half-width
     vec4 waveComponent1;   // x=crest scale(1/period), y=speed(m/s), z=amplitude, w=unused
     vec4 waveComponent2;   // reserved (was: the second/cross swell train)
-    vec4 waveBreaker;      // reserved (was: breaker bump / chop / whitecap / height falloff)
+    // Wind-wave drive: x = response 0..1, y = reference speed (m/s),
+    // z = shallow-water direction blend depth (m; 0 = derive from shoreWaveFade),
+    // w = unused. The wave direction comes from the shared fBm wind field
+    // (set=0 binding 27), not from this block.
+    vec4 waveBreaker;
     vec4 waveCurl;         // reserved (was: breaker lip skew / crest hook)
     vec4 waveWarp;         // xyz reserved, w=shore gradient step(texels)
     vec4 waveMask;         // x=scale, y=threshold, z=softness, w=time speed

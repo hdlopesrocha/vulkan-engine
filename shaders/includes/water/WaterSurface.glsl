@@ -805,8 +805,8 @@ void shadeWaterSurface() {
         fragBasePos.xyz, 
         animTime, 
         fragWaterDepth, 
-        fragBasePos.w, 
-        fragShoreDir, 
+        fragBasePos.w * fragWindWave, 
+        fragWaveDir, 
         wp, 
         true,
         waveFieldOct,
@@ -836,7 +836,7 @@ void shadeWaterSurface() {
         float rippleHeight = max(wp.rippleHeight, 0.0)
                            * clamp(wp.waveSteepness, 0.0, 1.0) * detail;
         if (rippleHeight > 0.0 && wp.noiseScale > 0.0) {
-            vec3 drift = vec3(fragShoreDir.x, 0.0, fragShoreDir.y) * (wp.waveSpeed * animTime);
+            vec3 drift = vec3(fragWaveDir.x, 0.0, fragWaveDir.y) * (wp.waveSpeed * animTime);
             vec4 n = fbmGrad4D(vec4((fragBasePos.xyz - drift) * wp.noiseScale,
                                     animTime * wp.noiseTimeSpeed),
                                kRippleOctaves, wp.noisePersistence, wp.noiseLacunarity);
@@ -1018,7 +1018,7 @@ void shadeWaterSurface() {
         // refraction warp): 2.5x the ripple frequency.
         const float kRefrNoiseScale = 2.5;
         float refrNoiseScale = wp.noiseScale * kRefrNoiseScale;
-        vec3 drift = vec3(fragShoreDir.x, 0.0, fragShoreDir.y) * (wp.waveSpeed * animTime);
+        vec3 drift = vec3(fragWaveDir.x, 0.0, fragWaveDir.y) * (wp.waveSpeed * animTime);
         // fbmGrad4D returns vec4(value, d/dx, d/dy, d/dz) over (x, y, z, t), so
         // (n.y, n.w) is the world-xz gradient; scaling by the sample scale gives
         // the world-space slope, which is what bends the ray.
@@ -2115,10 +2115,10 @@ void shadeWaterSurface() {
         // to a per-fragment evaluation of the same single wave field so the
         // view works without tessellation.
         float timeDebug = waterRenderUBO.waterTime;
-        float bumpAmpDbg = wp.bumpAmplitude;
+        float bumpAmpDbg = wp.bumpAmplitude * fragWindWave; // wind-scaled height
         float animTimeDbg = timeDebug;
         vec4 waveDbg = waterWaveSample(
-            fragPos.xyz, animTimeDbg, waterThickness, bumpAmpDbg, fragShoreDir, wp,
+            fragPos.xyz, animTimeDbg, waterThickness, bumpAmpDbg, fragWaveDir, wp,
             waveFieldOct, waveDx, waveDy);
         float maxExpected = max(bumpAmpDbg * wp.waveAmplitude, 1e-3);
         float normDisp = clamp((waveDbg.x / maxExpected) * 0.5 + 0.5, 0.0, 1.0);

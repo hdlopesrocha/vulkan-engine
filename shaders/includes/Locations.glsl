@@ -59,5 +59,11 @@
 // unique slots (flat ivec3), parallel to VARY_BRUSHPATCH. Only the solid path
 // reads it; it has no geometry stage, so it sits above the <=15 range.
 #define VARY_TEXTURETYPE 24
+// Water: wind-driven wave direction (xz, unit) and the wind amplitude
+// multiplier applied to the authored wave height. The water TES/no-tess VS
+// sample the shared wind field once per vertex and interpolate these, so the
+// fragment stage never re-evaluates the field.
+#define VARY_WAVEDIR 25
+#define VARY_WINDWAVE 26
 
 #endif // LOCATIONS_GLSL

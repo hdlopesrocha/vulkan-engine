@@ -1,6 +1,10 @@
-// Gerstner wave train for the water surface: the depth-derived shore
-// distance, the swell plus its six ripple bands riding it, the horizontal
-// pinch and the exact analytic normal of the resulting surface.
+// Gerstner wave train for the water surface: the wind-driven directional
+// swell, its amplitude fade near the waterline, the horizontal pinch and the
+// exact analytic normal of the resulting surface.
+// The train's propagation DIRECTION and HEIGHT come from the shared 3D fBm
+// wind field (sampled per water vertex by waterWindWave() in WaterTese.glsl):
+// the caller passes the wind-blended direction and an amplitude already scaled
+// by the saturating wind-sea response. This file is the pure wave geometry.
 // Requires ubo.glsl (WaterParamsNamed) to be included first.
 #ifndef GERSTNER_GLSL
 #define GERSTNER_GLSL
@@ -13,28 +17,16 @@ const int WATER_VERTEX_OCT = 2;
 
 
 
-// ── ONE shore sine ───────────────────────────────────────────────────────
-// A single sine swell travels toward the shore along the local shore direction
-// (the measured direction of decreasing water depth, falling back to the
-// configured shore angle) and its amplitude fades to zero over the last
-// `shoreWaveFade` metres of water depth: the wave approaches the shore and
-// dies out there. There is no spectrum, no shoaling, no breaking and no region
-// shaping - one sine on one water region. The only foam is the shoreline
-// contact line.
-// ONE swell with its ripples: a Gerstner train travelling toward the shore.
-//
-//   shoreDist = water depth / beach slope   (how far this point is from the shore)
-//   phase_i   = k_i * shoreDist + omega_i * t
-//   height    = sum  A_i * sin(phase_i)
-//   xz       += sum  Q_i * A_i * shoreDir * cos(phase_i)     (the Gerstner pinch)
-//
-// Every band rides the SAME depth-derived phase, so the crests of the swell and
-// of its ripples all lie on the depth contours - they follow the shoreline and
-// bend with the bottom - and all of them travel in the shore direction
-// together. The shading normal is the exact normal of the resulting Gerstner
-// surface (the 2x2 Jacobian of the horizontal displacement is inverted), aimed
-// along the local shore direction. `depth` is the measured water column; a
-// negative value is the deep sentinel (no thickness signal).
+// ── ONE wind-driven Gerstner swell ───────────────────────────────────────
+// A single directional swell travels along the wind-blended wave direction:
+//   phase = k * dot(xz, dir) - omega * t + phase0
+//   height = A * sin(phase)          (crest profile sharpened by the exponent)
+//   xz    += Q * A * dir * cos(phase)  (the Gerstner pinch)
+// The amplitude fades to zero over the last `shoreWaveFade` metres of water
+// depth, so the wave approaches the shore and dies out there. In shallow water
+// the CALLER bends `dir` toward the local shore direction (refraction), so the
+// crests turn to follow the depth contours near the coast while running with
+// the wind offshore. There is no spectrum: one swell with its analytic normal.
 const int   WAVE_BANDS = 1;
 // The Gerstner train is the SWELL alone: it is what the vertices are displaced
 // with. The ripple detail is not geometry any more - it is an FBM normal
@@ -46,7 +38,7 @@ const float WAVE_BAND_STEEP[WAVE_BANDS] = float[WAVE_BANDS](1.0);
 const float WAVE_BAND_PHASE[WAVE_BANDS] = float[WAVE_BANDS](0.0);
 
 WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
-                              vec2 shoreDirIn, WaterParamsNamed wp, bool withFoam,
+                              vec2 waveDirIn, WaterParamsNamed wp, bool withFoam,
                               int octBudget, vec2 dPosdx, vec2 dPosdy) {
     WaterWaveField f;
     f.height = 0.0;
@@ -64,18 +56,23 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     // Local water depth (m); a negative value is the deep sentinel.
     float d = (depth < 0.0) ? max(wp.shoreWaveFade, 1.0) * 4.0 : max(depth, 0.0);
 
-    vec2 shoreDir = (dot(shoreDirIn, shoreDirIn) > 1e-6)
-        ? normalize(shoreDirIn)
+    // Wave propagation direction: the caller passes the wind-driven direction
+    // (shared fBm field, blended toward the shore in shallow water). The
+    // authored angle is only the last-resort fallback.
+    vec2 waveDir = (dot(waveDirIn, waveDirIn) > 1e-6)
+        ? normalize(waveDirIn)
         : normalize(wp.waveDirection + vec2(1e-5, 0.0));
 
     const float TWO_PI = 6.28318530718;
     float kSw = TWO_PI * max(wp.wavePeriodScale, 1e-6);   // swell wavenumber
     float omSw = kSw * max(wp.waveSpeed, 0.0);            // swell angular frequency
-    float shoreSlope = max(wp.shoreWaveSlope, 1e-4);
-    float shoreDist = (depth >= 0.0) ? (d / shoreSlope) : dot(xyz.xz, shoreDir);
+    // Directional train: the phase runs along the wave direction, so the
+    // crests are normal to the local wind and the train travels with it. The
+    // caller's `amp` already carries the saturating wind-speed response.
+    float phaseBase = dot(xyz.xz, waveDir);
 
-    // Amplitude: the layer height, the period-derived steepness scale, and the
-    // fade to nothing at the waterline.
+    // Amplitude: the layer height (wind-scaled by the caller) and the fade to
+    // nothing at the waterline.
     float shoreFade = (wp.shoreWaveFade > 0.0)
         ? smoothstep(0.0, wp.shoreWaveFade, d)
         : 1.0;
@@ -90,19 +87,16 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         float omegai = omSw * WAVE_BAND_K[i];   // every band rides the swell
         // Analytic anti-aliasing: drop a band once its phase varies by more
         // than about half a cycle per pixel (the screen derivative of the
-        // phase under the uniform beach-slope model).
-        // Nyquist is pi radians per pixel. The old window (1.1 .. 2.4) faded the
-        // band out well BEFORE that, and at grazing views the world footprint per
-        // pixel is large enough that the whole swell lost its slope within a few
-        // hundred metres - the normal went flat at range while looking correct up
-        // close. Window it at the actual limit instead.
-        float phaseFw = ki * (abs(dot(dPosdx, shoreDir)) + abs(dot(dPosdy, shoreDir)));
+        // phase along the propagation direction).
+        // Nyquist is pi radians per pixel. Window it at the actual limit
+        // instead of fading early, so grazing views keep the swell slope.
+        float phaseFw = ki * (abs(dot(dPosdx, waveDir)) + abs(dot(dPosdy, waveDir)));
         float aaFade = 1.0 - smoothstep(2.8, 5.6, phaseFw);
         if (aaFade <= 0.0) continue;
 
         float Ai = ampSwell * WAVE_BAND_AMP[i] * aaFade;
         float Qi = clamp(wp.waveSteepness * WAVE_BAND_STEEP[i], 0.0, 0.92);
-        float phase = ki * shoreDist + omegai * time + WAVE_BAND_PHASE[i];
+        float phase = ki * phaseBase - omegai * time + WAVE_BAND_PHASE[i];
         float s = sin(phase);
         float c = cos(phase);
         // Crest sharpness: |sin|^e keeps the extremes and pulls the profile
@@ -114,11 +108,11 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
         float dprof = sharp * pow(a, sharp - 1.0) * c;
 
         h += Ai * prof;
-        gParam += Ai * ki * dprof * shoreDir;
+        gParam += Ai * ki * dprof * waveDir;
         // The Gerstner pinch: the surface point slides toward the crest, and
         // its derivative is what makes the analytic normal exact.
-        disp += (Qi * Ai * c) * shoreDir;
-        jac += (-Qi * Ai * ki * s) * outerProduct(shoreDir, shoreDir);
+        disp += (Qi * Ai * c) * waveDir;
+        jac += (-Qi * Ai * ki * s) * outerProduct(waveDir, waveDir);
         if (i == 0) {
             f.swell = prof;
             f.swellSlope = dprof;
@@ -136,7 +130,8 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     f.disp = disp;
     f.calmMask = 1.0;
 
-    // No foam: the surface is this one Gerstner train and nothing else.
+    // Wind/pressure wave growth is handled by the caller (the amplitude is
+    // already wind-scaled); no foam is generated by this geometry train.
     f.foam = 0.0;
     f.contact = 0.0;
     return f;

@@ -87,14 +87,14 @@ struct WaterSettings {
     // soften the bright ridges; 1.0 disables caustics (gain clamps to 1).
     float causticSoftness = 0.5f;
 
-    // ── Shore-wave system (one sine swell, per water material) ────────────
-    // The surface is a SINGLE sinusoidal swell travelling along
-    // `shoreWaveAngle` (direction TOWARD the shore) with Wave Period and Wave
-    // Speed. Its amplitude is gated by a sine band running along the shore
-    // (Wave Mask Period): the swell arrives in sets, and a zero mask is a
-    // fully calm band. There is no depth shaping and no ridged/choppy detail.
-    // The zone depths below are read by the depth-region TINT and by the Foam
-    // Band gate only - the wave itself is depth-independent.
+    // ── Wave system (one wind-driven Gerstner swell, per water material) ──
+    // The wave DIRECTION and HEIGHT are driven by the shared 3D fBm wind field
+    // (the SAME field the vegetation/clouds/fire sample): the train travels
+    // with the local wind in deep water, bends toward the shore in shallow
+    // water (refraction), and its height grows with the wind speed up to the
+    // wind response reference (see the Wind Drive block below). Wave Period
+    // sets the crest spacing along the propagation direction and Wave Speed
+    // the phase speed.
     bool enableWaves = false;       // master toggle (layer 0 only by default)
     bool enableFoam = true;         // whitewater/foam rendering
     bool enableVolumetric = true;   // volumetric light scattering in the volume
@@ -122,23 +122,37 @@ struct WaterSettings {
     // have if it were displaced by the ripples at infinite tessellation.
     float rippleHeight = 2.0f;
     float shoreWaveFade = 40.0f;    // depth (m) over which the swell fades out at the shore
-    // Beach slope: metres of water depth per metre of horizontal distance from
-    // the waterline. The wave phase runs on depth / slope (= the shore
-    // distance), so this sets how far apart the crests are when they follow the
-    // depth contours.
-    float shoreWaveSlope = 0.02f;   // 1:50 beach
+    // Unused by the wave geometry since the phase became directional (the
+    // train follows the wind, not the depth contours). Kept in the settings /
+    // GPU layout for compatibility; the wave direction comes from the shared
+    // wind field and the shallow blend below.
+    float shoreWaveSlope = 0.02f;   // legacy (1:50 beach)
 
-    // Propagation direction toward the shore (degrees in the XZ plane).
-    // 0 = +Z, 90 = +X, 180 = -Z, 270 = -X. This is the FALLBACK direction:
-    // the shader derives the local shore direction from the water-depth
-    // gradient (toward thinning water) and only uses this angle where the
-    // bottom cannot be measured. Set ShoreGradientStep = 0 to force it.
+    // Propagation direction fallback (degrees in the XZ plane).
+    // 0 = +Z, 90 = +X, 180 = -Z, 270 = -X. Used where the shared wind is calm
+    // and the local shore direction cannot be measured; also the target of the
+    // shallow-water refraction blend.
     float shoreWaveAngle = 0.0f;
     // Screen-texel step used to sample the water-depth gradient that yields
     // the shore direction. 0 = disable the gradient and use shoreWaveAngle.
     // A wider step keeps the deep-ocean direction stable (the bottom slope
     // there is small relative to the local ray spacing).
     float shoreGradientStep = 16.0f;   // texels: step of the depth-gradient shore solve
+
+    // ── Wind-driven waves (shared 3D fBm wind field) ─────────────────────
+    // The wave train direction and height come from the SAME wind field the
+    // vegetation/clouds/fire sample (set=0 binding 27): waves travel with the
+    // local wind in deep water, bend toward the shore in shallow water
+    // (refraction), and their height grows with the wind speed up to
+    // `windWaveReference` (saturating wind-sea response).
+    //   0 = the authored height stays constant (the wind only steers the
+    //       direction), 1 = fully wind-driven height.
+    float windWaveResponse = 0.85f;
+    // Wind speed (m/s) reaching ~63% of the response (calm air ~ flat water).
+    float windWaveReference = 10.0f;
+    // Water depth (m) over which the wave direction blends from the wind to
+    // the shore direction. 0 = derive it from shoreWaveFade.
+    float windWaveShallowBlend = 0.0f;
 
 
     // Foam (whitewater) look

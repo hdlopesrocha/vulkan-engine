@@ -148,7 +148,9 @@ WaterParams makeWaterParams(const WaterSettings& p) {
     gpu.waveShoal = glm::vec4(0.0f, 0.0f, p.waveSteepness, 0.0f);
     gpu.waveComponent1 = glm::vec4(p.wavePeriod, p.waveSpeed, 1.0f, 0.0f);
     gpu.waveComponent2 = glm::vec4(0.0f);                  // reserved
-    gpu.waveBreaker = glm::vec4(0.0f);                     // reserved
+    // Wind-wave drive: response, reference speed, shallow direction blend.
+    gpu.waveBreaker = glm::vec4(p.windWaveResponse, p.windWaveReference,
+                                p.windWaveShallowBlend, 0.0f);
     gpu.waveCurl = glm::vec4(p.rippleHeight, 0.0f, 0.0f, 0.0f);
     gpu.waveWarp = glm::vec4(0.0f, 0.0f, 0.0f, p.shoreGradientStep);
     gpu.waveMask = glm::vec4(p.shoreWaveFade, 0.0f, 0.0f, 0.0f);

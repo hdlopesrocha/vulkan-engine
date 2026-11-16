@@ -27,11 +27,16 @@ struct WaterParams {
     glm::vec4 waveToggles;      // x=enableWaves, y=enableFoam, z=enableVolumetric, w=unused
     glm::vec4 waveZones;        // x=deep depth(>=), y=break depth, z=shallow depth, w=unused
     glm::vec4 waveDirection;    // xy=shore direction fallback (unit, world XZ), zw=unused
-    glm::vec4 waveShape;        // x=shoreWaveSlope (m depth per m), y=waveCrestSharpness, zw=unused
+    glm::vec4 waveShape;        // x=shoreWaveSlope (legacy, unused by the wave), y=waveCrestSharpness, zw=unused
     glm::vec4 waveShoal;        // z=waveSteepness (Gerstner pinch), xyw=unused
     glm::vec4 waveComponent1;   // x=dominant swell period (scale at upload), y=dispersion scale, z=height scale, w=unused
     glm::vec4 waveComponent2;   // reserved
-    glm::vec4 waveBreaker;      // reserved
+    // Wind-wave drive (shared fBm wind field, set=0 binding 27):
+    // x = response 0..1 (how strongly the wind speed scales the wave height),
+    // y = reference speed (m/s) at which the wind response saturates,
+    // z = shallow-water direction blend depth (m; 0 = derive from shoreWaveFade),
+    // w = unused.
+    glm::vec4 waveBreaker;
     glm::vec4 waveCurl;         // reserved
     glm::vec4 waveWarp;         // xyz reserved, w=shore gradient step(texels)
     glm::vec4 waveMask;         // x=shoreWaveFade (depth over which the swell fades out at the shore)

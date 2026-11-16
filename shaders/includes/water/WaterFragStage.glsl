@@ -20,6 +20,8 @@ layout(location = VARY_SHARPNORMAL) in vec3 fragBaseNormal;  // undisplaced base
 layout(location = VARY_BASEPOS) in vec4 fragBasePos;          // xyz = undisplaced base position, w = raw bump amplitude
 layout(location = VARY_WATERDEPTH) in float fragWaterDepth;   // TES-measured water thickness (-1 = unknown/deep)
 layout(location = VARY_SHOREDIR) in vec2 fragShoreDir;        // unit shore direction (toward thinner water)
+layout(location = VARY_WAVEDIR) in vec2 fragWaveDir;          // wind-driven wave propagation direction (unit xz)
+layout(location = VARY_WINDWAVE) in float fragWindWave;       // wind amplitude multiplier on the wave height
 layout(location = VARY_POSCLIP) in vec4 fragPosClip;  // clip-space position for scene sampling
 layout(location = VARY_DEBUG) in vec3 fragDebug;   // debug visual (displacement)
 layout(location = VARY_POSWORLD) in vec3 fragPosWorld;  // world-space position for shadow cascades

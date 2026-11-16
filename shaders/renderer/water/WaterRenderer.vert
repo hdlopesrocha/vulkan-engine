@@ -48,6 +48,8 @@ layout(location = VARY_SHARPNORMAL) out vec3 fragBaseNormal;  // undisplaced bas
 layout(location = VARY_BASEPOS) out vec4 fragBasePos;         // xyz = undisplaced base position, w = raw bump amplitude
 layout(location = VARY_WATERDEPTH) out float fragWaterDepth;  // measured water depth (-1 = unknown/deep)
 layout(location = VARY_SHOREDIR) out vec2 fragShoreDir;       // unit shore direction (toward thinner water)
+layout(location = VARY_WAVEDIR) out vec2 fragWaveDir;         // wind-driven wave propagation direction (unit xz)
+layout(location = VARY_WINDWAVE) out float fragWindWave;      // wind amplitude multiplier on the wave height
 layout(location = VARY_POSCLIP) out vec4 fragPosClip;         // clip-space position for depth lookup
 layout(location = VARY_DEBUG) out vec3 fragDebug;             // debug visual (displacement)
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;       // world-space position for shadow cascades
@@ -147,9 +149,15 @@ void main() {
     }
     fragShoreDir = shoreDir;
 
+    // Wind-driven wave train (same helper the TES uses): local fBm wind
+    // direction + saturating amplitude response.
+    waterWindWave(pos, waterRenderUBO.waterTime, shoreDir, waterDepth, wp,
+                  fragWaveDir, fragWindWave);
+
     float animTime = waterRenderUBO.waterTime;   // raw: Wave Speed drives the swell
     WaterVertexWave wv = waterDisplaceWaterVertex(pos, normal, animTime,
-                                                  waterDepth, shoreDir, bumpAmp, wp,
+                                                  waterDepth, fragWaveDir,
+                                                  bumpAmp * fragWindWave, wp,
                                                   WATER_VERTEX_OCT);
     fragNormal = wv.normal;
     // Fragment interface. Every varying the water fragment stage reads has to

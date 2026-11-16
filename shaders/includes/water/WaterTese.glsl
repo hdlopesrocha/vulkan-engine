@@ -4,6 +4,11 @@
 #include "../../types/WaterVertexWave.glsl"
 #include "../../types/WaterWaveField.glsl"
 #include "WaterRenderView.glsl"
+// Shared 3D fBm wind field (set=0 binding 27): the SAME field the vegetation,
+// clouds, fire and wind trails sample. Requires perlinNoise3D, which every
+// includer (WaterRenderer.tese / the WATER_NO_TESS vertex path) includes
+// before this file.
+#include "../vegetation/WindField.glsl"
 // Water TES (moved from WaterRenderer.tese). Requires: ubo, locations,
 // perlin, water_noise. Defines the stage's main().
 //
@@ -38,6 +43,8 @@ layout(location = VARY_SHARPNORMAL) out vec3 fragBaseNormal;  // undisplaced bas
 layout(location = VARY_BASEPOS) out vec4 fragBasePos;        // xyz = undisplaced base position, w = raw bump amplitude
 layout(location = VARY_WATERDEPTH) out float fragWaterDepth; // measured water depth (-1 = unknown/deep)
 layout(location = VARY_SHOREDIR) out vec2 fragShoreDir;      // unit shore direction (toward thinner water)
+layout(location = VARY_WAVEDIR) out vec2 fragWaveDir;        // wind-driven wave propagation direction (unit xz)
+layout(location = VARY_WINDWAVE) out float fragWindWave;     // wind amplitude multiplier on the wave height
 layout(location = VARY_POSCLIP) out vec4 fragPosClip;  // clip-space position for depth lookup
 layout(location = VARY_DEBUG) out vec3 fragDebug;   // debug visual (displacement)
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;  // world-space position for shadow cascades
@@ -111,8 +118,43 @@ vec2 waterShoreDirFromSamples(float rawC, float rawX, float rawY,
 // which is global on purpose — the front and back rasterised surfaces must be
 // displaced by the same function or the measured water column gains a
 // wave-dependent term (see WATER_VERTEX_OCT in water_noise.glsl).
+
+// ── Wind-driven wave drive ─────────────────────────────────────────────────
+// Samples the SHARED 3D fBm wind field (set=0 binding 27 — the same field the
+// vegetation, clouds, fire and wind trails use) once per water vertex:
+//   * waveDir  = local wind direction in deep water, blended toward the shore
+//                in shallow water (refraction); falls back to the measured
+//                shore direction / authored angle when the air is still.
+//   * ampScale = saturating wind-sea amplitude multiplier
+//                mix(1, 1 - exp(-U / Uref), response).
+// The TES / no-tess VS forward both to the fragment stage as varyings, so the
+// per-pixel analytic normal uses the identical drive and the fragment never
+// re-evaluates the field.
+void waterWindWave(vec3 pos, float time, vec2 shoreDir, float depth,
+                   WaterParamsNamed wp, out vec2 waveDir, out float ampScale) {
+    vec3 w = windSVF(pos, time);
+    vec2 windXZ = w.xz;
+    float windSpeed = length(windXZ);
+    vec2 dir = (windSpeed > 1e-4) ? windXZ / windSpeed : shoreDir;
+
+    // Saturating wind response: calm air leaves nearly flat water, strong wind
+    // builds the full authored sea. response = 0 keeps the height constant.
+    float ref = max(wp.windWaveReference, 0.5);
+    float windNorm = 1.0 - exp(-max(windSpeed, 0.0) / ref);
+    ampScale = mix(1.0, windNorm, clamp(wp.windWaveResponse, 0.0, 1.0));
+
+    // Refraction: in shallow water the crests turn to follow the depth
+    // contours (the shore direction); in deep water they run with the wind.
+    float blendDepth = (wp.windWaveShallow > 0.0) ? wp.windWaveShallow : wp.shoreWaveFade;
+    float shallow = (depth >= 0.0 && blendDepth > 0.0)
+        ? 1.0 - smoothstep(0.5 * blendDepth, 2.5 * blendDepth, depth) : 0.0;
+    vec2 blended = mix(dir, shoreDir, clamp(shallow, 0.0, 1.0) * 0.85);
+    float l = length(blended);
+    waveDir = (l > 1e-4) ? blended / l : normalize(wp.waveDirection + vec2(1e-5, 0.0));
+}
+
 WaterVertexWave waterDisplaceWaterVertex(vec3 pos, vec3 normal, float animTime,
-                                         float waterDepth, vec2 shoreDir,
+                                         float waterDepth, vec2 waveDir,
                                          float bumpAmp, WaterParamsNamed wp,
                                          int octBudget) {
     // Surface basis (tangent plane) for projecting the analytic gradient.
@@ -129,7 +171,7 @@ WaterVertexWave waterDisplaceWaterVertex(vec3 pos, vec3 normal, float animTime,
         animTime,
         waterDepth,
         bumpAmp,
-        shoreDir,
+        waveDir,
         wp,
         false,
         octBudget,
@@ -207,6 +249,9 @@ void main() {
         // here): full swell amplitude, no contact foam.
         fragWaterDepth = 2.0 * max(wp.shoreWaveFade, 1.0);
         fragShoreDir = normalize(wp.waveDirection + vec2(1e-5, 0.0));
+        // Wind drive still applies to the per-pixel shading normal.
+        waterWindWave(pos, waterRenderUBO.waterTime, fragShoreDir, fragWaterDepth, wp,
+                      fragWaveDir, fragWindWave);
         fragNormal = normal;
         fragDebug = vec3(0.5, 0.5, 0.0);              // no displacement, no gradient
         fragPos = pos;
@@ -356,13 +401,22 @@ void main() {
     }
     fragShoreDir = shoreDir;
 
-    // Calculate the thickness-zoned shore-wave displacement and its analytic
-    // spatial gradient (single wave field: directional swell + chop + mask).
-    // Shared with the WATER_NO_TESS vertex path via waterDisplaceWaterVertex()
-    // so both geometry paths cannot drift.
+    // Wind-driven wave train: the shared fBm wind field sets the propagation
+    // direction (blended toward the shore in shallow water) and scales the
+    // height (saturating wind-sea response). Both are forwarded to the
+    // fragment stage so its per-pixel analytic normal uses the same drive.
+    vec2 waveDir;
+    float windAmp;
+    waterWindWave(pos, time, shoreDir, waterDepth, wp, waveDir, windAmp);
+    fragWaveDir = waveDir;
+    fragWindWave = windAmp;
+
+    // Calculate the thickness-zoned wind-wave displacement and its analytic
+    // spatial gradient (single wave field). Shared with the WATER_NO_TESS
+    // vertex path via waterDisplaceWaterVertex() so both cannot drift.
     float animTime = time;   // raw water time: Wave Speed drives the swell
     WaterVertexWave wv = waterDisplaceWaterVertex(pos, normal, animTime,
-                                                  waterDepth, shoreDir, bumpAmp, wp,
+                                                  waterDepth, waveDir, bumpAmp * windAmp, wp,
                                                   WATER_VERTEX_OCT);
     float waveDisplacement = wv.displacement;
     pos = wv.pos;

@@ -119,6 +119,10 @@ WaterParamsNamed waterParamsNamed(WaterParams p) {
     n.waveSteepness = p.waveShoal.z;
     n.waveCrestSharpness = p.waveShape.y;
     n.rippleHeight = p.waveCurl.x;
+    // Wind-wave drive (shared field sampled in the water vertex/TES stage).
+    n.windWaveResponse = p.waveBreaker.x;
+    n.windWaveReference = p.waveBreaker.y;
+    n.windWaveShallow = p.waveBreaker.z;
     n.waterColor = p.regionShoreColor.rgb;
     n.waveSpeed = p.waveComponent1.y;
     n.waveAmplitude = p.waveComponent1.z;

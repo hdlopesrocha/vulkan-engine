@@ -72,34 +72,47 @@ void WaterWidget::render() {
         SliderFloatField("Crest Sharpness", &layerParams.waveCrestSharpness, 1.0f, 4.0f, "%.2f",
             "Exponent on the wave profile: 1 = plain Gerstner, higher = narrower,\n"
             "spikier crests and troughs with steeper faces between them.");
-        SliderFloatField("Shore Slope (m/m)", &layerParams.shoreWaveSlope, 0.002f, 0.2f, "%.4f",
-            "Beach slope: metres of depth per metre from the shore. The wave phase runs\n"
-            "on depth / slope, i.e. on the distance to the waterline, so the crests follow\n"
-            "the depth contours (the shoreline).");
     }});
 
     sections.push_back({[&]() {
-        ImGui::Text("Shore Waves");
+        ImGui::Text("Waves (wind-driven)");
         ColSeparator();
         CheckboxField("Enable Waves", &layerParams.enableWaves,
-            "Master toggle for the sine swell.\n"
+            "Master toggle for the wind-driven swell.\n"
             "Only the first water material enables it by default.");
         SliderFloatField("Wave Height", &layerParams.waveAmplitude, 0.0f, 64.0f, "%.2f",
-            "Overall vertical amplitude of the wave displacement (world units).");
+            "Overall vertical amplitude of the wave displacement (world units),\n"
+            "scaled by the wind response below.");
         SliderFloatField("Wave Speed (m/s)", &layerParams.waveSpeed, 0.0f, 30.0f, "%.2f",
-            "Phase speed of the sine swell.");
+            "Phase speed of the swell train (how fast the crests travel).\n"
+            "For a realistic young sea set it near the local wind speed\n"
+            "(wind waves travel at roughly 0.8-1.0x the wind).");
         SliderFloatField("Wave Period", &layerParams.wavePeriod, 5.0f, 4096.0f, "%.1f",
-            "Wavelength of the sine swell (world units).\n"
+            "Crest spacing along the wave propagation direction (world units).\n"
             "The swell's HEIGHT follows the wavelength (constant steepness), so this\n"
-            "scales the whole swell up, not just its wavelength.",
+            "scales the whole train up, not just its wavelength.",
             ImGuiSliderFlags_Logarithmic);
         SliderFloatField("Shore Direction (deg)", &layerParams.shoreWaveAngle, 0.0f, 360.0f, "%.1f",
-            "Direction the sine wave travels, toward the shore.\n"
+            "Fallback propagation direction when the shared wind is calm, and the\n"
+            "target of the shallow-water refraction blend.\n"
             "0 = +Z, 90 = +X, 180 = -Z, 270 = -X.");
         SliderFloatField("Shore Gradient Step", &layerParams.shoreGradientStep, 0.0f, 64.0f, "%.1f",
             "Screen-texel step used to measure the local direction of decreasing depth\n"
-            "(the direction to the shore). The wave faces aim along it, so the swell\n"
-            "runs head-on into every part of the coastline. 0 = use the fixed angle above.");
+            "(the direction to the shore). Shallow water bends the wind-wave crests\n"
+            "toward it (refraction). 0 = use the fixed angle above.");
+
+        ImGui::TextUnformatted("Wind Drive");
+        SliderFloatField("Wind Response", &layerParams.windWaveResponse, 0.0f, 1.0f, "%.2f",
+            "How strongly the shared 3D fBm wind field's local speed scales the wave\n"
+            "height. 0 = constant authored height (the wind only steers the direction),\n"
+            "1 = fully wind-driven height (calm air gives nearly flat water).");
+        SliderFloatField("Wind Reference (m/s)", &layerParams.windWaveReference, 1.0f, 40.0f, "%.1f",
+            "Wind speed at which the amplitude response reaches ~63% (saturating\n"
+            "wind-sea growth). The shared wind field's default amplitude is ~16 m/s.");
+        SliderFloatField("Shallow Blend (m)", &layerParams.windWaveShallowBlend, 0.0f, 400.0f, "%.1f",
+            "Water depth over which the wave direction blends from the local wind\n"
+            "direction to the shore direction (refraction). 0 = derive it from\n"
+            "Shore Wave Fade.");
     }});
 
     sections.push_back({[&]() {
@@ -282,7 +295,7 @@ void WaterWidget::render() {
         EstimateSectionHeight(3),   // 4  Region 3: Breaker Line
         EstimateSectionHeight(3),   // 5  Region 4: Foam Band
         EstimateSectionHeight(3),   // 6  Region 5: Shore Line
-        EstimateSectionHeight(6),   // 7  Shore Waves
+        EstimateSectionHeight(9),   // 7  Waves (wind-driven)
         EstimateSectionHeight(5),   // 8  Cross Swell
         EstimateSectionHeight(5),   // 9  Crest Detail
         EstimateSectionHeight(6),   // 10 Wave Shaping (by Zone)

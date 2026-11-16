@@ -251,7 +251,12 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     windFieldBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     windFieldBinding.pImmutableSamplers = nullptr;
     windFieldBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
-        | VK_SHADER_STAGE_COMPUTE_BIT;
+        | VK_SHADER_STAGE_COMPUTE_BIT
+        // Water waves sample the field in the tessellation stages (control
+        // probe + evaluation displacement) so wind-driven waves match the
+        // rasterized surface exactly.
+        | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
+        | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     // binding 28: per-brush image source table (types/ImageType.hpp): one uvec2
     // {ImageType, index} per brush. Lets the shaders resolve which texture set
