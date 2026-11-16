@@ -33,14 +33,16 @@ static_assert(sizeof(OctreeRaymarchNode) == 128,
               "std430 RaymarchNode in RaymarchTable.glsl");
 
 // One rendered layer root: the node index the shader starts from plus the
-// layer's stable id. The id only feeds the debug view's per-layer hue (and
-// any future per-layer diagnostics); the march itself ignores it.
+// layer's stable id and renderer kind. The id feeds the debug view's per-layer
+// hue; `kind` selects the shading branch at a hit (0 = solid surface shading,
+// 1 = water surface shading) so one march covers every terrain layer.
 struct OctreeRaymarchRoot {
     uint32_t nodeIndex = 0;
     int32_t layerId = -1;
+    uint32_t kind = 0; // 0 = Solid, 1 = Water (LayerRendererType)
 };
 
-static_assert(sizeof(OctreeRaymarchRoot) == 8,
+static_assert(sizeof(OctreeRaymarchRoot) == 12,
               "OctreeRaymarchRoot must match the std430 RaymarchRoot in "
               "RaymarchTable.glsl");
 

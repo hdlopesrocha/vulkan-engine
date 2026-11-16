@@ -7,16 +7,19 @@
 #endif
 
 // ── Octree SDF raymarcher ───────────────────────────────────────────────────
-// Optional solid path (Settings: "Octree SDF Raymarch", mirrored in the Ray
-// Marching widget): instead of drawing the tessellated solid chunks, this
-// fullscreen pass marches the octree's stored corner SDFs and shades the first
-// isosurface hit with the same shadeSolidSurface() routine the raster path
-// uses (materials/mapping, CSM shadows, RT reflections/contact shadows).
+// Optional SDF path (Settings: "Octree SDF Raymarch", selected in the Ray
+// Marching widget): instead of drawing the tessellated chunks of each layer,
+// this fullscreen pass marches the octree's stored corner SDFs for EVERY
+// terrain layer (Solid and Water) and shades the nearest isosurface hit. Solid
+// layers go through the same shadeSolidSurface() routine the raster path uses
+// (materials/mapping, CSM shadows, RT reflections/contact shadows); Water
+// layers use a water-surface shading branch (tint + Fresnel + specular).
 //
 // The node table (utils/OctreeRaymarchTable.hpp) stores SURFACE cells only,
-// flattened breadth-first per enabled Solid layer. Each layer contributes one
+// flattened breadth-first per enabled terrain layer. Each layer contributes one
 // root entry covering a cube; roots are marched independently and the nearest
-// hit wins. Non-surface children are not stored: their SpaceType is packed in
+// hit wins, so solid and water surfaces occlude each other correctly in one
+// pass. Non-surface children are not stored: their SpaceType is packed in
 // the parent so Empty children (all corners outside) and Solid children (all
 // corners inside) are both skipped — by construction the unbumped isosurface
 // cannot cross either. Only node-cap-pruned Surface children fall back to the
@@ -878,7 +881,7 @@ void main() {
     vec3 ro = ubo.viewPosition;
     vec3 rd = normalize(farPoint.xyz / farPoint.w - ro);
 
-    // Nearest hit across every visible Solid layer root.
+    // Nearest hit across every visible terrain layer root (Solid + Water).
     float nearestT = 1.0e30;
     uint nearestNode = 0u;
     uint nearestRoot = 0u;
@@ -995,6 +998,31 @@ void main() {
             color = mix(color, vec3(0.10, 0.40, 1.00), 0.55 * missing);
         }
 
+        outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+        return;
+    }
+
+    // Water layers shade with a water-surface branch: the water octree stores
+    // the water volume, so the marched hit is its top surface. The pass is
+    // opaque (it writes the solid color/depth targets), so this is the
+    // diagnostic water look — layer tint + Fresnel + sun specular — rather
+    // than the raster water renderer's refraction/transparency.
+    if (rmRoots[nearestRoot].kind == 1u) {
+        WaterParamsNamed wp = waterParamsNamed(waterParams[0]);
+        vec3 N = normal;
+        vec3 V = -rd;
+        float ndv = clamp(dot(N, V), 0.0, 1.0);
+        float fresnel = pow(1.0 - ndv, max(wp.fresnelPower, 1.0));
+        vec3 sunDir = normalize(-ubo.lightDirection); // uniform stores light -> scene
+        float ndl = max(dot(N, sunDir), 0.0);
+        vec3 halfDir = normalize(sunDir + V);
+        float spec = pow(max(dot(N, halfDir), 0.0), max(wp.specularPower, 1.0)) *
+                     max(wp.specularIntensity, 0.0);
+        vec3 deep = wp.waterColor;
+        vec3 color = deep * (0.45 + 0.55 * ndl);
+        // Grazing views pick up a brighter sky-ish sheen.
+        color = mix(color, deep * 0.70 + vec3(0.28, 0.34, 0.40), fresnel * 0.75);
+        color += vec3(1.0, 0.97, 0.90) * spec;
         outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
         return;
     }

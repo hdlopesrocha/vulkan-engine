@@ -10,20 +10,22 @@
 
 #include <glm/glm.hpp>
 
-// Octree SDF raymarch solid path (Settings::octreeRaymarchEnabled).
+// Octree SDF raymarch terrain path (Settings::octreeRaymarchEnabled).
 //
 // Owns the set-2 descriptor layout (node table + layer roots), one host-visible
 // buffer pair per frame in flight and the fullscreen raymarch pipeline. The
-// shader shades through the shared solid surface body, with raster-style
-// three-brush barycentric blending (the local Surface-Nets triangle is
-// reconstructed at the hit), tessellation displacement folded into the marched
-// SDF, CSM/cloud shadows and optional inline RT reflections/contact shadows
-// (the RT fragment twin is bound while Settings::rtReflections / rtLocalShadows
-// are on).
+// table covers EVERY terrain layer (Solid + Water): the shader marches all
+// layer roots and keeps the nearest hit, so solid and water surfaces occlude
+// each other in one pass. Solid hits shade through the shared solid surface
+// body (raster-style three-brush barycentric blending, tessellation
+// displacement folded into the SDF, CSM/cloud shadows, optional inline RT
+// reflections/contact shadows); water hits take the water-surface shading
+// branch (layer tint + Fresnel + specular, opaque because the pass writes the
+// solid color/depth targets).
 // The table itself is built by the CPU (Scene::buildRaymarchTable) on a debounce
 // and uploaded here only when its revision differs from the slot's revision.
 // The table buffers are allocated on the first upload: the mode is off by
-// default, so paying ~48 MB per frame slot at startup would be wasteful.
+// default, so paying ~64 MB per frame slot at startup would be wasteful.
 //
 // Synchronization: upload() is called from MyApp::update(), which runs after
 // the frame-slot fence wait (VulkanApp::drawFrame). The slot's previous GPU
@@ -34,16 +36,17 @@ class OctreeRaymarchRenderer : public Renderer {
 public:
     static constexpr uint32_t RAYMARCH_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
 
-    // Hard CPU-side cap: 393216 nodes * 128 B = 48 MB per frame slot. The
-    // default procedural scene's complete surface tree is ~358k nodes (the
-    // terrain's 30-unit cells dominate; the test objects add depths 10-12), so
-    // this stores it whole as long as the device range allows. Larger scenes
-    // still degrade uniformly: breadth-first fills the shallow levels first
-    // and the cap only prunes the deepest surface children.
-    static constexpr size_t NODE_CAP = 393216;
-    // One root per visible Solid layer. Generous for a dynamic layer list;
-    // extra layers beyond this are ignored (they still rasterize when the
-    // fallback path is active).
+    // Hard CPU-side cap: 524288 nodes * 128 B = 64 MB per frame slot (192 MB
+    // for the three slots, allocated only once the mode is enabled). The
+    // default procedural scene's terrain tree (solid + water) is larger than
+    // this, so the breadth-first walk stores the shallow levels whole and
+    // prunes the deepest surface children; the parent's trilinear field keeps
+    // those regions continuous instead of leaving holes. Larger scenes
+    // degrade the same way.
+    static constexpr size_t NODE_CAP = 524288;
+    // One root per visible terrain layer (Solid + Water). Generous for a
+    // dynamic layer list; extra layers beyond this are ignored (they still
+    // rasterize when the fallback path is active).
     static constexpr size_t ROOT_CAP = 256;
 
     struct PushConstants {

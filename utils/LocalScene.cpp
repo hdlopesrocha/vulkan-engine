@@ -499,15 +499,21 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
     out.clear();
     if (maxNodes == 0) return false;
 
-    // Snapshot the enabled Solid layers: each octree is reference-counted, so a
-    // layer removed concurrently cannot destroy the tree under the walk.
+    // Snapshot every enabled SDF terrain layer (Solid + Water): the raymarch
+    // table is the ONE geometry path for all of them, so a water layer is
+    // marched exactly like a solid layer and shaded by its own branch. Video
+    // layers keep their dedicated textured renderer and are excluded (the
+    // raymarch shades materials, not video layers). Each octree is
+    // reference-counted, so a layer removed concurrently cannot destroy the
+    // tree under the walk.
     std::vector<std::shared_ptr<Layer>> layers;
     {
         std::lock_guard<std::mutex> lock(layersMutex_);
         layers.reserve(layers_.size());
         for (const auto& layer : layers_) {
             if (!layer || !layer->enabled()) continue;
-            if (layer->renderer() != LayerRendererType::Solid) continue;
+            const LayerRendererType rt = layer->renderer();
+            if (rt != LayerRendererType::Solid && rt != LayerRendererType::Water) continue;
             if (!layer->hasOctree()) continue;
             layers.push_back(layer);
         }
@@ -571,8 +577,13 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
                   << rootCube.getMin().y << ", " << rootCube.getMin().z << ") size="
                   << rootCube.getLengthX() << std::endl;
         const uint32_t rootIndex = out.append(makeRecord(root, rootCube));
+        // kind: 0 = Solid (material shading), 1 = Water (water surface
+        // shading). The march treats both roots identically; only the hit
+        // shading differs.
+        const uint32_t rootKind =
+            (layer->renderer() == LayerRendererType::Water) ? 1u : 0u;
         out.layerRoots.push_back(OctreeRaymarchRoot{
-            rootIndex, static_cast<int32_t>(layer->id())});
+            rootIndex, static_cast<int32_t>(layer->id()), rootKind});
         queue.push_back(PendingNode{root, rootCube, rootIndex, 0});
         {
             bool anyInf = false;
@@ -657,7 +668,7 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
 
     if (out.nodes.empty()) return false;
     std::cout << "[LocalScene] SDF raymarch table: " << out.nodes.size() << " nodes across "
-              << out.layerRoots.size() << " solid layer(s); surfaceSeen=" << surfaceSeen
+              << out.layerRoots.size() << " terrain layer(s); surfaceSeen=" << surfaceSeen
               << " pruned=" << prunedChildren << " solidChildren=" << solidChildren
               << " emptyChildren=" << emptyChildren << " maxDepth=" << maxDepth
               << " infCornerNodes=" << storedInfNodes << std::endl;

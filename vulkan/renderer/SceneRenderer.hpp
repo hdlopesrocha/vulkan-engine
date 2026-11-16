@@ -92,9 +92,11 @@ public:
     std::unique_ptr<VideoRenderer> videoRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<BrushSdfRenderer> brushRenderer;
-    // Optional solid path: raymarches the octree's stored SDFs instead of the
-    // tessellated chunks (Settings::octreeRaymarchEnabled). Owns the set-2
-    // node-table descriptors and the fullscreen raymarch pipeline.
+    // Optional terrain path: raymarches the octree's stored SDFs of EVERY
+    // terrain layer (Solid + Water) instead of the tessellated chunks
+    // (Settings::octreeRaymarchEnabled). Owns the set-2 node-table descriptors
+    // and the fullscreen raymarch pipeline. When active it replaces the raster
+    // solid pass and the raster water pass at once.
     std::unique_ptr<OctreeRaymarchRenderer> octreeRaymarchRenderer;
     std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
     // NOTE (hybrid RT §12): the legacy 360° cubemap capture (Solid360Renderer)

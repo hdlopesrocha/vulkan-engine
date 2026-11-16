@@ -58,25 +58,26 @@ void RaymarchWidget::render() {
     // analytic normals, CSM/RT shading and tessellation displacement (the
     // raymarcher folds the height offset into the marched SDF).
     addSection(190.0f, [this]() {
-        ImGui::Text("Solid Octree Path");
+        ImGui::Text("Terrain Octree Path");
         ImGuiComponents::ColSeparator();
         if (!settings) {
             ImGui::TextWrapped("No Settings bound to this widget.");
             return;
         }
         ImGui::TextWrapped("The octree SDF raymarch is the ray marched "
-                           "equivalent of the tessellated solid chunks. Both "
-                           "paths shade through shadeSolidSurface(); the "
-                           "raymarch reconstructs the local surface triangle "
-                           "for the same up-to-three-brush barycentric blend "
-                           "and folds the per-material tessellation height "
-                           "offset into the SDF, so the displaced surface "
-                           "matches the raster one.");
+                           "equivalent of the tessellated chunks and applies to "
+                           "EVERY terrain layer (solid and water) in one pass. "
+                           "Solid hits shade through shadeSolidSurface(); water "
+                           "hits take the water surface branch. The raymarch "
+                           "reconstructs the local surface triangle for the same "
+                           "up-to-three-brush barycentric blend and folds the "
+                           "per-material tessellation height offset into the "
+                           "SDF, so the displaced surface matches the raster one.");
         {
-            ImGuiComponents::FieldLabel("Solid path",
+            ImGuiComponents::FieldLabel("Terrain path",
                 "Rasterizer = GPU-tessellated chunk meshes. Ray marched = "
-                "full-screen octree SDF march (falls back to raster when no "
-                "node table is available).");
+                "full-screen octree SDF march of every terrain layer (falls "
+                "back to raster when no node table is available).");
             int path = settings->octreeRaymarchEnabled ? 1 : 0;
             const char* paths[] = {"Rasterizer (tessellated)", "Ray marched octree"};
             ImGui::SetNextItemWidth(kRaymarchColWidth);
@@ -87,8 +88,8 @@ void RaymarchWidget::render() {
             ImGui::PopID();
             ImGuiComponents::TooltipOnHover(
                 "Rasterizer = GPU-tessellated chunk meshes. Ray marched = "
-                "full-screen octree SDF march. The node table rebuilds on the "
-                "next debounce after switching on.");
+                "full-screen octree SDF march over solid AND water layers. The "
+                "node table rebuilds on the next debounce after switching on.");
         }
         {
             bool tess = settings->tessellationEnabled;

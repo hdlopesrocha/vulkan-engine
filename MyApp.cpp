@@ -1997,7 +1997,23 @@ public:
                 sceneRenderer->solidRenderer->getDepthView(frameIdx), windFieldBuffer, mainTime);
         }
 
-        const bool waterEnabled = settings.waterEnabled;
+        // Octree SDF raymarch path (Settings toggle or the debug view forcing
+        // it). When active it renders EVERY terrain layer (Solid + Water), so
+        // the raster water pass must be skipped below. The table for this
+        // frame slot was already uploaded in update(), so hasTable() is valid
+        // here (before the async solid/water tasks are launched).
+        const bool octreeRaymarchActive = sceneRenderer
+            && settings.renderSolid
+            && (settings.octreeRaymarchEnabled
+                || debugModeForcesOctreeRaymarch(debugModeFromInt(settings.debugMode)))
+            && !useRemote
+            && sceneRenderer->octreeRaymarchRenderer
+            && sceneRenderer->brushRenderer
+            && sceneRenderer->octreeRaymarchRenderer->hasTable(frameIdx);
+
+        // Water is rasterized only when it is enabled AND not already rendered
+        // by the octree raymarch (the raymarch covers all terrain layers).
+        const bool waterEnabled = settings.waterEnabled && !octreeRaymarchActive;
         const bool vegetationEnabled = settings.vegetationEnabled;
         // Bladed-grass impostor hand-off: captured blade tufts take over beyond
         // Settings::impostorDistance, so the impostor pass runs whenever
@@ -2435,7 +2451,7 @@ public:
         }
 
         if (sceneRenderer && sceneRenderer->solidRenderer) {
-            asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v]() {
+            asyncSolidFuture = asyncThreadPool.enqueue([this, viewProj, frameIdx, v, octreeRaymarchActive]() {
                 MyApp* app = this;
                 VkCommandBuffer solidCmd = app->beginAsyncTask("solid");
                 if (solidCmd == VK_NULL_HANDLE) return;
@@ -2463,22 +2479,19 @@ public:
                 const uint32_t solidW = this->sceneRenderer->solidRenderer->getRenderWidth();
                 const uint32_t solidH = this->sceneRenderer->solidRenderer->getRenderHeight();
 
-                // C2 gate: skip the depth prepass and run a single forward
-                // pass (color writes depth) when disabled in settings. Forced
-                // on while solid RT paths run: the RT color variants have no
-                // depth-write twin, and an unwritten depth target would break
-                // the water/composite passes that sample it. The depth layout
-                // transition below still runs in both modes (Instance 2 needs
-                // it when Instance 1 is skipped).
-                const bool solidRaymarch = settings.renderSolid
-                    && (settings.octreeRaymarchEnabled
-                        || debugModeForcesOctreeRaymarch(debugModeFromInt(settings.debugMode)))
-                    && !useRemote
-                    && this->sceneRenderer->octreeRaymarchRenderer
-                    && this->sceneRenderer->brushRenderer
-                    && this->sceneRenderer->octreeRaymarchRenderer->hasTable(frameIdx);
-                // Raymarch draws its own depth (CLEAR + gl_FragDepth writes), so
-                // it always skips the tessellated depth prepass.
+                // Octree SDF raymarch gate (computed in preRenderPass before
+                // the water pass decision). The raymarch owns the geometry path
+                // for every terrain layer and writes its own depth (CLEAR +
+                // gl_FragDepth), so it always skips the tessellated depth
+                // prepass.
+                const bool solidRaymarch = octreeRaymarchActive;
+                // C2 gate: also skip the depth prepass and run a single
+                // forward pass (color writes depth) when disabled in settings.
+                // Forced on while solid RT paths run: the RT color variants
+                // have no depth-write twin, and an unwritten depth target would
+                // break the water/composite passes that sample it. The depth
+                // layout transition below still runs in both modes (Instance 2
+                // needs it when Instance 1 is skipped).
                 const bool skipSolidPrepass = solidRaymarch || (
                     !settings.solidDepthPrepass
                     && !settings.rtReflections && !settings.rtLocalShadows);
@@ -3419,7 +3432,7 @@ public:
             const bool sdfSkipSubmit = sdfIdle && !sdfTransition && sdfWarmupRuns >= 3;
             if (!sdfSkipSubmit) {
             if (sdfWarmupRuns < 3) ++sdfWarmupRuns;
-            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, v]() {
+            asyncSdfFuture = asyncThreadPool.enqueue([this, frameIdx, sdfEnabled, v, waterEnabled]() {
                 // SDF fire is always on, so the task runs every frame it is
                 // enqueued (no steady-state elision inside the task: the same
                 // CB carries the fire render when content exists).
@@ -3457,12 +3470,22 @@ public:
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                         vkCmdWriteTimestamp(sdfCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 23);
                 }
-                // Wait on tlCull (cull buffers), tlSolid (solid depth) and
-                // tlWater (water surface depth, both sampled for occlusion
-                // after their SHADER_READ_ONLY transitions); signal tlSdf for
-                // the composite.
+                // Wait on tlCull (cull buffers), tlSolid (solid depth) and, only
+                // when the raster water pass ran this frame, tlWater (water
+                // surface depth, sampled for occlusion after its
+                // SHADER_READ_ONLY transition); signal tlSdf for the composite.
+                // When water is skipped (disabled, or rendered by the octree
+                // raymarch) nothing signals tlWater@v, so waiting on it would
+                // stall this task and leave the present's timeline dependency
+                // unresolved (VUID-vkQueuePresentKHR-pWaitSemaphores-03268).
+                std::vector<VkSemaphore> sdfWaitSemaphores = {tlCull, tlSolid};
+                std::vector<uint64_t> sdfWaitValues = {v, v};
+                if (waterEnabled) {
+                    sdfWaitSemaphores.push_back(tlWater);
+                    sdfWaitValues.push_back(v);
+                }
                 app->submitCommandBufferAsyncToQueue(sdfCmd, app->getSdfQueue(), &tlSdf,
-                    {tlCull, tlSolid, tlWater}, true, {}, {v, v, v}, v, {}, true);
+                    sdfWaitSemaphores, true, {}, sdfWaitValues, v, {}, true);
                 this->profileSdfCpu = std::chrono::duration<float, std::milli>(
                     std::chrono::high_resolution_clock::now() - tSdf).count();
             });

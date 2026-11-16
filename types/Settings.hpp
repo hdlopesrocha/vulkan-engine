@@ -145,11 +145,15 @@ public:
 
     // Tessellation
     bool tessellationEnabled = false; // user-enabled (was default false)
-    // Solid render mode: raymarch the octree's stored cell SDFs instead of
-    // drawing tessellated chunks. Off by default. Falls back to the tessellated
-    // path when no node table is available (remote scene, no solid layers).
-    // The raymarch applies the same tessellation height displacement as the
-    // raster path by folding it into the SDF (Settings::tessellationEnabled).
+    // Terrain render mode: raymarch the octree's stored cell SDFs instead of
+    // drawing tessellated chunks. Applies to EVERY terrain layer (Solid and
+    // Water) in one fullscreen pass; water hits use the water-surface shading
+    // branch. Off by default. Falls back to the tessellated path when no node
+    // table is available (remote scene, no terrain layers). The raymarch
+    // applies the same tessellation height displacement as the raster path by
+    // folding it into the SDF (Settings::tessellationEnabled). Selected in the
+    // Ray Marching widget's terrain-path combo; the debug view
+    // OctreeSdfRaymarch forces it too.
     bool octreeRaymarchEnabled = false;
     bool shadowTessellationEnabled = false;
     // Deferred depth prepass for the solid pass (perf report 21 C2 gate).

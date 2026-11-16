@@ -28,10 +28,12 @@ struct RaymarchNode {
     vec4  hsv1;        // data.xy, 0, 0
 };
 
-// Root entry: node index + stable Layer::Id. Must match OctreeRaymarchRoot.
+// Root entry: node index + stable Layer::Id + renderer kind (0 = Solid,
+// 1 = Water). Must match OctreeRaymarchRoot.
 struct RaymarchRoot {
     uint node;
     int  layerId;
+    uint kind;
 };
 
 layout(std430, set = 2, binding = 0) readonly buffer RaymarchNodes {
