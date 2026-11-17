@@ -13,8 +13,8 @@
 // terrain layer (Solid and Water) and shades the nearest isosurface hit. Solid
 // layers go through the same shadeSolidSurface() routine the raster path uses
 // (materials/mapping, CSM shadows, RT reflections/contact shadows); Water
-// layers use a water-surface shading branch (Snell-refracted lake bed + sky/SSR
-// reflection, composed with the raster surface's Fresnel/strength mix).
+// layers use a water-surface shading branch (Snell-refracted lake bed + SDF
+// mirror ray, composed with the raster surface's Fresnel/strength mix).
 //
 // The node table (utils/OctreeRaymarchTable.hpp) stores SURFACE cells only,
 // flattened breadth-first per enabled terrain layer. Each layer contributes one
@@ -58,6 +58,7 @@
 #include "../../includes/SceneBindings.glsl"
 
 #include "../../includes/water/WaterTint.glsl"
+#include "../../includes/water/Gerstner.glsl"
 #include "../../includes/DebugModes.glsl"
 #include "../../includes/Textures.glsl"
 // Set=1 binding 0: brush SDF description. shadeSolidSurface() evaluates it for
@@ -965,25 +966,93 @@ bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
     return found;
 }
 
+// ── Ray-marched water surface waves ───────────────────────────────────────
+// The SDF water surface is flat, so the raster water's animated swell is
+// recovered per pixel exactly like its fragment normal: the shared fBm wind
+// field sets the propagation direction and the saturating wind-sea amplitude,
+// and the analytic Gerstner gradient tilts the SDF normal. The same sample
+// returns the vertical wave height so the reflection/refraction origins ride
+// the moving surface.
+struct RmWaterSurface {
+    vec3 normal;  // wave-perturbed interface normal
+    float height; // vertical displacement along the flat SDF normal (m)
+};
+
+RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N) {
+    RmWaterSurface s;
+    s.normal = N;
+    s.height = 0.0;
+    if (!wp.enableWaves || wp.bumpAmplitude <= 0.0) return s;
+
+    // Shared animation clock (SkyUniform::windTime is the live main clock,
+    // advanced every frame even when the raster water pass is skipped).
+    float t = sky.windTime;
+    vec3 w = windSVF(p, t);
+    vec2 windXZ = w.xz;
+    float windSpeed = length(windXZ);
+    // Propagation direction: the live wind; the authored angle is only the
+    // still-air fallback (same rule as waterWindWave() in WaterTese.glsl).
+    vec2 dir = (windSpeed > 1e-4) ? windXZ / windSpeed
+                                  : normalize(wp.waveDirection + vec2(1e-5, 0.0));
+    // Saturating wind response: calm air leaves nearly flat water, strong wind
+    // builds the authored sea. response = 0 keeps the height constant.
+    float ref = max(wp.windWaveReference, 0.5);
+    float windNorm = 1.0 - exp(-max(windSpeed, 0.0) / ref);
+    float ampScale = mix(1.0, windNorm, clamp(wp.windWaveResponse, 0.0, 1.0));
+
+    // Deep-water sentinel: the SDF layer does not store a column depth here.
+    // Using the shore fade would flatten the whole lake; the waterline case is
+    // already handled by the near-zero water thickness at the shore.
+    WaterWaveField wf = waterWaveField(p, t, -1.0,
+        wp.bumpAmplitude * ampScale, dir, wp, false, 3,
+        vec2(0.0), vec2(0.0));
+    if (wf.calmMask <= 0.0) return s;
+
+    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, N));
+    vec3 B = cross(N, T);
+    vec3 n = normalize(N - dot(wf.grad, T) * T - dot(wf.grad, B) * B);
+    if (!(dot(n, n) > 0.25)) n = N;
+    if (dot(n, N) < 0.0) n = -n;
+    s.normal = n;
+    s.height = wf.height;
+    return s;
+}
+
+// Shade one raymarched solid hit: reconstruct the material payload, fill the
+// shared fragment globals and run the raster solid shading body. Returns the
+// shaded color (outColor is the target shadeSolidSurface writes).
+vec3 rmShadeSolidHit(uint root, uint node, int brush, vec3 pos, vec3 rd) {
+    RmHitShading h = rmResolveHitShading(rmRoots[root].node, node,
+                                         max(brush, 0), pos, rd);
+    rmWriteFragGlobals(pos, h);
+    shadeSolidSurface(vec3(0.0));
+    return outColor.rgb;
+}
+
 // Water shading for a raymarched water-layer hit.
 //
 // The octree raymarch draws water inside the SOLID pass (opaque color+depth),
-// so the raster water renderer's own targets and its separate underwater pass
-// do not exist here. Instead this helper resolves both lobes against the SDF
-// scene itself:
+// so the raster water renderer's own targets, its separate underwater pass and
+// the previous-frame screen-space sources do not exist for this surface.
+// Both lobes are therefore traced through the SAME SDF octree the primary ray
+// used (no SSR / no previous-frame color dependency):
 //   * refraction: the Snell-bent ray continues through the water to the SOLID
-//     lake bed, which is shaded with the same shadeSolidSurface() the raster
-//     path uses, then attenuated by the water column (absorption + tint);
-//   * reflection: procedural sky + clouds refined by a screen-space march over
-//     the previous frame's solid color/depth (SSR), rejecting hits below the
-//     water level;
+//     lake bed, which is shaded with the raster path's shadeSolidSurface() and
+//     attenuated by the water column (absorption + tint);
+//   * reflection: a ray from the wave-displaced surface along the mirror
+//     direction marches the solid roots and shades the hit, with procedural
+//     sky + clouds as the miss value;
+//   * the swell (wind-driven Gerstner slope) perturbs the normal and moves the
+//     ray origins, so both images animate with the live wind;
 //   * the two are composed with the raster surface's exact Fresnel/strength
 //     mirror mix, and the CSM surface shadow darkens the result.
-// The RT variant resolves the exact scene instead (see rtResolveWaterHit).
-vec3 shadeRaymarchWaterFallback(WaterParamsNamed wp, vec3 hitPos, vec3 N, vec3 V) {
+// The RT variant can resolve the exact scene instead (see rtResolveWaterHit).
+vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
+                           vec3 N, vec3 Nw, vec3 V) {
     vec3 toSun = normalize(-ubo.lightDirection);
     vec3 rd = -V;
-    float ndv = clamp(dot(N, V), 0.0, 1.0);
+    float ndv = clamp(dot(Nw, V), 0.0, 1.0);
     // Raster water Fresnel: Schlick base + refraction/reflection mix.
     float fresnel = clamp(0.02 + 0.98 * pow(1.0 - ndv,
                           clamp(wp.fresnelPower, 1.0, 8.0)), 0.0, 1.0);
@@ -991,7 +1060,7 @@ vec3 shadeRaymarchWaterFallback(WaterParamsNamed wp, vec3 hitPos, vec3 N, vec3 V
     // CSM shadow on the water surface (the refracted bed carries its own).
     float surfaceShadow = 0.0;
     if (ubo.shadowsEnabled != 0u) {
-        float ndlS = max(dot(N, toSun), 0.0);
+        float ndlS = max(dot(Nw, toSun), 0.0);
         if (ndlS > 0.01) {
             float bias = max(0.002 * (1.0 - ndlS), 0.0005);
             surfaceShadow = ShadowCalculation(
@@ -999,9 +1068,9 @@ vec3 shadeRaymarchWaterFallback(WaterParamsNamed wp, vec3 hitPos, vec3 N, vec3 V
         }
     }
 
-    // ── Refraction: Snell-bent ray traced to the solid bed below ──
-    vec3 snellDir = refract(rd, N, 1.0 / max(wp.waterIor, 1.0));
-    if (dot(snellDir, snellDir) < 1e-6) snellDir = reflect(rd, N); // total internal
+    // ── Refraction: Snell-bent ray traced through the SDF to the bed ──
+    vec3 snellDir = refract(rd, Nw, 1.0 / max(wp.waterIor, 1.0));
+    if (dot(snellDir, snellDir) < 1e-6) snellDir = reflect(rd, Nw); // total internal
     snellDir = normalize(snellDir);
     // Refraction Strength = amount of bending (0 = straight through).
     vec3 refrDir = normalize(mix(rd, snellDir,
@@ -1010,6 +1079,9 @@ vec3 shadeRaymarchWaterFallback(WaterParamsNamed wp, vec3 hitPos, vec3 N, vec3 V
 
     float thickness = max(wp.maxThickness, 0.0);
     vec3 refrCol;
+    // The refracted ray starts just below the flat SDF surface: the swell is a
+    // shading/rotational deformation here, not a geometric displacement of the
+    // marched plane, so the origin must stay on the real interface.
     vec3 refrOrigin = hitPos - N * 0.02; // just inside the water volume
     uint bedRoot, bedNode;
     float bedT;
@@ -1020,11 +1092,7 @@ vec3 shadeRaymarchWaterFallback(WaterParamsNamed wp, vec3 hitPos, vec3 N, vec3 V
         // Shade the bed with the shared solid shading body (materials,
         // triplanar mapping, displacement parity, CSM shadows). It writes
         // outColor; the water composition below replaces it.
-        RmHitShading bed = rmResolveHitShading(rmRoots[bedRoot].node, bedNode,
-                                               max(bedBrush, 0), bedPos, refrDir);
-        rmWriteFragGlobals(bedPos, bed);
-        shadeSolidSurface(vec3(0.0));
-        vec3 bedColor = outColor.rgb;
+        vec3 bedColor = rmShadeSolidHit(bedRoot, bedNode, bedBrush, bedPos, refrDir);
         // Beer-Lambert absorption over the water column, then the same tint
         // ramp the raster surface uses (shore fade + transparency cap).
         vec3 transmittance = exp(-min(
@@ -1045,23 +1113,29 @@ vec3 shadeRaymarchWaterFallback(WaterParamsNamed wp, vec3 hitPos, vec3 N, vec3 V
         refrCol = mix(deep, wp.waterColor, 0.85);
     }
 
-    // ── Reflection: sky + clouds, refined by SSR over the previous frame ──
-    vec3 reflDir = normalize(reflect(rd, N));
-    vec3 skyCol = rtProceduralSky(reflDir, sky.horizonColor, sky.zenithColor, sky.exponent);
-    if (sky.cloudsEnabled != 0u) {
-        float day = smoothstep(-0.2, 0.2, -ubo.lightElevation);
-        skyCol += cloudApproxForReflection(reflDir, toSun, day);
+    // ── Reflection: ray march the SDF scene along the mirror direction ──
+    vec3 reflCol = vec3(0.0);
+    if (wp.enableReflection) {
+        vec3 reflDir = normalize(reflect(rd, Nw));
+        // Water is a height field: a microfacet never mirrors below the
+        // horizon, and a downward secondary ray would re-hit the lake bed.
+        reflDir = normalize(vec3(reflDir.x, max(reflDir.y, 0.0), reflDir.z));
+        uint rRoot, rNode;
+        float rT;
+        int rBrush;
+        vec3 reflOrigin = shadePos + Nw * 0.05;
+        if (rmMarchSolidRoots(reflOrigin, reflDir, rRoot, rNode, rT, rBrush)) {
+            vec3 rPos = reflOrigin + reflDir * rT;
+            reflCol = rmShadeSolidHit(rRoot, rNode, rBrush, rPos, reflDir);
+        } else {
+            reflCol = rtProceduralSky(reflDir, sky.horizonColor,
+                                      sky.zenithColor, sky.exponent);
+            if (sky.cloudsEnabled != 0u) {
+                float day = smoothstep(-0.2, 0.2, -ubo.lightElevation);
+                reflCol += cloudApproxForReflection(reflDir, toSun, day);
+            }
+        }
     }
-    vec2 selfUV = gl_FragCoord.xy / max(pc.viewport.xy, vec2(1.0));
-#ifdef RT_ENABLED
-    // Previous-frame solid color/depth: reproject with the previous VP so the
-    // camera motion does not stipple the hit test.
-    mat4 ssrVP = rt.prevViewProj;
-#else
-    mat4 ssrVP = ubo.viewProjection;
-#endif
-    vec4 ssr = traceSSR(hitPos + N * 0.05, reflDir, V, ssrVP, selfUV, hitPos.y);
-    vec3 reflCol = mix(skyCol, ssr.rgb, clamp(ssr.a, 0.0, 1.0));
 
     // ── Compose exactly like the raster water surface ──
     // Reflection Strength is the mirror amount (1 = full mirror, 0 = physical
@@ -1167,34 +1241,41 @@ void main() {
         return;
     }
 
-    // Water layers shade through the same reflection/refraction response as
-    // the raster water surface: the octree stores the water volume, so the
-    // marched hit is its top surface. The RT variants resolve the exact scene
-    // (Snell refraction to the real bottom + a mirror chain, composed like the
-    // raster surface); the non-RT / RT-off fallback uses the previous frame's
-    // solid color/depth for screen-space reflection + refraction, with the
-    // procedural sky/clouds as the reflection baseline.
+    // Water layers: the octree stores the water volume, so the marched hit is
+    // its top surface. Shade it with the same wind-driven swell + raymarched
+    // reflection/refraction response as the raster water surface. The SDF path
+    // traces both lobes through the octree itself (no screen-space/previ-
+    // ous-frame dependency). RT variants use the exact scene TLAS when ready;
+    // otherwise the same SDF raymarch supplies both lobes.
     if (rmRoots[nearestRoot].kind == 1u) {
         WaterParamsNamed wp = waterParamsNamed(waterParams[0]);
         vec3 N = normalize(normal);
         vec3 V = -rd;
+        // Wind-driven swell: animated interface normal + vertical displacement
+        // (the flat SDF plane carries the same wave motion the raster TES/FS
+        // produce from the shared fBm wind field).
+        RmWaterSurface wave = rmWaterSurface(wp, hitPos, N);
+        vec3 Nw = wave.normal;
+        // Clamp the geometric offset: the SDF plane itself stays flat (only the
+        // normal and secondary-ray origins animate), so a large swell must not
+        // push a reflection origin through the lake bed near the shore.
+        vec3 shadePos = hitPos + N * clamp(wave.height, -1.0, 1.0);
         vec3 color;
 #ifdef RT_ENABLED
-        // Use the exact RT resolve whenever the RT scene is ready: the
-        // raymarched water has no raster water pass to provide the reflective/
-        // refractive look, so the ray-traced scene is its only exact source.
+        // Use the exact RT resolve whenever the RT scene is ready: it reflects
+        // every scene object (not just SDF layers) and resolves the exact bed.
         bool rtResolve = (rt.tlasReady != 0u);
         if (rtResolve) {
-            color = rtResolveWaterHit(wp, hitPos, N, rd);
+            color = rtResolveWaterHit(wp, hitPos, Nw, rd);
         } else
 #endif
         {
-            color = shadeRaymarchWaterFallback(wp, hitPos, N, V);
+            color = shadeRaymarchWaterSDF(wp, hitPos, shadePos, N, Nw, V);
         }
         // Sun specular highlight (the raster water adds it separately).
         vec3 toSun = normalize(-ubo.lightDirection);
         vec3 halfDir = normalize(toSun + V);
-        float spec = pow(max(dot(N, halfDir), 0.0), max(wp.specularPower, 1.0)) *
+        float spec = pow(max(dot(Nw, halfDir), 0.0), max(wp.specularPower, 1.0)) *
                      max(wp.specularIntensity, 0.0);
         color += vec3(1.0, 0.97, 0.90) * spec;
         outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
