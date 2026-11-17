@@ -694,7 +694,8 @@ float rmCellDepth(uint rootNode, uint node) {
 // a sign-change bisection refines the crossing. Discarded (underground / -Y
 // NormalBrush) surfaces are skipped and the march continues.
 bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
-                 out uint hitNode, out float hitT, out int hitBrush) {
+                 out uint hitNode, out float hitT, out int hitBrush,
+                 bool keepDiscardHits) {
     float t0, t1;
     if (!rmRayBox(rmNodeMin(root), rmNodeSize(root), ro, rd, t0, t1)) return false;
     float t = max(t0, 0.0);
@@ -807,7 +808,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
         float eps = rmHitEpsilon(nodeSize);
 
         if (abs(d) <= eps) {
-            if (material != RAYMARCH_DISCARD_BRUSH) {
+            if (keepDiscardHits || material != RAYMARCH_DISCARD_BRUSH) {
                 hitNode = node;
                 hitT = t;
                 hitBrush = material;
@@ -858,7 +859,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
                 if (dm > 0.0) lo = mid; else hi = mid;
             }
             float tHit = 0.5 * (lo + hi);
-            if (material != RAYMARCH_DISCARD_BRUSH) {
+            if (keepDiscardHits || material != RAYMARCH_DISCARD_BRUSH) {
                 hitNode = node;
                 hitT = tHit;
                 hitBrush = material;
@@ -955,7 +956,7 @@ bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
         uint node;
         float t;
         int brush;
-        if (rmMarchRoot(rmRoots[i].node, ro, rd, node, t, brush) && t < hitT) {
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, node, t, brush, false) && t < hitT) {
             hitT = t;
             hitNode = node;
             hitRoot = i;
@@ -978,7 +979,8 @@ struct RmWaterSurface {
     float height; // vertical displacement along the flat SDF normal (m)
 };
 
-RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N) {
+RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N,
+                               vec2 dPosdx, vec2 dPosdy) {
     RmWaterSurface s;
     s.normal = N;
     s.height = 0.0;
@@ -1005,7 +1007,7 @@ RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N) {
     // already handled by the near-zero water thickness at the shore.
     WaterWaveField wf = waterWaveField(p, t, -1.0,
         wp.bumpAmplitude * ampScale, dir, wp, false, 3,
-        vec2(0.0), vec2(0.0));
+        dPosdx, dPosdy);
     if (wf.calmMask <= 0.0) return s;
 
     vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
@@ -1119,7 +1121,9 @@ vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
         vec3 reflDir = normalize(reflect(rd, Nw));
         // Water is a height field: a microfacet never mirrors below the
         // horizon, and a downward secondary ray would re-hit the lake bed.
-        reflDir = normalize(vec3(reflDir.x, max(reflDir.y, 0.0), reflDir.z));
+        reflDir = (length(reflDir.xz) > 1e-6 || reflDir.y > 1e-6)
+            ? normalize(vec3(reflDir.x, max(reflDir.y, 0.0), reflDir.z))
+            : Nw;
         uint rRoot, rNode;
         float rT;
         int rBrush;
@@ -1170,7 +1174,8 @@ void main() {
         uint node;
         float t;
         int brush;
-        if (rmMarchRoot(rmRoots[i].node, ro, rd, node, t, brush) && t < nearestT) {
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, node, t, brush,
+                        rmRoots[i].kind == 1u) && t < nearestT) {
             nearestT = t;
             nearestNode = node;
             nearestRoot = i;
@@ -1178,21 +1183,36 @@ void main() {
             found = true;
         }
     }
-    if (!found || nearestBrush == RAYMARCH_DISCARD_BRUSH) discard;
+    if (!found) discard;
+    const bool isWater = rmRoots[nearestRoot].kind == 1u;
+    // Water nodes are accepted even when the brush resolver marks them
+    // discard: the water surface is defined by the SDF geometry, not by a
+    // terrain material (-1 here used to punch visible holes in the lake).
+    if (!isWater && nearestBrush == RAYMARCH_DISCARD_BRUSH) discard;
 
     vec3 hitPos = ro + rd * nearestT;
 
-    // Material / mapping payload of the hit cell. rmResolveHitShading()
-    // reconstructs the same up-to-three-material barycentric blend the raster
-    // TCS produces for the triangle under the hit, at the undisplaced base
-    // point the raster TES samples.
-    int material = max(nearestBrush, 0);
-    uint rootNode = rmRoots[nearestRoot].node;
-    RmHitShading hit = rmResolveHitShading(rootNode, nearestNode, material,
-                                           hitPos, rd);
-    vec3 normal = hit.normal;
-
-    rmWriteFragGlobals(hitPos, hit);
+    // Water hits use the analytic SDF normal directly: a water node is not a
+    // terrain material cell, so the tessellation displacement and brush-blend
+    // machinery (which follows a terrain height map) must not perturb its
+    // interface normal. Keeping the water normal clean is what makes the
+    // reflection/refraction directions stable pixel-to-pixel.
+    vec3 normal;
+    if (isWater) {
+        normal = normalize(rmNodeNormal(nearestNode, hitPos));
+        if (dot(normal, rd) > 0.0) normal = -normal;
+    } else {
+        // Material / mapping payload of the hit cell. rmResolveHitShading()
+        // reconstructs the same up-to-three-material barycentric blend the
+        // raster TCS produces for the triangle under the hit, at the
+        // undisplaced base point the raster TES samples.
+        int material = max(nearestBrush, 0);
+        uint rootNode = rmRoots[nearestRoot].node;
+        RmHitShading hit = rmResolveHitShading(rootNode, nearestNode, material,
+                                               hitPos, rd);
+        normal = hit.normal;
+        rmWriteFragGlobals(hitPos, hit);
+    }
 
     vec4 clip = ubo.viewProjection * vec4(hitPos, 1.0);
     gl_FragDepth = (clip.w > 1e-6) ? clamp(clip.z / clip.w, 0.0, 1.0) : 1.0;
@@ -1247,19 +1267,30 @@ void main() {
     // traces both lobes through the octree itself (no screen-space/previ-
     // ous-frame dependency). RT variants use the exact scene TLAS when ready;
     // otherwise the same SDF raymarch supplies both lobes.
-    if (rmRoots[nearestRoot].kind == 1u) {
+    if (isWater) {
         WaterParamsNamed wp = waterParamsNamed(waterParams[0]);
         vec3 N = normalize(normal);
         vec3 V = -rd;
-        // Wind-driven swell: animated interface normal + vertical displacement
-        // (the flat SDF plane carries the same wave motion the raster TES/FS
-        // produce from the shared fBm wind field).
-        RmWaterSurface wave = rmWaterSurface(wp, hitPos, N);
+        // Wind-driven swell: animated interface normal + a small upward-only
+        // surface offset (the flat SDF plane carries the same wave motion the
+        // raster TES/FS produce from the shared fBm wind field).
+        // Screen-space footprint of this pixel on the water plane: the wave
+        // field's analytic AA fades any swell band that would alias (the
+        // raster path passes dFdx/dFdy; ray hits have no such derivatives, so
+        // use the distance and the projection's pixel angle instead).
+        float hitDist = length(hitPos - ubo.viewPosition);
+        float pixelAngle = 2.0 / max(abs(ubo.viewProjection[1][1]) *
+                                     max(pc.viewport.y, 1.0), 1e-6);
+        vec2 waveStep = vec2(hitDist * pixelAngle);
+        RmWaterSurface wave = rmWaterSurface(wp, hitPos, N,
+                                             vec2(waveStep.x, 0.0),
+                                             vec2(0.0, waveStep.y));
         vec3 Nw = wave.normal;
-        // Clamp the geometric offset: the SDF plane itself stays flat (only the
-        // normal and secondary-ray origins animate), so a large swell must not
-        // push a reflection origin through the lake bed near the shore.
-        vec3 shadePos = hitPos + N * clamp(wave.height, -1.0, 1.0);
+        if (!(dot(Nw, Nw) > 0.25)) Nw = N;
+        // Never push the mirror origin below the flat interface: a trough
+        // below a shallow bed would start the secondary ray inside terrain and
+        // produce holes/speckles.
+        vec3 shadePos = hitPos + N * min(max(wave.height, 0.0), 1.0);
         vec3 color;
 #ifdef RT_ENABLED
         // Use the exact RT resolve whenever the RT scene is ready: it reflects
@@ -1278,6 +1309,7 @@ void main() {
         float spec = pow(max(dot(Nw, halfDir), 0.0), max(wp.specularPower, 1.0)) *
                      max(wp.specularIntensity, 0.0);
         color += vec3(1.0, 0.97, 0.90) * spec;
+        if (any(isnan(color)) || any(isinf(color))) color = wp.waterColor;
         outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
         return;
     }

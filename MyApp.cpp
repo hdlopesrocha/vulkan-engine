@@ -2252,6 +2252,27 @@ public:
             // registered for the composite, which samples the brush targets.
             {
                 updateBrushPreview(frameIdx);
+                // Apply the pending stroke HERE, immediately after the preview
+                // captured its exact transform/sweep pair. Deferring it to
+                // postSubmit (after this frame was recorded) made the painted
+                // geometry one full frame behind the brush preview. Rebuild
+                // the raymarch table now so the solid raymarch recorded below
+                // already contains the stroke.
+                if (brushApplyToScenePending) {
+                    brushApplyToScenePending = false;
+                    applyBrushToScene();
+                }
+                // A brush edit may also arrive from the UI during
+                // renderImGui() (undo/redo). The update()-time table refresh
+                // has already run, so publish the dirtied table again here:
+                // the solid raymarch recorded below then contains this frame's
+                // stroke/undo instead of the previous frame's SDF.
+                if (raymarchDirty_ && sceneRenderer &&
+                    sceneRenderer->octreeRaymarchRenderer) {
+                    refreshRaymarchTable(0.0f);
+                    sceneRenderer->octreeRaymarchRenderer->upload(
+                        getCurrentFrame(), raymarchTable_);
+                }
                 VkCommandBuffer brushCmd = beginAsyncTask("brush preview", "[MyApp]");
                 if (brushCmd == VK_NULL_HANDLE) {
                     // First begin failed (CB allocation hiccup): retry the
@@ -5221,9 +5242,11 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
     // tessellation batch is not drained this frame (e.g. edits outside the
     // current LoD/visibility window). Mark the raymarch table dirty here, at
     // the single place every paint/undo application funnels through, so the
-    // debounced rebuild never depends on mesh-upload timing.
+    // debounced rebuild never depends on mesh-upload timing. The timer is set
+    // past the debounce: a paint stroke is interactive, so the very next
+    // refreshRaymarchTable() must rebuild instead of waiting 0.4 s.
     raymarchDirty_ = true;
-    raymarchDirtyTime_ = 0.0f;
+    raymarchDirtyTime_ = 1.0f;
 }
 
 void MyApp::ensureBrushBase(Layer::Id layer, Octree& tree) {
@@ -5978,6 +6001,14 @@ void MyApp::postSubmit() {
     if (brushApplyToScenePending) {
         brushApplyToScenePending = false;
         applyBrushToScene();
+        // The raymarch table was refreshed earlier in update(), before this
+        // deferred apply. Rebuild and upload it now so the frame we are about
+        // to record contains the stroke instead of the previous frame's SDF
+        // (the raymarched surface used to lag one frame behind the brush).
+        if (sceneRenderer && sceneRenderer->octreeRaymarchRenderer) {
+            refreshRaymarchTable(0.0f);
+            sceneRenderer->octreeRaymarchRenderer->upload(getCurrentFrame(), raymarchTable_);
+        }
     }
 
     if (generateMapPending) {
