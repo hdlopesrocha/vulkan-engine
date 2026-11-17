@@ -2244,61 +2244,9 @@ public:
             // Restore the per-frame state for the main CB's continued recording.
             this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
 
-            // --- Brush preview offscreen on its own queue (signals tlBrush) ---
-            // SDF-raymarched brush preview (color + front depth) into the brush
-            // targets the composite overlays. No tessellated brush geometry and
-            // no dependency on the solid pass: the solid shader evaluates the
-            // same brush params (set=1) directly for PAINT/REMOVE. The signal is
-            // registered for the composite, which samples the brush targets.
-            {
-                updateBrushPreview(frameIdx);
-                // Apply the pending stroke HERE, immediately after the preview
-                // captured its exact transform/sweep pair. Deferring it to
-                // postSubmit (after this frame was recorded) made the painted
-                // geometry one full frame behind the brush preview. Rebuild
-                // the raymarch table now so the solid raymarch recorded below
-                // already contains the stroke.
-                if (brushApplyToScenePending) {
-                    brushApplyToScenePending = false;
-                    applyBrushToScene();
-                }
-                // A brush edit may also arrive from the UI during
-                // renderImGui() (undo/redo). The update()-time table refresh
-                // has already run, so publish the dirtied table again here:
-                // the solid raymarch recorded below then contains this frame's
-                // stroke/undo instead of the previous frame's SDF.
-                if (raymarchDirty_ && sceneRenderer &&
-                    sceneRenderer->octreeRaymarchRenderer) {
-                    refreshRaymarchTable(0.0f);
-                    sceneRenderer->octreeRaymarchRenderer->upload(
-                        getCurrentFrame(), raymarchTable_);
-                }
-                VkCommandBuffer brushCmd = beginAsyncTask("brush preview", "[MyApp]");
-                if (brushCmd == VK_NULL_HANDLE) {
-                    // First begin failed (CB allocation hiccup): retry the
-                    // allocation so tlBrush@v is still signaled — the
-                    // composite's registered timeline wait would otherwise
-                    // deadlock.
-                    brushCmd = allocatePrimaryCommandBuffer();
-                    VkCommandBufferBeginInfo bi{};
-                    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                    if (brushCmd == VK_NULL_HANDLE || vkBeginCommandBuffer(brushCmd, &bi) != VK_SUCCESS) {
-                        if (brushCmd != VK_NULL_HANDLE) freeCommandBuffer(brushCmd);
-                        brushCmd = VK_NULL_HANDLE;
-                    }
-                }
-                if (brushCmd != VK_NULL_HANDLE) {
-                    CommandBufferState brushState;
-                    this->sceneRenderer->setCmdState(&brushState);
-                    this->sceneRenderer->brushRenderer->recordPass(this, brushCmd, frameIdx, getMainDescriptorSet(),
-                        this->sceneRenderer->mainUniformBuffers[frameIdx].buffer);
-                    this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
-                    submitCommandBufferAsyncToQueue(brushCmd, getBrushQueue(), &tlBrush, {tlCull}, true, {}, {v}, v, {}, true);
-                }
-            }
+            // Brush preview is submitted after the shadow task is joined (see
+            // below): its camera UBO is restored at the end of that task.
         }
-
 
         // SDF frame inputs + depth bindings, set on the MAIN THREAD before the
         // shadow task records: the grass shadow pass binds the SDF descriptor
@@ -2398,6 +2346,69 @@ public:
         // skipped and the solid task waits tlCull@v directly.
         if (asyncShadowFuture.valid())
             asyncShadowFuture.get();
+
+        // --- Brush preview offscreen on its own queue (signals tlBrush) ---
+        // Submitted after the shadow task join: with shadows on, the shadow
+        // pass temporarily overwrites the main camera UBO and restores it at
+        // the end of that task. Waiting on tlShadow (implied by the join +
+        // explicit wait below) makes the preview raymarch read the current
+        // frame's restored camera instead of the shadow-pass matrices, which
+        // made the preview visibly lag behind camera/brush motion.
+        // SDF-raymarched brush preview (color + front depth) into the brush
+        // targets the composite overlays. No tessellated brush geometry and
+        // no dependency on the solid pass: the solid shader evaluates the
+        // same brush params (set=1) directly for PAINT/REMOVE. The signal is
+        // registered for the composite, which samples the brush targets.
+        if (sceneRenderer && sceneRenderer->brushRenderer) {
+            updateBrushPreview(frameIdx);
+            // Apply the pending stroke HERE, immediately after the preview
+            // captured its exact transform/sweep pair. Deferring it to
+            // postSubmit (after this frame was recorded) made the painted
+            // geometry one full frame behind the brush preview. Rebuild
+            // the raymarch table now so the solid raymarch recorded below
+            // already contains the stroke.
+            if (brushApplyToScenePending) {
+                brushApplyToScenePending = false;
+                applyBrushToScene();
+            }
+            // A brush edit may also arrive from the UI during
+            // renderImGui() (undo/redo). The update()-time table refresh
+            // has already run, so publish the dirtied table again here:
+            // the solid raymarch recorded below then contains this frame's
+            // stroke/undo instead of the previous frame's SDF.
+            if (raymarchDirty_ && sceneRenderer &&
+                sceneRenderer->octreeRaymarchRenderer) {
+                refreshRaymarchTable(0.0f);
+                sceneRenderer->octreeRaymarchRenderer->upload(
+                    getCurrentFrame(), raymarchTable_);
+            }
+            VkCommandBuffer brushCmd = beginAsyncTask("brush preview", "[MyApp]");
+            if (brushCmd == VK_NULL_HANDLE) {
+                // First begin failed (CB allocation hiccup): retry the
+                // allocation so tlBrush@v is still signaled — the
+                // composite's registered timeline wait would otherwise
+                // deadlock.
+                brushCmd = allocatePrimaryCommandBuffer();
+                VkCommandBufferBeginInfo bi{};
+                bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                if (brushCmd == VK_NULL_HANDLE || vkBeginCommandBuffer(brushCmd, &bi) != VK_SUCCESS) {
+                    if (brushCmd != VK_NULL_HANDLE) freeCommandBuffer(brushCmd);
+                    brushCmd = VK_NULL_HANDLE;
+                }
+            }
+            if (brushCmd != VK_NULL_HANDLE) {
+                CommandBufferState brushState;
+                this->sceneRenderer->setCmdState(&brushState);
+                this->sceneRenderer->brushRenderer->recordPass(this, brushCmd, frameIdx, getMainDescriptorSet(),
+                    this->sceneRenderer->mainUniformBuffers[frameIdx].buffer);
+                this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
+                // tlShadow implies tlCull and guarantees the restored camera
+                // UBO; shadows off means no tlShadow signal, so wait tlCull.
+                VkSemaphore brushWait = settings.enableShadows ? tlShadow : tlCull;
+                submitCommandBufferAsyncToQueue(brushCmd, getBrushQueue(), &tlBrush, {brushWait}, true, {}, {v}, v, {}, true);
+            }
+        }
 
         // --- Sky offscreen on its OWN queue (skyQueue), in parallel with the solid
         //     pass. Writes the equirectangular sky image (sampled by water, solid360
