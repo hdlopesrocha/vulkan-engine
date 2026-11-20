@@ -4,28 +4,47 @@
 #include "../core/VulkanApp.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
-#include <future>
+#include <thread>
 #include <vector>
 #include <stdexcept>
+#include <system_error>
 #include <backends/imgui_impl_vulkan.h>
 #include <cmath>
 #include <stb/stb_image.h>
 // <tuple> no longer required (using TextureTriple)
 
-// Convert in-place 8-bit RGBA sRGB values to linear (also 8-bit)
-void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount) {
-    for (size_t i = 0; i < pixelCount; ++i) {
-        unsigned char* p = data + i * 4;
-        for (int c = 0; c < 3; ++c) {
-            float srgb = p[c] / 255.0f;
-            float lin = (srgb <= 0.04045f) ? (srgb / 12.92f) : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
+// Convert in-place 8-bit RGBA sRGB values to linear (also 8-bit).
+// The table is computed once (C++11 thread-safe static init) and is read-only
+// afterwards: loadTriples() calls this concurrently from its decode workers,
+// and the previous per-pixel std::pow(2.4) was a measurable part of bring-up.
+static const std::array<unsigned char, 256>& srgbToLinearTable() {
+    static const std::array<unsigned char, 256> table = [] {
+        std::array<unsigned char, 256> t{};
+        for (int i = 0; i < 256; ++i) {
+            const float srgb = static_cast<float>(i) / 255.0f;
+            const float lin = (srgb <= 0.04045f)
+                ? (srgb / 12.92f)
+                : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
             int v = static_cast<int>(std::round(lin * 255.0f));
             if (v < 0) v = 0;
             if (v > 255) v = 255;
-            p[c] = static_cast<unsigned char>(v);
+            t[static_cast<size_t>(i)] = static_cast<unsigned char>(v);
         }
+        return t;
+    }();
+    return table;
+}
+
+void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount) {
+    const auto& lut = srgbToLinearTable();
+    for (size_t i = 0; i < pixelCount; ++i) {
+        unsigned char* p = data + i * 4;
+        p[0] = lut[p[0]];
+        p[1] = lut[p[1]];
+        p[2] = lut[p[2]];
         // alpha channel left as-is
     }
 }
@@ -444,13 +463,14 @@ size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureT
 	if (!a) throw std::runtime_error("TextureArrayManager::loadTriples: app is null");
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::loadTriples: layerAmount == 0");
 
-	// Bring-up used to decode every triple's five maps on the main thread and
-	// submit one blocking command buffer per layer (26 submits for the scene
-	// palette). Decode a batch of layers in parallel into a staging slab, then
-	// upload the whole batch with ONE submit: setup wall time scales with the
-	// number of batches instead of layers, and stbi/resize/sRGB run on all
-	// cores. Layer indices/layout bookkeeping stay sequential (they are cheap).
-	constexpr size_t kBatchLayers = 4;
+	// Decode every (triple, map) in a bounded worker pool into a staging slab,
+	// then upload the batch with ONE submit. The previous path decoded five
+	// maps serially per triple and used only four workers; setup wall time now
+	// scales with the slowest map instead of with triples. Layer indices/layout
+	// bookkeeping stay sequential (they are cheap). The staging slab is bounded
+	// by kStagingBudgetBytes so a 4096^2 texture set cannot reserve gigabytes of
+	// host memory; smaller arrays naturally widen the batch (one submit for the
+	// whole palette at 512^2).
 	const size_t layerBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
 	struct ImgDef { const char* path; bool srgb; unsigned char defaultVal[4]; };
 	auto imgDefs = [](const TextureTriple& t, ImgDef out[5]) {
@@ -482,47 +502,84 @@ size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureT
 
 	size_t loaded = 0;
 	size_t next = 0;
+	// Decode budget for the host-visible staging slab. Batches larger than this
+	// would reserve hundreds of MiB of host memory for no extra GPU parallelism;
+	// a smaller texture-array size automatically widens the batch (all triples
+	// fit in one submit at 512^2, ~9 layers at 1024^2, one at 4096^2).
+	constexpr size_t kStagingBudgetBytes = 192ull * 1024ull * 1024ull;
+	const size_t perTripleBytes = layerBytes * 5u;
+	const unsigned hwThreads = std::max(1u, std::thread::hardware_concurrency());
+
 	while (next < triples.size() && currentLayer < layerAmount) {
-		const size_t batch = std::min(kBatchLayers, triples.size() - next);
-		Buffer& staging = ensureStagingBuffer(a, layerBytes * 5 * batch);
+		const size_t capacityLeft = static_cast<size_t>(layerAmount - currentLayer);
+		const size_t byBudget = std::max<size_t>(1, kStagingBudgetBytes / std::max<size_t>(1, perTripleBytes));
+		const size_t batch = std::min({ triples.size() - next, capacityLeft, byBudget });
+		if (batch == 0) break;
 
-		struct Decoded { size_t index; size_t slot; bool ok; std::array<float, 3> albedoAvg; };
-		std::vector<std::future<Decoded>> futures;
-		futures.reserve(batch);
+		Buffer& staging = ensureStagingBuffer(a, perTripleBytes * batch);
+
+		// Per-triple definitions are prepared up front; workers only read them.
+		std::vector<std::array<ImgDef, 5>> defs(batch);
 		for (size_t i = 0; i < batch; ++i) {
-			const size_t slot = i;
-			futures.push_back(std::async(std::launch::async, [&, slot]() -> Decoded {
-				Decoded d;
-				d.index = next + slot;
-				d.slot = slot;
-				d.ok = false;
-				const TextureTriple& t = triples[d.index];
-				ImgDef defs[5];
-				imgDefs(t, defs);
-				unsigned char* base = static_cast<unsigned char*>(staging.mappedData) +
-					layerBytes * 5 * slot;
-				try {
-					for (int m = 0; m < 5; ++m) decodeMap(defs[m], base + layerBytes * static_cast<size_t>(m));
-					d.albedoAvg = meanLinearRGB(base, static_cast<size_t>(width) * height);
-					d.ok = true;
-				} catch (const std::exception& e) {
-					std::cerr << "[TextureArrayManager] Failed to load "
-					          << (t.albedo ? t.albedo : "(null)") << ": " << e.what() << std::endl;
-				}
-				return d;
-			}));
+			imgDefs(triples[next + i], defs[i].data());
 		}
-		std::vector<Decoded> decoded;
-		decoded.reserve(batch);
-		for (auto& f : futures) decoded.push_back(f.get());
 
-		// Assign layer indices in submission order and drop failed decodes.
-		std::vector<const Decoded*> ready;
+		// One task per (triple, map): 5x more parallel work than the previous
+		// per-triple tasks (which decoded the five maps serially). The staging
+		// slab is partitioned by task, so no two workers write the same bytes;
+		// decodeMap uses only thread-local state (stbi's failure reason is
+		// thread-local) and const inputs. The workers are joined before the
+		// blocking upload reads the slab, so the GPU never overlaps a write.
+		const size_t taskCount = batch * 5u;
+		const unsigned workerCount = static_cast<unsigned>(std::min<size_t>(taskCount, hwThreads));
+		std::vector<char> taskOk(taskCount, 0);
+		std::atomic<size_t> nextTask{0};
+		auto workerFn = [&]() {
+			for (;;) {
+				const size_t task = nextTask.fetch_add(1, std::memory_order_relaxed);
+				if (task >= taskCount) break;
+				const size_t slot = task / 5u;
+				const int map = static_cast<int>(task % 5u);
+				unsigned char* base = static_cast<unsigned char*>(staging.mappedData) +
+					perTripleBytes * slot;
+				try {
+					decodeMap(defs[slot][static_cast<size_t>(map)],
+					          base + layerBytes * static_cast<size_t>(map));
+					taskOk[task] = 1;
+				} catch (const std::exception& e) {
+					const TextureTriple& t = triples[next + slot];
+					std::cerr << "[TextureArrayManager] Failed to load "
+					          << (t.albedo ? t.albedo : "(null)") << " map " << map
+					          << ": " << e.what() << std::endl;
+				}
+			}
+		};
+		std::vector<std::thread> workers;
+		workers.reserve(workerCount);
+		try {
+			for (unsigned w = 0; w < workerCount; ++w) workers.emplace_back(workerFn);
+		} catch (const std::system_error& e) {
+			// Thread creation failure is non-fatal: already-created workers (or
+			// the caller fallback below) still drain the shared task queue.
+			std::cerr << "[TextureArrayManager] decode worker creation failed ("
+			          << e.what() << "); using " << workers.size() << " worker(s)"
+			          << std::endl;
+		}
+		if (workers.empty()) workerFn(); // caller-thread fallback
+		for (auto& w : workers) w.join();
+
+		// Assign layer indices in submission order; a triple is usable only when
+		// all five maps decoded. meanLinearRGB is a cheap sequential scan of the
+		// albedo slab compared with the decode itself.
+		struct Ready { size_t slot; std::array<float, 3> albedoAvg; };
+		std::vector<Ready> ready;
 		ready.reserve(batch);
-		for (const Decoded& d : decoded) {
-			if (!d.ok) continue;
-			if (currentLayer >= layerAmount) break;
-			ready.push_back(&d);
+		for (size_t slot = 0; slot < batch; ++slot) {
+			bool ok = true;
+			for (int m = 0; m < 5; ++m) ok = ok && taskOk[slot * 5u + static_cast<size_t>(m)] != 0;
+			if (!ok) continue;
+			unsigned char* base = static_cast<unsigned char*>(staging.mappedData) + perTripleBytes * slot;
+			ready.push_back({slot, meanLinearRGB(base, static_cast<size_t>(width) * height)});
 		}
 		if (ready.empty()) {
 			next += batch;
@@ -533,7 +590,7 @@ size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureT
 		a->runSingleTimeCommands([&](VkCommandBuffer cmd) {
 			for (size_t n = 0; n < ready.size(); ++n) {
 				const uint32_t layer = currentLayer + static_cast<uint32_t>(n);
-				const size_t slot = ready[n]->slot;
+				const size_t slot = ready[n].slot;
 				TextureImage* images[5] = {&albedoArray, &normalArray, &bumpArray, &roughnessArray, &aoArray};
 				for (int m = 0; m < 5; ++m) {
 					a->recordTransitionImageLayoutLayer(cmd, images[m]->image, VK_FORMAT_R8G8B8A8_UNORM,
@@ -572,7 +629,7 @@ size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureT
 		for (size_t n = 0; n < ready.size(); ++n) {
 			const uint32_t layer = currentLayer++;
 			for (int m = 0; m < 5; ++m) setLayerLayout(m, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			if (layer < albedoAvg.size()) albedoAvg[layer] = ready[n]->albedoAvg;
+			if (layer < albedoAvg.size()) albedoAvg[layer] = ready[n].albedoAvg;
 			setLayerInitialized(layer, true);
 			++loaded;
 		}
