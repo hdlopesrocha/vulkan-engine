@@ -749,9 +749,23 @@ float rmCellDepth(uint rootNode, uint node) {
 // behind a hit costs only its AABB test. Exact: the caller only passes a hit
 // distance produced by the same field, and a first crossing at or beyond it can
 // never be the nearest.
+// Hit acceptance (raster-parity visibility rules).
+//   Solid: back-face culling (the raster solid pipeline culls back faces) and
+//          DISCARD_BRUSH_INDEX cells are not surfaces at all.
+//   Water: the NormalBrush-filtered layer is the +Y water surface. Accept the
+//          top plane from either side (the raster water back-face pass renders
+//          the underside when the camera is underwater), but reject the water
+//          volume's vertical/bottom faces. Those are the NormalBrush discards
+//          and are what used to appear as water walls/backfaces.
+bool rmHitAllowed(uint node, vec3 p, vec3 rd, int material, bool waterRoot) {
+    if (waterRoot) return normalize(rmNodeNormal(node, p)).y > 0.0;
+    if (material == RAYMARCH_DISCARD_BRUSH) return false;
+    return dot(normalize(rmNodeNormal(node, p)), rd) < 0.0;
+}
+
 bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
                  out uint hitNode, out float hitT, out int hitBrush,
-                 bool keepDiscardHits) {
+                 bool waterRoot) {
     // Hoist the three direction reciprocals: every non-leaf iteration tests a
     // child box, and rmInvComp is a division.
     vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
@@ -897,14 +911,17 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
         float eps = rmHitEpsilon(nodeSize, t);
 
         if (abs(d) <= eps) {
-            if (keepDiscardHits || material != RAYMARCH_DISCARD_BRUSH) {
-                // Screen-space tolerance: the accepted sample can sit up to
-                // `eps` (a few pixels at distance) before the true crossing.
-                // Refine with the secant of the two same-node samples that
-                // bracket it, clamped to the band.
-                float tHit = t;
-                if (ubo.raymarchScreenEps > 0.0 && prevNode == node)
-                    tHit = rmRefineHit(node, ro, rd, material, prevT, prevD, t, d, eps);
+            // Screen-space tolerance: the accepted sample can sit up to `eps`
+            // (a few pixels at distance) before the true crossing. Refine with
+            // the secant of the two same-node samples that bracket it, clamped
+            // to the band.
+            float tHit = t;
+            if (ubo.raymarchScreenEps > 0.0 && prevNode == node)
+                tHit = rmRefineHit(node, ro, rd, material, prevT, prevD, t, d, eps);
+            // Raster-parity visibility: solid back faces and DISCARD_BRUSH_INDEX
+            // cells are not shaded; water accepts only the +Y surface (top
+            // plane, from either side), not the volume sides/bottom.
+            if (rmHitAllowed(node, ro + rd * tHit, rd, material, waterRoot)) {
                 hitNode = node;
                 hitT = tHit;
                 hitBrush = material;
@@ -969,7 +986,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
                 if (dm > 0.0) lo = mid; else hi = mid;
             }
             float tHit = 0.5 * (lo + hi);
-            if (keepDiscardHits || material != RAYMARCH_DISCARD_BRUSH) {
+            if (rmHitAllowed(node, ro + rd * tHit, rd, material, waterRoot)) {
                 hitNode = node;
                 hitT = tHit;
                 hitBrush = material;
@@ -1426,9 +1443,10 @@ void main() {
     }
     if (!found) discard;
     const bool isWater = rmRoots[nearestRoot].kind == 1u;
-    // Water nodes are accepted even when the brush resolver marks them
-    // discard: the water surface is defined by the SDF geometry, not by a
-    // terrain material (-1 here used to punch visible holes in the lake).
+    // rmHitAllowed() already rejected solid DISCARD_BRUSH_INDEX cells and
+    // non-upward water faces. Keep the solid guard as a defensive backstop;
+    // water shading is driven by the +Y surface geometry, not the material
+    // index (shore cells may still carry the NormalBrush discard value).
     if (!isWater && nearestBrush == RAYMARCH_DISCARD_BRUSH) discard;
 
     vec3 hitPos = ro + rd * nearestT;
