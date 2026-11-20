@@ -219,7 +219,7 @@ float brushSdTetrahedronWorld(vec3 p, vec3 xlate, vec3 s, vec4 rot, float bevel)
     // transforms, matching the CPU inradius clamp.
     float inradius = min(min(-dot(geoCenter - v0, n0), -dot(geoCenter - v0, n1)),
                          min(-dot(geoCenter - v0, n2), -dot(geoCenter - v1, n3)));
-    bevel = min(bevel, 0.35 * max(inradius, 0.0));
+    bevel = min(bevel, 0.5 * max(inradius, 0.0));
 
     if (bevel > 0.0) {
         // Inset vertex v is the intersection of the three inset face planes

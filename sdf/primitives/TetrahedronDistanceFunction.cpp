@@ -75,11 +75,15 @@ TetrahedronDistanceFunction::TetrahedronDistanceFunction(const Transformation &m
     // put and only the edges/vertices move inward, and bevel == 0 reproduces
     // the sharp exact tetrahedron (bias 0 is used by callers that do not
     // sample on a grid).
-    const float requested = 0.5f * std::max(bias, 0.0f);
-    float bevel = std::min(requested, 0.06f * minScale);
-    // Keep the inset tetrahedron well-conditioned for flat/non-uniform
-    // transforms, where the inradius can be much smaller than minScale.
-    bevel = std::min(bevel, 0.35f * std::max(inradius, 0.0f));
+    //
+    // One full sampling cell is the minimum rounding a trilinear cell can
+    // resolve: a half-cell bevel still leaves the edge between two corner
+    // samples, which is what produces the visible facets. The 15% of scale
+    // and half-inradius caps keep the inset tetrahedron well-conditioned for
+    // small/flat/non-uniform transforms.
+    const float requested = std::max(bias, 0.0f);
+    float bevel = std::min(requested, 0.15f * minScale);
+    bevel = std::min(bevel, 0.5f * std::max(inradius, 0.0f));
     bevel = std::max(bevel, 0.0f);
 
     std::array<glm::vec3, 4> inset = world;

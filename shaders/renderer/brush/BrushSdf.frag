@@ -26,7 +26,7 @@
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
-const int kBrushMaxSteps = 384;
+const int kBrushMaxSteps = 192;
 
 bool brushRaySphere(vec3 ro, vec3 rd, vec3 c, float r, out float t0, out float t1) {
     vec3 oc = ro - c;
@@ -152,11 +152,7 @@ void main() {
     t0 = max(t0, 0.0);
     if (t0 >= t1) discard;
 
-    // World-space hit tolerance. The old value scaled only with the brush
-    // radius (1e-4 * bounds), which at close range is several pixels wide and
-    // quantizes the silhouette into stairs. The Newton refinement below removes
-    // the tolerance error, so the loop tolerance can be much tighter.
-    float eps = max(brush.xBounds.w * 1e-5, 1e-3);
+    float eps = max(brush.xBounds.w * 1e-4, 0.01);
     // Front-surface-only preview: from inside the volume there is no front
     // face, matching the old front-face raster pass (the composite hides the
     // overlay where no surface depth was written).
@@ -167,18 +163,7 @@ void main() {
     for (int i = 0; i < kBrushMaxSteps; ++i) {
         vec3 p = ro + rd * t;
         float d = brushDistance(p);
-        if (d < eps) {
-            // Newton refinement along the ray. The field is a 1-Lipschitz
-            // signed distance, so moving by -d cannot cross the surface; a few
-            // iterations converge the hit even for grazing silhouettes.
-            for (int r = 0; r < 4; ++r) {
-                t = clamp(t - d, t0, t1);
-                d = brushDistance(ro + rd * t);
-                if (abs(d) <= eps * 0.25) break;
-            }
-            hit = true;
-            break;
-        }
+        if (d < eps) { hit = true; break; }
         t += max(d, eps);
         if (t > t1) break;
     }

@@ -13,9 +13,11 @@
 //
 // With bias = 0 the field is the exact Euclidean SDF of the sharp tetrahedron.
 // When the caller passes a sampling bias (the octree leaf size), the six edges
-// and four vertices are additionally beveled by min(bias/2, 6% of the smallest
-// scale): the field stores enough curvature that trilinear cell reconstruction
-// can resolve the silhouette instead of scalloping it.
+// and four vertices are additionally beveled by one full cell (capped at 15%
+// of the smallest scale and half the inradius): a trilinear lattice cannot
+// resolve any feature sharper than that, so the field stores exactly enough
+// curvature for the cell grid to reproduce the silhouette instead of faceting
+// it.
 class TetrahedronDistanceFunction : public SignedDistanceFunction {
 public:
     TetrahedronDistanceFunction(const Transformation &model, float bias);

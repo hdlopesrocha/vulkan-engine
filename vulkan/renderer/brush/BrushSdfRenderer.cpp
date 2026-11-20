@@ -152,14 +152,14 @@ void BrushSdfRenderer::updateParams(uint32_t frameIndex, const BrushEntry& entry
 
     BrushSdfUBO u{};
     // Same sampling-scale edge bevel as the CPU TetrahedronDistanceFunction:
-    // half the octree leaf size, capped at 6% of the smallest model scale.
+    // one octree leaf cell, capped at 15% of the smallest model scale.
     // The preview and the applied octree field must agree, otherwise the
     // brush appears sharp while the painted result is beveled (or vice versa).
     auto tetraBevel = [](const glm::vec3& scale, float minSize) {
         const glm::vec3 a = glm::abs(scale);
         const float minScale = glm::min(glm::min(a.x, a.y), a.z);
         const float sampleSize = brushSdfSampleMinSize(11, scale, minSize);
-        return glm::min(0.5f * glm::max(sampleSize, 0.0f), 0.06f * minScale);
+        return glm::min(glm::max(sampleSize, 0.0f), 0.15f * minScale);
     };
     u.translate = glm::vec4(entry.translate, 1.0f);
     u.scale = glm::vec4(entry.scale, 0.0f);
