@@ -3267,7 +3267,11 @@ to that state.
 \textbf{Implementation status.} The recommended F1--F3 items were subsequently
 implemented and merged in commits \code{33dd271f} (F1), \code{474b6e9c} (F3),
 \code{ee3cabe5} (F2), \code{6e43883c} (tessellation-safe root rejection) and
-\code{ba94e3ac} (integration). This report remains the pre-implementation
-investigation; it does not describe the shipped code line by line.}
+\code{ba94e3ac} (integration). F4 (compact child header) and F11
+(screen-space hit epsilon) followed in \code{9ba36f5e} and \code{3eb74eac};
+the shipped record is 96\,B (48\,MiB per frame slot) and the screen-space
+tolerance is opt-in (default 0). A skipped-producer depth-layout fix landed in
+\code{f03758d6}. This report remains the pre-implementation investigation; it
+does not describe the shipped code line by line.}
 
 \end{document}
