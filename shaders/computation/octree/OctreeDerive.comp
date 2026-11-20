@@ -1,0 +1,65 @@
+#version 460
+
+// Once-per-revision node payload cache (docs/raymarch-octree.tex section 6.3).
+//
+// The fragment march resolves a node's material by running the QEF solver
+// (rmResolvedBrush) and advances by a fixed 0.5|f|. Both are pure functions of
+// the node record, so this pass computes them once per table revision and
+// caches them in the record's dead bytes:
+//
+//   meta.x  = resolved material index (the march's LoD value is unused)
+//   hsv1.z  = 1 / Lipschitz bound L (max cell step becomes |f| / L)
+//   meta.w |= RM_FLAG_PAYLOAD
+//
+// No memory is added: the record stays 128 bytes. Nodes that predate the pass
+// (or slots whose pipeline failed to build) keep the fragment-side QEF
+// fallback and the fixed 0.5 factor.
+//
+// One invocation per node, each invocation owns exactly one record, so there
+// is no cross-invocation dependency and no atomics.
+
+layout(local_size_x = 64) in;
+
+// Shared bit-exact cell math; the derive pass must use the same solvers as the
+// march so a cached material can never disagree with the fallback.
+#include "../../includes/octree/SdfCell.glsl"
+#include "../../includes/octree/LandBrush.glsl"
+// The record declaration is shared with RaymarchTable.glsl (128 bytes, same
+// field order) so the two stages cannot drift apart.
+#include "../../includes/octree/RaymarchNodeRecord.glsl"
+#include "../../includes/octree/RaymarchMaterial.glsl"
+
+// Set=2 binding=0: the same node table the march reads; the derive pass owns
+// the writes to meta.x / hsv1.z / meta.w.
+layout(std430, set = 2, binding = 0) buffer RaymarchNodes {
+    RaymarchNode nodes[];
+};
+
+layout(push_constant) uniform PC {
+    uint nodeCount; // records uploaded for this frame slot
+    uint flags;     // reserved (0): room for a future payload variant
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.nodeCount) return;
+
+    float sdf[8];
+    for (int c = 0; c < 8; ++c) {
+        vec4 v = (c < 4) ? nodes[i].sdf0 : nodes[i].sdf1;
+        sdf[c] = v[c & 3];
+    }
+    vec3 mn = nodes[i].cubeMinSize.xyz;
+    float sz = nodes[i].cubeMinSize.w;
+
+    vec3 qef = sdfCellPosition(sdf, mn, sz);
+    vec3 n = sdfCellNormal(sdf, mn, sz, qef);
+    int mat = rmResolveMaterialAtCorners(int(nodes[i].meta.z), sdf, mn, sz, qef, n);
+    float lip = rmLipBound(sdf, sz);
+
+    // The 1e-3 floor caps the step multiplier at 1000 for a degenerate bound;
+    // the march still clamps every step to the child-cell exit.
+    nodes[i].meta.x = mat;
+    nodes[i].hsv1.z = 1.0 / max(lip, 1e-3);
+    nodes[i].meta.w |= int(RM_FLAG_PAYLOAD);
+}

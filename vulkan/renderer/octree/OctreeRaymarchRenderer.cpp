@@ -31,7 +31,9 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
 
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
-    // Set=2: binding 0 = node table, binding 1 = layer roots (fragment stage).
+    // Set=2: binding 0 = node table, binding 1 = layer roots. Binding 0 is also
+    // read/written by the payload derive compute pass, so its stage mask spans
+    // both stages; binding 1 stays fragment-only.
     VkDescriptorSetLayoutBinding bindings[2]{};
     for (uint32_t b = 0; b < 2; ++b) {
         bindings[b].binding = b;
@@ -39,6 +41,7 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
         bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     }
+    bindings[0].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
     setLayout_ = descAlloc.createLayout(bindings, 2, 0, nullptr,
                                         "OctreeRaymarchRenderer: set2 layout");
 
@@ -130,6 +133,73 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
         std::cerr << "[OctreeRaymarchRenderer] shaders not available (" << e.what()
                   << "); SDF raymarch disabled." << std::endl;
     }
+
+    // Once-per-revision payload derive pass (OctreeDerive.comp). It reuses the
+    // set-2 layout (sets 0/1 are declared only for index compatibility with the
+    // shader's set=2 binding and are never accessed) and carries an 8-byte
+    // compute push constant. A missing module or pipeline is non-fatal: the
+    // fragment march keeps its QEF / fixed-0.5 fallback.
+    if (setLayout_ != VK_NULL_HANDLE) {
+        try {
+            VkShaderModule deriveModule =
+                app->getOrCreateShaderModule("shaders/computation/octree/OctreeDerive.comp.spv");
+            if (deriveModule == VK_NULL_HANDLE) {
+                std::cerr << "[OctreeRaymarchRenderer] missing "
+                             "shaders/computation/octree/OctreeDerive.comp.spv; "
+                             "using the fragment fallback." << std::endl;
+            } else {
+                VkPushConstantRange derivePush{};
+                derivePush.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+                derivePush.offset = 0;
+                derivePush.size = 8;
+
+                std::vector<VkDescriptorSetLayout> deriveSetLayouts = {
+                    app->getDescriptorSetLayout(),
+                    app->getBrushParamsDescriptorSetLayout(),
+                    setLayout_
+                };
+                VkPipelineLayoutCreateInfo layoutInfo{};
+                layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+                layoutInfo.setLayoutCount = static_cast<uint32_t>(deriveSetLayouts.size());
+                layoutInfo.pSetLayouts = deriveSetLayouts.data();
+                layoutInfo.pushConstantRangeCount = 1;
+                layoutInfo.pPushConstantRanges = &derivePush;
+
+                if (vkCreatePipelineLayout(app->getDevice(), &layoutInfo, nullptr,
+                                           &deriveLayout_) != VK_SUCCESS) {
+                    std::cerr << "[OctreeRaymarchRenderer] failed to create the derive "
+                                 "pipeline layout; using the fragment fallback."
+                              << std::endl;
+                    deriveLayout_ = VK_NULL_HANDLE;
+                } else {
+                    app->resources.addPipelineLayout(
+                        deriveLayout_, "OctreeRaymarchRenderer: deriveLayout");
+
+                    VkComputePipelineCreateInfo info{};
+                    info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+                    info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+                    info.stage.module = deriveModule;
+                    info.stage.pName = "main";
+                    info.layout = deriveLayout_;
+                    if (vkCreateComputePipelines(app->getDevice(), app->getPipelineCache(),
+                                                 1, &info, nullptr,
+                                                 &derivePipeline_) != VK_SUCCESS) {
+                        std::cerr << "[OctreeRaymarchRenderer] failed to create the derive "
+                                     "pipeline; using the fragment fallback." << std::endl;
+                        derivePipeline_ = VK_NULL_HANDLE;
+                    } else {
+                        app->resources.addPipeline(
+                            derivePipeline_, "OctreeRaymarchRenderer: derivePipeline");
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[OctreeRaymarchRenderer] derive pass unavailable ("
+                      << e.what() << "); using the fragment fallback." << std::endl;
+            derivePipeline_ = VK_NULL_HANDLE;
+        }
+    }
 }
 
 void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
@@ -138,12 +208,27 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
             if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
         for (auto& buf : rootBuffers_)
             if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
+        // The derive pipeline/layout are registered with VulkanResourceManager
+        // at creation; remove before destroying so shutdown does not free them
+        // twice (same contract as RayTracingResources).
+        if (derivePipeline_ != VK_NULL_HANDLE) {
+            if (app->resources.removePipeline(derivePipeline_))
+                vkDestroyPipeline(app->getDevice(), derivePipeline_, nullptr);
+        }
+        if (deriveLayout_ != VK_NULL_HANDLE) {
+            if (app->resources.removePipelineLayout(deriveLayout_))
+                vkDestroyPipelineLayout(app->getDevice(), deriveLayout_, nullptr);
+        }
     }
+    derivePipeline_ = VK_NULL_HANDLE;
+    deriveLayout_ = VK_NULL_HANDLE;
     nodeBuffers_.fill(Buffer{});
     rootBuffers_.fill(Buffer{});
     sets_.fill(VK_NULL_HANDLE);
     uploadedVersion_.fill(0);
     rootCounts_.fill(0);
+    nodeCounts_.fill(0);
+    needsDerive_.fill(false);
     app_ = nullptr;
     // The layout/pool/pipeline are registered with VulkanResourceManager at
     // creation and destroyed by it at shutdown (same contract as the other
@@ -206,6 +291,14 @@ void OctreeRaymarchRenderer::upload(uint32_t frameIndex, const OctreeRaymarchTab
     const size_t nodeCount = std::min(table.nodes.size(), maxNodes_);
     if (nodeCount > 0) {
         memcpy(nodeBuffers_[fi].mappedData, table.nodes.data(), nodeCount * kNodeBytes);
+        // The host records carry the raw brush/lod fields only. Ask
+        // recordDerive() to run the payload pass before this slot's next march;
+        // a version match returns early above and never re-derives.
+        nodeCounts_[fi] = static_cast<uint32_t>(nodeCount);
+        needsDerive_[fi] = true;
+    } else {
+        nodeCounts_[fi] = 0;
+        needsDerive_[fi] = false;
     }
 
     const size_t rootCount = std::min(table.layerRoots.size(), ROOT_CAP);
@@ -247,6 +340,73 @@ void OctreeRaymarchRenderer::recordHostWriteBarrier(VkCommandBuffer cmd) {
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
+void OctreeRaymarchRenderer::recordDerive(VkCommandBuffer cmd, uint32_t frameIndex) {
+    if (cmd == VK_NULL_HANDLE) return;
+    const uint32_t fi = frameIndex % RAYMARCH_FRAMES;
+
+    // Fallback: no derive pass for this slot (pipeline unavailable, no new
+    // revision, or an empty table). Publish the host writes straight to the
+    // fragment stage exactly as before.
+    if (derivePipeline_ == VK_NULL_HANDLE || deriveLayout_ == VK_NULL_HANDLE ||
+        sets_[fi] == VK_NULL_HANDLE || !needsDerive_[fi] || nodeCounts_[fi] == 0) {
+        recordHostWriteBarrier(cmd);
+        return;
+    }
+
+    // The node table is persistently mapped and rewritten on the host in
+    // update(), after this frame slot's fence wait. Coherent mapped memory
+    // needs no explicit flush. Two destination scopes share the host writes:
+    // the derive pass (node-table read + payload write) and the fragment
+    // march, which still reads the host-written root buffer.
+    VkMemoryBarrier2 hostBarriers[2]{};
+    hostBarriers[0].sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    hostBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    hostBarriers[0].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+    hostBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    hostBarriers[0].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    hostBarriers[1].sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    hostBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    hostBarriers[1].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+    hostBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    hostBarriers[1].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+
+    VkDependencyInfo hostDep{};
+    hostDep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    hostDep.memoryBarrierCount = 2;
+    hostDep.pMemoryBarriers = hostBarriers;
+    vkCmdPipelineBarrier2(cmd, &hostDep);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, derivePipeline_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, deriveLayout_,
+                            2, 1, &sets_[fi], 0, nullptr);
+
+    struct {
+        uint32_t nodeCount;
+        uint32_t flags;
+    } derivePush{nodeCounts_[fi], 0u};
+    vkCmdPushConstants(cmd, deriveLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(derivePush), &derivePush);
+    vkCmdDispatch(cmd, (nodeCounts_[fi] + 63u) / 64u, 1u, 1u);
+
+    // Publish the derived payload (meta.x / hsv1.z / meta.w) to the fragment
+    // march that follows in this command buffer.
+    VkMemoryBarrier2 deriveBarrier{};
+    deriveBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    deriveBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    deriveBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    deriveBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    deriveBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+
+    VkDependencyInfo deriveDep{};
+    deriveDep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    deriveDep.memoryBarrierCount = 1;
+    deriveDep.pMemoryBarriers = &deriveBarrier;
+    vkCmdPipelineBarrier2(cmd, &deriveDep);
+
+    needsDerive_[fi] = false;
+}
+
 void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
                                   uint32_t frameIndex, uint32_t width,
                                   uint32_t height, VkDescriptorSet mainSet,
@@ -259,8 +419,9 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
         return;
     }
 
-    // Note: the caller records recordHostWriteBarrier() before beginning the
-    // solid color pass (HOST barriers are illegal inside a render scope).
+    // Note: the caller records recordDerive() before beginning the solid
+    // color pass (host barriers and the derive dispatch are illegal inside a
+    // render scope).
 
     const VkPipeline activePipeline =
         (rtShadingEnabled_ && pipelineRt_ != VK_NULL_HANDLE) ? pipelineRt_ : pipeline_;

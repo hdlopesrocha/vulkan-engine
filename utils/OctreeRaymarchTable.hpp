@@ -21,11 +21,11 @@ struct OctreeRaymarchNode {
     glm::vec4 sdf0;        // sdf[0..3]
     glm::vec4 sdf1;        // sdf[4..7]
     glm::vec4 cubeMinSize; // xyz = node cube min, w = edge length
-    glm::ivec4 meta;       // x = lod, y = SpaceType, z = brushIndex, w = flags
+    glm::ivec4 meta;       // x = lod (host) / resolved material (derived), y = SpaceType, z = brushIndex, w = flags
     glm::ivec4 child03;    // child index per corner slot 0..3 (-1 = absent)
     glm::ivec4 child47;    // child index per corner slot 4..7 (-1 = absent)
     glm::vec4 hsv0;        // hsv.xyz, textureType
-    glm::vec4 hsv1;        // data.xy (mapping/UV scale), 0, 0
+    glm::vec4 hsv1;        // data.xy (mapping/UV scale), z = 1/Lipschitz bound (derived), 0
 };
 
 static_assert(sizeof(OctreeRaymarchNode) == 128,
@@ -58,11 +58,15 @@ static_assert(sizeof(OctreeRaymarchRoot) == 48,
 // revision into each frame slot exactly once (version match = already there).
 class OctreeRaymarchTable {
 public:
-    // meta.w packing, shared with shaders/includes/octree/RaymarchTable.glsl:
+    // meta.w packing, shared with shaders/includes/octree/RaymarchNodeRecord.glsl:
     //   bit0       leaf (no children block)
+    //   bit1       derived payload valid (RM_FLAG_PAYLOAD): meta.x = resolved
+    //              material index, hsv1.z = 1/Lipschitz bound. Written by the
+    //              renderer's once-per-revision OctreeDerive.comp pass.
     //   bits8..15  mask of surface children pruned by the node cap (per slot)
     //   bits16..31 two-bit SpaceType per child slot (non-surface leaves only)
     static constexpr uint32_t FLAG_LEAF = 1u;
+    static constexpr uint32_t FLAG_PAYLOAD = 1u << 1;
     static constexpr uint32_t PRUNED_CHILD_SHIFT = 8u;
     static constexpr uint32_t CHILD_TYPE_SHIFT = 16u;
     static constexpr int32_t NO_CHILD = -1;
