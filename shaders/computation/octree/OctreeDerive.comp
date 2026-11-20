@@ -11,7 +11,7 @@
 //   hsv1.z  = 1 / Lipschitz bound L (max cell step becomes |f| / L)
 //   meta.w |= RM_FLAG_PAYLOAD
 //
-// No memory is added: the record stays 128 bytes. Nodes that predate the pass
+// No memory is added: the record stays 96 bytes. Nodes that predate the pass
 // (or slots whose pipeline failed to build) keep the fragment-side QEF
 // fallback and the fixed 0.5 factor.
 //
@@ -24,7 +24,7 @@ layout(local_size_x = 64) in;
 // march so a cached material can never disagree with the fallback.
 #include "../../includes/octree/SdfCell.glsl"
 #include "../../includes/octree/LandBrush.glsl"
-// The record declaration is shared with RaymarchTable.glsl (128 bytes, same
+// The record declaration is shared with RaymarchTable.glsl (96 bytes, same
 // field order) so the two stages cannot drift apart.
 #include "../../includes/octree/RaymarchNodeRecord.glsl"
 #include "../../includes/octree/RaymarchMaterial.glsl"

@@ -326,8 +326,9 @@ uint rmFindNodeAt(uint root, vec3 pos, out bool nonSurfaceStop) {
 // EdgeCell::isSurface() + nodeTopologyAllowed() from OctreeTriangles.comp: a
 // ring vertex must be a Surface node whose own corners cross zero and whose
 // paint is not a raw discard. (Infinity corners are skipped by sdfEvalType.)
+// meta.y is the child base now, not a SpaceType: the table only stores Surface
+// nodes, so the old type check is implied by construction.
 bool rmBlendCellValid(uint id) {
-    if (rmNodes[id].meta.y != RM_TYPE_SURFACE) return false;
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
     if (sdfEvalType(sdf) != SDF_TYPE_SURFACE) return false;

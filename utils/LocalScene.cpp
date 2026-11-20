@@ -527,13 +527,14 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
         for (int i = 0; i < 4; ++i) rec.sdf0[i] = node->sdf[i];
         for (int i = 0; i < 4; ++i) rec.sdf1[i] = node->sdf[i + 4];
         rec.cubeMinSize = glm::vec4(cube.getMin(), cube.getLengthX());
+        // meta.y is the child base, not a SpaceType: every stored node is
+        // Surface and setChild() fills in the contiguous child range. hsv1.w
+        // starts at 0 (child mask = no stored children).
         rec.meta = glm::ivec4(
             static_cast<int32_t>(node->getLod()),
-            static_cast<int32_t>(node->getType()),
+            0,
             node->brushIndex,
             node->isLeaf() ? static_cast<int32_t>(OctreeRaymarchTable::FLAG_LEAF) : 0);
-        rec.child03 = glm::ivec4(OctreeRaymarchTable::NO_CHILD);
-        rec.child47 = glm::ivec4(OctreeRaymarchTable::NO_CHILD);
         rec.hsv0 = glm::vec4(node->hsv, static_cast<float>(node->textureType));
         rec.hsv1 = glm::vec4(node->data, 0.0f, 0.0f);
         return rec;

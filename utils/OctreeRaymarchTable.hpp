@@ -7,7 +7,7 @@
 
 // One flattened octree node consumed by the SDF raymarch pass
 // (shaders/renderer/octree/OctreeRaymarch.frag). Field-for-field mirror of the
-// shader's `RaymarchNode` struct (shaders/includes/octree/RaymarchTable.glsl):
+// shader's `RaymarchNode` struct (shaders/includes/octree/RaymarchNodeRecord.glsl):
 // 8 corner samples, the node cube, plus the material/mapping payload the
 // surface shader needs to shade a hit without any rasterized vertex data.
 // The table stores SURFACE nodes only (plus one root entry per layer). A
@@ -17,20 +17,26 @@
 // are marked in the parent's pruned mask and fall back to the parent's
 // trilinear field, which keeps truncation uniform across the tree instead of
 // failing the whole table.
+//
+// Child header (compact): a node's stored Surface children are appended
+// contiguously by the builder, so the record only needs the first index
+// (meta.y = childBase) plus an 8-bit presence mask (hsv1.w). Slot s resolves
+// to childBase + popcount(mask & ((1 << s) - 1)). A node with no stored child
+// keeps childBase = 0 and mask = 0.
 struct OctreeRaymarchNode {
     glm::vec4 sdf0;        // sdf[0..3]
     glm::vec4 sdf1;        // sdf[4..7]
     glm::vec4 cubeMinSize; // xyz = node cube min, w = edge length
-    glm::ivec4 meta;       // x = lod (host) / resolved material (derived), y = SpaceType, z = brushIndex, w = flags
-    glm::ivec4 child03;    // child index per corner slot 0..3 (-1 = absent)
-    glm::ivec4 child47;    // child index per corner slot 4..7 (-1 = absent)
+    glm::ivec4 meta;       // x = lod (host) / resolved material (derived), y = childBase,
+                           // z = brushIndex, w = flags
     glm::vec4 hsv0;        // hsv.xyz, textureType
-    glm::vec4 hsv1;        // data.xy (mapping/UV scale), z = 1/Lipschitz bound (derived), 0
+    glm::vec4 hsv1;        // data.xy (mapping/UV scale), z = 1/Lipschitz bound (derived),
+                           // w = childMask (bit s = slot s has a stored child)
 };
 
-static_assert(sizeof(OctreeRaymarchNode) == 128,
-              "OctreeRaymarchNode must stay 128 bytes (8 x vec4) to match the "
-              "std430 RaymarchNode in RaymarchTable.glsl");
+static_assert(sizeof(OctreeRaymarchNode) == 96,
+              "OctreeRaymarchNode must stay 96 bytes (6 x vec4) to match the "
+              "std430 RaymarchNode in RaymarchNodeRecord.glsl");
 
 // One rendered layer root: the node index the shader starts from plus the
 // layer's stable id, renderer kind and conservative surface AABB. The id feeds
@@ -65,11 +71,12 @@ public:
     //              renderer's once-per-revision OctreeDerive.comp pass.
     //   bits8..15  mask of surface children pruned by the node cap (per slot)
     //   bits16..31 two-bit SpaceType per child slot (non-surface leaves only)
+    // meta.y is the stored-child base (NOT a SpaceType): all stored nodes are
+    // Surface by construction, and their children are contiguous.
     static constexpr uint32_t FLAG_LEAF = 1u;
     static constexpr uint32_t FLAG_PAYLOAD = 1u << 1;
     static constexpr uint32_t PRUNED_CHILD_SHIFT = 8u;
     static constexpr uint32_t CHILD_TYPE_SHIFT = 16u;
-    static constexpr int32_t NO_CHILD = -1;
 
     void clear();
 
