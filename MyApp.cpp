@@ -4826,7 +4826,7 @@ void MyApp::recreateTextureArrays(uint32_t size) {
                   << textureArrayManager.layerAmount << " layers)\n";
     }
 
-    // Refresh the five generated layers. The mixer rebuilds its compute-view
+    // Refresh the generated layers. The mixer rebuilds its compute-view
     // bindings per generation (perf report 23 C2), so the re-created arrays
     // need no explicit rebind here.
     if (textureMixer) {

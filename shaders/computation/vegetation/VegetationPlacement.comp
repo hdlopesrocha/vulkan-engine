@@ -34,13 +34,22 @@ layout(push_constant, scalar) uniform PC {
     uint triangleCount;
     uint seed;
     uint billboardCount;
-    int  grassBrush;
+    // Bit i set = material i seeds blades (sceneGrassBrushMask). Two words so
+    // biome mix layers above material 31 are covered.
+    uint grassMaskLo;
+    uint grassMaskHi;
     uint vertexCount;
     uint relVertexBase;   // first pool element inside the bound vertex window
     uint relIndexBase;    // first index inside the bound index window
     uint instanceCapacity;
     float density;        // instances per world-space unit of triangle area
 } pc;
+
+bool isGrassBrush(int brush) {
+    if (brush < 0 || brush >= 64) return false;
+    uint word = (brush < 32) ? pc.grassMaskLo : pc.grassMaskHi;
+    return (word & (1u << uint(brush & 31))) != 0u;
+}
 
 uint xorshift32(inout uint state) {
     state ^= state << 13;
@@ -111,11 +120,11 @@ void emitInstance(vec3 v0, vec3 v1, vec3 v2,
     vec3 pos = u * v0 + v * v1 + w * v2;
 
     // Dominant-vertex brush test: keep the sample only if the closest vertex
-    // (largest barycentric weight) is grass-brushed (mirrors the CPU path).
+    // (largest barycentric weight) is blade-bearing (mirrors the CPU path).
     int dominantBrush = (u >= v && u >= w) ? b0
                       : (v >= w)          ? b1
                                           : b2;
-    if (dominantBrush != pc.grassBrush) return;
+    if (!isGrassBrush(dominantBrush)) return;
 
     // Biome from spatially-coherent noise.
     float noise = biomeNoise(pos.xz);
@@ -158,9 +167,9 @@ void main() {
     int b1 = vertexBrush(i1);
     int b2 = vertexBrush(i2);
 
-    // Permissive: any grass-touching triangle contributes slots; the
+    // Permissive: any blade-bearing triangle contributes slots; the
     // per-instance dominant-vertex test trims the spill later.
-    bool hasBrush = (b0 == pc.grassBrush) || (b1 == pc.grassBrush) || (b2 == pc.grassBrush);
+    bool hasBrush = isGrassBrush(b0) || isGrassBrush(b1) || isGrassBrush(b2);
     if (!hasBrush) return;
 
     vec3 faceNormal = cross(v1 - v0, v2 - v0);

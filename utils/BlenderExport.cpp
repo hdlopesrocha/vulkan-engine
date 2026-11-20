@@ -584,6 +584,7 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
     }
     const std::vector<SceneTextureTriple> triples = sceneTextureTriples();
     const std::vector<SceneMixerDesc> mixers = sceneMixerDescs();
+    const uint64_t grassMask = sceneGrassBrushMask();
     const size_t materialCount =
         triples.size() + mixers.size() + kScenePaintMargin + 1; // + spare/paint slot
     const std::vector<MaterialProperties> materials =
@@ -644,11 +645,11 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
                 if (options.includeGrass) {
                     const uintptr_t nodeId = reinterpret_cast<uintptr_t>(chunk.node);
                     std::vector<uint32_t> slots;
-                    grass::collectSlots(geometry, nodeId, slots);
+                    grass::collectSlots(geometry, nodeId, grassMask, slots);
                     std::vector<grass::Instance> placed;
                     placed.reserve(slots.size() / 3);
                     grass::placeInstances(geometry, slots, nodeId,
-                                          options.billboardCount, placed);
+                                          options.billboardCount, grassMask, placed);
                     for (const grass::Instance& inst : placed) {
                         GrassPoint p;
                         p.position = inst.position;

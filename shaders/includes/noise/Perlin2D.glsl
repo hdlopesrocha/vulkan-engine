@@ -1,5 +1,7 @@
-// 2D Perlin noise helpers shared by vegetation and impostor shaders.
-// Depends on nothing — include before any code that calls perlin2().
+// 2D Perlin noise helpers shared by vegetation, impostor and terrain-biome
+// shaders. Depends on nothing — include before any code that calls perlin2().
+#ifndef PERLIN2D_GLSL
+#define PERLIN2D_GLSL
 
 vec2 perlin2d_fade(vec2 t) {
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
@@ -50,3 +52,5 @@ float perlin2(vec2 p) {
     float nx1 = mix(n01, n11, u.x);
     return mix(nx0, nx1, u.y);
 }
+
+#endif // PERLIN2D_GLSL

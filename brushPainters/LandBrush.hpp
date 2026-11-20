@@ -1,7 +1,8 @@
 #pragma once
 #include "../math/BrushPainter.hpp"
 
-// Terrain material classifier (height + slope -> material index).
+// Terrain material classifier (height + slope + Perlin biome -> material
+// index).
 //
 // The classification itself runs on the GPU (shaders/includes/LandBrush.glsl)
 // per vertex, dispatched by the octree topology compute (OctreeTriangles.comp)

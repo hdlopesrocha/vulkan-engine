@@ -34,13 +34,20 @@ std::vector<SceneMixerDesc> sceneMixerDescs() {
     std::vector<SceneMixerDesc> mixers;
     mixers.reserve(kSceneMixerCount);
     // LandBrush uses generated blend layers for the slope/height transition
-    // bands (grass/sand, grass/snow, rock/grass, rock/snow, rock/sand).
+    // bands (grass/sand, grass/snow, rock/grass, rock/snow, rock/sand) and,
+    // after those, for the grass-band biome seams (biome i <-> biome i+1 in
+    // the LandBrush.glsl palette order: Grass_001, Ground_Grass_001,
+    // Dead_leaves_001, Ground_Dirt_007, Ground_Dirt_008).
     const uint32_t sources[kSceneMixerCount][2] = {
         {3u, 8u}, // grassMixSand
         {3u, 9u}, // grassMixSnow
         {7u, 3u}, // rockMixGrass
         {7u, 9u}, // rockMixSnow
         {7u, 8u}, // rockMixSand
+        {3u, 22u}, // biomeMixGrassGroundGrass
+        {22u, 2u}, // biomeMixGroundGrassLeaves
+        {2u, 1u},  // biomeMixLeavesDirt
+        {1u, 21u}, // biomeMixDirtBareDirt
     };
     for (uint32_t i = 0; i < kSceneMixerCount; ++i) {
         SceneMixerDesc d;
@@ -50,6 +57,35 @@ std::vector<SceneMixerDesc> sceneMixerDescs() {
         mixers.push_back(d);
     }
     return mixers;
+}
+
+uint64_t sceneGrassBrushMask() {
+    // The table is fixed at bring-up; cache the mask so per-chunk/per-frame
+    // callers do not rebuild the vectors.
+    static const uint64_t mask = [] {
+        // Grass-band biome palette in LandBrush.glsl order. Keep in sync with
+        // the LAND_BIOME_* constants there.
+        static constexpr uint32_t kBiomeMaterials[] = {
+            3u,  // Grass_001
+            22u, // Ground_Grass_001
+            2u,  // Dead_leaves_001
+            1u,  // Ground_Dirt_007
+            21u, // Ground_Dirt_008
+        };
+        uint64_t bits = 0;
+        for (uint32_t material : kBiomeMaterials) bits |= uint64_t{1} << material;
+        // Every generated mix of two grass biomes is a biome seam; those
+        // layers seed the same blades. The older sand/snow/rock transitions
+        // have a non-grass source and stay out of the mask.
+        for (const SceneMixerDesc& mixer : sceneMixerDescs()) {
+            if (mixer.primary >= 64 || mixer.secondary >= 64) continue;
+            const bool primaryIsGrass = ((bits >> mixer.primary) & 1ull) != 0ull;
+            const bool secondaryIsGrass = ((bits >> mixer.secondary) & 1ull) != 0ull;
+            if (primaryIsGrass && secondaryIsGrass) bits |= uint64_t{1} << mixer.target;
+        }
+        return bits;
+    }();
+    return mask;
 }
 
 std::vector<MaterialProperties> sceneMaterialProperties(size_t materialCount) {

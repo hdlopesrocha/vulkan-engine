@@ -98,7 +98,8 @@ float heightScaleAt(const glm::vec2& worldXZ) {
     return 0.6f + 0.8f * (n * 0.5f + 0.5f);
 }
 
-void collectSlots(const Geometry& geom, uintptr_t nodeId, std::vector<uint32_t>& out) {
+void collectSlots(const Geometry& geom, uintptr_t nodeId, uint64_t grassMask,
+                  std::vector<uint32_t>& out) {
     out.clear();
     if (geom.vertices.empty() || geom.indices.size() < 3) return;
 
@@ -113,12 +114,12 @@ void collectSlots(const Geometry& geom, uintptr_t nodeId, std::vector<uint32_t>&
         const uint32_t i2 = geom.indices[i + 2];
         if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) continue;
 
-        // Permissive: any grass-touching triangle contributes slots; the
+        // Permissive: any blade-bearing triangle contributes slots; the
         // per-instance dominant-vertex test trims the spill later.
         const bool hasBrush =
-            geom.vertices[i0].brushIndex == kGrassBrush ||
-            geom.vertices[i1].brushIndex == kGrassBrush ||
-            geom.vertices[i2].brushIndex == kGrassBrush;
+            isGrassMaterial(grassMask, geom.vertices[i0].brushIndex) ||
+            isGrassMaterial(grassMask, geom.vertices[i1].brushIndex) ||
+            isGrassMaterial(grassMask, geom.vertices[i2].brushIndex);
         if (!hasBrush) continue;
 
         const glm::vec3& v0 = geom.vertices[i0].position;
@@ -161,6 +162,7 @@ void placeInstances(const std::vector<glm::vec3>& positions,
                     const std::vector<uint32_t>& slots,
                     uint32_t billboardCount,
                     uint32_t seed,
+                    uint64_t grassMask,
                     std::vector<Instance>& out) {
     const uint32_t billboardCnt = (billboardCount > 0) ? billboardCount : 1u;
     const uint32_t triCount = static_cast<uint32_t>(slots.size()) / 3;
@@ -192,12 +194,12 @@ void placeInstances(const std::vector<glm::vec3>& positions,
         const glm::vec3 pos = u * v0 + v * v1 + w * v2;
 
         // Dominant-vertex brush test: keep the sample only if the closest
-        // vertex (largest barycentric weight) is grass-brushed.
+        // vertex (largest barycentric weight) is a blade-bearing material.
         if (hasBrushes && i0 < brushes.size() && i1 < brushes.size() && i2 < brushes.size()) {
             const int dominantBrush = (u >= v && u >= w) ? brushes[i0]
                                     : (v >= w)           ? brushes[i1]
                                                          : brushes[i2];
-            if (dominantBrush != kGrassBrush) continue;
+            if (!isGrassMaterial(grassMask, dominantBrush)) continue;
         }
 
         // Biome from spatially-coherent noise.
@@ -228,7 +230,7 @@ void placeInstances(const std::vector<glm::vec3>& positions,
 
 void placeInstances(const Geometry& geom, const std::vector<uint32_t>& slots,
                     uintptr_t nodeId, uint32_t billboardCount,
-                    std::vector<Instance>& out) {
+                    uint64_t grassMask, std::vector<Instance>& out) {
     std::vector<glm::vec3> positions;
     std::vector<glm::vec3> normals;
     std::vector<int> brushes;
@@ -241,7 +243,7 @@ void placeInstances(const Geometry& geom, const std::vector<uint32_t>& slots,
         brushes.push_back(v.brushIndex);
     }
     const uint32_t seed = static_cast<uint32_t>(nodeId & 0xffffffffull);
-    placeInstances(positions, normals, brushes, slots, billboardCount, seed, out);
+    placeInstances(positions, normals, brushes, slots, billboardCount, seed, grassMask, out);
 }
 
 } // namespace grass

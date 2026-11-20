@@ -151,7 +151,7 @@ Reproduced equations:
   base colour (Blender's HSV is 0..1; the engine's hue is degrees).
 
 Texture colour spaces: albedo tiles are `sRGB`, normal/roughness/AO tiles are
-`Non-Color`. The generated mixer layers (indices 24–28) have no source files;
+`Non-Color`. The generated mixer layers (indices 24–32) have no source files;
 the exporter bakes them on the CPU with the same two source layers and the same
 equations as `TextureMixer.comp` (Perlin-scale/octave/contrast/brightness),
 so they are included as ordinary tiles.
@@ -172,6 +172,11 @@ procedural blade colours into vertex colours.
   changed with `BLENDER_EXPORT_MAX_GRASS` before starting the export.
 - The instances match the CPU placement path. The default GPU placement
   path produces the same records up to float rounding.
+- Blade-bearing materials come from `sceneGrassBrushMask()`: the LandBrush
+  grass-band biomes (`Grass_001`, `Ground_Grass_001`, `Dead_leaves_001`,
+  `Ground_Dirt_007`, `Ground_Dirt_008`) plus the four generated biome-seam
+  mixers between them. The sand/snow/rock transition mixers stay bare; the
+  exporter applies the same mask to the mesh brush indices it receives.
 - Wind, impostor hand-off and distance thinning are runtime effects and are not
   exported; blades are static.
 

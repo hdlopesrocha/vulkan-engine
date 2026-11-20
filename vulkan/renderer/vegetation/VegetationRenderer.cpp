@@ -12,6 +12,7 @@
 #include "VegetationRenderer.hpp"
 #include "../../../utils/FileReader.hpp"
 #include "../../../utils/GrassPlacement.hpp"
+#include "../../../utils/SceneMaterialTable.hpp"
 #include <stdexcept>
 #include <cstring>
 #include <numeric>
@@ -2212,14 +2213,15 @@ struct VegPlacementPC {
     uint32_t triangleCount;
     uint32_t seed;
     uint32_t billboardCount;
-    int32_t  grassBrush;
+    uint32_t grassMaskLo;
+    uint32_t grassMaskHi;
     uint32_t vertexCount;
     uint32_t relVertexBase;
     uint32_t relIndexBase;
     uint32_t instanceCapacity;
     float    density;
 };
-static_assert(sizeof(VegPlacementPC) == 36, "VegPlacementPC must match the shader block");
+static_assert(sizeof(VegPlacementPC) == 40, "VegPlacementPC must match the shader block");
 } // anonymous namespace
 
 void VegetationRenderer::generateChunkInstancesCPU(NodeID chunkId,
@@ -2450,7 +2452,7 @@ void VegetationRenderer::processPendingChunksGPU(VulkanApp* app, uint32_t maxChu
     };
 
     const uint32_t billboardCnt = (billboardCount > 0) ? billboardCount : 1u;
-    constexpr int kGrassBrush = 3;         // LandBrush::grass: meadow brush
+    const uint64_t grassMask = sceneGrassBrushMask();
     constexpr float kGrassDensity = 0.01f; // matches grass::kDensity
     const float maxBillboardRadius = billboardScale * 2.1f;
     // Descriptor offsets must satisfy minStorageBufferOffsetAlignment; the
@@ -2591,7 +2593,8 @@ void VegetationRenderer::processPendingChunksGPU(VulkanApp* app, uint32_t maxChu
             pc.triangleCount = w.triangleCount;
             pc.seed = w.seed;
             pc.billboardCount = billboardCnt;
-            pc.grassBrush = kGrassBrush;
+            pc.grassMaskLo = static_cast<uint32_t>(grassMask & 0xffffffffull);
+            pc.grassMaskHi = static_cast<uint32_t>(grassMask >> 32);
             pc.vertexCount = w.vertexCount;
             pc.relVertexBase = w.relVertexBase;
             pc.relIndexBase = w.relIndexBase;
@@ -2687,6 +2690,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         return;
     }
     const uint32_t billboardCnt = (billboardCount > 0) ? billboardCount : 1u;
+    const uint64_t grassMask = sceneGrassBrushMask();
 
     // M12-(1) (report 26): batch build list. Per-chunk payloads are stashed
     // here so a single staging buffer can be sized once from the batch total
@@ -2739,7 +2743,7 @@ void VegetationRenderer::processPendingChunks(uint32_t maxChunks) {
         std::vector<grass::Instance> placed;
         placed.reserve(instanceCount);
         grass::placeInstances(pc.positions, pc.normals, pc.brushIndices,
-                              pc.grassIndices, billboardCnt, pc.seed, placed);
+                              pc.grassIndices, billboardCnt, pc.seed, grassMask, placed);
         for (const grass::Instance& inst : placed) {
             validData.push_back(inst.position.x);
             validData.push_back(inst.position.y);
@@ -2997,10 +3001,11 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
 
         // Area-weighted virtual slots with unbiased stochastic rounding and a
         // per-chunk shuffle; shared with the Blender exporter so the offline
-        // tufts match the rendered ones (utils/GrassPlacement).
+        // tufts match the rendered ones (utils/GrassPlacement). The mask lets
+        // every LandBrush grass-band biome (and its seam mixes) grow blades.
         std::vector<uint32_t> grassIndices;
         grassIndices.reserve(geom.indices.size());
-        grass::collectSlots(geom, static_cast<uintptr_t>(nid), grassIndices);
+        grass::collectSlots(geom, static_cast<uintptr_t>(nid), sceneGrassBrushMask(), grassIndices);
 
         // Each virtual triangle slot produces exactly 1 instance.
         uint32_t instancesPerTriangle = 1u;

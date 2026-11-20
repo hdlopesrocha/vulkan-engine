@@ -20,8 +20,6 @@
 
 namespace grass {
 
-// LandBrush::grass material index (utils/LandBrush.cpp).
-constexpr int kGrassBrush = 3;
 // Instances per world-space unit of triangle area.
 constexpr float kDensity = 0.01f;
 
@@ -31,6 +29,13 @@ struct Instance {
     int variant = 0;
     float rotation = 0.0f; // 0..1 fraction of a full turn around +Y
 };
+
+// Bit i set = material i seeds blades (sceneGrassBrushMask in
+// utils/SceneMaterialTable.cpp). Passed explicitly so this header stays free
+// of the material table.
+inline bool isGrassMaterial(uint64_t mask, int brush) {
+    return brush >= 0 && brush < 64 && ((mask >> brush) & uint64_t{1}) != 0ull;
+}
 
 uint32_t xorshift32(uint32_t& state);
 float randFloat(uint32_t& state);
@@ -47,8 +52,9 @@ float heightScaleAt(const glm::vec2& worldXZ);
 
 // Expands the chunk's triangles into area-weighted virtual instance slots
 // (unbiased stochastic rounding per triangle, chunk-seeded shuffle). `out`
-// holds 3 indices per slot.
-void collectSlots(const Geometry& geom, uintptr_t nodeId, std::vector<uint32_t>& out);
+// holds 3 indices per slot. `grassMask` selects the blade-bearing materials.
+void collectSlots(const Geometry& geom, uintptr_t nodeId, uint64_t grassMask,
+                  std::vector<uint32_t>& out);
 
 // Resolves slots into tufts (barycentric sample, dominant-vertex brush test,
 // biome gate, variant/rotation). `seed` is the low 32 bits of the chunk id,
@@ -59,6 +65,7 @@ void placeInstances(const std::vector<glm::vec3>& positions,
                     const std::vector<uint32_t>& slots,
                     uint32_t billboardCount,
                     uint32_t seed,
+                    uint64_t grassMask,
                     std::vector<Instance>& out);
 
 // Convenience overload for offline consumers: builds the parallel vertex
@@ -66,6 +73,6 @@ void placeInstances(const std::vector<glm::vec3>& positions,
 // VegetationRenderer::generateChunkInstancesCPU.
 void placeInstances(const Geometry& geom, const std::vector<uint32_t>& slots,
                     uintptr_t nodeId, uint32_t billboardCount,
-                    std::vector<Instance>& out);
+                    uint64_t grassMask, std::vector<Instance>& out);
 
 } // namespace grass
