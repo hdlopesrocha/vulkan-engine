@@ -123,11 +123,14 @@ bool aoEnabled = (ubo.ambientOcclusionEnabled != 0u);
 // NormalBrush material resolver used by the octree topology pass.
 #include "../../includes/octree/SdfCell.glsl"
 #include "../../includes/octree/LandBrush.glsl"
+// Material + Lipschitz helpers shared with the once-per-revision payload pass
+// (OctreeDerive.comp): the cached payload and this fallback use one rule.
+#include "../../includes/octree/RaymarchMaterial.glsl"
 
 // Solid surface shading (extracted): writes outColor; debug branches return.
 #include "../../includes/solid/SolidSurface.glsl"
 
-const int RAYMARCH_DISCARD_BRUSH = -1;
+const int RAYMARCH_DISCARD_BRUSH = RM_MATERIAL_DISCARD;
 // Grazing rays through the depth-12 terrain leaf lattice can need ~800
 // iteration steps (descent + empty/solid skips) before reaching the surface;
 // 320 left visible holes wherever the budget ran out. The cost is only paid by
@@ -145,23 +148,19 @@ float rmHitEpsilon(float nodeSize) {
 
 // Resolve a node's shading material at a given QEF position. Shared by the
 // march's cache (position solved from the node) and the hit-time material
-// blend (positions solved once for every ring cell).
+// blend (positions solved once for every ring cell). The classifier itself
+// lives in RaymarchMaterial.glsl so OctreeDerive.comp resolves the identical
+// index into meta.x.
 int rmResolveMaterialAt(uint id, vec3 qefPos) {
     int raw = rmNodes[id].meta.z;
     if (raw != LAND_BRUSH_INDEX && raw != NORMAL_BRUSH) return raw;
 
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
-    vec3 n = sdfCellNormal(sdf, rmNodeMin(id), rmNodeSize(id), qefPos);
-
-    if (raw == LAND_BRUSH_INDEX) {
-        // Mirror writeVertexOnce(): LAND_UNDERGROUND is a shading fallback,
-        // not a topology discard.
-        int land = landMaterialIndex(qefPos, n);
-        return (land == LAND_UNDERGROUND) ? LAND_ROCK : land;
-    }
-    // NormalBrush keeps only +Y-facing cells, like the old CPU painter.
-    return (dot(normalize(n), vec3(0.0, 1.0, 0.0)) > 0.0) ? 0 : RAYMARCH_DISCARD_BRUSH;
+    vec3 mn = rmNodeMin(id);
+    float sz = rmNodeSize(id);
+    vec3 n = sdfCellNormal(sdf, mn, sz, qefPos);
+    return rmResolveMaterialAtCorners(raw, sdf, mn, sz, qefPos, n);
 }
 
 // Node QEF vertex position (the same value the raster vertex payload carries).
@@ -178,6 +177,10 @@ vec3 rmCellQef(uint id) {
 // of discarding the hit. DISCARD_BRUSH (-1) from a NORMAL/unpainted cell means
 // "no surface here".
 int rmResolvedBrush(uint id) {
+    // Payload cache: OctreeDerive.comp already resolved the material into
+    // meta.x once per revision. Only slots whose derive pass never ran (module
+    // missing) or nodes without the flag take the QEF fallback below.
+    if ((uint(rmNodes[id].meta.w) & RM_FLAG_PAYLOAD) != 0u) return rmNodes[id].meta.x;
     int raw = rmNodes[id].meta.z;
     if (raw != LAND_BRUSH_INDEX && raw != NORMAL_BRUSH) return raw;
     return rmResolveMaterialAt(id, rmCellQef(id));
@@ -693,8 +696,9 @@ float rmCellDepth(uint rootNode, uint node) {
 // cell's [t, nodeExit] interval and follows stored Surface children. Empty and
 // Solid children are skipped (neither can contain an isosurface crossing);
 // only node-cap-pruned Surface children fall back to the parent trilinear
-// field. Within a cell the field is sphere-traced with a 0.5 safety factor and
-// a sign-change bisection refines the crossing. Discarded (underground / -Y
+// field. Within a cell the field is sphere-traced with the node's cached
+// 1/Lipschitz bound (0.5 safety factor when no payload is available) and a
+// sign-change bisection refines the crossing. Discarded (underground / -Y
 // NormalBrush) surfaces are skipped and the march continues.
 bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
                  out uint hitNode, out float hitT, out int hitBrush,
@@ -863,7 +867,14 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
                 float fineStep = max(nodeSize / levels, 1e-3);
                 stepLen = max(min(abs(d) * 0.5, fineStep), eps);            }
         } else {
-            stepLen = max(abs(d) * 0.5, eps);
+            // Payload cache: 1/L for the node's conservative trilinear
+            // Lipschitz bound (OctreeDerive.comp), so smooth cells take steps
+            // up to 1.155x longer and rough cells step shorter (safer) than
+            // the fixed 0.5 factor. Cells without a payload keep 0.5.
+            float invLip = ((uint(rmNodes[node].meta.w) & RM_FLAG_PAYLOAD) != 0u)
+                ? rmNodes[node].hsv1.z
+                : 0.5;
+            stepLen = max(abs(d) * invLip, eps);
         }
         float tNext = min(t + stepLen, cellExit);
         float dNextBase;

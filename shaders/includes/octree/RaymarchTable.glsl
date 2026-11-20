@@ -6,27 +6,12 @@
 // One flat node array per frame slot (set=2 binding=0) plus the per-layer root
 // entries (binding=1: node index + stable Layer::Id). The table stores surface
 // octree nodes only; the parent's meta.w packs the information the descent
-// needs for absent children:
-//   bit0       leaf
-//   bits8..15  surface children pruned by the node cap (per corner slot)
-//   bits16..31 two-bit SpaceType per child slot (Empty / Surface / Solid)
+// needs for absent children (see RaymarchNodeRecord.glsl for the flag layout).
 //
-// Keep the struct order/size identical to OctreeRaymarchNode (128 bytes).
-//
-// std430 is sufficient here: every member is a vec4/ivec4, so the scalar and
-// std430 layouts are byte-identical and the shader does not depend on the
-// optional scalarBlockLayout device feature.
+// The record itself lives in RaymarchNodeRecord.glsl so the once-per-revision
+// payload derive pass (OctreeDerive.comp) declares the same 128-byte layout.
 
-struct RaymarchNode {
-    vec4  sdf0;        // sdf[0..3]
-    vec4  sdf1;        // sdf[4..7]
-    vec4  cubeMinSize; // xyz = node cube min, w = edge length
-    ivec4 meta;        // x = lod, y = SpaceType, z = brushIndex, w = flags
-    ivec4 child03;     // child index per corner slot 0..3 (-1 = absent)
-    ivec4 child47;     // child index per corner slot 4..7 (-1 = absent)
-    vec4  hsv0;        // hsv.xyz, textureType
-    vec4  hsv1;        // data.xy, 0, 0
-};
+#include "RaymarchNodeRecord.glsl"
 
 // Root entry: node index + stable Layer::Id + renderer kind (0 = Solid,
 // 1 = Water). Must match OctreeRaymarchRoot.
@@ -56,7 +41,7 @@ int rmNodeChild(uint id, int slot) {
     return c[slot & 3];
 }
 
-bool rmNodeIsLeaf(uint id) { return (rmNodes[id].meta.w & 1) != 0; }
+bool rmNodeIsLeaf(uint id) { return (rmNodes[id].meta.w & int(RM_FLAG_LEAF)) != 0; }
 
 bool rmNodeChildPruned(uint id, int slot) {
     return ((rmNodes[id].meta.w >> (8 + slot)) & 1) != 0;

@@ -30,8 +30,10 @@
 // Synchronization: upload() is called from MyApp::update(), which runs after
 // the frame-slot fence wait (VulkanApp::drawFrame). The slot's previous GPU
 // readers are therefore complete, so the host can safely rewrite the mapped
-// buffers. draw() records a HOST -> FRAGMENT_SHADER barrier because the node
-// buffer is persistently mapped and written with plain memcpy.
+// buffers. draw()/recordDerive() publish those writes with a HOST barrier
+// because the node buffer is persistently mapped and written with plain
+// memcpy; a slot that received a new revision first runs the OctreeDerive.comp
+// payload pass and barriers its writes to the fragment march.
 class OctreeRaymarchRenderer : public Renderer {
 public:
     static constexpr uint32_t RAYMARCH_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
@@ -75,6 +77,7 @@ public:
 
     // Publish `table` into the frame slot's buffers. Cheap when the slot
     // already holds this revision (the common case: rebuilds are debounced).
+    // An actual upload marks the slot for recordDerive().
     void upload(uint32_t frameIndex, const OctreeRaymarchTable& table);
 
     // True when this frame slot is ready to march (pipeline + table buffers
@@ -89,11 +92,18 @@ public:
     // never created).
     void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
 
+    // Publish this frame slot's host-side table upload and, when the slot
+    // received a new revision, run the once-per-revision payload derive pass
+    // (OctreeDerive.comp) before the march. MUST be recorded OUTSIDE any
+    // dynamic rendering scope: HOST is not a framebuffer-space stage, and
+    // vkCmdPipelineBarrier2 / compute dispatches inside
+    // vkCmdBeginRendering/vkCmdEndRendering are illegal. Call immediately
+    // before beginning the solid color pass.
+    void recordDerive(VkCommandBuffer cmd, uint32_t frameIndex);
+
     // Make the host writes to this frame slot's mapped table buffers visible
-    // to fragment shader reads. MUST be recorded OUTSIDE any dynamic rendering
-    // scope: HOST is not a framebuffer-space stage, and vkCmdPipelineBarrier2
-    // inside vkCmdBeginRendering/vkCmdEndRendering may only use framebuffer
-    // stages. Call immediately before beginning the solid color pass.
+    // to fragment shader reads. Kept for the fragment-only fallback path;
+    // MyApp records recordDerive(), which calls this when no derive pass runs.
     void recordHostWriteBarrier(VkCommandBuffer cmd);
 
     // Record the fullscreen pass into the already-begun solid color+depth
@@ -117,8 +127,19 @@ private:
     std::array<Buffer, RAYMARCH_FRAMES> rootBuffers_{};
     std::array<uint64_t, RAYMARCH_FRAMES> uploadedVersion_{};
     std::array<uint32_t, RAYMARCH_FRAMES> rootCounts_{};
+    // Slot states for the payload derive pass: node count of the upload that
+    // still needs its derived fields, and whether that pass is pending. Both
+    // are per-slot because a revision is uploaded into each slot separately.
+    std::array<uint32_t, RAYMARCH_FRAMES> nodeCounts_{};
+    std::array<bool, RAYMARCH_FRAMES> needsDerive_{};
 
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    // Once-per-revision payload derive pass (OctreeDerive.comp): writes the
+    // resolved material, 1/Lipschitz bound and the payload flag into the
+    // record's dead bytes. Null when the module/pipeline was unavailable; the
+    // fragment march then keeps its QEF / fixed-0.5 fallback.
+    VkPipeline derivePipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout deriveLayout_ = VK_NULL_HANDLE;
     // RT fragment variant (same march; shadeSolidSurface with inline ray
     // queries). Created only when the device supports ray queries.
     VkPipeline pipelineRt_ = VK_NULL_HANDLE;

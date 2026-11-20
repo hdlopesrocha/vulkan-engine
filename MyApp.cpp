@@ -2690,12 +2690,13 @@ public:
                     // as clear over the whole lake even though the depth
                     // prepass had written the bed, which cut the raster water
                     // depth off.
-                    // Publish this frame's host-side table upload to the
-                    // fragment shader. Must happen before vkCmdBeginRendering:
-                    // HOST is not a framebuffer-space stage and is illegal
-                    // inside a dynamic rendering scope.
+                    // Publish this frame's host-side table upload and run the
+                    // node payload derive pass when the slot got a new
+                    // revision. Must happen before vkCmdBeginRendering: HOST
+                    // is not a framebuffer-space stage and the compute
+                    // dispatch is illegal inside a dynamic rendering scope.
                     if (solidRaymarch) {
-                        this->sceneRenderer->octreeRaymarchRenderer->recordHostWriteBarrier(solidCmd);
+                        this->sceneRenderer->octreeRaymarchRenderer->recordDerive(solidCmd, frameIdx);
                     }
 
                     if (skipSolidPrepass) {
