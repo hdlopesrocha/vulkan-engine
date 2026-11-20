@@ -23,6 +23,9 @@ std::vector<SceneTextureTriple> sceneTextureTriples() {
         { "textures/Crystal_Metal_001/COLOR.jpg", "textures/Crystal_Metal_001/NORMAL.jpg", "textures/Crystal_Metal_001/HEIGHT.jpg", "textures/Crystal_Metal_001/ROUGH.jpg", "textures/Crystal_Metal_001/OCC.jpg" },
         { "textures/Sci-fi_Armor_001/COLOR.jpg", "textures/Sci-fi_Armor_001/NORMAL.jpg", "textures/Sci-fi_Armor_001/HEIGHT.jpg", "textures/Sci-fi_Armor_001/ROUGH.jpg", "textures/Sci-fi_Armor_001/OCC.jpg" },
         { "textures/Greeble_Techno_002/COLOR.jpg", "textures/Greeble_Techno_002/NORMAL.jpg", "textures/Greeble_Techno_002/HEIGHT.jpg", "textures/Greeble_Techno_002/ROUGH.jpg", "textures/Greeble_Techno_002/OCC.jpg" },
+        { "textures/Ground_Dirt_008/COLOR.jpg", "textures/Ground_Dirt_008/NORMAL.jpg", "textures/Ground_Dirt_008/HEIGHT.jpg", "textures/Ground_Dirt_008/ROUGH.jpg", "textures/Ground_Dirt_008/OCC.jpg" },
+        { "textures/Ground_Grass_001/COLOR.jpg", "textures/Ground_Grass_001/NORMAL.jpg", "textures/Ground_Grass_001/HEIGHT.jpg", "textures/Ground_Grass_001/ROUGH.jpg", "textures/Ground_Grass_001/OCC.jpg" },
+        { "textures/Terracotta_Floor_Tiles_005/COLOR.jpg", "textures/Terracotta_Floor_Tiles_005/NORMAL.jpg", "textures/Terracotta_Floor_Tiles_005/HEIGHT.jpg", "textures/Terracotta_Floor_Tiles_005/ROUGH.jpg", "textures/Terracotta_Floor_Tiles_005/OCC.jpg" },
     };
 }
 

@@ -151,7 +151,7 @@ Reproduced equations:
   base colour (Blender's HSV is 0..1; the engine's hue is degrees).
 
 Texture colour spaces: albedo tiles are `sRGB`, normal/roughness/AO tiles are
-`Non-Color`. The generated mixer layers (indices 21–25) have no source files;
+`Non-Color`. The generated mixer layers (indices 24–28) have no source files;
 the exporter bakes them on the CPU with the same two source layers and the same
 equations as `TextureMixer.comp` (Perlin-scale/octave/contrast/brightness),
 so they are included as ordinary tiles.
