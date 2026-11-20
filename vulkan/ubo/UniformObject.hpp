@@ -44,7 +44,11 @@ struct alignas(16) UniformObject {
     uint32_t brushMode = 0u;             // offset 424  0 = overlay, 1 = remove, 2 = PAINT
     float brushPhase = 0.0f;             // offset 428  brush animation phase (s)
     alignas(16) glm::vec3 brushHsv{0.0f, 0.5f, 0.5f}; // offset 432
-    // offset 444..448: std140 block size rounding (multiple of 16).
+    // Screen-space octree raymarch hit tolerance in pixels (0 = off). Lives in
+    // the former std140 tail padding: the block size stays 448 B.
+    float raymarchScreenEps = 0.0f;      // offset 444
+    // The struct ends at 448 with no tail padding; alignas(16) keeps the
+    // std140 block size a multiple of 16.
 };
 static_assert(sizeof(UniformObject) == 448, "UniformObject must be 448 bytes (std140 padding)");
 static_assert(offsetof(UniformObject, viewProjection) == 0, "viewProjection offset");
@@ -75,3 +79,4 @@ static_assert(offsetof(UniformObject, brushTextureIndex) == 420, "brushTextureIn
 static_assert(offsetof(UniformObject, brushMode) == 424, "brushMode offset");
 static_assert(offsetof(UniformObject, brushPhase) == 428, "brushPhase offset");
 static_assert(offsetof(UniformObject, brushHsv) == 432, "brushHsv offset");
+static_assert(offsetof(UniformObject, raymarchScreenEps) == 444, "raymarchScreenEps offset");

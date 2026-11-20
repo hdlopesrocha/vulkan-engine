@@ -104,6 +104,23 @@ void RaymarchWidget::render() {
                 "so the marched surface matches the displaced raster surface. "
                 "Off: both paths stay undisplaced.");
         }
+        {
+            ImGuiComponents::FieldLabel("SS hit epsilon",
+                "Screen-space hit tolerance in pixels (0 = off). 0.25 removes "
+                "over-resolution at distance and on grazing rays; hit positions "
+                "move by at most this many pixels.");
+            float ss = settings->octreeRaymarchScreenEps;
+            ImGui::SetNextItemWidth(kRaymarchColWidth);
+            ImGui::PushID("SSEps##octree");
+            if (ImGui::SliderFloat("##v", &ss, 0.0f, 1.0f, "%.2f px")) {
+                settings->octreeRaymarchScreenEps = ss;
+            }
+            ImGui::PopID();
+            ImGuiComponents::TooltipOnHover(
+                "Screen-space hit tolerance in pixels (0 = off). 0.25 removes "
+                "over-resolution at distance and on grazing rays; hit positions "
+                "move by at most this many pixels.");
+        }
     });
 
     // 0: Shape (generic SDF rig: cloud / sphere / cube + translation,

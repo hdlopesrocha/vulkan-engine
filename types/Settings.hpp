@@ -155,6 +155,10 @@ public:
     // Ray Marching widget's terrain-path combo; the debug view
     // OctreeSdfRaymarch forces it too.
     bool octreeRaymarchEnabled = false;
+    // Screen-space hit tolerance in pixels; 0 = off; 0.25 is the recommended
+    // start; larger values cut distant/grazing march steps at a sub-pixel
+    // accuracy cost.
+    float octreeRaymarchScreenEps = 0.0f;
     bool shadowTessellationEnabled = false;
     // Deferred depth prepass for the solid pass (perf report 21 C2 gate).
     // true = depth prepass, then color with loaded depth (current behavior);
