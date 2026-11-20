@@ -158,7 +158,8 @@ void BrushSdfRenderer::updateParams(uint32_t frameIndex, const BrushEntry& entry
     auto tetraBevel = [](const glm::vec3& scale, float minSize) {
         const glm::vec3 a = glm::abs(scale);
         const float minScale = glm::min(glm::min(a.x, a.y), a.z);
-        return glm::min(0.5f * glm::max(minSize, 0.0f), 0.06f * minScale);
+        const float sampleSize = brushSdfSampleMinSize(11, scale, minSize);
+        return glm::min(0.5f * glm::max(sampleSize, 0.0f), 0.06f * minScale);
     };
     u.translate = glm::vec4(entry.translate, 1.0f);
     u.scale = glm::vec4(entry.scale, 0.0f);

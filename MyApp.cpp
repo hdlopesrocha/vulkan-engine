@@ -5229,22 +5229,28 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
                  : static_cast<const BrushPainter&>(simpleBrush);
 
     Simplifier simplifier(0.05f);
+    // The tetrahedron's sampled field needs a finer octree lattice than the
+    // widget default to represent its beveled edges; other primitives keep the
+    // user's Min Size unchanged.
+    BrushEntry sampled = entry;
+    sampled.minSize = brushSdfSampleMinSize(entry.sdfType, entry.scale, entry.minSize);
     auto applyEntry = [&](SignedDistanceFunction& sourceFunc) {
-        if (!entry.useInterpolation) {
-            applyBrushWithEffect(entry, sourceFunc, octree, brushOp, model, brush, simplifier,
+        if (!sampled.useInterpolation) {
+            applyBrushWithEffect(sampled, sourceFunc, octree, brushOp, model, brush, simplifier,
                                  updateHandler, deleteHandler);
             return;
         }
 
-        const BrushEntry target = brushEntryFromTarget(entry.interpolationTarget);
+        BrushEntry target = brushEntryFromTarget(sampled.interpolationTarget);
+        target.minSize = brushSdfSampleMinSize(target.sdfType, target.scale, target.minSize);
         const Transformation targetModel(target.scale, target.translate, target.rot);
         const glm::vec3 targetSweepStart = target.sweepMode ? target.previousTranslate
                                                             : target.translate;
         bool mixedApplied = false;
         auto applyTarget = [&](SignedDistanceFunction& targetFunc) {
             InterpolatedDistanceFunction mixed(sourceFunc, targetFunc,
-                                               entry.interpolationFactor, model, entry.minSize);
-            applyBrushWithEffect(entry, mixed, octree, brushOp, model, brush, simplifier,
+                                               sampled.interpolationFactor, model, sampled.minSize);
+            applyBrushWithEffect(sampled, mixed, octree, brushOp, model, brush, simplifier,
                                  updateHandler, deleteHandler);
             mixedApplied = true;
         };
@@ -5252,11 +5258,11 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
                         "[applyBrushEventToLayer:target]", applyTarget);
         if (!mixedApplied) {
             // Invalid target SDF (e.g. an unreadable SVG): keep the source.
-            applyBrushWithEffect(entry, sourceFunc, octree, brushOp, model, brush, simplifier,
+            applyBrushWithEffect(sampled, sourceFunc, octree, brushOp, model, brush, simplifier,
                                  updateHandler, deleteHandler);
         }
     };
-    forEachBrushSDF(entry, model, sweepStart, entry.minSize, "[applyBrushEventToLayer]", applyEntry);
+    forEachBrushSDF(sampled, model, sweepStart, sampled.minSize, "[applyBrushEventToLayer]", applyEntry);
 
     // A brush edit changes stored SDF corners even for chunks whose
     // tessellation batch is not drained this frame (e.g. edits outside the

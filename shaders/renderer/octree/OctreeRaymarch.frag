@@ -912,12 +912,14 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
         float eps = rmHitEpsilon(nodeSize, t);
 
         if (abs(d) <= eps) {
-            // Screen-space tolerance: the accepted sample can sit up to `eps`
-            // (a few pixels at distance) before the true crossing. Refine with
-            // the secant of the two same-node samples that bracket it, clamped
-            // to the band.
+            // The accepted sample can sit up to `eps` before the true crossing;
+            // at close range that is several pixels on a sharp silhouette.
+            // Refine with the secant of the two same-node samples that bracket
+            // it, clamped to the band. This used to run only when the optional
+            // screen-space tolerance was enabled, which left the default path
+            // quantized to the fixed node epsilon.
             float tHit = t;
-            if (ubo.raymarchScreenEps > 0.0 && prevNode == node)
+            if (prevNode == node)
                 tHit = rmRefineHit(node, ro, rd, material, prevT, prevD, t, d, eps);
             // Raster-parity visibility: solid back faces and DISCARD_BRUSH_INDEX
             // cells are not shaded; water accepts only the +Y surface (top

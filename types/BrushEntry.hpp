@@ -144,3 +144,17 @@ inline BrushEntry brushEntryFromTarget(const BrushSdfTarget& t) {
     e.svgTintFromFill = t.svgTintFromFill;
     return e;
 }
+
+// Octree sampling size for one brush application. Most primitives can use the
+// entry's Min Size as-is, but the tetrahedron stores a sharp face-plane field
+// with only a small edge bevel: at the default 30-unit Min Size a 512-unit
+// tetrahedron has ~17 cells across and the beveled edges reconstruct as visible
+// facets. Keep at least ~64 cells across its smallest extent so the sampled
+// field resolves the silhouette; the user's Min Size still wins when it is
+// already finer.
+inline float brushSdfSampleMinSize(int sdfType, const glm::vec3& scale, float minSize) {
+    if (sdfType != 11) return minSize;
+    const glm::vec3 a = glm::abs(scale);
+    const float minScale = glm::min(glm::min(a.x, a.y), a.z);
+    return glm::min(minSize, glm::max(minScale * (1.0f / 64.0f), 0.5f));
+}
