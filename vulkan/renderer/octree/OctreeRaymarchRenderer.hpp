@@ -25,7 +25,7 @@
 // The table itself is built by the CPU (Scene::buildRaymarchTable) on a debounce
 // and uploaded here only when its revision differs from the slot's revision.
 // The table buffers are allocated on the first upload: the mode is off by
-// default, so paying ~64 MB per frame slot at startup would be wasteful.
+// default, so paying ~48 MB per frame slot at startup would be wasteful.
 //
 // Synchronization: upload() is called from MyApp::update(), which runs after
 // the frame-slot fence wait (VulkanApp::drawFrame). The slot's previous GPU
@@ -38,7 +38,7 @@ class OctreeRaymarchRenderer : public Renderer {
 public:
     static constexpr uint32_t RAYMARCH_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
 
-    // Hard CPU-side cap: 524288 nodes * 128 B = 64 MB per frame slot (192 MB
+    // Hard CPU-side cap: 524288 nodes * 96 B = 48 MiB per frame slot (144 MiB
     // for the three slots, allocated only once the mode is enabled). The
     // default procedural scene's terrain tree (solid + water) is larger than
     // this, so the breadth-first walk stores the shallow levels whole and

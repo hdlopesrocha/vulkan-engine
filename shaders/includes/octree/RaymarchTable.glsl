@@ -9,7 +9,7 @@
 // needs for absent children (see RaymarchNodeRecord.glsl for the flag layout).
 //
 // The record itself lives in RaymarchNodeRecord.glsl so the once-per-revision
-// payload derive pass (OctreeDerive.comp) declares the same 128-byte layout.
+// payload derive pass (OctreeDerive.comp) declares the same 96-byte layout.
 // std430 is sufficient here: the node record consists only of vec4/ivec4 and
 // the root record only of 4-byte scalars followed by two vec4s, so the scalar
 // and std430 layouts are byte-identical and the shader does not depend on the
@@ -47,9 +47,15 @@ const int RM_TYPE_SOLID = 2;
 // no SDF data is skipped by the interpolation, exactly like OctreeTriangles.comp.
 #define RM_INF (uintBitsToFloat(0x7F800000u))
 
+// Compact child header: stored Surface children are contiguous from
+// meta.y (childBase), hsv1.w is the 8-bit presence mask. Slot s resolves to
+// childBase + bitCount(mask & ((1 << s) - 1)), which is the popcount of the
+// present slots below s. bitCount() is core GLSL 4.0.
 int rmNodeChild(uint id, int slot) {
-    ivec4 c = (slot < 4) ? rmNodes[id].child03 : rmNodes[id].child47;
-    return c[slot & 3];
+    uint mask = uint(rmNodes[id].hsv1.w + 0.5);
+    if ((mask & (1u << slot)) == 0u) return -1;
+    uint base = uint(rmNodes[id].meta.y);
+    return int(base + bitCount(mask & ((1u << slot) - 1u)));
 }
 
 bool rmNodeIsLeaf(uint id) { return (rmNodes[id].meta.w & int(RM_FLAG_LEAF)) != 0; }
