@@ -752,13 +752,14 @@ float rmCellDepth(uint rootNode, uint node) {
 // Hit acceptance (raster-parity visibility rules).
 //   Solid: back-face culling (the raster solid pipeline culls back faces) and
 //          DISCARD_BRUSH_INDEX cells are not surfaces at all.
-//   Water: the NormalBrush-filtered layer is the +Y water surface. Accept the
-//          top plane from either side (the raster water back-face pass renders
-//          the underside when the camera is underwater), but reject the water
-//          volume's vertical/bottom faces. Those are the NormalBrush discards
-//          and are what used to appear as water walls/backfaces.
+//   Water: the NormalBrush layer defines a water volume, so BOTH the top and
+//          bottom water faces are visible (the raster water back-face pass
+//          renders the underside when the camera is underwater). Accept
+//          horizontal faces with either sign of n.y; reject the near-vertical
+//          volume sides, which are the NormalBrush discards that used to
+//          appear as water walls.
 bool rmHitAllowed(uint node, vec3 p, vec3 rd, int material, bool waterRoot) {
-    if (waterRoot) return normalize(rmNodeNormal(node, p)).y > 0.0;
+    if (waterRoot) return abs(normalize(rmNodeNormal(node, p)).y) > 1.0e-3;
     if (material == RAYMARCH_DISCARD_BRUSH) return false;
     return dot(normalize(rmNodeNormal(node, p)), rd) < 0.0;
 }
