@@ -12,8 +12,9 @@
 //   roughnessEnabled 384, ambientOcclusionEnabled 388, tessNearDist 392,
 //   tessFarDist 396, tessellationFactor 400, isShadowPass 404,
 //   tessellationEnabled 408, nearPlane 412, farPlane 416,
-//   brushTextureIndex 420, brushMode 424, brushPhase 428, brushHsv 432.
-// 444..448 is std140 block-size rounding.
+//   brushTextureIndex 420, brushMode 424, brushPhase 428, brushHsv 432,
+//   raymarchScreenEps 444 (occupies the former std140 tail padding).
+// Block size stays 448.
 // Flags are uint (compare with == 0u / != 0u); debugMode is int.
 struct UniformObject {
     mat4 viewProjection;        // offset   0
@@ -44,6 +45,7 @@ struct UniformObject {
     uint brushMode;             // offset 424
     float brushPhase;           // offset 428
     vec3 brushHsv;              // offset 432
+    float raymarchScreenEps;    // offset 444  octree raymarch SS hit tolerance (px, 0 = off)
 };
 
 #endif // UNIFORM_OBJECT_GLSL

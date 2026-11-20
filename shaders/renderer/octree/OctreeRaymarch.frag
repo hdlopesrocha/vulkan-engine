@@ -149,8 +149,18 @@ const int RM_MAX_STACK = 16;
 const int RM_MAX_ROOTS = 16;
 const int RM_BISECT_STEPS = 7;
 
-float rmHitEpsilon(float nodeSize) {
-    return max(nodeSize * 2.0e-3, 1.0e-4);
+// Distance-adaptive hit tolerance. The node epsilon is the base floor; with a
+// screen-space tolerance enabled the band widens with the world size of one
+// pixel at the sample distance, so distant and grazing rays stop as soon as
+// the crossing is sub-pixel instead of over-resolving it. One pixel's world
+// size at distance t is 2*tan(fovy/2)/height * t; viewProjection[1][1] holds
+// 1/tan(fovy/2) (pc.viewport is the solid target extent in pixels).
+float rmHitEpsilon(float nodeSize, float t) {
+    float eps = max(nodeSize * 2.0e-3, 1.0e-4);
+    float px = ubo.raymarchScreenEps;
+    if (px <= 0.0) return eps;
+    float pixelAngle = 2.0 / max(abs(ubo.viewProjection[1][1]) * max(pc.viewport.y, 1.0), 1e-6);
+    return max(eps, px * max(t, 0.0) * pixelAngle);
 }
 
 // Resolve a node's shading material at a given QEF position. Shared by the
@@ -244,6 +254,32 @@ float rmField(uint id, vec3 p, int material, out float base, out float maxDisp) 
     if (!m.mappingEnabled) return base;
     maxDisp = 0.5 * abs(m.tessHeightScale);
     return base - rmDisplacement(id, material, p);
+}
+
+// Secant refinement of a hit accepted inside the (possibly screen-space
+// widened) tolerance band. The march only knows the last two field samples of
+// the same node, prevT/dPrev and t/d, which bracket the crossing when the band
+// is wider than the step; a short secant iteration recovers the sub-band
+// crossing, clamped to the band so the hit can never leave it. Only called
+// when the screen-space tolerance is active; the plain node epsilon keeps the
+// historical acceptance at the sampled t.
+float rmRefineHit(uint node, vec3 ro, vec3 rd, int material,
+                  float tPrev, float dPrev, float t, float d, float eps) {
+    if (!(tPrev < t) || !(abs(t - tPrev) > 1e-8) || abs(dPrev) <= eps) return t;
+    float t0 = tPrev, f0 = dPrev;
+    float t1 = t, f1 = d;
+    for (int i = 0; i < 2; ++i) {
+        float den = f1 - f0;
+        if (abs(den) < 1e-12) break;
+        float tn = clamp(t1 - f1 * (t1 - t0) / den, min(t0, t1), max(t0, t1));
+        tn = clamp(tn, t - eps, t + eps);   // never move off the hit band
+        float bBase, bMax;
+        float fn = rmField(node, ro + rd * tn, material, bBase, bMax);
+        if (isnan(fn)) break;
+        t0 = t1; f0 = f1; t1 = tn; f1 = fn;
+        if (abs(f1) < 1e-6) break;
+    }
+    return clamp(t1, t - eps, t + eps);
 }
 
 // Tessellation level the raster TCS would request for this material at this
@@ -743,6 +779,13 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
     float cachedBase = 0.0;
     float cachedMaxDisp = 0.0;
 
+    // Previous accepted sample of the CURRENT node, for the secant refinement
+    // of a hit accepted inside a screen-space-widened tolerance band. Reset on
+    // every discard path so a stale bracket is never reused.
+    uint prevNode = 0xFFFFFFFFu;
+    float prevT = -1.0;
+    float prevD = 0.0;
+
     for (int iter = 0; iter < RM_MAX_STEPS; ++iter) {
         // An earlier root already found a nearer hit: this march cannot
         // improve it and every candidate from here on is behind tMax.
@@ -851,16 +894,24 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
             d = rmField(node, p, material, baseD, maxDisp);
         }
         if (isnan(d)) d = 1.0; // defensive: never let a bad sample freeze the march
-        float eps = rmHitEpsilon(nodeSize);
+        float eps = rmHitEpsilon(nodeSize, t);
 
         if (abs(d) <= eps) {
             if (keepDiscardHits || material != RAYMARCH_DISCARD_BRUSH) {
+                // Screen-space tolerance: the accepted sample can sit up to
+                // `eps` (a few pixels at distance) before the true crossing.
+                // Refine with the secant of the two same-node samples that
+                // bracket it, clamped to the band.
+                float tHit = t;
+                if (ubo.raymarchScreenEps > 0.0 && prevNode == node)
+                    tHit = rmRefineHit(node, ro, rd, material, prevT, prevD, t, d, eps);
                 hitNode = node;
-                hitT = t;
+                hitT = tHit;
                 hitBrush = material;
                 return true;
             }
             t += eps;
+            prevNode = 0xFFFFFFFFu;
             continue;
         }
 
@@ -925,6 +976,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
                 return true;
             }
             t = tHit + eps;
+            prevNode = 0xFFFFFFFFu;
             continue;
         }
 
@@ -933,6 +985,10 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
         cachedD = dNext;
         cachedBase = dNextBase;
         cachedMaxDisp = dNextMax;
+        // Bracket endpoint for the next iteration's hit refinement.
+        prevNode = node;
+        prevT = t;
+        prevD = d;
         t = tNext;
     }
     return false;

@@ -1907,6 +1907,8 @@ public:
         uboStatic.tessellationFactor = settings.tessellationFactor;
         uboStatic.isShadowPass = 0u;
         uboStatic.tessellationEnabled = settings.tessellationEnabled ? 1u : 0u;
+        // Screen-space octree raymarch hit tolerance (0 = off, see Settings).
+        uboStatic.raymarchScreenEps = settings.octreeRaymarchScreenEps;
         uboStatic.nearPlane = settings.nearPlane;
         uboStatic.farPlane = settings.farPlane;
         uboStatic.normalMappingEnabled = settings.normalMappingEnabled ? 1u : 0u;
