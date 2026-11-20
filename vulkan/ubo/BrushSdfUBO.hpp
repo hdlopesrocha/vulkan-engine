@@ -25,6 +25,7 @@
 //                z = material index (texture array layer), w = sweepMode
 //   xHsv       : xyz = paint tint HSV
 //   xViewport  : xy = target size in pixels (ray reconstruction)
+//   xBevel     : x = current tetra edge bevel (world units), y = target
 struct BrushSdfUBO {
     glm::vec4  translate   = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
     glm::vec4  scale       = glm::vec4(1.0f);
@@ -48,7 +49,10 @@ struct BrushSdfUBO {
     glm::vec4  targetParams1   = glm::vec4(0.0f);
     glm::vec4  targetSweepStart= glm::vec4(0.0f);
     glm::uvec4 targetFlags     = glm::uvec4(0u); // x=sdfType, w=sweep
+    // Sample-scale edge bevel for the tetrahedron (sdfType 11), matching the
+    // CPU TetrahedronDistanceFunction: x = current placement, y = target.
+    glm::vec4  bevel           = glm::vec4(0.0f);
 };
 
-static_assert(sizeof(BrushSdfUBO) == 20 * 16,
-              "BrushSdfUBO must match the std140 GLSL block layout (20 x vec4)");
+static_assert(sizeof(BrushSdfUBO) == 21 * 16,
+              "BrushSdfUBO must match the std140 GLSL block layout (21 x vec4)");

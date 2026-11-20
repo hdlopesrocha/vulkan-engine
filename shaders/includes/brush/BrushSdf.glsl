@@ -17,6 +17,9 @@
 //     of perlin-at-lattice; same cell structure, deterministic and cheap.
 //   * Pyramid and tetrahedron are evaluated from the same world-space face
 //     triangles and outward normals as the CPU (non-uniform scale included).
+//   * The tetrahedron additionally bevels its edges by the sample-scale amount
+//     in xBevel (CPU TetrahedronDistanceFunction parity), so the trilinear
+//     octree field can resolve the silhouette without stair-stepping.
 //   * SVG extrusion (sdfType 10) is CPU-only: the contour stream is not part
 //     of this UBO, so the preview uses the tapered-capsule fallback.
 // Layout must stay in sync with vulkan/ubo/BrushSdfUBO.hpp.
@@ -42,6 +45,7 @@ layout(std140, set = 1, binding = 0) uniform BrushSdfBlock {
     vec4  xTargetParams1;
     vec4  xTargetSweepStart;
     uvec4 xTargetFlags;  // x = sdfType, w = sweepMode
+    vec4  xBevel;        // x = current tetra bevel, y = target tetra bevel
 } brush;
 
 // ── Transform helpers (CPU parity: inverse(quat) * (p - translate)) ─────────
@@ -184,10 +188,14 @@ float brushSdPyramidWorld(vec3 p, vec3 xlate, vec3 s, vec4 rot) {
     return inside ? -dist : dist;
 }
 
-// Exact world-space regular-tetrahedron SDF (CPU TetrahedronDistanceFunction).
-// The four vertices are on the unit sphere, so the model sphere bound is
-// |scale| as well.
-float brushSdTetrahedronWorld(vec3 p, vec3 xlate, vec3 s, vec4 rot) {
+// Exact face-plane tetrahedron with an optional sampling-scale edge bevel.
+// The four face planes are always exact. A positive `bevel` moves each plane
+// inward by that amount and offsets the resulting tetrahedron's distance by
+// +bevel: faces stay on their original planes and the six edges (and four
+// vertices) get a C1 bevel of radius `bevel`. This is the GPU twin of the CPU
+// TetrahedronDistanceFunction; the bevel lets the octree's trilinear cell
+// field resolve the silhouette instead of scalloping a sharp edge.
+float brushSdTetrahedronWorld(vec3 p, vec3 xlate, vec3 s, vec4 rot, float bevel) {
     // Conventional base-anchored regular tetrahedron: equilateral base on
     // y=0, apex at y=1, base circumradius 1/sqrt(2).
     const float r = 0.70710678;
@@ -198,6 +206,41 @@ float brushSdTetrahedronWorld(vec3 p, vec3 xlate, vec3 s, vec4 rot) {
     vec3 v3 = brushModelVertex(vec3( r3, 0.0, -0.5 * r), xlate, s, rot);
     vec3 geoCenter = (v0 + v1 + v2 + v3) * 0.25;
 
+    vec3 n0 = normalize(cross(v1 - v0, v2 - v0));
+    vec3 n1 = normalize(cross(v2 - v0, v3 - v0));
+    vec3 n2 = normalize(cross(v3 - v0, v1 - v0));
+    vec3 n3 = normalize(cross(v2 - v1, v3 - v1));
+    if (dot(n0, geoCenter - v0) > 0.0) n0 = -n0;
+    if (dot(n1, geoCenter - v0) > 0.0) n1 = -n1;
+    if (dot(n2, geoCenter - v0) > 0.0) n2 = -n2;
+    if (dot(n3, geoCenter - v1) > 0.0) n3 = -n3;
+    float c0 = dot(n0, v0), c1 = dot(n1, v0), c2 = dot(n2, v0), c3 = dot(n3, v1);
+    // Keep the inset tetrahedron well-conditioned for flat/non-uniform
+    // transforms, matching the CPU inradius clamp.
+    float inradius = min(min(-dot(geoCenter - v0, n0), -dot(geoCenter - v0, n1)),
+                         min(-dot(geoCenter - v0, n2), -dot(geoCenter - v1, n3)));
+    bevel = min(bevel, 0.35 * max(inradius, 0.0));
+
+    if (bevel > 0.0) {
+        // Inset vertex v is the intersection of the three inset face planes
+        // incident to v. The normals are rows of the system, so transpose the
+        // GLM/GLSL column-major mat3.
+        mat3 A0 = transpose(mat3(n0, n1, n2));
+        mat3 A1 = transpose(mat3(n0, n2, n3));
+        mat3 A2 = transpose(mat3(n0, n1, n3));
+        mat3 A3 = transpose(mat3(n1, n2, n3));
+        float det = min(min(abs(determinant(A0)), abs(determinant(A1))),
+                        min(abs(determinant(A2)), abs(determinant(A3))));
+        if (det > 1e-8) {
+            v0 = inverse(A0) * vec3(c0 - bevel, c1 - bevel, c2 - bevel);
+            v1 = inverse(A1) * vec3(c0 - bevel, c2 - bevel, c3 - bevel);
+            v2 = inverse(A2) * vec3(c0 - bevel, c1 - bevel, c3 - bevel);
+            v3 = inverse(A3) * vec3(c1 - bevel, c2 - bevel, c3 - bevel);
+        } else {
+            bevel = 0.0;
+        }
+    }
+
     float d0 = brushSdTriangle(p, v0, v1, v2);
     float d1 = brushSdTriangle(p, v0, v2, v3);
     float d2 = brushSdTriangle(p, v0, v3, v1);
@@ -205,18 +248,18 @@ float brushSdTetrahedronWorld(vec3 p, vec3 xlate, vec3 s, vec4 rot) {
     float dist = min(min(d0, d1), min(d2, d3));
 
     bool inside =
-        brushFaceInside(p, v0, v1, v2, geoCenter) &&
-        brushFaceInside(p, v0, v2, v3, geoCenter) &&
-        brushFaceInside(p, v0, v3, v1, geoCenter) &&
-        brushFaceInside(p, v1, v2, v3, geoCenter);
-    return inside ? -dist : dist;
+        dot(p - v0, n0) <= 0.0 &&
+        dot(p - v0, n1) <= 0.0 &&
+        dot(p - v0, n2) <= 0.0 &&
+        dot(p - v1, n3) <= 0.0;
+    return (inside ? -dist : dist) - bevel;
 }
 
 // ── Primitive dispatch (sdfType → local-space field) ────────────────────────
 // `xlate` is the primitive's own world translate so the sweep path can
 // evaluate the START placement with the same routine.
 float brushPrimitiveAt(vec3 p, vec3 xlate, vec3 scale, vec4 rot,
-                       uint type, vec4 params0, vec4 params1) {
+                       uint type, vec4 params0, vec4 params1, float bevel) {
     vec3 pos = brushRotateInv(p - xlate, rot);
     vec3 s = max(abs(scale), vec3(1e-6));
     float minS = min(min(s.x, s.y), s.z);
@@ -239,8 +282,8 @@ float brushPrimitiveAt(vec3 p, vec3 xlate, vec3 scale, vec4 rot,
         return brushSdCylinder(pos / s, 0.5, 1.0) * minS;
     } else if (type == 8u) {   // Tapered cylinder
         return brushSdTaperedCylinder(pos / s, params0.x, params0.y, 0.5) * minS;
-    } else if (type == 11u) {  // Tetrahedron (exact world-space convex SDF)
-        return brushSdTetrahedronWorld(p, xlate, s, rot);
+    } else if (type == 11u) {  // Tetrahedron (exact face planes, sampled-scale edge bevel)
+        return brushSdTetrahedronWorld(p, xlate, s, rot, bevel);
     }                          // 9 = Tapered capsule, 10 = SVG (unsupported preview)
     return brushSdTaperedCapsule(pos / s, params0.xyz, params1.xyz, params0.w, params1.w) * minS;
 }
@@ -250,29 +293,29 @@ float brushPrimitiveAt(vec3 p, vec3 xlate, vec3 scale, vec4 rot,
 // START placement at the point offset from the start center.
 float brushRawDistanceShape(vec3 p, vec3 translate, vec3 sweepStart,
                            vec3 scale, vec4 rot, uint type,
-                           vec4 params0, vec4 params1, bool sweep)
+                           vec4 params0, vec4 params1, bool sweep, float bevel)
 {
     if (!sweep) {
-        return brushPrimitiveAt(p, translate, scale, rot, type, params0, params1);
+        return brushPrimitiveAt(p, translate, scale, rot, type, params0, params1, bevel);
     }
     vec3 posA = sweepStart;
     vec3 posB = translate;
     vec3 seg = posB - posA;
     float segLenSq = dot(seg, seg);
     if (segLenSq < 1e-8) {
-        return brushPrimitiveAt(p, posB, scale, rot, type, params0, params1);
+        return brushPrimitiveAt(p, posB, scale, rot, type, params0, params1, bevel);
     }
     float t = clamp(dot(p - posA, seg) / segLenSq, 0.0, 1.0);
     vec3 closest = posA + t * seg;
     vec3 q = posA + brushRotate(brushRotateInv(p - closest, rot), rot);
-    return brushPrimitiveAt(q, posA, scale, rot, type, params0, params1);
+    return brushPrimitiveAt(q, posA, scale, rot, type, params0, params1, bevel);
 }
 
 float brushRawDistance(vec3 p) {
     return brushRawDistanceShape(p, brush.xTranslate.xyz, brush.xSweepStart.xyz,
                                  brush.xScale.xyz, brush.xRotation, brush.xFlags.x,
                                  brush.xParams0, brush.xParams1,
-                                 brush.xFlags.w != 0u);
+                                 brush.xFlags.w != 0u, brush.xBevel.x);
 }
 
 // Target operand for two-SDF interpolation. Its effect parameters are unused:
@@ -282,7 +325,8 @@ float brushTargetRawDistance(vec3 p) {
                                  brush.xTargetSweepStart.xyz,
                                  brush.xTargetScale.xyz, brush.xTargetRotation,
                                  brush.xTargetFlags.x, brush.xTargetParams0,
-                                 brush.xTargetParams1, brush.xTargetFlags.w != 0u);
+                                 brush.xTargetParams1, brush.xTargetFlags.w != 0u,
+                                 brush.xBevel.y);
 }
 
 // Raw field used by the effect path: source field, or the blended source/target
