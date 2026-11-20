@@ -18,16 +18,18 @@
 //
 // The node table (utils/OctreeRaymarchTable.hpp) stores SURFACE cells only,
 // flattened breadth-first per enabled terrain layer. Each layer contributes one
-// root entry covering a cube; roots are marched independently and the nearest
-// hit wins, so solid and water surfaces occlude each other correctly in one
-// pass. Non-surface children are not stored: their SpaceType is packed in
-// the parent so Empty children (all corners outside) and Solid children (all
-// corners inside) are both skipped — by construction the unbumped isosurface
-// cannot cross either. Only node-cap-pruned Surface children fall back to the
-// parent's trilinear field. With tessellation displacement active the skip is
-// suspended: the bump (below) can move the surface across a child border, so
-// those children are sampled through the parent field to keep the marched
-// surface continuous with the displaced raster triangles.
+// root entry with the root's conservative surface AABB; roots are sorted by
+// AABB entry, marched front to back and each later march is clamped to the
+// nearest hit so far. The nearest hit wins, so solid and water surfaces occlude
+// each other correctly in one pass. Non-surface children are not stored: their
+// SpaceType is packed in the parent so Empty children (all corners outside) and
+// Solid children (all corners inside) are both skipped — by construction the
+// unbumped isosurface cannot cross either. Only node-cap-pruned Surface
+// children fall back to the parent's trilinear field. With tessellation
+// displacement active the skip is suspended: the bump (below) can move the
+// surface across a child border, so those children are sampled through the
+// parent field to keep the marched surface continuous with the displaced
+// raster triangles.
 //
 // Tessellation parity: the raster TES displaces every tessellated vertex along
 // its smooth cell normal by (height - 0.5) * tessHeightScale. The march folds
@@ -137,6 +139,11 @@ const int RM_MAX_STEPS = 1024;
 // truncates deeper levels); 16 leaves margin without paying for a 40-entry
 // per-invocation scratch stack.
 const int RM_MAX_STACK = 16;
+// Root-interval sort budget. The layer list is two roots in practice; 16
+// covers every realistic scene without turning the per-invocation interval
+// array into a large scratch allocation. Roots past this budget keep the
+// unsorted fallback loop.
+const int RM_MAX_ROOTS = 16;
 const int RM_BISECT_STEPS = 7;
 
 float rmHitEpsilon(float nodeSize) {
@@ -689,14 +696,19 @@ float rmCellDepth(uint rootNode, uint node) {
     return clamp(log2(rootSize / max(nodeSize, 1e-8)) / 16.0, 0.0, 1.0);
 }
 
-// March one layer root. Adaptive descent: the ray is confined to the current
-// cell's [t, nodeExit] interval and follows stored Surface children. Empty and
-// Solid children are skipped (neither can contain an isosurface crossing);
-// only node-cap-pruned Surface children fall back to the parent trilinear
-// field. Within a cell the field is sphere-traced with a 0.5 safety factor and
-// a sign-change bisection refines the crossing. Discarded (underground / -Y
-// NormalBrush) surfaces are skipped and the march continues.
-bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
+// March one layer root, stopping at tMax. Adaptive descent: the ray is
+// confined to the current cell's [t, nodeExit] interval and follows stored
+// Surface children. Empty and Solid children are skipped (neither can contain
+// an isosurface crossing); only node-cap-pruned Surface children fall back to
+// the parent trilinear field. Within a cell the field is sphere-traced with a
+// 0.5 safety factor and a sign-change bisection refines the crossing.
+// Discarded (underground / -Y NormalBrush) surfaces are skipped and the march
+// continues. tMax is the nearest hit already found by an earlier root: it
+// clamps the root box exit and aborts the loop as soon as the ray reaches it,
+// so a root ordered behind a hit costs only its AABB test. Exact: the caller
+// only passes a hit distance produced by the same field, and a first crossing
+// at or beyond it can never be the nearest.
+bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
                  out uint hitNode, out float hitT, out int hitBrush,
                  bool keepDiscardHits) {
     // Hoist the three direction reciprocals: every non-leaf iteration tests a
@@ -704,6 +716,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
     vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
     float t0, t1;
     if (!rmRayBoxInv(rmNodeMin(root), rmNodeSize(root), ro, invRd, t0, t1)) return false;
+    t1 = min(t1, tMax);
     float t = max(t0, 0.0);
     if (t >= t1) return false;
 
@@ -726,6 +739,9 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
     float cachedMaxDisp = 0.0;
 
     for (int iter = 0; iter < RM_MAX_STEPS; ++iter) {
+        // An earlier root already found a nearer hit: this march cannot
+        // improve it and every candidate from here on is behind tMax.
+        if (t >= tMax) return false;
         // Left the current cell: resume the parent (or stop at the root).
         if (t >= nodeExit) {
             if (depth == 0) return false;
@@ -977,6 +993,32 @@ void rmWriteFragGlobals(vec3 hitPos, RmHitShading h) {
     fragTessLevel = vec3(rmTessLevel(h.blendCell, rmCachedBrush(h.blendCell), h.basePos));
 }
 
+// Front-to-back root scheduling shared by the primary march and the water
+// lobes. Each entry is the root's ray interval entry parameter; sorting by
+// entry lets a root behind an already-found hit be skipped without marching
+// it. The surface AABB (not the whole layer cube) is a conservative bound on
+// every point the root march can sample, so a missed or behind-origin box
+// cannot hide a crossing.
+struct RmRootInterval {
+    uint root;
+    float t0;
+};
+
+// Stable insertion into the ascending-t0 list: roots with the same entry keep
+// their table order, so exact ties select the same root as the old unsorted
+// loop.
+void rmInsertRootInterval(inout RmRootInterval iv[RM_MAX_ROOTS],
+                          inout int count, uint root, float t0) {
+    int j = count;
+    while (j > 0 && iv[j - 1].t0 > t0) {
+        iv[j] = iv[j - 1];
+        --j;
+    }
+    iv[j].root = root;
+    iv[j].t0 = t0;
+    ++count;
+}
+
 // Nearest hit among the SOLID layer roots only. The water refraction path uses
 // it to reach the lake bed behind the water surface (the primary march stops
 // at the water layer).
@@ -987,12 +1029,52 @@ bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
     hitNode = 0u;
     hitBrush = RAYMARCH_DISCARD_BRUSH;
     bool found = false;
-    for (uint i = 0u; i < pc.rootCount; ++i) {
+    // Hoist the reciprocals once: every root AABB test below reuses them.
+    vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
+
+    RmRootInterval iv[RM_MAX_ROOTS];
+    int ivCount = 0;
+    const uint sortedRoots = min(pc.rootCount, uint(RM_MAX_ROOTS));
+    for (uint i = 0u; i < sortedRoots; ++i) {
         if (rmRoots[i].kind != 0u) continue;
+        float t0, t1;
+        if (!rmRayBoxInv(rmRoots[i].surfaceMin.xyz,
+                         rmRoots[i].surfaceMax.xyz - rmRoots[i].surfaceMin.xyz,
+                         ro, invRd, t0, t1)) continue;
+        rmInsertRootInterval(iv, ivCount, i, t0);
+    }
+
+    // Front to back: the first root whose entry is at or behind the nearest
+    // hit cannot contribute, and every march stops at that hit.
+    for (int k = 0; k < ivCount; ++k) {
+        if (iv[k].t0 >= hitT) break;
+        const uint i = iv[k].root;
         uint node;
         float t;
         int brush;
-        if (rmMarchRoot(rmRoots[i].node, ro, rd, node, t, brush, false) && t < hitT) {
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, hitT, node, t, brush, false) &&
+            t < hitT) {
+            hitT = t;
+            hitNode = node;
+            hitRoot = i;
+            hitBrush = brush;
+            found = true;
+        }
+    }
+
+    // Roots past the sorting budget keep the old unsorted order (still with
+    // the surface-AABB rejection and the nearest-hit clamp).
+    for (uint i = sortedRoots; i < pc.rootCount; ++i) {
+        if (rmRoots[i].kind != 0u) continue;
+        float t0, t1;
+        if (!rmRayBoxInv(rmRoots[i].surfaceMin.xyz,
+                         rmRoots[i].surfaceMax.xyz - rmRoots[i].surfaceMin.xyz,
+                         ro, invRd, t0, t1)) continue;
+        uint node;
+        float t;
+        int brush;
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, hitT, node, t, brush, false) &&
+            t < hitT) {
             hitT = t;
             hitNode = node;
             hitRoot = i;
@@ -1201,16 +1283,55 @@ void main() {
     vec3 rd = normalize(farPoint.xyz / farPoint.w - ro);
 
     // Nearest hit across every visible terrain layer root (Solid + Water).
+    // Roots are ordered by surface-AABB entry, so the first hit found clamps
+    // every later march. The AABB bounds all sampled surface points (see
+    // LocalScene::buildRaymarchTable), so rejecting a missed root or stopping
+    // behind a hit cannot skip geometry.
     float nearestT = 1.0e30;
     uint nearestNode = 0u;
     uint nearestRoot = 0u;
     int nearestBrush = RAYMARCH_DISCARD_BRUSH;
     bool found = false;
-    for (uint i = 0u; i < pc.rootCount; ++i) {
+    vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
+
+    RmRootInterval iv[RM_MAX_ROOTS];
+    int ivCount = 0;
+    const uint sortedRoots = min(pc.rootCount, uint(RM_MAX_ROOTS));
+    for (uint i = 0u; i < sortedRoots; ++i) {
+        float t0, t1;
+        if (!rmRayBoxInv(rmRoots[i].surfaceMin.xyz,
+                         rmRoots[i].surfaceMax.xyz - rmRoots[i].surfaceMin.xyz,
+                         ro, invRd, t0, t1)) continue;
+        rmInsertRootInterval(iv, ivCount, i, t0);
+    }
+
+    for (int k = 0; k < ivCount; ++k) {
+        if (iv[k].t0 >= nearestT) break;
+        const uint i = iv[k].root;
         uint node;
         float t;
         int brush;
-        if (rmMarchRoot(rmRoots[i].node, ro, rd, node, t, brush,
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, nearestT, node, t, brush,
+                        rmRoots[i].kind == 1u) && t < nearestT) {
+            nearestT = t;
+            nearestNode = node;
+            nearestRoot = i;
+            nearestBrush = brush;
+            found = true;
+        }
+    }
+
+    // Roots past the sorting budget keep the old unsorted order (still with
+    // the surface-AABB rejection and the nearest-hit clamp).
+    for (uint i = sortedRoots; i < pc.rootCount; ++i) {
+        float t0, t1;
+        if (!rmRayBoxInv(rmRoots[i].surfaceMin.xyz,
+                         rmRoots[i].surfaceMax.xyz - rmRoots[i].surfaceMin.xyz,
+                         ro, invRd, t0, t1)) continue;
+        uint node;
+        float t;
+        int brush;
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, nearestT, node, t, brush,
                         rmRoots[i].kind == 1u) && t < nearestT) {
             nearestT = t;
             nearestNode = node;

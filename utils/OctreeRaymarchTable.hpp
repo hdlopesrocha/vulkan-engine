@@ -33,18 +33,25 @@ static_assert(sizeof(OctreeRaymarchNode) == 128,
               "std430 RaymarchNode in RaymarchTable.glsl");
 
 // One rendered layer root: the node index the shader starts from plus the
-// layer's stable id and renderer kind. The id feeds the debug view's per-layer
-// hue; `kind` selects the shading branch at a hit (0 = solid surface shading,
-// 1 = water surface shading) so one march covers every terrain layer.
+// layer's stable id, renderer kind and conservative surface AABB. The id feeds
+// the debug view's per-layer hue; `kind` selects the shading branch at a hit
+// (0 = solid surface shading, 1 = water surface shading) so one march covers
+// every terrain layer. The AABB bounds every surface point the root march can
+// sample (union of the stored surface cells, not the whole layer cube), so the
+// shader can reject a root or clamp the root's ray interval without ever
+// eliding a crossing. `surfaceMin.w`/`surfaceMax.w` are unused padding.
 struct OctreeRaymarchRoot {
     uint32_t nodeIndex = 0;
     int32_t layerId = -1;
     uint32_t kind = 0; // 0 = Solid, 1 = Water (LayerRendererType)
+    uint32_t pad = 0;
+    glm::vec4 surfaceMin = glm::vec4(0.0f); // xyz = surface AABB min
+    glm::vec4 surfaceMax = glm::vec4(0.0f); // xyz = surface AABB max
 };
 
-static_assert(sizeof(OctreeRaymarchRoot) == 12,
-              "OctreeRaymarchRoot must match the std430 RaymarchRoot in "
-              "RaymarchTable.glsl");
+static_assert(sizeof(OctreeRaymarchRoot) == 48,
+              "OctreeRaymarchRoot must stay 48 bytes (4 x 4 B + 2 x vec4) to "
+              "match the std430 RaymarchRoot in RaymarchTable.glsl");
 
 // CPU-side owner of one raymarch table revision. The owner (MyApp) rebuilds it
 // on a debounce and hands it to OctreeRaymarchRenderer, which uploads the same
@@ -71,9 +78,10 @@ public:
     void setChildType(uint32_t parent, int slot, uint32_t type);
 
     std::vector<OctreeRaymarchNode> nodes;
-    // Root entry per rendered layer (node index + stable Layer::Id). The
-    // shader ray-boxes each root cube and keeps the nearest hit across all of
-    // them; the id feeds the per-layer debug tint.
+    // Root entry per rendered layer (node index + stable Layer::Id + surface
+    // AABB). The shader sorts the roots by AABB entry, marches them front to
+    // back and clamps every later march to the nearest hit so far; the id
+    // feeds the per-layer debug tint.
     std::vector<OctreeRaymarchRoot> layerRoots;
     // Monotonic revision. Bumped by the owner on every rebuild (including an
     // empty result) so stale per-slot uploads are cleared.

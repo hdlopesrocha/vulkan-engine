@@ -592,6 +592,27 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
             storedInfNodes += anyInf ? 1u : 0u;
         }
 
+        // Conservative surface AABB for this layer: the union of every stored
+        // Surface cell cube. The layer root cube is deliberately excluded
+        // because it spans the whole domain and would make the AABB test
+        // useless; it is only the fallback when the root has no stored surface
+        // child (root-only/empty layer). A pruned Surface child is added too:
+        // the shader samples the parent's field over that child cell, so its
+        // cube is still reachable geometry even though it has no table entry.
+        glm::vec3 surfaceMin(0.0f);
+        glm::vec3 surfaceMax(0.0f);
+        bool haveSurfaceCube = false;
+        auto addSurfaceCube = [&](const BoundingCube& cube) {
+            if (!haveSurfaceCube) {
+                surfaceMin = cube.getMin();
+                surfaceMax = cube.getMax();
+                haveSurfaceCube = true;
+            } else {
+                surfaceMin = glm::min(surfaceMin, cube.getMin());
+                surfaceMax = glm::max(surfaceMax, cube.getMax());
+            }
+        };
+
         // Breadth-first: the node cap truncates the deepest level uniformly
         // across the whole tree. Surface children that do not fit are marked on
         // their parent (pruned mask) so the shader samples the parent's
@@ -646,6 +667,7 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
                 ++surfaceSeen;
                 if (out.nodes.size() >= maxNodes) {
                     out.setPrunedChild(cur.index, i);
+                    addSurfaceCube(cur.cube.getChild(i));
                     ++prunedChildren;
                     continue;
                 }
@@ -653,6 +675,7 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
                 const BoundingCube childCube = cur.cube.getChild(i);
                 const uint32_t childIndex = out.append(makeRecord(child, childCube));
                 out.setChild(cur.index, i, static_cast<int32_t>(childIndex));
+                addSurfaceCube(childCube);
                 const uint32_t depth = cur.depth + 1u;
                 maxDepth = std::max(maxDepth, depth);
                 {
@@ -664,6 +687,21 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
                 queue.push_back(PendingNode{child, childCube, childIndex, depth});
             }
         }
+
+        if (!haveSurfaceCube) {
+            // Root-only / empty surface layer: the root's own field is sampled
+            // over the whole cube, so the root cube is the tight bound we have.
+            surfaceMin = rootCube.getMin();
+            surfaceMax = rootCube.getMax();
+        }
+        OctreeRaymarchRoot& rootEntry = out.layerRoots.back();
+        rootEntry.surfaceMin = glm::vec4(surfaceMin, 0.0f);
+        rootEntry.surfaceMax = glm::vec4(surfaceMax, 0.0f);
+        std::cout << "[LocalScene] SDF raymarch surface AABB (layer " << layer->id()
+                  << " '" << layer->name() << "'): min=(" << surfaceMin.x << ", "
+                  << surfaceMin.y << ", " << surfaceMin.z << ") max=("
+                  << surfaceMax.x << ", " << surfaceMax.y << ", " << surfaceMax.z
+                  << ")" << std::endl;
     }
 
     if (out.nodes.empty()) return false;

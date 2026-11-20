@@ -13,8 +13,9 @@
 //
 // Keep the struct order/size identical to OctreeRaymarchNode (128 bytes).
 //
-// std430 is sufficient here: every member is a vec4/ivec4, so the scalar and
-// std430 layouts are byte-identical and the shader does not depend on the
+// std430 is sufficient here: the node record consists only of vec4/ivec4 and
+// the root record only of 4-byte scalars followed by two vec4s, so the scalar
+// and std430 layouts are byte-identical and the shader does not depend on the
 // optional scalarBlockLayout device feature.
 
 struct RaymarchNode {
@@ -29,11 +30,18 @@ struct RaymarchNode {
 };
 
 // Root entry: node index + stable Layer::Id + renderer kind (0 = Solid,
-// 1 = Water). Must match OctreeRaymarchRoot.
+// 1 = Water) + the layer's conservative surface AABB. The AABB bounds every
+// surface point the root march can sample (the union of the stored surface
+// cells, not the whole layer cube), so a missed AABB can be skipped and a hit
+// can clamp every later root without eliding geometry. std430 size is 48 B
+// (4 x 4 B header + 2 x vec4). Must match OctreeRaymarchRoot.
 struct RaymarchRoot {
     uint node;
     int  layerId;
     uint kind;
+    uint pad;
+    vec4 surfaceMin; // xyz = surface AABB min, w unused
+    vec4 surfaceMax; // xyz = surface AABB max, w unused
 };
 
 layout(std430, set = 2, binding = 0) readonly buffer RaymarchNodes {
@@ -126,10 +134,12 @@ float rmInvComp(float v) {
 
 // Ray/AABB entry/exit in parametric units. Returns false when the ray misses
 // the box or the box lies entirely behind the origin. `inv` is the ray
-// direction reciprocal, hoisted by callers that test more than one box.
-bool rmRayBoxInv(vec3 boxMin, float boxSize, vec3 ro, vec3 inv,
+// direction reciprocal, hoisted by callers that test more than one box. The
+// vec3-extent overload serves non-cubic boxes (the layer surface AABBs); the
+// cube overload keeps every existing call site unchanged.
+bool rmRayBoxInv(vec3 boxMin, vec3 boxSize, vec3 ro, vec3 inv,
                  out float t0, out float t1) {
-    vec3 boxMax = boxMin + vec3(boxSize);
+    vec3 boxMax = boxMin + boxSize;
     vec3 a = (boxMin - ro) * inv;
     vec3 b = (boxMax - ro) * inv;
     vec3 lo = min(a, b);
@@ -137,6 +147,11 @@ bool rmRayBoxInv(vec3 boxMin, float boxSize, vec3 ro, vec3 inv,
     t0 = max(max(lo.x, lo.y), lo.z);
     t1 = min(min(hi.x, hi.y), hi.z);
     return t1 >= max(t0, 0.0);
+}
+
+bool rmRayBoxInv(vec3 boxMin, float boxSize, vec3 ro, vec3 inv,
+                 out float t0, out float t1) {
+    return rmRayBoxInv(boxMin, vec3(boxSize), ro, inv, t0, t1);
 }
 
 bool rmRayBox(vec3 boxMin, float boxSize, vec3 ro, vec3 rd, out float t0, out float t1) {
