@@ -125,10 +125,11 @@ float rmInvComp(float v) {
 }
 
 // Ray/AABB entry/exit in parametric units. Returns false when the ray misses
-// the box or the box lies entirely behind the origin.
-bool rmRayBox(vec3 boxMin, float boxSize, vec3 ro, vec3 rd, out float t0, out float t1) {
+// the box or the box lies entirely behind the origin. `inv` is the ray
+// direction reciprocal, hoisted by callers that test more than one box.
+bool rmRayBoxInv(vec3 boxMin, float boxSize, vec3 ro, vec3 inv,
+                 out float t0, out float t1) {
     vec3 boxMax = boxMin + vec3(boxSize);
-    vec3 inv = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
     vec3 a = (boxMin - ro) * inv;
     vec3 b = (boxMax - ro) * inv;
     vec3 lo = min(a, b);
@@ -136,6 +137,11 @@ bool rmRayBox(vec3 boxMin, float boxSize, vec3 ro, vec3 rd, out float t0, out fl
     t0 = max(max(lo.x, lo.y), lo.z);
     t1 = min(min(hi.x, hi.y), hi.z);
     return t1 >= max(t0, 0.0);
+}
+
+bool rmRayBox(vec3 boxMin, float boxSize, vec3 ro, vec3 rd, out float t0, out float t1) {
+    vec3 inv = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
+    return rmRayBoxInv(boxMin, boxSize, ro, inv, t0, t1);
 }
 
 #endif // OCTREE_RAYMARCH_TABLE_GLSL

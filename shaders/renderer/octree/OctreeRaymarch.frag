@@ -133,7 +133,10 @@ const int RAYMARCH_DISCARD_BRUSH = -1;
 // 320 left visible holes wherever the budget ran out. The cost is only paid by
 // pixels that actually take that many steps.
 const int RM_MAX_STEPS = 1024;
-const int RM_MAX_STACK = 40;
+// The flattened table's measured maximum stored depth is 12 (the node cap
+// truncates deeper levels); 16 leaves margin without paying for a 40-entry
+// per-invocation scratch stack.
+const int RM_MAX_STACK = 16;
 const int RM_BISECT_STEPS = 7;
 
 float rmHitEpsilon(float nodeSize) {
@@ -696,8 +699,11 @@ float rmCellDepth(uint rootNode, uint node) {
 bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
                  out uint hitNode, out float hitT, out int hitBrush,
                  bool keepDiscardHits) {
+    // Hoist the three direction reciprocals: every non-leaf iteration tests a
+    // child box, and rmInvComp is a division.
+    vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
     float t0, t1;
-    if (!rmRayBox(rmNodeMin(root), rmNodeSize(root), ro, rd, t0, t1)) return false;
+    if (!rmRayBoxInv(rmNodeMin(root), rmNodeSize(root), ro, invRd, t0, t1)) return false;
     float t = max(t0, 0.0);
     if (t >= t1) return false;
 
@@ -707,6 +713,17 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
 
     uint node = root;
     float nodeExit = t1;
+
+    // Carry-forward sample. The loop evaluates the field at t and then at
+    // t+dt; on the next iteration it would evaluate the same node at the same
+    // t again. Reuse that exact value when neither the node nor the parameter
+    // changed. The cache is invocation-local registers, so it needs no
+    // invalidation beyond the equality test.
+    uint cachedNode = 0xFFFFFFFFu;
+    float cachedT = -1.0;
+    float cachedD = 0.0;
+    float cachedBase = 0.0;
+    float cachedMaxDisp = 0.0;
 
     for (int iter = 0; iter < RM_MAX_STEPS; ++iter) {
         // Left the current cell: resume the parent (or stop at the root).
@@ -754,7 +771,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
             // strictly inside the cell, so the slab test is well defined even
             // when the un-nudged ray sits on a face.
             float c0, c1;
-            if (rmRayBox(childMin, childSize, pn, rd, c0, c1) && c1 > 0.0) {
+            if (rmRayBoxInv(childMin, childSize, pn, invRd, c0, c1) && c1 > 0.0) {
                 cellExit = min(nodeExit, tn + c1);
             } else {
                 // Degenerate slab result: advance a hair and re-evaluate the
@@ -803,7 +820,15 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
         int material = rmCachedBrush(node);
         float baseD;
         float maxDisp;
-        float d = rmField(node, p, material, baseD, maxDisp);
+        float d;
+        if (node == cachedNode && t == cachedT) {
+            // Exact reuse: same node, same parameter, same expression.
+            d = cachedD;
+            baseD = cachedBase;
+            maxDisp = cachedMaxDisp;
+        } else {
+            d = rmField(node, p, material, baseD, maxDisp);
+        }
         if (isnan(d)) d = 1.0; // defensive: never let a bad sample freeze the march
         float eps = rmHitEpsilon(nodeSize);
 
@@ -844,7 +869,13 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
         float dNextBase;
         float dNextMax;
         float dNext = rmField(node, ro + rd * tNext, material, dNextBase, dNextMax);
-        if (isnan(dNext)) dNext = -1.0;
+        if (isnan(dNext)) {
+            // Cache only finite values: the displacement branch consumes
+            // baseD/maxDisp too, and a NaN there would poison the next reuse.
+            dNext = -1.0;
+            dNextBase = -1.0;
+            dNextMax = 0.0;
+        }
 
         // Sign change inside this cell: refine with bisection.
         if (d > 0.0 && dNext <= 0.0) {
@@ -869,6 +900,11 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd,
             continue;
         }
 
+        cachedNode = node;
+        cachedT = tNext;
+        cachedD = dNext;
+        cachedBase = dNextBase;
+        cachedMaxDisp = dNextMax;
         t = tNext;
     }
     return false;
