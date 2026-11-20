@@ -3109,12 +3109,17 @@ void VegetationRenderer::createRenderTargets(VulkanApp* app, uint32_t width, uin
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT,
                     vegDepthImages[i], vegDepthAllocations[i], vegDepthMemories[i], vegDepthImageViews[i]);
-        // Created in DEPTH_STENCIL_ATTACHMENT_OPTIMAL (the veg task renders depth into it)
+        // Resting layout is SHADER_READ_ONLY: the composite and the water pass
+        // sample this depth image even on frames where the vegetation task is
+        // skipped (no content / disabled). The task transitions it to
+        // DEPTH_STENCIL_ATTACHMENT when it renders and back to SRO at the end;
+        // creating it directly in the attachment layout left skipped frames
+        // with a sampled depth image in the wrong layout (VUID-vkCmdDraw-None-09600).
         if (vegDepthImages[i] != VK_NULL_HANDLE && app) {
             app->transitionImageLayoutLayer(vegDepthImages[i], VK_FORMAT_D32_SFLOAT,
-                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-            app->setImageLayoutTracked(vegDepthImages[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-            vegDepthImageLayouts[i] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(vegDepthImages[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            vegDepthImageLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
     }
 

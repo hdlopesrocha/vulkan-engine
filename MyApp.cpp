@@ -1687,14 +1687,20 @@ public:
     // frame because the current main targets are the render attachments.
     void updateWaterSceneTextures(VkDescriptorSet ds, VkImageView backFaceDepth,
                                   VkImageView rtReflect, VkImageView rtRefract,
-                                  VkImageView skyView, uint32_t sceneFrameIdx) {
+                                  VkImageView skyView, uint32_t sceneFrameIdx,
+                                  bool vegetationValid) {
         VkImageView solidColor = sceneRenderer->solidRenderer
             ? sceneRenderer->solidRenderer->getColorView(sceneFrameIdx) : VK_NULL_HANDLE;
         VkImageView solidDepth = sceneRenderer->solidRenderer
             ? sceneRenderer->solidRenderer->getDepthView(sceneFrameIdx) : VK_NULL_HANDLE;
-        VkImageView vegColor = sceneRenderer->vegetationRenderer
+        // The vegetation task may be skipped this frame (disabled / no content /
+        // warmup). Its images can still hold the previous frame's contents, but
+        // the water shader must not treat them as this frame's vegetation;
+        // bind the renderer's SRO dummy instead. The image-layout side is
+        // covered by VegetationRenderer::createRenderTargets (SRO resting).
+        VkImageView vegColor = (vegetationValid && sceneRenderer->vegetationRenderer)
             ? sceneRenderer->vegetationRenderer->getVegColorView(sceneFrameIdx) : VK_NULL_HANDLE;
-        VkImageView vegDepth = sceneRenderer->vegetationRenderer
+        VkImageView vegDepth = (vegetationValid && sceneRenderer->vegetationRenderer)
             ? sceneRenderer->vegetationRenderer->getVegDepthView(sceneFrameIdx) : VK_NULL_HANDLE;
         sceneRenderer->waterRenderer->updateSceneTexturesBinding(this, ds,
             backFaceDepth, rtReflect, rtRefract, skyView, solidColor, solidDepth, vegColor, vegDepth);
@@ -3208,7 +3214,7 @@ public:
                             }
                         }
                         if (slot.waterDs != VK_NULL_HANDLE) {
-                            updateWaterSceneTextures(slot.waterDs, bfBack, bfRefl, bfRefr, bfSky, frameIdx);
+                            updateWaterSceneTextures(slot.waterDs, bfBack, bfRefl, bfRefr, bfSky, frameIdx, vegWillSignal);
                             asyncWaterDs = slot.waterDs;
                         }
                     }
@@ -3364,7 +3370,7 @@ public:
                         // SSR source: the solid pass color/depth for this frame.
                         // The water task waits on tlSolid, and the solid pass
                         // ends both images in SHADER_READ_ONLY_OPTIMAL.
-                        updateWaterSceneTextures(slot.waterDs2, wBack, wRefl, wRefr, wsky, frameIdx);
+                        updateWaterSceneTextures(slot.waterDs2, wBack, wRefl, wRefr, wsky, frameIdx, vegWillSignal);
                         if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                             vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 14);
                         if (settings.waterInMainPass && this->sceneRenderer->solidRenderer
@@ -3382,7 +3388,7 @@ public:
                             // the zeroed dummy water view.
                             constexpr uint32_t kFif = VulkanApp::MAX_FRAMES_IN_FLIGHT;
                             const uint32_t prevIdx = (frameIdx + kFif - 1u) % kFif;
-                            updateWaterSceneTextures(slot.waterDs2, wBack, wRefl, wRefr, wsky, prevIdx);
+                            updateWaterSceneTextures(slot.waterDs2, wBack, wRefl, wRefr, wsky, prevIdx, vegWillSignal);
                             // The bound solid depth is the PREVIOUS frame's, so
                             // the shader-side occlusion rejection (C5) must stay
                             // off here; the main targets' hardware depth test

@@ -318,11 +318,16 @@ void WaterBackFaceRenderer::createRenderTargets(VulkanApp* app, uint32_t width, 
                     VK_IMAGE_ASPECT_DEPTH_BIT,
                     backFaceDepthImages[i], backFaceDepthAllocations[i], backFaceDepthMemories[i], backFaceDepthImageViews[i]);
         backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
-        // Ensure authoritative/tracked layout matches the render-pass initial layout
+        // Resting layout is SHADER_READ_ONLY: the water geometry pass samples
+        // this depth even on frames where the back-face pass is skipped (no
+        // water volume / no pipeline). render() transitions it to the
+        // attachment layout when it actually draws and back to SRO at the end;
+        // creating it directly in the attachment layout left a skipped frame
+        // sampling a depth image in the wrong layout (VUID-vkCmdDraw-None-09600).
         if (backFaceDepthImages[i] != VK_NULL_HANDLE && app) {
-            app->transitionImageLayoutLayer(backFaceDepthImages[i], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1, 0, 1);
-            app->setImageLayoutTracked(backFaceDepthImages[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, 1);
-            backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            app->transitionImageLayoutLayer(backFaceDepthImages[i], VK_FORMAT_D32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
+            app->setImageLayoutTracked(backFaceDepthImages[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+            backFaceDepthImageLayouts[i] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
     }
 
