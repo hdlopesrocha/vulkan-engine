@@ -11,6 +11,7 @@
 
 #include "../../types/WaterParamsNamed.glsl"
 #include "../../types/WaterWaveField.glsl"
+#include "../noise/Perlin.glsl"
 
 const int WATER_OCT_FULL = 64;
 const int WATER_VERTEX_OCT = 2;
@@ -135,6 +136,41 @@ WaterWaveField waterWaveField(vec3 xyz, float time, float depth, float amp,
     f.foam = 0.0;
     f.contact = 0.0;
     return f;
+}
+
+// Per-pixel FBM ripple detail for the shading normal.
+//
+// The vertex stages only carry the low-frequency Gerstner swell; this is the
+// sub-tessellation roughness, so it exists on the shading normal alone. The
+// tangent frame is built from the UNDISPLACED base normal (like the raster
+// fragment stage) and the height gradient is expressed in world metres, which
+// is what lets the normal be the one the surface would have with infinite
+// tessellation. `detail` is the distance LOD factor; `waveDir` is the same
+// wind-driven unit xz direction the Gerstner field used. Shared by the raster
+// water surface and the octree ray-marched water path so both normals match.
+vec3 waterRippleNormal(vec3 normal, vec3 baseN, vec3 basePos, vec2 waveDir,
+                       float time, WaterParamsNamed wp, float detail) {
+    vec3 n = normalize(normal);
+    float rippleHeight = max(wp.rippleHeight, 0.0)
+                       * clamp(wp.waveSteepness, 0.0, 1.0) * detail;
+    if (!(rippleHeight > 0.0) || !(wp.noiseScale > 0.0)) return n;
+
+    vec3 up = abs(baseN.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, baseN));
+    vec3 B = cross(baseN, T);
+
+    const int kRippleOctaves = 3;
+    vec3 drift = vec3(waveDir.x, 0.0, waveDir.y) * (wp.waveSpeed * time);
+    vec4 g = fbmGrad4D(vec4((basePos - drift) * wp.noiseScale,
+                            time * wp.noiseTimeSpeed),
+                       kRippleOctaves, wp.noisePersistence, wp.noiseLacunarity);
+    vec3 rg = vec3(g.y, 0.0, g.w) * wp.noiseScale;   // d/dx, d/dz
+    n = normalize(n - dot(rg, T) * rippleHeight * T
+                    - dot(rg, B) * rippleHeight * B);
+    // Same guard as the raster path: a collapsed direction here is what turned
+    // the water black in the normal view.
+    if (!(dot(n, n) > 0.25)) n = normalize(baseN);
+    return n;
 }
 
 // Height-only entry point (debug views). The tessellation probe uses

@@ -1256,12 +1256,11 @@ struct RmWaterSurface {
     float height; // vertical displacement along the flat SDF normal (m)
 };
 
-RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N,
+RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N, float detail,
                                vec2 dPosdx, vec2 dPosdy) {
     RmWaterSurface s;
     s.normal = N;
     s.height = 0.0;
-    if (!wp.enableWaves || wp.bumpAmplitude <= 0.0) return s;
 
     // Shared animation clock (SkyUniform::windTime is the live main clock,
     // advanced every frame even when the raster water pass is skipped).
@@ -1273,6 +1272,16 @@ RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N,
     // still-air fallback (same rule as waterWindWave() in WaterTese.glsl).
     vec2 dir = (windSpeed > 1e-4) ? windXZ / windSpeed
                                   : normalize(wp.waveDirection + vec2(1e-5, 0.0));
+
+    // The raster surface applies the per-pixel FBM ripple normal independently
+    // of the Gerstner swell (sub-tessellation detail), so the ray-marched
+    // surface does the same. Without it a hit with waves off falls back to the
+    // perfectly flat SDF normal and reads as flat shading.
+    if (!wp.enableWaves || wp.bumpAmplitude <= 0.0) {
+        s.normal = waterRippleNormal(N, N, p, dir, t, wp, detail);
+        return s;
+    }
+
     // Saturating wind response: calm air leaves nearly flat water, strong wind
     // builds the authored sea. response = 0 keeps the height constant.
     float ref = max(wp.windWaveReference, 0.5);
@@ -1285,7 +1294,10 @@ RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N,
     WaterWaveField wf = waterWaveField(p, t, -1.0,
         wp.bumpAmplitude * ampScale, dir, wp, false, 3,
         dPosdx, dPosdy);
-    if (wf.calmMask <= 0.0) return s;
+    if (wf.calmMask <= 0.0) {
+        s.normal = waterRippleNormal(N, N, p, dir, t, wp, detail);
+        return s;
+    }
 
     vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 T = normalize(cross(up, N));
@@ -1293,7 +1305,7 @@ RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N,
     vec3 n = normalize(N - dot(wf.grad, T) * T - dot(wf.grad, B) * B);
     if (!(dot(n, n) > 0.25)) n = N;
     if (dot(n, N) < 0.0) n = -n;
-    s.normal = n;
+    s.normal = waterRippleNormal(n, N, p, dir, t, wp, detail);
     s.height = wf.height;
     return s;
 }
@@ -1322,7 +1334,8 @@ vec3 rmShadeSolidHit(uint root, uint node, int brush, vec3 pos, vec3 rd) {
 //   * reflection: a ray from the wave-displaced surface along the mirror
 //     direction marches the solid roots and shades the hit, with procedural
 //     sky + clouds as the miss value;
-//   * the swell (wind-driven Gerstner slope) perturbs the normal and moves the
+//   * the swell (wind-driven Gerstner slope) and the per-pixel FBM ripple
+//     detail (shared with the raster surface) perturb the normal and move the
 //     ray origins, so both images animate with the live wind;
 //   * the two are composed with the raster surface's exact Fresnel/strength
 //     mirror mix, and the CSM surface shadow darkens the result.
@@ -1600,7 +1613,9 @@ void main() {
         float pixelAngle = 2.0 / max(abs(ubo.viewProjection[1][1]) *
                                      max(pc.viewport.y, 1.0), 1e-6);
         vec2 waveStep = vec2(hitDist * pixelAngle);
-        RmWaterSurface wave = rmWaterSurface(wp, hitPos, N,
+        // Same ripple-detail LOD band as the raster surface (WaterSurface.glsl).
+        float waveDetail = 1.0 - smoothstep(200.0, 1000.0, hitDist);
+        RmWaterSurface wave = rmWaterSurface(wp, hitPos, N, waveDetail,
                                              vec2(waveStep.x, 0.0),
                                              vec2(0.0, waveStep.y));
         vec3 Nw = wave.normal;

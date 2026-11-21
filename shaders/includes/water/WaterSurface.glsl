@@ -826,28 +826,11 @@ void shadeWaterSurface() {
     // the shading normal alone. It advects toward the shore with the same
     // motion as the swell (the noise is sampled upstream of the shore drift),
     // its strength follows the wave steepness, and it fades with the distance
-    // LOD so its finest octaves can never alias.
-    {
-        const int kRippleOctaves = 3;
-        // Ripple HEIGHT in metres, faded by the distance LOD and scaled by the
-        // steepness. Treating it as a height (not a slope) is what lets the
-        // normal be the one the surface would have with infinite tessellation:
-        // the displacement the vertices cannot afford is still in the normal.
-        float rippleHeight = max(wp.rippleHeight, 0.0)
-                           * clamp(wp.waveSteepness, 0.0, 1.0) * detail;
-        if (rippleHeight > 0.0 && wp.noiseScale > 0.0) {
-            vec3 drift = vec3(fragWaveDir.x, 0.0, fragWaveDir.y) * (wp.waveSpeed * animTime);
-            vec4 n = fbmGrad4D(vec4((fragBasePos.xyz - drift) * wp.noiseScale,
-                                    animTime * wp.noiseTimeSpeed),
-                               kRippleOctaves, wp.noisePersistence, wp.noiseLacunarity);
-            vec3 rg = vec3(n.y, 0.0, n.w) * wp.noiseScale;   // d/dx, d/dz
-            normal = normalize(normal - dot(rg, T) * rippleHeight * T
-                                      - dot(rg, B) * rippleHeight * B);
-            // Same guard after the ripple perturbation: a collapsed direction
-            // here is what turned the water black in the normal view.
-            if (!(dot(normal, normal) > 0.25)) normal = flatN;
-        }
-    }
+    // LOD so its finest octaves can never alias. Shared with the octree
+    // ray-marched water path (waterRippleNormal in Gerstner.glsl), so both
+    // surfaces get the same soft normal detail.
+    normal = waterRippleNormal(normal, flatN, fragBasePos.xyz,
+                               fragWaveDir, animTime, wp, detail);
 
     // Calm-patch gate for the wave-derived NOISE chains (see waterWaveField:
     // the mask returns early there). dbg.y is the calm mask, and it is 0
