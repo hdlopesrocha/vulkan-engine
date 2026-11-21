@@ -26,6 +26,8 @@
 #include "../sdf/primitives/OctahedronDistanceFunction.hpp"
 #include "../sdf/primitives/PyramidDistanceFunction.hpp"
 #include "../sdf/primitives/TetrahedronDistanceFunction.hpp"
+#include "../sdf/primitives/DodecahedronDistanceFunction.hpp"
+#include "../sdf/primitives/IcosahedronDistanceFunction.hpp"
 #include "../sdf/primitives/TorusDistanceFunction.hpp"
 #include "../sdf/primitives/ConeDistanceFunction.hpp"
 #include "../sdf/primitives/CylinderDistanceFunction.hpp"
@@ -302,6 +304,18 @@ public:
                 BoxDistanceFunction target(model, tileSize);
                 InterpolatedDistanceFunction mixed(source, target, 0.5f, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), mixed, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::Dodecahedron: {
+                std::cout << "\topaqueLayer.add(dodecahedron)" << std::endl;
+                DodecahedronDistanceFunction function(model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::Icosahedron: {
+                std::cout << "\topaqueLayer.add(icosahedron)" << std::endl;
+                IcosahedronDistanceFunction function(model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             default:

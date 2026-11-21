@@ -27,5 +27,7 @@ enum class TestShape {
     CubeProjectionZ,
     CubeAngular,
     Interpolation,
+    Dodecahedron,
+    Icosahedron,
     Count
 };
