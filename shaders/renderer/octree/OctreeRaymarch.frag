@@ -264,8 +264,23 @@ float rmDisplacementN(uint id, int material, vec3 p, vec3 n) {
     return materialDisplacementLod(material, texType, uv, p, n);
 }
 
+bool rmDisplacementActive(int material) {
+    if (ubo.tessellationEnabled == 0u || material < 0) return false;
+    return materialNamed(materials[material]).mappingEnabled;
+}
+
+// Compute the normal only when a displacement can actually be produced. The
+// old unconditional rmNodeNormal() here was a full gradient per hit (and a
+// second one when the caller also needed the base-point normal).
 float rmDisplacement(uint id, int material, vec3 p) {
+    if (!rmDisplacementActive(material)) return 0.0;
     return rmDisplacementN(id, material, p, rmNodeNormal(id, p));
+}
+
+// Same, with a normal the caller already computed at p.
+float rmDisplacement(uint id, int material, vec3 p, vec3 n) {
+    if (!rmDisplacementActive(material)) return 0.0;
+    return rmDisplacementN(id, material, p, n);
 }
 
 // Bumped trilinear field. `base` receives the unbumped value (used for the
@@ -1057,13 +1072,25 @@ RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
     // mapping are evaluated at the same world position the raster path uses.
     // Two fixed-point steps; the offset is small relative to the height-map
     // feature scale, so this converges to the raster's undisplaced vertex.
-    vec3 sdfNormal = rmNodeNormal(node, hitPos);
-    float hitDisplacement = rmDisplacement(node, material, hitPos);
-    h.basePos = hitPos - sdfNormal * hitDisplacement;
-    for (int i = 0; i < 2 && hitDisplacement != 0.0; ++i) {
-        sdfNormal = rmNodeNormal(node, h.basePos);
-        hitDisplacement = rmDisplacement(node, material, h.basePos);
+    // With tessellation off (the default) no displacement exists, so the
+    // hit-point gradient is not computed at all; the ring's stored normal is
+    // used for shading. With displacement active, the same normal feeds both
+    // the base-point step and the height-map sample instead of being solved
+    // twice.
+    vec3 sdfNormal = vec3(0.0);
+    float hitDisplacement = 0.0;
+    if (rmDisplacementActive(material)) {
+        sdfNormal = rmNodeNormal(node, hitPos);
+        hitDisplacement = rmDisplacement(node, material, hitPos, sdfNormal);
+    }
+    h.basePos = hitPos;
+    if (hitDisplacement != 0.0) {
         h.basePos = hitPos - sdfNormal * hitDisplacement;
+        for (int i = 0; i < 2 && hitDisplacement != 0.0; ++i) {
+            sdfNormal = rmNodeNormal(node, h.basePos);
+            hitDisplacement = rmDisplacement(node, material, h.basePos, sdfNormal);
+            h.basePos = hitPos - sdfNormal * hitDisplacement;
+        }
     }
 
     // The raster material blend belongs to the base (undisplaced) cell: use
@@ -1075,9 +1102,15 @@ RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
 
     // Raster fragNormal is the barycentric interpolation of the per-vertex
     // cell normals; use the blend's normal when the ring reconstructed it and
-    // fall back to the marched cell's analytic normal otherwise.
+    // fall back to the marched cell's analytic normal otherwise. The fallback
+    // is only solved when the ring did not provide one, so the common
+    // tessellation-off hit pays no hit-point gradient at all.
+    vec3 fallbackNormal = sdfNormal;
+    if (dot(fallbackNormal, fallbackNormal) <= 1e-12) {
+        fallbackNormal = rmNodeNormal(node, hitPos);
+    }
     h.normal = (dot(h.blend.normal, h.blend.normal) > 1e-12)
-        ? normalize(h.blend.normal) : sdfNormal;
+        ? normalize(h.blend.normal) : fallbackNormal;
     if (dot(h.normal, rd) > 0.0) h.normal = -h.normal; // front surface only
     h.blendCell = blendCell;
     return h;
