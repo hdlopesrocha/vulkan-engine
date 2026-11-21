@@ -61,6 +61,13 @@ public:
         updates.clear();
     }
 
+    // Number of queued per-node events (adds + deletes, deduplicated). Used by
+    // the loading progress model before dispatch consumes the set.
+    size_t size() const {
+        std::lock_guard<std::mutex> guard(mtx);
+        return updates.size();
+    }
+
 private:
     void onNodeAdded(const OctreeNodeData& data) {
         NodeID id = reinterpret_cast<NodeID>(data.node);

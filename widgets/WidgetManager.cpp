@@ -17,6 +17,18 @@ void WidgetManager::renderAll() {
 	}
 }
 
+void WidgetManager::renderAllExcept(const std::vector<Widget*>& skip) {
+	for (auto& widget : widgets) {
+		if (!widget) continue;
+		if (!widget->isVisible()) continue;
+		bool skipped = false;
+		for (Widget* s : skip) {
+			if (s == widget.get()) { skipped = true; break; }
+		}
+		if (!skipped) widget->render();
+	}
+}
+
 void WidgetManager::renderMenu() {
 	if (ImGui::BeginMenu("Windows")) {
 		for (auto& widget : widgets) {

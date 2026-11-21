@@ -202,6 +202,12 @@ public:
     IndirectRenderer* indirectForLayer(Layer::Id layer);
     // Back-compat: total solid (opaque) count across Solid-mapped layers.
     size_t getRegisteredModelCount() const;
+    // Streaming progress: active mesh count across the solid, water and video
+    // indirect pools (one per published chunk entry). Main thread only.
+    size_t getStreamedMeshCount();
+    // Entries waiting for the main-thread drain; zero means the workers have
+    // pushed every result they can for the current frame.
+    size_t getPendingMeshCount() const;
 
     // Chunk-streaming counters (diagnostic; VULKAN_STREAM_DIAG prints them):
     // how the GPU topology path resolved every node it was asked to build.

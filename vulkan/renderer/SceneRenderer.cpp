@@ -292,6 +292,19 @@ size_t SceneRenderer::getRegisteredModelCount() const {
     return total;
 }
 
+size_t SceneRenderer::getStreamedMeshCount() {
+    size_t total = 0;
+    if (solidRenderer) total += solidRenderer->getIndirectRenderer().getMeshCount();
+    if (waterRenderer) total += waterRenderer->getIndirectRenderer().getMeshCount();
+    if (videoRenderer) total += videoRenderer->getIndirectRenderer().getMeshCount();
+    return total;
+}
+
+size_t SceneRenderer::getPendingMeshCount() const {
+    std::lock_guard<std::mutex> lock(pendingMeshMutex);
+    return pendingMeshQueue.size();
+}
+
 void SceneRenderer::removeAllLayerMeshes(Layer::Id layer) {
     if (layer >= 0) chunkMeshProfiles_.clearLayer(static_cast<int32_t>(layer));
     // The layer may have been remapped since its slots were published, so

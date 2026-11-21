@@ -696,6 +696,19 @@ are polled; short wiring runs on the main thread. Prompt~1.
 \subsubsection*{S2: The Content Build Freezes the Window After the Loading
 Screen Is Gone}
 
+\textbf{Status (this tree).} Addressed by a CPU-only content worker. The
+request now enters \texttt{MyApp::startLocalContentLoad()} (reset + snapshot +
+thread) and the main thread polls \texttt{contentBuildDone\_} in
+\texttt{postSubmit()}, finalizing in \texttt{finalizeContentLoad()}
+(\texttt{MyApp.cpp}). A non-modal content panel shows the build and the chunk
+stream, and structural commands (generate/load/save/export) are disabled only
+while the tree is owned by the worker or the dispatch threads. In the
+verification run the 29.97\,s \texttt{LocalScene::loadScene} ran on the worker
+while frames continued; the droplet table was built afterwards with 58\,075
+nodes (previously 1 node against the empty tree); no validation errors were
+reported. The only remaining stall at the start of the build is a 527\,ms
+\texttt{resetSceneState()} frame (\texttt{deviceWaitIdle} + scene clear).
+
 \textbf{Evidence.} \texttt{isLoading = false} at
 \texttt{VulkanApp.cpp:5889} precedes \texttt{mainLoop()}; the first
 \texttt{postSubmit()} then calls \texttt{generateMap()} or

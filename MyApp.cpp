@@ -293,6 +293,25 @@ public:
     // Set by abortSetup() so a Quit during the texture stage stops starting new
     // decode batches/uploads; the worker returns the layers completed so far.
     std::atomic<bool> textureLoadCancel_{false};
+
+    // ── S2: background content build ─────────────────────────────────────
+    // The octree build/load runs on its own CPU-only thread. The main thread
+    // keeps rendering; postSubmit() polls contentBuildDone_ and finalizes
+    // (start tessellation, droplets, settings) after present.
+    std::thread contentThread;
+    std::atomic<bool> contentLoading_{false};
+    std::atomic<bool> contentBuildDone_{false};
+    std::atomic<bool> contentBuildFailed_{false};
+    std::atomic<bool> contentReady_{false};
+    std::atomic<bool> contentStreaming_{false};
+    std::atomic<bool> sceneDispatchRunning_{false};
+    std::atomic<uint32_t> contentChunksExpected_{0};
+    std::chrono::steady_clock::time_point contentStart_{};
+    bool contentIsFile_ = false;
+    std::string contentPath_;
+    std::string contentError_;
+    Settings contentSettingsCopy_;
+    bool contentHasSettings_ = false;
     Settings settings;
     // Last grass mode applied to the renderers; the mode selector only
     // pushes on change so the Grass/Impostors widget toggles are not
@@ -1111,6 +1130,51 @@ public:
         }
         ImGui::End();
     }
+
+    // S2: non-modal content progress. Drawn while the octree is built on
+    // contentThread and while its chunks stream in. The camera and the rest of
+    // the UI remain fully interactive.
+    void drawContentPanel() {
+        const ImGuiIO& io = ImGui::GetIO();
+        const bool building = contentLoading_.load(std::memory_order_acquire);
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
+                                 ImGuiWindowFlags_AlwaysAutoResize |
+                                 ImGuiWindowFlags_NoFocusOnAppearing |
+                                 ImGuiWindowFlags_NoNav |
+                                 ImGuiWindowFlags_NoSavedSettings;
+        ImGui::SetNextWindowBgAlpha(0.80f);
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 12.0f, io.DisplaySize.y - 12.0f),
+                                ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+        ImGui::Begin("##content_progress", nullptr, flags);
+
+        if (building) {
+            const double elapsed = contentStart_.time_since_epoch().count() != 0
+                ? std::chrono::duration<double>(std::chrono::steady_clock::now() - contentStart_).count()
+                : 0.0;
+            ImGui::TextUnformatted(contentIsFile_ ? "Loading scene..." : "Building world...");
+            if (contentIsFile_) {
+                ImGui::TextDisabled("%.72s", contentPath_.c_str());
+            }
+            // Negative fraction: ImGui draws its indeterminate animation.
+            ImGui::ProgressBar(-1.0f, ImVec2(260.0f, 0.0f));
+            ImGui::Text("Elapsed: %.1f s", elapsed);
+            ImGui::TextDisabled("Camera and UI stay interactive.");
+        } else {
+            const size_t published = sceneRenderer ? sceneRenderer->getStreamedMeshCount() : 0;
+            const uint32_t expected = contentChunksExpected_.load(std::memory_order_relaxed);
+            ImGui::Text("Streaming chunks: %zu", published);
+            if (expected > 0) {
+                const float fraction = std::min(1.0f,
+                    static_cast<float>(published) / static_cast<float>(expected));
+                ImGui::ProgressBar(fraction, ImVec2(260.0f, 0.0f));
+                ImGui::TextDisabled("~%u chunk events queued", expected);
+            } else {
+                ImGui::ProgressBar(-1.0f, ImVec2(260.0f, 0.0f));
+            }
+        }
+        ImGui::End();
+    }
+
     void applySetupEnvOverrides() {
         // Headless droplet bring-up (validation/diagnostics): VULKAN_DROPLETS=1
         // enables the simulation + rendering and the counter readback — the
@@ -1625,6 +1689,15 @@ public:
     void pollBrushUndo();
     // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
     void generateMap();
+    // S2: CPU-only background build. startLocalContentLoad() resets the scene,
+    // snapshots the collectors and launches the build thread; the render loop
+    // polls contentBuildDone_ and calls finalizeContentLoad() after present.
+    void startLocalContentLoad(bool fromFile, std::string path);
+    void finalizeContentLoad();
+    // Start the scene server if settings.serveScene is set and it is not
+    // running. Called before tessellation dispatch so the server sees every
+    // chunk event of a fresh content build.
+    void startSceneServerIfEnabled();
     // Builds the GPU droplet sim + renderer for the active scene (once).
     void ensureDroplets();
     void action();
@@ -1685,12 +1758,14 @@ public:
             for (size_t i = 0; i < scene.layerCount(); ++i)
                 if (const Layer* l = scene.layerAt(i)) ids.push_back(l->id());
         }
+        sceneDispatchRunning_.store(true, std::memory_order_relaxed);
         sceneProcessThread = std::thread([this, completionLog, ids]() {
             std::vector<std::thread> workers;
             workers.reserve(ids.size());
             for (Layer::Id id : ids)
                 workers.emplace_back([this, id]() { dispatchLayerEvents(id); });
             for (auto& t : workers) t.join();
+            sceneDispatchRunning_.store(false, std::memory_order_release);
             std::cout << completionLog;
         });
     }
@@ -1758,7 +1833,8 @@ public:
             nunchukPublisher.update();
             nunchukPublisher.applyControls(&eventManager, camera, deltaTime,
                                            &controllerManager, &brushManager,
-                                            (world && !useRemote && world->scene().findLayer(LAYER_OPAQUE))
+                                            (world && !useRemote && !contentLoading_.load() &&
+                                             world->scene().findLayer(LAYER_OPAQUE))
                                                 ? world->scene().findLayer(LAYER_OPAQUE)->octree() : nullptr);
         } else {
             // Still poll nunchuk state so Home/A button edge detection works
@@ -1786,7 +1862,10 @@ public:
         // Process pending meshes at a controlled rate (10 per frame).
         // Chunks closest to the camera are uploaded first. Drains pending
         // entries from the ONE shared queue.
-        if (sceneRenderer && !isLoading) {
+        // S2: while the content worker owns the octrees, skip every scene
+        // reader (syncLayers, maxChunkLod, drain/publish). There are no new
+        // chunks during the build, and the tree must not be read concurrently.
+        if (sceneRenderer && !isLoading && !contentLoading_.load(std::memory_order_acquire)) {
             // Dynamic layers: pick up LayersWidget add/remove without restart.
             syncLayers();
             // Video-layer mesh uploads stage their indirect commands into the
@@ -1806,7 +1885,10 @@ public:
         // Octree SDF raymarch: rebuild the node table on a debounce and keep
         // every frame slot's revision current. Uploading here is safe: the
         // frame-slot fence for getCurrentFrame() was waited before update().
-        if (sceneRenderer && sceneRenderer->octreeRaymarchRenderer) {
+        // S2: the table reads the octree; build it only once content is final.
+        if (sceneRenderer && sceneRenderer->octreeRaymarchRenderer &&
+            contentReady_.load(std::memory_order_acquire) &&
+            !contentLoading_.load(std::memory_order_acquire)) {
             refreshRaymarchTable(deltaTime);
             sceneRenderer->octreeRaymarchRenderer->upload(getCurrentFrame(), raymarchTable_);
         }
@@ -2662,7 +2744,7 @@ public:
             // geometry one full frame behind the brush preview. Rebuild
             // the raymarch table now so the solid raymarch recorded below
             // already contains the stroke.
-            if (brushApplyToScenePending) {
+            if (brushApplyToScenePending && !contentLoading_.load(std::memory_order_acquire)) {
                 brushApplyToScenePending = false;
                 applyBrushToScene();
             }
@@ -2671,8 +2753,9 @@ public:
             // has already run, so publish the dirtied table again here:
             // the solid raymarch recorded below then contains this frame's
             // stroke/undo instead of the previous frame's SDF.
-            if (raymarchDirty_ && sceneRenderer &&
-                sceneRenderer->octreeRaymarchRenderer) {
+            if (raymarchDirty_ && contentReady_.load(std::memory_order_acquire) &&
+                !contentLoading_.load(std::memory_order_acquire) &&
+                sceneRenderer && sceneRenderer->octreeRaymarchRenderer) {
                 refreshRaymarchTable(0.0f);
                 sceneRenderer->octreeRaymarchRenderer->upload(
                     getCurrentFrame(), raymarchTable_);
@@ -3963,6 +4046,14 @@ public:
     }
 
     void startBlenderExport(const std::string& path) {
+        // S2: the export walks the octree without a long-held tree lock; do not
+        // start it while the content worker is mutating the tree or while the
+        // chunk dispatch is still reading it.
+        if (contentLoading_.load(std::memory_order_acquire) ||
+            contentStreaming_.load(std::memory_order_acquire)) {
+            std::cout << "[MyApp] Blender export ignored while content is loading\n";
+            return;
+        }
         if (blenderExportRunning_.exchange(true)) {
             std::cout << "[MyApp] Blender export already running\n";
             return;
@@ -4043,15 +4134,27 @@ public:
         static const bool hideUi = std::getenv("VULKAN_HIDE_UI") != nullptr;
         if (hideUi) return;
 
+        // S2: while the content worker owns the octree, structural scene
+        // commands are disabled and the explorer is suppressed. While chunks
+        // are still streaming, structural commands stay disabled too (a new
+        // build would have to join the dispatch threads on the main thread).
+        // The rest of the UI (camera, settings, textures) stays interactive.
+        const bool contentTreeLocked = contentLoading_.load(std::memory_order_acquire);
+        const bool contentBusy = contentTreeLocked ||
+            contentStreaming_.load(std::memory_order_acquire);
+
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("Generate Map")) generateMapPending = true;
-                if (ImGui::MenuItem("Action")) action();
+                if (ImGui::MenuItem("Generate Map", nullptr, false, !contentBusy))
+                    generateMapPending = true;
+                if (ImGui::MenuItem("Action", nullptr, false, !contentBusy)) action();
                 ImGui::Separator();
-                if (ImGui::MenuItem("Save Scene...")) scenePicker_.open(sceneFolderBuf, true,  "Mode: Save");
-                if (ImGui::MenuItem("Load Scene...")) scenePicker_.open(sceneFolderBuf, false, "Mode: Load");
+                if (ImGui::MenuItem("Save Scene...", nullptr, false, !contentBusy))
+                    scenePicker_.open(sceneFolderBuf, true,  "Mode: Save");
+                if (ImGui::MenuItem("Load Scene...", nullptr, false, !contentBusy))
+                    scenePicker_.open(sceneFolderBuf, false, "Mode: Load");
                 ImGui::Separator();
-                if (ImGui::MenuItem("Export to Blender (.blend)..."))
+                if (ImGui::MenuItem("Export to Blender (.blend)...", nullptr, false, !contentBusy))
                     blenderPicker_.open(blenderExportBuf_, true, "Mode: Export");
                 ImGui::Separator();
                 if (ImGui::MenuItem("Exit")) requestClose();
@@ -4070,7 +4173,7 @@ public:
             ImGui::EndMainMenuBar();
 
             std::filesystem::path chosenScene;
-            if (scenePicker_.render(chosenScene)) {
+            if (scenePicker_.render(chosenScene) && !contentBusy) {
                 std::string s = chosenScene.string();
                 if (s.size() < sizeof(sceneFolderBuf)) {
                     std::memcpy(sceneFolderBuf, s.c_str(), s.size());
@@ -4088,7 +4191,7 @@ public:
             }
 
             std::filesystem::path chosenGlb;
-            if (blenderPicker_.render(chosenGlb)) {
+            if (blenderPicker_.render(chosenGlb) && !contentBusy) {
                 const std::string s = chosenGlb.string();
                 if (s.size() < sizeof(blenderExportBuf_)) {
                     std::memcpy(blenderExportBuf_, s.c_str(), s.size());
@@ -4476,8 +4579,15 @@ public:
             ImGui::EndPopup();
         }
 
-        // Render all widgets
-        widgetManager.renderAll();
+        // Render all widgets. S2: the octree explorer walks raw nodes without
+        // the tree lock; skip it while the content worker is building.
+        if (contentTreeLocked) {
+            std::vector<Widget*> skip;
+            if (octreeExplorerWidget) skip.push_back(octreeExplorerWidget.get());
+            widgetManager.renderAllExcept(skip);
+        } else {
+            widgetManager.renderAll();
+        }
 
         // Music analysis runs even when the widget window is hidden, then
         // the compact features are forwarded into the water GPU params
@@ -4497,6 +4607,13 @@ public:
         // S1: while the last boot stages run, keep a compact progress readout
         // on top of the full UI. It disappears when setup completes.
         if (isLoading) drawBootPanel(true);
+        // S2: content build / chunk-streaming readout, independent of the boot
+        // stage. It is the visible sign that the world is being built while
+        // the camera and the rest of the UI stay live.
+        if (contentLoading_.load(std::memory_order_acquire) ||
+            contentStreaming_.load(std::memory_order_acquire)) {
+            drawContentPanel();
+        }
     }
 
     void draw(VkCommandBuffer &commandBuffer) override {
@@ -4684,6 +4801,11 @@ public:
     // holds the scene alive through world->scene().
     blenderExportCancel_.store(true);
     if (blenderExportThread_.joinable()) blenderExportThread_.join();
+    // S2: join the background content builder before the octrees/GPU resources
+    // are destroyed. It is CPU-only, so no Vulkan call happens on the worker.
+    if (contentThread.joinable()) contentThread.join();
+    contentLoading_.store(false);
+    contentBuildDone_.store(false);
     // Exit viewpoint, logged next to the saved exit screenshot so a report
     // of "X is not visible" can be reproduced pixel-exact in the CPU probe
     // (same format as the startup [Camera Setup] line).
@@ -4791,6 +4913,11 @@ public:
         // validation error). Mirrors the thread-stopping half of clean().
         // Remote streaming stops first so blocked mesh fetchers wake up.
         stopRemoteStreaming();
+        // Cancel the Blender export and join the content builder before the
+        // scene/allocators are torn down.
+        blenderExportCancel_.store(true);
+        if (blenderExportThread_.joinable()) blenderExportThread_.join();
+        if (contentThread.joinable()) contentThread.join();
         if (sceneProcessThread.joinable()) sceneProcessThread.join();
         asyncThreadPool.stop();
         if (world) world->stopPools();
@@ -5042,6 +5169,12 @@ uint64_t MyApp::raymarchLayerSignature() const {
 }
 
 void MyApp::refreshRaymarchTable(float deltaTime) {
+    // S2: the table is walked from the octree. Never read it while the content
+    // worker owns the tree; contentReady gates the empty pre-content state.
+    if (contentLoading_.load(std::memory_order_acquire) ||
+        !contentReady_.load(std::memory_order_acquire)) {
+        return;
+    }
     if (!sceneRenderer || !sceneRenderer->octreeRaymarchRenderer) return;
     OctreeRaymarchRenderer& renderer = *sceneRenderer->octreeRaymarchRenderer;
 
@@ -5716,6 +5849,8 @@ void MyApp::clearBrushHistory() {
 }
 
 void MyApp::pollBrushUndo() {
+    // S2: undo replays brush events into the octree; defer while content builds.
+    if (contentLoading_.load(std::memory_order_acquire)) return;
     GLFWwindow* glfwWindow = getWindow();
     if (!glfwWindow) return;
     const bool ctrl = glfwGetKey(glfwWindow, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
@@ -5737,6 +5872,8 @@ void MyApp::pollBrushUndo() {
 
 void MyApp::applyBrushToScene() {
     if (!world || !sceneRenderer) return;
+    // S2: never mutate the tree while the content worker owns it.
+    if (contentLoading_.load(std::memory_order_acquire)) return;
     // Brush edits target the LOCAL octrees; in remote mode there is nothing
     // local to edit (the server owns the SDF), so refuse instead of silently
     // building invisible local content.
@@ -5794,6 +5931,11 @@ void MyApp::applyBrushToScene() {
 // so array-layer transitions happen outside of active draw command buffers.
 
 void MyApp::action() {
+    // S2: the content worker owns the octree; a re-tessellation must wait.
+    if (contentLoading_.load(std::memory_order_acquire)) {
+        std::cout << "[MyApp::action] ignored while content is loading\n";
+        return;
+    }
     // Remote mode has no local tessellation pass; restart live dispatch.
     if (useRemote) {
         stopRemoteDispatch();
@@ -5816,11 +5958,41 @@ void MyApp::action() {
 
 void MyApp::resetSceneState() {
     clearBrushHistory();
+    // S2: the content worker owns the octrees while it builds. Join it before
+    // any GPU/CPU scene teardown so it can never touch recycled nodes.
+    if (contentThread.joinable()) contentThread.join();
+    contentLoading_.store(false);
+    contentBuildDone_.store(false);
+    contentStreaming_.store(false);
+    contentReady_.store(false);
+    contentChunksExpected_.store(0);
+    contentError_.clear();
+    // The Blender export walks the octree: stop it before resetting the tree.
+    if (blenderExportRunning_.load()) {
+        blenderExportCancel_.store(true);
+        if (blenderExportThread_.joinable()) blenderExportThread_.join();
+        blenderExportRunning_.store(false);
+        blenderExportFinished_.store(false);
+    }
+    // The scene server holds references into the live scene.
+    if (sceneServer) {
+        sceneServer->stop();
+        sceneServer.reset();
+    }
     stopRemoteDispatch();
     if (sceneProcessThread.joinable()) sceneProcessThread.join();
+    sceneDispatchRunning_.store(false);
     deviceWaitIdle();
     processPendingCommandBuffers();
 
+    // S2: the previous scene's raymarch table references copied nodes that no
+    // longer exist. Clear it now (device idle) so the old isosurface does not
+    // linger while the new content builds.
+    if (sceneRenderer && sceneRenderer->octreeRaymarchRenderer) {
+        raymarchTable_.clear();
+        for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f)
+            sceneRenderer->octreeRaymarchRenderer->upload(f, raymarchTable_);
+    }
     if (sceneRenderer) {
         sceneRenderer->removeAllMeshes();
         world->chunkManager().removeAll();
@@ -5832,6 +6004,14 @@ void MyApp::resetSceneState() {
         if (sceneRenderer->sdfRenderer) {
             sceneRenderer->sdfRenderer->clearLava();
         }
+    }
+
+    // The content tree is about to change: its droplet collision table can no
+    // longer be valid. Rebuild it in finalizeContentLoad() after the build.
+    if (particleSim) {
+        particleSim->destroy(this);
+        particleSim.reset();
+        dropletDrawCount = 0;
     }
 
     // Remote mode has no local octree content; the GPU/collector clearing
@@ -5959,6 +6139,9 @@ void MyApp::ensureLayerHandlers() {
 }
 
 void MyApp::syncLayers() {
+    // S2: the content worker owns the trees and the file path can replace the
+    // layer list. Do not rebuild handlers or re-point widgets until it is done.
+    if (contentLoading_.load(std::memory_order_acquire)) return;
     if (!world) return;
     Scene* active = &world->activeScene();
     {
@@ -5971,7 +6154,8 @@ void MyApp::syncLayers() {
     }
     if (layersWidget) {
         layersWidget->setScene(active);
-        layersWidget->setAllowStructureEdit(!useRemote);
+        layersWidget->setAllowStructureEdit(
+            !useRemote && !contentStreaming_.load(std::memory_order_acquire));
     }
     if (brush3dWidget) brush3dWidget->setScene(active);
     if (octreeExplorerWidget) octreeExplorerWidget->setScene(active);
@@ -5980,6 +6164,8 @@ void MyApp::syncLayers() {
 
 void MyApp::repopulateLayer(Layer::Id layer) {
     if (!world || !sceneRenderer) return;
+    // S2: re-emitting walks the octree; wait for the content build to finish.
+    if (contentLoading_.load(std::memory_order_acquire)) return;
     ensureLayerHandlers();
     Scene& scene = world->activeScene();
     Layer* layerPtr = scene.findLayer(layer);
@@ -6006,6 +6192,9 @@ void MyApp::repopulateLayer(Layer::Id layer) {
 
 void MyApp::applyDebugOverlaySettings() {
     if (!sceneRenderer) return;
+    // S2: a toggle-on runs a tree walk (recollectDebugOverlays); never walk the
+    // octree while the content worker holds its write lock.
+    if (contentLoading_.load(std::memory_order_acquire)) return;
     const bool sdfOn = settings.showSDFDebug;
     const bool bboxOn = settings.showBoundingBoxes;
     const bool sdfWas = sceneRenderer->debugSDFRenderer && sceneRenderer->debugSDFRenderer->isEnabled();
@@ -6116,37 +6305,194 @@ void MyApp::ensureDroplets() {
               << ", spawn centre Y=" << dropletSpawnCenter_.y << "\n";
 }
 
-void MyApp::generateMap() {
+// S2: start the CPU-only content build on its own thread. The main thread has
+// already reset the scene/GPU state; from here on frames keep presenting while
+// the octree is built or loaded. postSubmit() polls contentBuildDone_ and
+// calls finalizeContentLoad().
+void MyApp::startLocalContentLoad(bool fromFile, std::string path) {
     if (useRemote) {
-        std::cout << "[MyApp::generateMap] ignored in remote mode (rendering server scene)\n";
+        std::cout << "[MyApp] local content load ignored in remote mode\n";
         return;
     }
+    if (contentLoading_.load()) {
+        std::cout << "[MyApp] content load already running; request ignored\n";
+        return;
+    }
+    if (contentStreaming_.load(std::memory_order_acquire)) {
+        std::cout << "[MyApp] content still streaming; new load ignored\n";
+        return;
+    }
+    if (fromFile) {
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec) || ec) {
+            std::cerr << "[MyApp] loadSceneFromFile: cannot open '" << path << "'\n";
+            contentError_ = "cannot open " + path;
+            contentBuildFailed_.store(true);
+            contentReady_.store(false);
+            return;
+        }
+    }
+
+    // Main-thread reset: joins old workers, waits the GPU, clears meshes and
+    // resets the CPU trees. Nothing below this point touches Vulkan.
     resetSceneState();
     ensureLayerHandlers();
+    if (layersWidget) layersWidget->setAllowStructureEdit(false);
 
-    // Build the octree (CPU only, no tessellation)
-    MainSceneLoader loader;
-    loader.setVideoBrushIndex(videoCubeMaterialIndex);
-    loader.setSdfGivenBrushIndex(sdfGivenMaterialIndex);
     std::vector<Octree::OctreeNodeDataHandler> ups, dels;
     {
         std::lock_guard<std::mutex> lock(layersSyncMutex_);
         ups.reserve(collectors.size());
         dels.reserve(collectors.size());
-        for (auto& c : collectors) { ups.push_back(c->updateHandler); dels.push_back(c->deleteHandler); }
+        for (auto& c : collectors) {
+            ups.push_back(c->updateHandler);
+            dels.push_back(c->deleteHandler);
+        }
     }
-    world->scene().loadScene(loader, ups, dels);
-    std::cout << "[MyApp::generateMap] Octree construction complete\n";
 
-    // The octree SDFs are final now: mark the raymarch table for one debounced
-    // rebuild. Chunk tessellation below publishes geometry only and must not
-    // retrigger this (it does not mutate stored corners).
+    const int videoIdx = videoCubeMaterialIndex;
+    const int sdfIdx = sdfGivenMaterialIndex;
+    contentIsFile_ = fromFile;
+    contentPath_ = std::move(path);
+    contentStart_ = std::chrono::steady_clock::now();
+    contentError_.clear();
+    contentBuildFailed_.store(false);
+    contentBuildDone_.store(false);
+    contentChunksExpected_.store(0);
+    contentStreaming_.store(false);
+    contentHasSettings_ = false;
+    if (fromFile) contentSettingsCopy_ = settings;
+    contentLoading_.store(true, std::memory_order_release);
+
+    try {
+        contentThread = std::thread(
+        [this, fromFile, path = contentPath_, ups = std::move(ups),
+         dels = std::move(dels), videoIdx, sdfIdx]() mutable {
+            bool ok = true;
+            try {
+                if (fromFile) {
+                    Settings loaded = contentSettingsCopy_;
+                    world->scene().load(path, ups, dels, &loaded);
+                    contentSettingsCopy_ = loaded;
+                    contentHasSettings_ = true;
+                    std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '"
+                              << path << "'\n";
+                } else {
+                    MainSceneLoader loader;
+                    loader.setVideoBrushIndex(videoIdx);
+                    loader.setSdfGivenBrushIndex(sdfIdx);
+                    world->scene().loadScene(loader, ups, dels);
+                    std::cout << "[MyApp::generateMap] Octree construction complete\n";
+                }
+            } catch (const std::exception& e) {
+                ok = false;
+                contentError_ = e.what();
+                std::cerr << "[MyApp] content build failed: " << contentError_ << "\n";
+            } catch (...) {
+                ok = false;
+                contentError_ = "unknown exception";
+                std::cerr << "[MyApp] content build failed (unknown exception)\n";
+            }
+            contentBuildFailed_.store(!ok, std::memory_order_relaxed);
+            contentBuildDone_.store(true, std::memory_order_release);
+        });
+    } catch (const std::exception& e) {
+        contentLoading_.store(false);
+        contentBuildFailed_.store(true);
+        contentError_ = std::string("thread creation failed: ") + e.what();
+        std::cerr << "[MyApp] " << contentError_ << "\n";
+    }
+}
+
+void MyApp::startSceneServerIfEnabled() {
+    if (!settings.serveScene || sceneServer || !world) return;
+    if (auto* local = dynamic_cast<LocalScene*>(&world->activeScene())) {
+        sceneServer = std::make_unique<SceneServer>(
+            *local, static_cast<uint16_t>(std::clamp(settings.serveScenePort, 1024, 65535)));
+        try {
+            sceneServer->start();
+        } catch (const std::exception& e) {
+            std::cerr << "[MyApp] scene server failed to start: " << e.what() << std::endl;
+            sceneServer.reset();
+            settings.serveScene = false;
+        }
+    } else {
+        std::cerr << "[MyApp] scene server unavailable: the active scene is remote" << std::endl;
+        settings.serveScene = false;
+    }
+}
+
+// Main thread, after present: join the builder, apply any loaded settings,
+// start tessellation and build the content-dependent GPU state (droplets).
+void MyApp::finalizeContentLoad() {
+    if (!contentBuildDone_.exchange(false, std::memory_order_acquire)) return;
+    if (contentThread.joinable()) contentThread.join();
+    contentLoading_.store(false);
+
+    if (contentBuildFailed_.load(std::memory_order_relaxed)) {
+        std::cerr << "[MyApp] content load failed: " << contentError_ << "\n";
+        contentReady_.store(false);
+        contentStreaming_.store(false);
+        if (layersWidget) layersWidget->setAllowStructureEdit(!useRemote);
+        return;
+    }
+
+    if (contentHasSettings_) {
+        settings = contentSettingsCopy_;
+        contentHasSettings_ = false;
+    }
+
+    contentReady_.store(true, std::memory_order_release);
+    // New octree content: rebuild the raymarch table once the debounce settles.
     raymarchDirty_ = true;
     raymarchDirtyTime_ = 0.0f;
 
-    // Tessellate chunks in background threads, one per layer.
-    startTessellationThreads("[MyApp::generateMap] Scene chunk tessellation complete\n");
+    // Expected chunk events are known before dispatch consumes the collectors.
+    size_t expected = 0;
+    {
+        std::lock_guard<std::mutex> lock(layersSyncMutex_);
+        for (auto& c : collectors) {
+            if (c) expected += c->size();
+        }
+    }
+    contentChunksExpected_.store(
+        static_cast<uint32_t>(std::min<size_t>(expected, UINT32_MAX)),
+        std::memory_order_relaxed);
+
+    // Start the server before dispatch so it observes the first chunk events.
+    startSceneServerIfEnabled();
+
+    // Every layer tessellates on its own thread.
+    startTessellationThreads(contentIsFile_
+        ? "[MyApp::loadSceneFromFile] Scene tessellation complete\n"
+        : "[MyApp::generateMap] Scene chunk tessellation complete\n");
+
+    // Content-dependent GPU state now has a valid octree to read.
     ensureDroplets();
+    contentStreaming_.store(contentChunksExpected_.load(std::memory_order_relaxed) > 0,
+                            std::memory_order_relaxed);
+
+    // Keep structural editing disabled until the stream finishes; adding or
+    // removing layers while the dispatch threads read the trees is unsafe.
+    if (layersWidget) layersWidget->setAllowStructureEdit(!useRemote && !contentStreaming_.load());
+
+    if (sceneRenderer) sceneRenderer->logMemoryUtilization();
+    std::cout << "[MyApp] content ready: expected chunk events="
+              << contentChunksExpected_.load(std::memory_order_relaxed)
+              << (contentIsFile_ ? " (file)" : " (generated)") << "\n";
+}
+
+// Compatibility entry point: run the whole build synchronously. The render
+// loop uses startLocalContentLoad()/finalizeContentLoad() instead.
+void MyApp::generateMap() {
+    if (useRemote) {
+        std::cout << "[MyApp::generateMap] ignored in remote mode (rendering server scene)\n";
+        return;
+    }
+    startLocalContentLoad(false, std::string());
+    while (contentLoading_.load() && !contentBuildDone_.load(std::memory_order_acquire))
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (contentBuildDone_.load(std::memory_order_acquire)) finalizeContentLoad();
 }
 
 void MyApp::loadRemoteScene() {
@@ -6176,10 +6522,12 @@ void MyApp::loadRemoteScene() {
         remoteScene.reset();
         useRemote = false;
         if (world) world->setActiveScene(nullptr);
+        contentReady_.store(false, std::memory_order_relaxed);
         generateMapPending = true;
         return;
     }
     std::cout << "[MyApp::loadRemoteScene] snapshot replayed; starting live dispatch\n";
+    contentReady_.store(true, std::memory_order_relaxed);
     startRemoteDispatchLoop();
 }
 
@@ -6188,40 +6536,39 @@ void MyApp::loadSceneFromFile(const std::string& path) {
         std::cout << "[MyApp::loadSceneFromFile] ignored in remote mode (rendering server scene)\n";
         return;
     }
-    resetSceneState();
-    ensureLayerHandlers();
-
-    std::vector<Octree::OctreeNodeDataHandler> ups, dels;
-    {
-        std::lock_guard<std::mutex> lock(layersSyncMutex_);
-        ups.reserve(collectors.size());
-        dels.reserve(collectors.size());
-        for (auto& c : collectors) { ups.push_back(c->updateHandler); dels.push_back(c->deleteHandler); }
-    }
-    world->scene().load(path, ups, dels, &settings);
-    std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '" << path << "'\n";
-
-    // New octree content: rebuild the raymarch table once the debounce settles.
-    raymarchDirty_ = true;
-    raymarchDirtyTime_ = 0.0f;
-
-    // Every layer tessellates on its own thread.
-    startTessellationThreads("[MyApp::loadSceneFromFile] Scene tessellation complete\n");
-
-    // New scene: the old droplet region table belongs to the previous octree.
-    // Drop it so the lazy bring-up rebuilds the region from the loaded scene.
-    if (particleSim) {
-        particleSim->destroy(this);
-        particleSim.reset();
-    }
-    ensureDroplets();
+    startLocalContentLoad(true, path);
+    while (contentLoading_.load() && !contentBuildDone_.load(std::memory_order_acquire))
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (contentBuildDone_.load(std::memory_order_acquire)) finalizeContentLoad();
 }
 void MyApp::postSubmit() {
+    // ── S2: content build first ─────────────────────────────────────────
+    // The octree build/load runs on contentThread. A completed build is
+    // finalized here (after present) so its one-time wiring (tessellation
+    // start, droplets, settings) never splits a frame. New requests start
+    // only when no build is in flight.
+    if (contentLoading_.load(std::memory_order_acquire) &&
+        contentBuildDone_.load(std::memory_order_acquire)) {
+        finalizeContentLoad();
+    }
+    if (!contentLoading_.load(std::memory_order_acquire) &&
+        !contentStreaming_.load(std::memory_order_acquire)) {
+        if (generateMapPending) {
+            generateMapPending = false;
+            startLocalContentLoad(false, std::string());
+        } else if (loadScenePending) {
+            loadScenePending = false;
+            startLocalContentLoad(true, pendingLoadPath);
+        }
+    }
+
     // H3 (perf report 29): follow the overlay settings every frame. The widget
     // writes settings.showSDFDebug / showBoundingBoxes directly, so this is the
     // single place that turns them into collection gates (a toggle-on also runs
     // the one-shot re-collection). Steady state is four relaxed atomic loads.
-    applyDebugOverlaySettings();
+    // S2: the recollect walk reads the octree; do not run it while the content
+    // worker holds the tree's write lock.
+    if (!contentLoading_.load(std::memory_order_acquire)) applyDebugOverlaySettings();
     pollBlenderExport();
     // Droplet diagnostics: throttled counter readback (never in the hot path).
     if (settings.dropletsEnabled && settings.dropletStats && particleSim && particleSim->ready()) {
@@ -6247,27 +6594,22 @@ void MyApp::postSubmit() {
         }
     }
     // Lazy bring-up: toggling the master gate on after startup builds the sim.
-    if (settings.dropletsEnabled && sceneRenderer && (!particleSim || !particleSim->ready())) {
+    // S2: never build it before the octree content exists (the old ordering
+    // built a one-node table against an empty tree and never refreshed it).
+    if (contentReady_.load(std::memory_order_acquire) &&
+        !contentLoading_.load(std::memory_order_acquire) &&
+        settings.dropletsEnabled && sceneRenderer &&
+        (!particleSim || !particleSim->ready())) {
         ensureDroplets();
     }
 
     // Scene server: start/stop with the settings toggle (or VULKAN_SERVE=1).
     // Only a LocalScene can be served; a remote scene already has a server.
-    if (settings.serveScene && !sceneServer && world) {
-        if (auto* local = dynamic_cast<LocalScene*>(&world->activeScene())) {
-            sceneServer = std::make_unique<SceneServer>(
-                *local, static_cast<uint16_t>(std::clamp(settings.serveScenePort, 1024, 65535)));
-            try {
-                sceneServer->start();
-            } catch (const std::exception& e) {
-                std::cerr << "[MyApp] scene server failed to start: " << e.what() << std::endl;
-                sceneServer.reset();
-                settings.serveScene = false;
-            }
-        } else {
-            std::cerr << "[MyApp] scene server unavailable: the active scene is remote" << std::endl;
-            settings.serveScene = false;
-        }
+    // S2: start it only after the content tree is final.
+    if (contentReady_.load(std::memory_order_acquire) &&
+        !contentLoading_.load(std::memory_order_acquire) &&
+        settings.serveScene && !sceneServer && world) {
+        startSceneServerIfEnabled();
     } else if (!settings.serveScene && sceneServer) {
         sceneServer->stop();
         sceneServer.reset();
@@ -6315,7 +6657,7 @@ void MyApp::postSubmit() {
         videoTextureService->update(std::clamp(lastFrameDelta, 0.0f, 0.25f));
     }
 
-    if (brushApplyToScenePending) {
+    if (brushApplyToScenePending && !contentLoading_.load(std::memory_order_acquire)) {
         brushApplyToScenePending = false;
         applyBrushToScene();
         // The raymarch table was refreshed earlier in update(), before this
@@ -6328,23 +6670,18 @@ void MyApp::postSubmit() {
         }
     }
 
-    if (generateMapPending) {
-        generateMapPending = false;
-        generateMap();
-        // Pool utilization telemetry (perf report 22 C1): one line per pool
-        // plus <25% warnings while non-empty.
-        if (sceneRenderer) sceneRenderer->logMemoryUtilization();
-    }
-
-    if (loadScenePending) {
-        loadScenePending = false;
-        loadSceneFromFile(pendingLoadPath);
-        if (sceneRenderer) sceneRenderer->logMemoryUtilization();
-    }
-
-    if (remoteLoadPending) {
+    if (remoteLoadPending && !contentLoading_.load(std::memory_order_acquire)) {
         remoteLoadPending = false;
         loadRemoteScene();
         if (sceneRenderer) sceneRenderer->logMemoryUtilization();
+    }
+
+    // S2: the streaming indicator lives until every layer worker has finished
+    // dispatching and the main thread has drained the pending publish queue.
+    if (contentStreaming_.load(std::memory_order_relaxed) &&
+        !sceneDispatchRunning_.load(std::memory_order_acquire) &&
+        sceneRenderer && sceneRenderer->getPendingMeshCount() == 0) {
+        contentStreaming_.store(false, std::memory_order_relaxed);
+        if (layersWidget) layersWidget->setAllowStructureEdit(!useRemote);
     }
 }
