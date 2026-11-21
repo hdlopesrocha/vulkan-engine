@@ -459,7 +459,8 @@ void TextureArrayManager::releaseStagingBuffer(VulkanApp* app) {
 	stagingBufferSize_ = 0;
 }
 
-size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureTriple> &triples) {
+size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureTriple> &triples,
+                                        const std::atomic<bool>* cancel) {
 	if (!a) throw std::runtime_error("TextureArrayManager::loadTriples: app is null");
 	if (layerAmount == 0) throw std::runtime_error("TextureArrayManager::loadTriples: layerAmount == 0");
 
@@ -511,6 +512,7 @@ size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureT
 	const unsigned hwThreads = std::max(1u, std::thread::hardware_concurrency());
 
 	while (next < triples.size() && currentLayer < layerAmount) {
+		if (cancel && cancel->load(std::memory_order_relaxed)) break;
 		const size_t capacityLeft = static_cast<size_t>(layerAmount - currentLayer);
 		const size_t byBudget = std::max<size_t>(1, kStagingBudgetBytes / std::max<size_t>(1, perTripleBytes));
 		const size_t batch = std::min({ triples.size() - next, capacityLeft, byBudget });
@@ -536,6 +538,7 @@ size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureT
 		std::atomic<size_t> nextTask{0};
 		auto workerFn = [&]() {
 			for (;;) {
+				if (cancel && cancel->load(std::memory_order_relaxed)) break;
 				const size_t task = nextTask.fetch_add(1, std::memory_order_relaxed);
 				if (task >= taskCount) break;
 				const size_t slot = task / 5u;

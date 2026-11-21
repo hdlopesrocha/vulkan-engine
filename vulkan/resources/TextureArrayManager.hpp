@@ -17,6 +17,7 @@ void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount);
 
 #include <cstdint>
 #include <array>
+#include <atomic>
 #include "Buffer.hpp"
 #include "TextureImage.hpp"
 #include <vector>
@@ -109,7 +110,13 @@ public:
     void logMemoryUtilization(const char* name) const;
 
     // Load a set of triples (albedo/normal/bump/roughness/ao) into layers.
-    size_t loadTriples(class VulkanApp* app, const std::vector<TextureTriple> &triples);
+    // Decode/upload the triples. `cancel` is optional: when it flips true the
+    // function stops starting new batches (and new decode tasks) and returns
+    // the number of layers completed so far. This lets a quit during the
+    // (potentially long) texture bring-up join the worker quickly instead of
+    // waiting for the whole palette.
+    size_t loadTriples(class VulkanApp* app, const std::vector<TextureTriple> &triples,
+                       const std::atomic<bool>* cancel = nullptr);
 
     // Invalidate all cached ImGui texture descriptors (e.g. after swapchain recreation
     // when the descriptor pool is destroyed). Next getImTexture() call re-creates them.

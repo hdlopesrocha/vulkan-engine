@@ -19,6 +19,7 @@
 #include <bit>
 #include <cassert>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <cfloat>
 #include <mutex>
@@ -476,7 +477,7 @@ SceneRenderer::~SceneRenderer() {
     // VulkanApp instance.
 }
 
-void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams) {
+void SceneRenderer::beginInit(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams) {
     if (!app) {
         std::cerr << "[SceneRenderer::init] app is nullptr!" << std::endl;
         return;
@@ -542,25 +543,25 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // shader-module / single-time-submit paths are locked. Run the heavy
     // pipeline creation concurrently; the renderers that consume these results
     // (shadow, vegetation, water, brush, post) stay sequential.
-    auto futureSolid = std::async(std::launch::async, [&]() {
+    initFutureSolid_ = std::async(std::launch::async, [this, app, initW, initH]() {
         solidRenderer->init();
         solidRenderer->destroyRenderTargets(app);
         solidRenderer->createRenderTargets(app, initW, initH);
         solidRenderer->createPipelines(app);
     });
-    auto futureVideo = std::async(std::launch::async, [&]() {
+    initFutureVideo_ = std::async(std::launch::async, [this, app, initW, initH]() {
         if (!videoRenderer) return;
         videoRenderer->init(app);
         videoRenderer->destroyRenderTargets(app);
         videoRenderer->createRenderTargets(app, initW, initH);
         videoRenderer->createPipelines(app);
     });
-    auto futureSky = std::async(std::launch::async, [&]() {
+    initFutureSky_ = std::async(std::launch::async, [this, app, initW, initH]() {
         skyRenderer->init(app);
         skyRenderer->destroyOffscreenTargets(app);
         skyRenderer->createOffscreenTargets(app, initW, initH);
     });
-    auto futureDebug = std::async(std::launch::async, [&]() {
+    initFutureDebug_ = std::async(std::launch::async, [this, app, initW, initH]() {
         if (debugCubeRenderer) debugCubeRenderer->init(app);
         if (boundingBoxRenderer) boundingBoxRenderer->init(app);
         if (debugSDFRenderer) debugSDFRenderer->init(app);
@@ -572,10 +573,32 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
         if (sdfRenderer) sdfRenderer->createRenderTargets(app, initW, initH);
         if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, initW, initH);
     });
-    futureSolid.get();
-    futureVideo.get();
-    futureSky.get();
-    futureDebug.get();
+
+    initWidth_ = initW;
+    initHeight_ = initH;
+    initStarted_ = true;
+}
+
+// Non-blocking readiness check for the four renderer groups started by
+// beginInit(). Safe to call from the main thread between frames; it never
+// blocks on a future.
+bool SceneRenderer::pollInit() {
+    if (!initStarted_) return true;
+    auto ready = [](const std::future<void>& f) {
+        return f.valid() && f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+    };
+    return ready(initFutureSolid_) && ready(initFutureVideo_) &&
+           ready(initFutureSky_) && ready(initFutureDebug_);
+}
+
+void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams) {
+    const uint32_t initW = initWidth_;
+    const uint32_t initH = initHeight_;
+    initFutureSolid_.get();
+    initFutureVideo_.get();
+    initFutureSky_.get();
+    initFutureDebug_.get();
+
 
     shadowMapper->init(app);
     vegetationRenderer->init(app);
@@ -1178,7 +1201,17 @@ void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManage
     // views created above (water render targets + sky offscreen targets).
     if (waterRenderer) waterRenderer->setRTResources(rayTracing.get());
     refreshRTSceneViews(app);
+
 }
+
+// Compatibility entry point: run all three phases back to back. The staged
+// path (MyApp) uses beginInit()/pollInit()/finishInit() instead.
+void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams) {
+    beginInit(app, textureArrayManager, materialManager, waterParams);
+    while (!pollInit()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    finishInit(app, textureArrayManager, materialManager, waterParams);
+}
+
 
 // ── Descriptor-buffer migration (Phase 1) ───────────────────────────────────
 // Step 1: allocate 3 host-visible descriptor buffers (one per frame). Size =

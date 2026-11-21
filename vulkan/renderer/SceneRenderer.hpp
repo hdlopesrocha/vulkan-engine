@@ -19,6 +19,7 @@ class World;
 #include <unordered_set>
 #include <array>
 #include <atomic>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <deque>
@@ -235,6 +236,16 @@ public:
     void logMemoryUtilization();
 
     void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams);
+    // ── Staged bring-up (S1) ─────────────────────────────────────────────
+    // beginInit() runs the serial prologue and starts the four heavy renderer
+    // groups on worker threads, then returns. pollInit() is a non-blocking
+    // "are the groups done?" check; finishInit() joins them and performs the
+    // main-thread wiring (shadow map, vegetation, descriptors, pools). The
+    // compatibility init() below runs all three back to back.
+    void beginInit(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams);
+    bool pollInit();
+    void finishInit(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams);
+    bool initStarted() const { return initStarted_; }
     // Re-update main descriptor set when texture arrays are (re)allocated
     void updateTextureDescriptorSet(VulkanApp* app, TextureArrayManager * textureArrayManager);
 
@@ -539,6 +550,18 @@ private:
     std::atomic<uint64_t> dbgWalkWindowWalks_{0};
     std::atomic<uint32_t> dbgWalkChunks_{0};   // chunks that ran >= 1 walk
     void logDebugWalkStats(bool force);
+
+    // ── Staged bring-up (S1) ─────────────────────────────────────────────
+    // The four renderer groups started by beginInit() and joined by
+    // finishInit(). They must be members because beginInit() returns while
+    // they are still running; lambdas capture app/size by value.
+    std::future<void> initFutureSolid_;
+    std::future<void> initFutureVideo_;
+    std::future<void> initFutureSky_;
+    std::future<void> initFutureDebug_;
+    bool initStarted_ = false;
+    uint32_t initWidth_ = 0;
+    uint32_t initHeight_ = 0;
 };
 
 // ...existing code...

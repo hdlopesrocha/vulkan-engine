@@ -273,6 +273,10 @@ protected:
 
     // True between initVulkan() and the end of setup() — used to show loading screen
     bool isLoading = false;
+    // True once the application's ImGui panels exist. While false the boot UI
+    // is drawn; while true renderImGui() runs even if the scene hooks are
+    // still disabled. Set by the derived app from its boot stages.
+    bool uiReady = false;
 
     // Set when a device-lost is detected to allow graceful shutdown handling
     std::atomic<bool> deviceLost{false};
@@ -743,6 +747,26 @@ public:
     void requestClose();
         virtual void setup() = 0;
         virtual void update(float deltaTime) = 0;
+        // S1 staged bring-up: VulkanApp::run() calls setupStep() once per
+        // presented frame instead of running setup() as one uninterruptible
+        // block. A step returns true when the whole bring-up is complete; a
+        // long step may return false to be polled again next frame. The
+        // default keeps the old behaviour for any app without a stage list.
+        virtual bool setupStep() { setup(); return true; }
+        // Human-readable name of the stage setupStep() will run, for the boot
+        // panel and the [setup-diag] log.
+        virtual const char* setupStepName() const { return "Setup"; }
+        // Called once per frame while setup is in progress (events are polled
+        // by the boot loop). Default no-op.
+        virtual void updateBoot(float /*deltaTime*/) {}
+        // Minimal ImGui UI drawn while the full application UI is not ready.
+        // The boot panel lives here; once uiReady is set the normal
+        // renderImGui() path runs and can draw a compact progress overlay.
+        virtual void renderBootUi() {}
+        // Called before cleanup() if bring-up did not complete (window closed
+        // or an exception): join any asynchronous setup work so no worker
+        // touches Vulkan resources while they are destroyed.
+        virtual void abortSetup() {}
         virtual void preRenderPass(VkCommandBuffer &commandBuffer) {} // Called after vkBeginCommandBuffer but before rendering begins
         virtual void draw(VkCommandBuffer &commandBuffer) = 0;
         virtual void clean() = 0;

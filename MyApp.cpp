@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <atomic>
 #include <array>
+#include <future>
 #include <unordered_set>
 #include <shared_mutex>
 #include <sstream>
@@ -254,6 +255,44 @@ static void playSetupAlert(const char* name) {
 
 class MyApp : public VulkanApp, public IEventHandler {
 public:
+    // ── S1 staged bring-up ────────────────────────────────────────────────
+    // setupStep() advances exactly one entry per frame. Long steps start
+    // asynchronous work (texture decode/upload, the four renderer groups) and
+    // return; the matching Poll step is retried until the futures are ready.
+    enum class BootStage : uint32_t {
+        Env = 0,
+        SceneInfrastructure,
+        WorldAndBrushes,
+        VegetationRenderer,
+        VegetationTextures,
+        TexturesBegin,
+        TexturesPoll,
+        TexturesFinish,
+        RenderersBegin,
+        RenderersPoll,
+        RenderersFinish,
+        TextureViewer,
+        UiWidgets,
+        RegisterWidgets,
+        InputAndCamera,
+        BrushAndLayerWidgets,
+        ProfilingResources,
+        ScheduleLoad,
+        Done
+    };
+    BootStage bootStage = BootStage::Env;
+    bool setupDiag_ = false;
+    std::chrono::steady_clock::time_point setupDiagLast_{};
+    std::chrono::steady_clock::time_point bootStart_{};
+    // Async texture load started by setupTexturesBegin(). The future returns
+    // the number of loaded layers; it is polled, never waited on, by the boot
+    // loop so the window keeps presenting frames while 5*N maps decode/upload.
+    std::future<size_t> textureLoadFuture_;
+    std::vector<TextureTriple> textureTriplesForLoad_;
+    uint32_t textureLayerCount_ = 0;
+    // Set by abortSetup() so a Quit during the texture stage stops starting new
+    // decode batches/uploads; the worker returns the layers completed so far.
+    std::atomic<bool> textureLoadCancel_{false};
     Settings settings;
     // Last grass mode applied to the renderers; the mode selector only
     // pushes on change so the Grass/Impostors widget toggles are not
@@ -564,8 +603,11 @@ public:
             textureArrayManager.getImTexture(layer, map);
     }
 
-    // setupTextures (defined out-of-line to avoid inline/member-definition issues)
-    void setupTextures() {
+    // S1: staged texture bring-up. Begin allocates the arrays and starts the
+    // decode/upload worker; Poll is non-blocking; Finish does the main-thread
+    // ImGui/material wiring that needs the loaded layer count.
+    void setupTexturesBegin() {
+
         // Perf report 23 C1: size the material arrays from content, not a
         // magic 32. The startup path loads this many triples, configures this
         // many mixers, and keeps one editable/paint placeholder plus one
@@ -578,23 +620,30 @@ public:
         // the Blender exporter reads, so layer indices, texture files and
         // material parameters cannot drift between the renderer and exports.
         textureTriples_ = sceneTextureTriples();
-        std::vector<TextureTriple> textureTriples;
-        textureTriples.reserve(textureTriples_.size());
+        textureTriplesForLoad_.clear();
+        textureTriplesForLoad_.reserve(textureTriples_.size());
         for (const SceneTextureTriple& t : textureTriples_) {
-            textureTriples.push_back({t.albedo.c_str(), t.normal.c_str(), t.height.c_str(),
-                                      t.rough.c_str(), t.ao.c_str()});
+            textureTriplesForLoad_.push_back({t.albedo.c_str(), t.normal.c_str(), t.height.c_str(),
+                                              t.rough.c_str(), t.ao.c_str()});
         }
 
-        uint32_t layerCount = static_cast<uint32_t>(textureTriples.size()) + kSceneMixerCount + kScenePaintMargin;
+        uint32_t layerCount = static_cast<uint32_t>(textureTriplesForLoad_.size()) + kSceneMixerCount + kScenePaintMargin;
         layerCount = std::max(layerCount, kMinLayers);
         std::cout << "[MyApp::setupTextures] texture arrays: " << layerCount
                   << " layers at " << arraySize << "^2 ("
-                  << textureTriples.size() << " triples + " << kSceneMixerCount
+                  << textureTriplesForLoad_.size() << " triples + " << kSceneMixerCount
                   << " mixers + " << kScenePaintMargin << " paint margin)\n";
         textureArrayManager.allocate(layerCount, arraySize, arraySize, this);
 
-        // Bulk load the triples directly using TextureTriple vector already defined above
-        loadedTextureLayers = textureArrayManager.loadTriples(this, textureTriples);
+        // S1: decode + upload on a worker. loadTriples() already parallelizes
+        // the 5*N decodes and submits one batch; the boot loop polls the
+        // future instead of blocking the main thread for the whole upload.
+        loadedTextureLayers = 0;
+        textureLoadCancel_.store(false, std::memory_order_relaxed);
+        textureLoadFuture_ = std::async(std::launch::async, [this]() {
+            return textureArrayManager.loadTriples(this, textureTriplesForLoad_,
+                                                   &textureLoadCancel_);
+        });
         // Ensure mixer descriptor sets are updated with newly loaded arrays
         
         textureMixer = std::make_shared<TextureMixer>();
@@ -606,6 +655,26 @@ public:
         octreeTopologyCompute->init(this);
         textureMixer->attachTextureArrayManager(&textureArrayManager);
         // Record into member so UI can display counts
+        textureLayerCount_ = layerCount;
+    }
+
+    bool setupTexturesPoll() {
+        if (!textureLoadFuture_.valid()) return true;
+        if (textureLoadFuture_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return false;
+        try {
+            loadedTextureLayers = textureLoadFuture_.get();
+        } catch (const std::exception& e) {
+            std::cerr << "[MyApp::setupTextures] asynchronous load failed: " << e.what() << "\n";
+            loadedTextureLayers = 0;
+        } catch (...) {
+            std::cerr << "[MyApp::setupTextures] asynchronous load failed (unknown)\n";
+            loadedTextureLayers = 0;
+        }
+        return true;
+    }
+
+    void setupTexturesFinish() {
         mixerParams.clear();
         // Generated blend layers (targets continue after the source triples).
         for (const SceneMixerDesc& d : sceneMixerDescs()) {
@@ -622,7 +691,7 @@ public:
         // Editable placeholder: the first paint-margin layer after the source
         // triples and the generated mixers (video clips live in their own
         // array and do not consume texture-array layers).
-        uint32_t editableLayer = (loadedTextureLayers < layerCount) ? loadedTextureLayers : 0u;
+        uint32_t editableLayer = (loadedTextureLayers < textureLayerCount_) ? loadedTextureLayers : 0u;
 
         // Trigger initial generation for configured mixers so UI previews show meaningful results
         // (Previously this was deferred to the user pressing "Generate" in the UI)
@@ -773,39 +842,275 @@ public:
         // Perf report 23 C1: committed vs. initialized texture memory. The
         // scene renderer logs it again after every scene load/generation.
         textureArrayManager.logMemoryUtilization("main");
-
     }
 
-     void setup() override {
-        applySetupEnvOverrides();
+    // Compatibility wrapper for direct (non-staged) bring-up.
+    void setupTextures() {
+        setupTexturesBegin();
+        while (!setupTexturesPoll()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        setupTexturesFinish();
+    }
 
-        // VULKAN_SETUP_DIAG=1: print the wall time of each top-level setup step
-        // so the parallelisation work can be measured.
-        const bool setupDiag = std::getenv("VULKAN_SETUP_DIAG") != nullptr;
-        auto setupDiagLast = std::chrono::steady_clock::now();
-        auto setupStep = [&](const char* name) {
-            if (!setupDiag) return;
-            const auto now = std::chrono::steady_clock::now();
-            std::cout << "[setup-diag] " << name << ": "
-                      << std::chrono::duration<double, std::milli>(now - setupDiagLast).count()
-                      << " ms" << std::endl;
-            setupDiagLast = now;
-        };
 
-        createSceneInfrastructure(setupStep);
-        createWorldAndBrushes();
-        initSceneRenderers(setupStep);
-        createTextureViewerPanel();
-        createUiWidgets();
-        registerUiWidgets();
-        setupInputAndCamera();
-        createBrushAndLayerWidgets();
-        createProfilingResources();
-        scheduleInitialSceneLoad();
-        playSetupAlert("setup-ready");
+    // Compatibility entry point: run the whole staged bring-up synchronously.
+    // VulkanApp::run() does not call this; it pumps setupStep() between frames.
+    void setup() override {
+        while (!setupStep()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
+    // S1: one boot stage per call. Returning false means "poll me again next
+    // frame" (the stage started async work and is waiting for it); true means
+    // the whole setup is complete.
+    bool setupStep() override {
+        if (bootStage == BootStage::Env) {
+            // VULKAN_SETUP_DIAG=1: wall time per stage. The first stamp is the
+            // start of the boot, so the first line includes applySetupEnvOverrides.
+            setupDiag_ = std::getenv("VULKAN_SETUP_DIAG") != nullptr;
+            setupDiagLast_ = std::chrono::steady_clock::now();
+            bootStart_ = setupDiagLast_;
+            applySetupEnvOverrides();
+            setupDiagStep("environment overrides");
+            advanceBoot();
+            return false;
+        }
+
+        switch (bootStage) {
+        case BootStage::SceneInfrastructure:
+            createSceneInfrastructure([this](const char* name) { setupDiagStep(name); });
+            advanceBoot();
+            break;
+
+        case BootStage::WorldAndBrushes:
+            createWorldAndBrushes();
+            advanceBoot();
+            break;
+
+        case BootStage::VegetationRenderer:
+            // Must run before setupVegetationTextures: the impostor service
+            // shares the wind UBO + descriptor layout created here.
+            if (sceneRenderer && sceneRenderer->vegetationRenderer)
+                sceneRenderer->vegetationRenderer->init(this);
+            setupDiagStep("vegetation renderer init");
+            advanceBoot();
+            break;
+
+        case BootStage::VegetationTextures:
+            setupVegetationTextures();
+            setupDiagStep("vegetation textures");
+            advanceBoot();
+            break;
+
+        case BootStage::TexturesBegin:
+            setupTexturesBegin();
+            setupDiagStep("texture decode/upload started");
+            advanceBoot();
+            break;
+
+        case BootStage::TexturesPoll:
+            if (!setupTexturesPoll()) return false; // keep presenting frames
+            setupDiagStep("texture decode/upload (wall)");
+            advanceBoot();
+            break;
+
+        case BootStage::TexturesFinish:
+            setupTexturesFinish();
+            playSetupAlert("setup-textures");
+            setupDiagStep("textures + materials");
+            advanceBoot();
+            break;
+
+        case BootStage::RenderersBegin:
+            // Offscreen target scales must be known before the async groups
+            // create those targets.
+            if (sceneRenderer) {
+                sceneRenderer->setWaterRenderScale(settings.waterRenderScale);
+                sceneRenderer->setVegetationRenderScale(settings.vegetationRenderScale);
+                sceneRenderer->beginInit(this, &textureArrayManager, &materialManager, waterParams);
+            }
+            setupDiagStep("renderer init groups started");
+            advanceBoot();
+            break;
+
+        case BootStage::RenderersPoll:
+            if (sceneRenderer && !sceneRenderer->pollInit()) return false;
+            setupDiagStep("renderer init groups (wall)");
+            advanceBoot();
+            break;
+
+        case BootStage::RenderersFinish:
+            finishRendererInit();
+            playSetupAlert("setup-renderers");
+            setupDiagStep("renderer post-init (video bind, impostor rewire)");
+            advanceBoot();
+            break;
+
+        case BootStage::TextureViewer:
+            createTextureViewerPanel();
+            setupDiagStep("texture viewer");
+            advanceBoot();
+            break;
+
+        case BootStage::UiWidgets:
+            createUiWidgets();
+            setupDiagStep("UI widgets");
+            advanceBoot();
+            break;
+
+        case BootStage::RegisterWidgets:
+            registerUiWidgets();
+            // All panels the app UI expects now exist; drawFrame() switches
+            // from the minimal boot panel to renderImGui() while the last
+            // (short) stages finish.
+            uiReady = true;
+            setupDiagStep("UI registration");
+            advanceBoot();
+            break;
+
+        case BootStage::InputAndCamera:
+            setupInputAndCamera();
+            setupDiagStep("input + camera");
+            advanceBoot();
+            break;
+
+        case BootStage::BrushAndLayerWidgets:
+            createBrushAndLayerWidgets();
+            setupDiagStep("brush + layer widgets");
+            advanceBoot();
+            break;
+
+        case BootStage::ProfilingResources:
+            createProfilingResources();
+            setupDiagStep("profiling resources");
+            advanceBoot();
+            break;
+
+        case BootStage::ScheduleLoad:
+            scheduleInitialSceneLoad();
+            playSetupAlert("setup-ready");
+            setupDiagStep("schedule initial scene load");
+            bootStage = BootStage::Done;
+            return true;
+
+        case BootStage::Done:
+            return true;
+
+        case BootStage::Env:
+            break; // handled above
+        }
+        return false;
+    }
+
+    const char* setupStepName() const override {
+        switch (bootStage) {
+        case BootStage::Env:                 return "Applying environment overrides";
+        case BootStage::SceneInfrastructure: return "Creating scene infrastructure";
+        case BootStage::WorldAndBrushes:     return "Creating world and layer handlers";
+        case BootStage::VegetationRenderer:  return "Initializing vegetation renderer";
+        case BootStage::VegetationTextures:  return "Preparing vegetation textures";
+        case BootStage::TexturesBegin:       return "Starting texture decode";
+        case BootStage::TexturesPoll:        return "Decoding and uploading scene textures";
+        case BootStage::TexturesFinish:      return "Finalizing textures and materials";
+        case BootStage::RenderersBegin:      return "Starting renderer pipelines";
+        case BootStage::RenderersPoll:       return "Creating renderer pipelines";
+        case BootStage::RenderersFinish:     return "Finalizing renderers and pools";
+        case BootStage::TextureViewer:       return "Creating texture viewer";
+        case BootStage::UiWidgets:           return "Creating UI widgets";
+        case BootStage::RegisterWidgets:     return "Registering UI widgets";
+        case BootStage::InputAndCamera:      return "Setting up input and camera";
+        case BootStage::BrushAndLayerWidgets:return "Creating brush and layer widgets";
+        case BootStage::ProfilingResources:  return "Creating profiling resources";
+        case BootStage::ScheduleLoad:        return "Scheduling scene content";
+        case BootStage::Done:                return "Ready";
+        }
+        return "Starting up";
+    }
+
+    // Called from drawFrame() once per boot frame (events are polled by the
+    // run() loop). Gives the user a way out even before input is initialized.
+    void updateBoot(float /*deltaTime*/) override {
+        if (!getWindow()) return;
+        if (glfwGetKey(getWindow(), GLFW_KEY_ESCAPE) == GLFW_PRESS) requestClose();
+    }
+
+    // Minimal ImGui panel shown before the full UI exists.
+    void renderBootUi() override {
+        drawBootPanel(false);
+    }
+
+    // S1: if the window is closed (or a stage throws) while an async boot task
+    // is in flight, join it before cleanup() destroys the resources it uses.
+    void abortSetup() override {
+        if (textureLoadFuture_.valid()) {
+            textureLoadCancel_.store(true, std::memory_order_relaxed);
+            try { (void)textureLoadFuture_.get(); } catch (const std::exception& e) {
+                std::cerr << "[MyApp::abortSetup] texture load failed: " << e.what() << "\n";
+            } catch (...) {
+                std::cerr << "[MyApp::abortSetup] texture load failed (unknown)\n";
+            }
+        }
+        if (sceneRenderer && sceneRenderer->initStarted()) {
+            while (!sceneRenderer->pollInit())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // Futures are ready, so no renderer worker is still using device
+            // resources. A partially finished init is safe to tear down: every
+            // created object was registered with the resource manager.
+        }
     }
 
     // ── setup() sections ─────────────────────────────────────────────────────
+    void advanceBoot() {
+        bootStage = static_cast<BootStage>(static_cast<uint32_t>(bootStage) + 1u);
+    }
+
+    void setupDiagStep(const char* name) {
+        if (!setupDiag_) return;
+        const auto now = std::chrono::steady_clock::now();
+        std::cout << "[setup-diag] " << name << ": "
+                  << std::chrono::duration<double, std::milli>(now - setupDiagLast_).count()
+                  << " ms" << std::endl;
+        setupDiagLast_ = now;
+    }
+
+    void drawBootPanel(bool compact) {
+        const ImGuiIO& io = ImGui::GetIO();
+        const double elapsed = bootStart_.time_since_epoch().count() != 0
+            ? std::chrono::duration<double>(std::chrono::steady_clock::now() - bootStart_).count()
+            : 0.0;
+        const float progress = std::min(0.99f,
+            static_cast<float>(static_cast<uint32_t>(bootStage)) /
+            static_cast<float>(static_cast<uint32_t>(BootStage::Done)));
+
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse |
+                                 ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoSavedSettings;
+        if (compact) {
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 12.0f, io.DisplaySize.y - 12.0f),
+                                    ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+            flags |= ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+            ImGui::SetNextWindowBgAlpha(0.75f);
+            ImGui::Begin("##boot_compact", nullptr, flags);
+            ImGui::Text("Starting up: %s", setupStepName());
+            ImGui::ProgressBar(progress, ImVec2(220.0f, 0.0f));
+        } else {
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                                    ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_Always);
+            ImGui::Begin("Starting up", nullptr, flags | ImGuiWindowFlags_AlwaysAutoResize);
+            ImGui::TextUnformatted("Vulkan Engine");
+            ImGui::Separator();
+            ImGui::Text("Stage: %s", setupStepName());
+            ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f));
+            ImGui::Text("Elapsed: %.1f s", elapsed);
+            ImGui::Spacing();
+            ImGui::TextDisabled("The world loads after the renderers are ready.");
+            ImGui::Spacing();
+            if (ImGui::Button("Quit")) requestClose();
+        }
+        ImGui::End();
+    }
     void applySetupEnvOverrides() {
         // Headless droplet bring-up (validation/diagnostics): VULKAN_DROPLETS=1
         // enables the simulation + rendering and the counter readback — the
@@ -1034,28 +1339,12 @@ public:
         // Scene starts empty — use File > Generate Map to populate it.
     }
 
-    void initSceneRenderers(const std::function<void(const char*)>& step) {
-        // Init the VegetationRenderer before setupVegetationTextures so that
-        // wind params UBO + descriptor set layout exist before captureAll calls
-        // setImpostorData().  SceneRenderer::init() is called later after all
-        // texture/material setup is complete.
-        if (sceneRenderer && sceneRenderer->vegetationRenderer)
-            sceneRenderer->vegetationRenderer->init(this);
-        step("vegetation renderer init");
-
-        setupVegetationTextures();
-        step("vegetation textures");
-        setupTextures();
-        playSetupAlert("setup-textures");
-        step("scene textures + materials");
-
-        // H9: the water offscreen targets render at Settings::waterRenderScale.
-        sceneRenderer->setWaterRenderScale(settings.waterRenderScale);
-        // M12 (perf report 22): the vegetation offscreen targets render at
-        // Settings::vegetationRenderScale.
-        sceneRenderer->setVegetationRenderScale(settings.vegetationRenderScale);
-        sceneRenderer->init(this, &textureArrayManager, &materialManager, waterParams);
-        step("scene renderer init (renderers, pipelines, descriptors)");
+    // S1: final main-thread wiring after the four async renderer groups have
+    // completed. Runs between frames (the boot loop calls it after present),
+    // so ImGui descriptor creation in ShadowRenderer::init is safe.
+    void finishRendererInit() {
+        if (!sceneRenderer) return;
+        sceneRenderer->finishInit(this, &textureArrayManager, &materialManager, waterParams);
 
         // H3 (perf report 29): seed the debug collection gates from the settings
         // before any chunk is built, so the default (both overlays off) never
@@ -1073,8 +1362,6 @@ public:
         if (impostorService) impostorService->rewire();
 
         printf("[MyApp::setup] Created and initialized SceneRenderer\n");
-        playSetupAlert("setup-renderers");
-        step("renderer post-init (video bind, impostor rewire)");
     }
 
     void createTextureViewerPanel() {
@@ -4206,6 +4493,10 @@ public:
                     af.beatIntensity, active);
             }
         }
+
+        // S1: while the last boot stages run, keep a compact progress readout
+        // on top of the full UI. It disappears when setup completes.
+        if (isLoading) drawBootPanel(true);
     }
 
     void draw(VkCommandBuffer &commandBuffer) override {

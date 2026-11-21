@@ -4108,6 +4108,9 @@ void VulkanApp::drawFrame() {
     if (r == VK_TIMEOUT) {
         return;
     } else if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+        // During bring-up the swapchain is recreated after setup, so async boot
+        // stages never observe renderer targets being torn down mid-init.
+        if (isLoading) { framebufferResized = true; return; }
         recreateSwapchain();
         return;
     } else if (r == VK_ERROR_DEVICE_LOST) {
@@ -4165,6 +4168,8 @@ void VulkanApp::drawFrame() {
     lastFrameTime = frameNow;
     if (!isLoading) {
         update(deltaTime);
+    } else {
+        updateBoot(deltaTime);
     }
 
     // ImGui new frame (backend)
@@ -4173,15 +4178,14 @@ void VulkanApp::drawFrame() {
     ImGui::NewFrame();
 
     if (isLoading) {
-        // Draw a centered "Loading..." text with white text on black background
-        ImDrawList* dl = ImGui::GetBackgroundDrawList();
-        ImVec2 display = ImGui::GetIO().DisplaySize;
-        dl->AddRectFilled(ImVec2(0.0f, 0.0f), display, IM_COL32(0, 0, 0, 255));
-        const char* text = "Loading...";
-        ImVec2 textSize = ImGui::CalcTextSize(text);
-        float x = (display.x - textSize.x) * 0.5f;
-        float y = (display.y - textSize.y) * 0.5f;
-        dl->AddText(ImVec2(x, y), IM_COL32(255, 255, 255, 255), text);
+        // S1: the full app UI is available as soon as its panels exist; until
+        // then the minimal boot panel is drawn. The scene hooks stay disabled
+        // until setup completes.
+        if (uiReady) {
+            renderImGui();
+        } else {
+            renderBootUi();
+        }
     } else {
         // call into the derived app to build the UI
         renderImGui();
@@ -4648,6 +4652,8 @@ void VulkanApp::drawFrame() {
     recordQueueSegment(presentQueue, VK_NULL_HANDLE, frameCounter_.load(std::memory_order_relaxed));
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || framebufferResized) {
         framebufferResized = false;
+        // Defer resize processing until setup completes (see the acquire path).
+        if (isLoading) { framebufferResized = true; return; }
         recreateSwapchain();
         return;
     } else if (r == VK_ERROR_DEVICE_LOST) {
@@ -4661,8 +4667,10 @@ void VulkanApp::drawFrame() {
     processPendingCommandBuffers();
     //std::cerr << "presented image " << imageIndex << "\n";
 
-    // Hook for derived apps to run post-submit instrumentation (e.g., readback)
-    postSubmit();
+    // Hook for derived apps to run post-submit instrumentation (e.g., readback).
+    // During bring-up the app may only be partially initialized; boot stages are
+    // advanced from run(), so postSubmit() must not consume scene flags yet.
+    if (!isLoading) postSubmit();
 
     // Per-frame barrier accounting: logs vkCmdPipelineBarrier2 calls recorded
     // this frame (target <20/frame). Enable with VULKAN_BARRIER_STATS=1.
@@ -5875,26 +5883,37 @@ void VulkanApp::run() {
     // resources). cleanup() must still run so the partially created device and
     // instance are torn down instead of leaking. The mainLoop catch blocks are
     // kept as before; any exception escaping them is caught by the outer try.
+    bool setupComplete = false;
     try {
         initWindow();
         initVulkan();
 
-        // Fonts are now loaded — render one frame showing the loading screen before
-        // the (potentially slow) setup() call so the user sees something immediately.
+        // S1: present one frame before the first setup stage so the user sees
+        // the boot panel immediately. From then on the bring-up is advanced one
+        // stage per frame: events are polled, the boot UI animates, and the
+        // window can be closed at any point. Long stages are implemented as
+        // async work started in one step and polled in the next.
         isLoading = true;
         glfwPollEvents();
         drawFrame();
 
-        setup();
-        isLoading = false;
+        while (!glfwWindowShouldClose(window)) {
+            setupComplete = setupStep();
+            if (setupComplete) break;
+            glfwPollEvents();
+            drawFrame();
+        }
 
-        try {
-            mainLoop();
-        } catch (const std::exception& e) {
-            fprintf(stderr, "[VulkanApp] mainLoop threw: %s, proceeding with cleanup\n", e.what());
-        } catch (...) {
-            std::type_info* ti = abi::__cxa_current_exception_type();
-            fprintf(stderr, "[VulkanApp] mainLoop threw unknown exception (type=%s), proceeding with cleanup\n", ti ? ti->name() : "null");
+        if (setupComplete && !glfwWindowShouldClose(window)) {
+            isLoading = false;
+            try {
+                mainLoop();
+            } catch (const std::exception& e) {
+                fprintf(stderr, "[VulkanApp] mainLoop threw: %s, proceeding with cleanup\n", e.what());
+            } catch (...) {
+                std::type_info* ti = abi::__cxa_current_exception_type();
+                fprintf(stderr, "[VulkanApp] mainLoop threw unknown exception (type=%s), proceeding with cleanup\n", ti ? ti->name() : "null");
+            }
         }
     } catch (const std::exception& e) {
         fprintf(stderr, "[VulkanApp] setup threw: %s, proceeding with cleanup\n", e.what());
@@ -5902,6 +5921,8 @@ void VulkanApp::run() {
         std::type_info* ti = abi::__cxa_current_exception_type();
         fprintf(stderr, "[VulkanApp] setup threw unknown exception (type=%s), proceeding with cleanup\n", ti ? ti->name() : "null");
     }
+    // Join any async bring-up work before teardown touches the same resources.
+    if (!setupComplete) abortSetup();
     cleanup();
 }
 

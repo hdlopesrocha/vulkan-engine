@@ -1,0 +1,1518 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{array}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+\tcbset{
+    promptbox/.style={
+        colback=blue!5!white,
+        colframe=blue!75!black,
+        title={#1},
+        fonttitle=\bfseries,
+        fontupper=\raggedright,
+        before skip=6pt,
+        after skip=6pt,
+        breakable,
+    }
+}
+
+% Long unbreakable \texttt{} paths are the main source of overfull boxes; a
+% generous emergencystretch plus sloppy paragraph breaking lets TeX loosen
+% those lines instead of running into the margin.
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+% Table cells are left-aligned and ragged-right: several cells hold long
+% identifiers that cannot be hyphenated, and justified cells leave large gaps.
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    columns=fullflexible,
+    frame=single,
+    framerule=0.3pt,
+    backgroundcolor=\color{gray!6},
+    xleftmargin=4pt,
+    xrightmargin=4pt,
+}
+
+\title{Setup Parallelism Report \\
+\large What the Engine Builds in Parallel, What It Serializes, and a Staged Boot Path}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report maps the engine's bring-up path from process start to the first
+frames that can be interacted with. It separates what is already parallel
+(texture decode, four renderer-init groups, per-layer chunk dispatch, the
+octree shape fork band) from what is strictly sequential (the setup call
+chain, 315 full-tree brush applies, a per-chunk GPU round trip behind a
+process-wide mutex, and the main-thread publish/copy path). The recorded run in
+\texttt{logs/run.log} builds the octree in \textbf{30.10\,s}
+(\texttt{run.log:301}) and then spends \textbf{30.59\,s} in the first
+\texttt{mainLoop} frame (\texttt{run.log:311}) because the content build runs
+inside \texttt{postSubmit()} after the loading state was already cleared. The
+topology pass reports 1024 chunks with a cumulative average of 28.12\,ms
+(\texttt{run.log:502}); since the printed value is cumulative
+(\texttt{OctreeTopologyCompute.cpp:506--513}), differencing it recovers the
+real windows: 43.0, 57.7, 6.4 and 5.3\,ms/chunk, i.e.\ 28.80\,s of worker time
+with the first 512 chunks alone taking 25.8\,s. Frames during that streaming
+phase sit at 100--350\,ms (\texttt{run.log:355--471}) and the user sees no
+loading indicator at all. The report identifies 11 findings (2 critical, 3
+high, 4 medium, 2 low), proposes a staged boot scheduler with live ImGui, a
+background content builder, batched topology submission, a priority publish
+scheduler, and a clean thread budget, and closes with five implementation
+prompts and a validation plan. No rendered pixel or node value is allowed to
+change.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Executive Summary}
+% =====================================================================
+
+\subsection{Scope and Method}
+
+The scope is the boot path as it exists today: \texttt{VulkanApp::run()}
+(\texttt{vulkan/core/VulkanApp.cpp:5873}), \texttt{initVulkan()}
+(\texttt{:192}), the single pre-setup loading frame (\texttt{:5884}), the
+application's \texttt{setup()} (\texttt{MyApp.cpp:779}), the first
+\texttt{mainLoop} frames, and the content path those frames trigger:
+\texttt{scheduleInitialSceneLoad()} (\texttt{MyApp.cpp:1305}),
+\texttt{generateMap()} (\texttt{:5828}), \texttt{loadSceneFromFile()}
+(\texttt{:5895}), \texttt{LocalScene::loadScene()}
+(\texttt{utils/LocalScene.cpp:834}), \texttt{MainSceneLoader::loadScene()}
+(\texttt{utils/MainSceneLoader.hpp:392}), the chunk topology service
+(\texttt{services/OctreeTopologyCompute.cpp:682}), and the main-thread
+publisher (\texttt{vulkan/renderer/SceneRenderer.cpp:1694,1833,1852}).
+
+The method is a full source read plus wall-clock evidence from the recorded
+run \texttt{logs/run.log}. The application was not re-executed. All
+file:line references point at this tree. Where a log value is a cumulative
+average, the report says so and differences it; the per-window numbers in
+Section~\ref{sec:budgets} are derived, not printed by the engine.
+\texttt{VULKAN\_SETUP\_DIAG} was not enabled in the recorded run (there are no
+\texttt{[setup-diag]} lines), so the setup half of the timeline is the one
+phase without a measured budget; Section~\ref{sec:instrument} makes fixing
+that the first instrumentation task.
+
+\subsection{The Timeline in One Table}
+
+\begin{table}[h]
+\centering
+\footnotesize
+\begin{tabular}{@{}L{6.6cm}rL{5.4cm}@{}}
+\toprule
+\textbf{Phase} & \textbf{Measured} & \textbf{Evidence} \\
+\midrule
+Window, device, swapchain, ImGui, fonts & not measured & \texttt{VulkanApp.cpp:192--213} \\
+One ``Loading\ldots'' frame presented & one frame & \texttt{VulkanApp.cpp:5884--5886} \\
+\texttt{MyApp::setup()} (straight-line, no events) & not measured & \texttt{MyApp.cpp:779--806} \\
+Octree construction (\texttt{loadScene}) & \textbf{30.10\,s} & \texttt{run.log:301} \\
+First \texttt{mainLoop} frame (\texttt{postSubmit} build) & \textbf{30.59\,s} & \texttt{run.log:311} \\
+Topology, first 256 chunks & 11.01\,s (43.0\,ms/chunk) & \texttt{run.log:380} \\
+Topology, chunks 257--512 & 14.78\,s (57.7\,ms/chunk) & \texttt{run.log:479} \\
+Topology, chunks 513--768 & 1.65\,s (6.4\,ms/chunk) & \texttt{run.log:492} \\
+Topology, chunks 769--1024 & 1.36\,s (5.3\,ms/chunk) & \texttt{run.log:502} \\
+Topology, all 1024 chunks & \textbf{28.80\,s} cumulative & $1024\times28.1218$\,ms \\
+Frames while chunks stream & 100--350\,ms & \texttt{run.log:355--471} \\
+\bottomrule
+\end{tabular}
+\caption{The recorded run. Setup itself has no timing because the setup
+profiler is opt-in. The topology numbers are derived by differencing the
+cumulative averages the engine prints.}
+\end{table}
+
+The wall-clock floor of a cold start in this run is therefore
+$T_{\mathrm{setup}} + 30.10 + \max(T_{\mathrm{topology}},
+T_{\mathrm{publish}}) \approx T_{\mathrm{setup}} + 60\,\mathrm{s}$, with the
+two freezes described below making most of that time look like a hang.
+
+\subsection{What Already Works}
+
+This is not a path that starts from zero. Banked and not re-proposed:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item Texture decoding is already a bounded worker pool over every
+(triple, map) pair, followed by one upload submit for the whole batch
+(\texttt{vulkan/resources/TextureArrayManager.cpp:462--634}). The old
+serial-per-triple path is gone.
+\item \texttt{SceneRenderer::init()} already creates the solid, video, sky
+and debug renderers in four concurrent \texttt{std::async} groups before it
+joins them (\texttt{vulkan/renderer/SceneRenderer.cpp:545--578}).
+\item Content dispatch already runs one thread per scene layer
+(\texttt{MyApp.cpp:1393--1409}), and the octree shape path already forks into
+the pool with a two-level band (\texttt{space/Octree.cpp:375--385},
+\texttt{:392--506}).
+\item The change collector already deduplicates per-node events and replays
+them once on the consuming thread (\texttt{space/UniqueChangeCollector.hpp:46}).
+\item Chunk geometry is GPU-resident: only node tables are uploaded and the
+compute pass writes the packed pools directly, so the publish path copies no
+vertices (\texttt{SceneRenderer.cpp:1694--1831}).
+\item Publishing is already progressive: 16 pending meshes per frame are
+drained and published without waiting for the whole scene
+(\texttt{MyApp.cpp:1515}, \texttt{SceneRenderer.cpp:1833--1850}).
+\end{itemize}
+
+The report's recommendations preserve all of this. Most of the gain comes from
+scheduling and from removing stalls, not from rewriting the geometry path.
+
+\subsection{The Five Findings That Matter}
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=3pt]
+\item \textbf{Bring-up is one uninterruptible block.} \texttt{run()}
+presents exactly one loading frame, calls \texttt{setup()} on the main thread,
+and only then enters \texttt{mainLoop()} (\texttt{VulkanApp.cpp:5884--5889}).
+During \texttt{setup()} there is no event polling, no progress and no way to
+cancel, and \texttt{isLoading} suppresses \texttt{update()},
+\texttt{renderImGui()}, \texttt{preRenderPass()} and \texttt{draw()}
+(\texttt{VulkanApp.cpp:4166,4175,4408,4477}).
+\item \textbf{The content build freezes the window after the loading screen is
+gone.} The scene is built in \texttt{postSubmit()} (\texttt{MyApp.cpp:6040}),
+which runs after present (\texttt{VulkanApp.cpp:4665}) and after
+\texttt{isLoading} was cleared (\texttt{VulkanApp.cpp:5889}). In the recorded
+run that single call makes the first frame 30.59\,s long
+(\texttt{run.log:311}); no events are processed and the screen shows an empty
+scene.
+\item \textbf{Chunk topology pays a blocking GPU round trip per chunk behind a
+global mutex.} \texttt{computeResident()} holds a process-wide lock for its
+whole body (\texttt{OctreeTopologyCompute.cpp:690}), submits and waits once
+per chunk (\texttt{:825}, \texttt{VulkanApp.cpp:1059--1162}), and reads its
+counters back immediately (\texttt{:958}). The three layer workers can only
+overlap the flattening, not the GPU work. Measured cost: 28.80\,s for 1024
+chunks, with a 57.7\,ms/chunk convoy in the second window.
+\item \textbf{Chunk visibility order is arbitrary.} The comment in
+\texttt{update()} says the closest chunks are uploaded first
+(\texttt{MyApp.cpp:1499--1501}), but \texttt{drainPendingMeshes()} pulls the
+first 16 entries out of an \texttt{unordered\_map}
+(\texttt{SceneRenderer.cpp:1833--1850}). The nearest terrain can therefore
+appear after chunks behind the camera, and the 16/frame cap is not tied to
+frame time.
+\item \textbf{Content-dependent subsystems run before the content.} On the
+first frame, \texttt{postSubmit()} brings up the droplet simulation
+(\texttt{MyApp.cpp:5959}) before it generates the map (\texttt{:6040}).
+\texttt{ensureDroplets()} then early-returns once ready (\texttt{:5790}), and
+\texttt{generateMap()} does not reset it the way \texttt{loadSceneFromFile()}
+does (\texttt{:5922--5926}). The log shows a one-node droplet collision table
+built before \texttt{loadScene} (\texttt{run.log:211--213}).
+\end{enumerate}
+
+% =====================================================================
+\section{The Bring-Up Sequence}
+% =====================================================================
+
+\subsection{Act I: Window and Vulkan (Sequential)}
+
+\texttt{VulkanApp::run()} calls \texttt{initWindow()} and
+\texttt{initVulkan()} before anything else. \texttt{initVulkan()} is a
+straight line of twelve calls (\texttt{VulkanApp.cpp:192--213}): build
+timestamp, instance, debug messenger, surface, physical device, logical
+device, pipeline cache, VMA, staging ring, swapchain, image views, command
+pools, depth resources, command buffers, sync objects and ImGui. Each step
+needs the previous one, so there is nothing to overlap here. The only work
+that is not on the main thread is driver-internal.
+
+The log confirms the sequence: the device is created at
+\texttt{run.log:10--11}, the pipeline cache reports 0 bytes loaded from disk
+(\texttt{run.log:12}), the staging ring is initialized
+(\texttt{run.log:13}), the icon font is merged (\texttt{run.log:14}) and the
+ImGui Vulkan backend returns true (\texttt{run.log:15}). At that point the UI
+is fully usable in principle; the engine simply does not use it.
+
+\subsection{Act II: One Loading Frame, Then a Blocking setup()}
+
+\begin{lstlisting}
+isLoading = true;
+glfwPollEvents();
+drawFrame();        // presents the only "Loading..." image
+setup();            // no events, no frames, no progress
+isLoading = false;
+mainLoop();         // first scene/content work happens here
+\end{lstlisting}
+
+This is the whole of \texttt{VulkanApp::run()} in five lines
+(\texttt{VulkanApp.cpp:5884--5889}). The pre-setup frame draws a black
+background and centered text through the ImGui background draw list
+(\texttt{:4175--4188}); it is a complete, validated dynamic-rendering frame,
+which is useful: the machinery for a richer loading screen already exists.
+
+While \texttt{isLoading} is true, \texttt{drawFrame()} skips
+\texttt{update()} (\texttt{:4166}), \texttt{preRenderPass()} (\texttt{:4408})
+and the scene \texttt{draw()} (\texttt{:4477}), and calls only
+\texttt{ImGui\_ImplVulkan\_RenderDrawData} for the loading text
+(\texttt{:4480--4485}). The flag is cleared before \texttt{mainLoop()}, so the
+first frame the user ever sees as ``interactive'' is already an empty scene
+with no loading text. Everything after that is ordinary frames.
+
+\subsection{Act III: setup() Step by Step}
+
+Table~\ref{tab:setupsteps} lists the actual order executed by
+\texttt{MyApp::setup()} (\texttt{MyApp.cpp:779--806}). ``Blocking'' means the
+main thread waits for the step to finish; ``GPU'' means the step submits work
+and waits for a fence.
+
+\begin{table}[h]
+\centering
+\footnotesize
+\begin{tabular}{@{}L{0.25cm}L{5.3cm}L{4.0cm}L{2.1cm}L{2.8cm}@{}}
+\toprule
+\# & \textbf{Step} & \textbf{What it does} & \textbf{Where} & \textbf{Blocks?} \\
+\midrule
+1 & \texttt{applySetupEnvOverrides} & env/settings overrides & main & no \\
+2 & \texttt{createSceneInfrastructure} & descriptor layout, scene queues, SceneRenderer object, water params & main & yes (short) \\
+3 & \texttt{createWorldAndBrushes} & World/LocalScene (three octrees, pools), remote probe, collectors & main & yes; remote probe up to 4\,s \\
+4 & \texttt{initSceneRenderers} & vegetation init, impostor service, textures, materials, all renderers, pools & main + 4 async groups + decode workers & yes (long) \\
+5 & \texttt{createTextureViewerPanel} & texture viewer bound to arrays/materials & main & short \\
+6 & \texttt{createUiWidgets} & all UI panels; starts the Wiimote scan & main & short, spawns BT thread \\
+7 & \texttt{registerUiWidgets} & menu registration & main & no \\
+8 & \texttt{setupInputAndCamera} & input subscriptions, projection, camera pose & main & no \\
+9 & \texttt{createBrushAndLayerWidgets} & brush/layer panels & main & short \\
+10 & \texttt{createProfilingResources} & timestamp pools; one submit+wait to reset them & main & yes (GPU) \\
+11 & \texttt{scheduleInitialSceneLoad} & only sets a pending flag & main & no \\
+\bottomrule
+\end{tabular}
+\caption{\texttt{setup()} execution order. Steps 1--11 are one call chain; no
+frame is presented between them.}
+\label{tab:setupsteps}
+\end{table}
+
+The expensive step is 4. It contains its own sequence
+(\texttt{MyApp.cpp:1037--1078,568--777};
+\texttt{SceneRenderer.cpp:479--598}):
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+\item Vegetation renderer init (\texttt{MyApp.cpp:1043}). This is the
+heavyweight \texttt{init(VulkanApp*)} overload: layouts, wind UBO, culling
+buffers.
+\item Impostor service init: 3 billboard types $\times$ 20 views at
+$256^2$ (\texttt{MyApp.cpp:4860--4878}; \texttt{run.log:24}).
+\item Texture arrays: 40 layers at $1024^2$ $\times$ 5 maps
+(\texttt{MyApp.cpp:594--597}), i.e.\ 1067\,MB of device-local images
+(\texttt{run.log:44--45}). Decoding is parallel; the upload is one submit;
+the allocation and mip initialization are not.
+\item Texture mixer init and 12 initial generations
+(\texttt{MyApp.cpp:600--632}).
+\item Video service init and base clips (\texttt{MyApp.cpp:646--680}); in
+this build FFmpeg is absent, so the service reports unavailable
+(\texttt{run.log:43}).
+\item Materials, brush map, and their buffer uploads
+(\texttt{MyApp.cpp:686--763}).
+\item \texttt{SceneRenderer::init()}: streaming engine init (32 staging slots
+of 4\,MiB, \texttt{SceneRenderer.cpp:510--514}), four async renderer groups,
+join, shadow and vegetation init, wind, post-process, descriptor writes,
+\texttt{initSlottedMode} (solid 1536 slots $\times$ 640\,KB plus water and
+video pools, \texttt{:1169--1174}), RT views.
+\end{enumerate}
+
+Two observations follow directly. First, the step is not missing
+parallelism: it has a parallel decode and four parallel init groups. Second,
+the parallel parts are surrounded by serial joins: the decode workers are
+joined before the batch upload, the four init futures are joined before
+shadow/vegetation/post-process, and the whole step is joined before any UI is
+created.
+
+\subsection{Act IV: The First Frame Builds the World}
+
+\texttt{scheduleInitialSceneLoad()} only records intent
+(\texttt{MyApp.cpp:1305--1320}). The action happens in the first
+\texttt{postSubmit()}, after present:
+
+\begin{lstlisting}
+if (generateMapPending) {
+    generateMap();                 // 30.1 s in this run
+}
+if (loadScenePending) {
+    loadSceneFromFile(pendingLoadPath);   // same shape, file path
+}
+\end{lstlisting}
+
+\texttt{generateMap()} does four things in order
+(\texttt{MyApp.cpp:5828--5859}):
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+\item \texttt{resetSceneState()} (\texttt{:5526--5560}): join the old
+dispatch thread, \texttt{deviceWaitIdle()}, drain pending command buffers,
+clear GPU meshes, chunk manager, vegetation, lava and collectors.
+\item \texttt{MainSceneLoader::loadScene()} (\texttt{:5847}): the procedural
+scene, one full-tree \texttt{Octree::apply()} per brush. The recorded run
+takes 30.10\,s (\texttt{run.log:301}).
+\item Mark the raymarch table dirty.
+\item \texttt{startTessellationThreads()} (\texttt{:5857}): one thread per
+layer, then return to the frame loop.
+\end{enumerate}
+
+\texttt{Octree::apply()} takes the tree's unique write lock for the whole call
+(\texttt{space/Octree.cpp:349}) and calls \texttt{shape()} from the root
+(\texttt{:357--360}). Every apply is therefore a full traversal. Report~29
+counts 315 applies and 15.5M \texttt{shape} invocations for the reference
+scene. The applies are intentionally sequential: later operations delete or
+repaint what earlier ones produced, so a chunk cannot be finalized until the
+last apply that can touch it has run. The change collector is the barrier
+that turns those intermediate states into one final per-node event set
+(\texttt{UniqueChangeCollector.hpp:9--30}).
+
+\subsection{Act V: Tessellation and Streaming}
+
+\texttt{startTessellationThreads()} snapshots the layer ids, spawns one
+worker per layer, calls \texttt{dispatchLayerEvents(id)} on each, and joins
+them in a detached \texttt{sceneProcessThread} (\texttt{MyApp.cpp:1393--1409}).
+Each \texttt{dispatchLayerEvents()} calls
+\texttt{UniqueChangeCollector::dispatch()} (\texttt{:5594}), which invokes the
+renderer handler for every node that survived dedup. That handler calls
+\texttt{SceneRenderer::processNodeLayer()} synchronously on the layer thread
+(\texttt{MyApp.cpp:157}; \texttt{SceneRenderer.cpp:2391}). There is no
+per-layer pool involved in the build; the pool is passed only for the debug
+walks.
+
+For each chunk, \texttt{processNodeLayer()} does:
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+\item \texttt{Scene::buildChunkTopology()} (\texttt{LocalScene.cpp:397--416}):
+flatten the chunk's SDF neighborhood under the tree's shared lock.
+\item \texttt{buildChunkResident()} $\rightarrow$
+\texttt{OctreeTopologyCompute::computeResident()}
+(\texttt{OctreeTopologyCompute.cpp:682}): take the service mutex
+(\texttt{:690}), upload node tables, write descriptors, submit a compute
+dispatch with \texttt{runSingleTimeCommands()} (\texttt{:825}), wait for its
+fence, read the counters back (\texttt{:958}), and return the resident span.
+\item The publish lambda copies the result into the shared pending map
+(\texttt{MyApp.cpp:179--180}).
+\end{enumerate}
+
+On the main thread, \texttt{update()} drains at most 16 pending entries per
+frame (\texttt{MyApp.cpp:1515}) and \texttt{processPendingMeshes()} installs
+their draw entries, consumes pending deletes, feeds vegetation placement and
+lava anchors, and rebuilds the RT proxy set if needed
+(\texttt{SceneRenderer.cpp:1694--1831,1852--1960}). Chunks therefore appear
+progressively, exactly as the class comments advertise.
+
+\subsection{What the User Sees}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}L{4.1cm}L{6.6cm}L{4.6cm}@{}}
+\toprule
+\textbf{Phase} & \textbf{Screen} & \textbf{Can interact?} \\
+\midrule
+Window creation to first frame & black, then ``Loading\ldots'' & no (single frame) \\
+\texttt{setup()} & static ``Loading\ldots''; no progress & no events polled \\
+First \texttt{mainLoop} frame & empty scene, no loading text & one frame, then frozen 30.6\,s \\
+Topology streaming & world fills at 16 chunks/frame & yes, no progress indicator \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The two freezes have different causes and need different fixes. The setup
+freeze needs a boot scheduler; the content freeze needs the build moved off
+the main thread. A richer loading screen alone cannot fix either: a static
+frame with a progress bar is still a static frame.
+
+% =====================================================================
+\section{Parallelism Inventory}
+% =====================================================================
+
+\subsection{Thread Pools}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}L{3.7cm}L{2.6cm}L{3.6cm}L{4.7cm}@{}}
+\toprule
+\textbf{Owner} & \textbf{Threads} & \textbf{Lifetime} & \textbf{What it runs} \\
+\midrule
+Each \texttt{Octree} (3 in LocalScene) & 16 each & created with the tree & shape fork/join during \texttt{apply()} \\
+LocalScene pool & 16 & created with the scene & \textbf{never used}; only stopped \\
+\texttt{genPool} (per layer) & $\max(2, hw/2)=8$ & by \texttt{ensureLayerStates} & debug walks only \\
+\texttt{TerrainStreamer} (2 categories) & 2 each & \texttt{SceneRenderer::init} & no producers; \texttt{uploadSlot()} has no callers \\
+Layer dispatch threads & 3 transient & per scene load & flatten + topology + publish queueing \\
+\texttt{TextureArrayManager} decode & up to 16, transient & per batch & (triple, map) decode \\
+\texttt{std::async} init groups & 4 transient & \texttt{SceneRenderer::init} & targets and pipelines \\
+Wiimote scan & 1+ & from \texttt{createUiWidgets} & Bluetooth discovery during the load \\
+\bottomrule
+\end{tabular}
+\caption{Live pools during a load. On this 16-thread CPU the creation code
+asks for roughly 96 worker threads before driver, audio and validation
+threads. Most of that capacity is parked or unused.}
+\end{table}
+
+The budget is not the only problem; the count is. The three octree pools are
+created eagerly by \texttt{Octree}'s member initializer
+(\texttt{space/Octree.hpp:34}), so constructing the LocalScene starts 48
+threads before the first brush is applied. \texttt{LocalScene}'s own pool is
+constructed and never used (\texttt{utils/LocalScene.cpp:280}, used only at
+\texttt{:290,297}). The per-layer generation pools exist only so the debug
+overlay walks have a pool override; with both overlays off (the default) they
+sit idle. The streamer pools are for a path whose upload entry point is no
+longer called.
+
+\subsection{GPU Queues and Submission Paths}
+
+The device acquires up to nine graphics-family queues and exposes them
+through \texttt{SceneQueues} (vegetation, SDF, bbox, geometry, brush, solid,
+water, sky). On this machine only five are distinct, so the log reports
+\texttt{solidQueue=aliased waterQueue=aliased} (\texttt{run.log:11}): the
+scene passes share one queue. The transfer family is separate
+(\texttt{dedicatedTransfer=yes}), but the engine deliberately does not use it
+for uploads because of documented RADV/RENOIR instability
+(\texttt{UploadManager.cpp:67--74}).
+
+Three submission styles coexist:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item \textbf{Fire-and-forget frame work} on the main queue, recorded into
+the frame command buffer.
+\item \textbf{Per-chunk blocking work} through
+\texttt{runSingleTimeCommands()} (\texttt{VulkanApp.cpp:1059--1162}): a
+four-slot ring, a per-slot mutex held across wait/reset/record/submit/wait, a
+queue-submit mutex, and a fence wait. This is the topology path.
+\item \textbf{Asynchronous uploads} through
+\texttt{runSingleTimeCommandsAsync()} /
+\texttt{UploadManager} with timeline-semaphore completion. This is the
+streaming path that currently has no producers for chunk geometry.
+\end{itemize}
+
+\subsection{Already Parallel, and Where}
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item \textbf{Texture decode.} One task per (triple, map), bounded by
+hardware threads and a 192\,MB staging budget, then one submit for the whole
+batch (\texttt{TextureArrayManager.cpp:462--634}).
+\item \textbf{Renderer initialization.} Solid, video, sky and debug renderers
+initialize targets and pipelines in four concurrent \texttt{std::async}
+groups (\texttt{SceneRenderer.cpp:545--578}).
+\item \textbf{Per-layer content dispatch.} One thread per layer
+(\texttt{MyApp.cpp:1401--1408}).
+\item \textbf{Octree shape forks.} Children in the band
+$(0.25\cdot16\cdot minSize,\,16\cdot minSize]$ are enqueued into the tree's
+pool and joined by a helping waiter (\texttt{Octree.cpp:375--385,392--506}).
+\item \textbf{Progressive publishing.} The main thread publishes while the
+workers build (\texttt{MyApp.cpp:1502--1517}).
+\item \textbf{Input and Bluetooth.} \texttt{createUiWidgets()} starts the
+Wiimote/nunchuk scanner during setup (\texttt{MyApp.cpp:1148}); its log lines
+interleave with the map build (\texttt{run.log:229--264}), which is harmless
+but visible proof that a background thread survives the whole load.
+\end{itemize}
+
+There is one caveat in the renderer-init group: all four groups call
+\texttt{vkCreateGraphicsPipelines} with the same \texttt{VkPipelineCache},
+and no host-side lock is held. The Vulkan specification requires external
+synchronization of host access to a pipeline cache. The validation layer
+does not check host synchronization, so this passes today, but it is
+undefined behavior. Give each group its own cache and merge them
+(\texttt{vkMergePipelineCaches}) or serialize pipeline creation with a mutex.
+
+\subsection{Strictly Sequential Chains, and Why}
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=3pt]
+\item \textbf{Instance $\rightarrow$ device $\rightarrow$ swapchain
+$\rightarrow$ ImGui.} Hard dependency; nothing to overlap.
+\item \textbf{Descriptor layout $\rightarrow$ textures/materials
+$\rightarrow$ renderer descriptors.} The static set-0 writes need the final
+texture array views and the material buffer, so
+\texttt{SceneRenderer::init()} cannot finish before \texttt{setupTextures()}.
+Pipeline creation itself does not need the arrays, which is why the four
+groups can start after the layout exists.
+\item \textbf{315 full-tree applies.} Each \texttt{apply()} holds the tree's
+write lock and traverses from the root. Later operations depend on earlier
+ones. The collector barrier at the end is correct; pipelining applies would
+re-tessellate every chunk many times.
+\item \textbf{The topology service mutex plus one blocking submit per chunk.}
+Three layer workers can flatten in parallel, but the GPU portion
+(\texttt{computeResident}) is serialized by the service lock and by the
+single-time command ring's fence waits.
+\item \textbf{Main-thread publish.} All draw-entry and pool bookkeeping is
+main-thread only. It is cheap per chunk, but it is a hard serial section
+between the workers and the frame.
+\item \textbf{Widget creation and ImGui.} Vulkan object creation is partially
+thread-safe, but ImGui windows, widget construction and descriptor creation
+are main-thread by design.
+\end{enumerate}
+
+\subsection{Dependencies That Bound the Schedule}
+
+\begin{table}[h]
+\centering
+\footnotesize
+\begin{tabular}{@{}L{3.0cm}L{3.3cm}L{4.0cm}L{4.1cm}@{}}
+\toprule
+\textbf{Producer} & \textbf{Consumer} & \textbf{Real dependency} & \textbf{Can overlap today?} \\
+\midrule
+Texture decode & renderer descriptors & final array views + material buffer & no, upload joins decode first \\
+Renderer init (async) & post/shadow/veg & pipeline + target handles & no, joined immediately \\
+Content build & tessellation & final octree tree & no, by design (correct) \\
+Content build & renderer init & none (material indices only) & \textbf{yes, not attempted} \\
+Renderer init & tessellation & packed pools + topology pipeline & no, must finish first \\
+Tessellation & publish & pending map entry & yes, per frame \\
+Publish & visible frame & draw entry & only after next \texttt{update()} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The important empty cell is ``content build vs renderer init''. The octree
+build needs the material indices from \texttt{setupTextures()} but not the
+initialized renderers. It can run on a worker while renderer init, slotted
+mode, widget creation and the first textured UI frames proceed.
+
+% =====================================================================
+\section{Measured Budgets and the Load-Time Model}
+\label{sec:budgets}
+% =====================================================================
+
+\subsection{What the Log Prints, and What It Means}
+
+\texttt{OctreeTopologyCompute::countStats()} prints
+calls, cumulative average milliseconds, cells, nodes and triangles every 256
+chunks (\texttt{OctreeTopologyCompute.cpp:498--514}). The printed
+\texttt{avg ms} is \texttt{totalMs / calls}, not the average of the last
+window. Report~29 read the four prints as windows; they are cumulative. The
+per-window cost is recovered by differencing:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Window} & \textbf{Printed cumulative avg} & \textbf{Cumulative total} & \textbf{Window total} & \textbf{Window ms/chunk} \\
+\midrule
+1--256   & 43.0163\,ms & 11.012\,s & 11.012\,s & 43.02 \\
+257--512 & 50.3690\,ms & 25.789\,s & 14.777\,s & 57.72 \\
+513--768 & 35.7275\,ms & 27.439\,s & 1.650\,s  & 6.44 \\
+769--1024& 28.1218\,ms & 28.797\,s & 1.358\,s  & 5.31 \\
+\bottomrule
+\end{tabular}
+\caption{Topology cost derived from \texttt{run.log:380,479,492,502}. The
+convoy is in the second window: the first 512 chunks take 25.8\,s, the last
+512 take 3.0\,s. The shader work is small (236 cells, 1740 triangles on
+average); the cost is submission, synchronization and host round trips.}
+\end{table}
+
+The counter starts after the service lock (\texttt{OctreeTopologyCompute.cpp:712}),
+so it excludes the chunk flattening and the mutex wait. The numbers are
+therefore a lower bound on the topology's wall-clock cost, not an upper one.
+
+\subsection{The Critical Path}
+
+Today, ignoring setup:
+
+\begin{equation}
+T_{\mathrm{load}} = T_{\mathrm{content}} + \max(T_{\mathrm{topology}},
+T_{\mathrm{publish}}) + T_{\mathrm{tail}}
+= 30.10 + \max(28.80, \sim\!30) + \varepsilon \approx 60\,\mathrm{s}.
+\end{equation}
+
+The publish side is not negligible: at 16 chunks per frame and 10--16\,fps it
+sustains 160--256 chunks/s, while the topology tail runs at $\sim$188
+chunks/s. Both are near the same rate, which is why the frames stay at
+100--350\,ms. The measured GPU frame time is only 40--73\,ms
+(\texttt{run.log:354,360,374,392,406,422}), so most of each frame is CPU work
+in the load path, not rendering.
+
+With the proposed schedule:
+
+\begin{equation}
+T'_{\mathrm{load}} = \max(T_{\mathrm{setup\ renderers}},
+T_{\mathrm{content}}) + T_{\mathrm{topology\ batched}} +
+T_{\mathrm{publish\ tail}},
+\end{equation}
+
+and the two big terms overlap. The content build (30.10\,s) is the floor
+unless it is cached; the batch topology target is 5--8\,s; the publish tail
+can be brought under a second with a priority queue and a time budget.
+
+\subsection{Where a Second Goes}
+
+The recorded run has no setup budget, but the content path is fully
+attributable: 30.10\,s of octree construction, 28.80\,s of topology, and
+roughly 30\,s of frames that are dominated by the same three workers. The
+setup path's likely order of magnitude, based on the work items, is pipeline
+creation and shader compilation first, texture decode and upload second, and
+the 1\,GB texture arrays + 1.2\,GB packed pools third. Section~\ref{sec:instrument}
+turns that estimate into numbers before any optimization is attempted.
+
+% =====================================================================
+\section{Findings}
+% =====================================================================
+
+\subsection{Critical}
+
+\subsubsection*{S1: setup() Is One Uninterruptible Main-Thread Block}
+
+\textbf{Status (this tree).} Addressed by a staged boot scheduler:
+\texttt{VulkanApp::run()} now presents one frame and then calls
+\texttt{setupStep()} once per frame (\texttt{VulkanApp.cpp:5886--5926});
+\texttt{MyApp} advances a \texttt{BootStage} state machine and starts the
+texture and renderer work asynchronously
+(\texttt{MyApp.cpp:869--1120},
+\texttt{SceneRenderer::beginInit/pollInit/finishInit}). \texttt{isLoading} no longer hides ImGui: a boot panel is drawn
+until the app panels exist, then the full \texttt{renderImGui()} runs while
+the last stages finish (\texttt{VulkanApp.cpp:4178--4192}, \texttt{uiReady}).
+Escape/close is polled between stages, resize is deferred, and
+\texttt{abortSetup()} joins in-flight work before teardown. In the verification
+run the texture stage took 17.2\,s and the renderer groups 86\,ms, both with
+frames presenting; the remaining synchronous post-init was 1.46\,s. The
+evidence below is the pre-fix state and is kept as the baseline.
+
+\textbf{Evidence.} \texttt{VulkanApp.cpp:5884--5889} presents one frame and
+then calls \texttt{setup()}; \texttt{MyApp.cpp:779--806} is a straight line of
+eleven calls; no \texttt{glfwPollEvents()} runs during it; \texttt{isLoading}
+gates \texttt{update()} (\texttt{VulkanApp.cpp:4166}), \texttt{renderImGui()}
+(\texttt{:4175--4188}), \texttt{preRenderPass()} (\texttt{:4408}) and
+\texttt{draw()} (\texttt{:4477}).
+
+\textbf{Impact.} The window is static for the whole setup and cannot be
+closed with the keyboard or the window button, because events are not polled.
+The loading text proves the frame path works; the UI is simply not invited.
+
+\textbf{Fix.} Split the gates (scene hooks vs.\ UI vs.\ content) and pump
+setup as a stage machine between frames. Long stages start asynchronously and
+are polled; short wiring runs on the main thread. Prompt~1.
+
+\subsubsection*{S2: The Content Build Freezes the Window After the Loading
+Screen Is Gone}
+
+\textbf{Evidence.} \texttt{isLoading = false} at
+\texttt{VulkanApp.cpp:5889} precedes \texttt{mainLoop()}; the first
+\texttt{postSubmit()} then calls \texttt{generateMap()} or
+\texttt{loadSceneFromFile()} (\texttt{MyApp.cpp:6040--6058}), which run
+synchronously on the main thread. The log records
+\texttt{[frame] 30592.6 ms} for that frame (\texttt{run.log:311}) and
+\texttt{LocalScene::loadScene Ok! 30.099269s} (\texttt{run.log:301}).
+\texttt{resetSceneState()} also performs a full \texttt{deviceWaitIdle()}
+(\texttt{MyApp.cpp:5530}).
+
+\textbf{Impact.} A 30.6\,s unresponsive window showing an empty scene, with
+no loading text and no progress. This is the longest and most visible stall
+in the whole boot.
+
+\textbf{Fix.} Run the content build on a worker, keep rendering, report
+progress atomics. Prompt~2.
+
+\subsection{High}
+
+\subsubsection*{S3: Blocking Per-Chunk Topology Behind a Global Mutex}
+
+\textbf{Evidence.} \texttt{computeResident()} takes \texttt{mutex} for its
+entire body (\texttt{OctreeTopologyCompute.cpp:690}), submits through
+\texttt{runSingleTimeCommands()} (\texttt{:825}), waits on the fence
+(\texttt{VulkanApp.cpp:1155--1157}), and reads counters back immediately
+(\texttt{OctreeTopologyCompute.cpp:958}). The three layer workers
+(\texttt{MyApp.cpp:1401--1408}) can only flatten concurrently.
+
+\textbf{Impact.} 28.80\,s of GPU round trips for 1024 chunks; 57.7\,ms/chunk
+in the convoy window. The per-chunk shader cost is tiny (236 cells).
+
+\textbf{Fix.} Flatten a batch, record all dispatches with per-chunk
+descriptor sets into one command buffer, submit once, read counters one batch
+later, then record the fill/dedup/index passes for the batch. Keep the
+per-chunk barriers. Prompt~3.
+
+\subsubsection*{S4: Content-Dependent Subsystems Initialize Before Content}
+
+\textbf{Evidence.} In \texttt{postSubmit()}, droplets are ensured at
+\texttt{MyApp.cpp:5959}, before the map is generated at \texttt{:6040}.
+\texttt{ensureDroplets()} early-returns when the sim is ready
+(\texttt{:5790}), and \texttt{generateMap()} never resets the sim the way
+\texttt{loadSceneFromFile()} does (\texttt{:5922--5926}). The log shows a
+one-node SDF region table built before \texttt{LocalScene::loadScene()}
+starts (\texttt{run.log:211--213}). The same ordering issue applies to the
+raymarch table and the scene server: they are brought up by generic update
+code that does not know whether content exists yet.
+
+\textbf{Impact.} A droplet collision table built against an empty octree,
+retained for the session on the procedural path. This is a correctness bug,
+not only a load-time issue.
+
+\textbf{Fix.} Add an explicit \texttt{contentReady} state. Bring up dependent
+subsystems only after it flips, and make every scene replacement destroy and
+recreate them. Prompt~2.
+
+\subsubsection*{S5: Chunk Visibility Order Is Arbitrary and the Budget Is
+Fixed}
+
+\textbf{Evidence.} \texttt{drainPendingMeshes()} erases from the front of an
+\texttt{unordered\_map} until 16 entries are taken
+(\texttt{SceneRenderer.cpp:1833--1850}). The comment above the caller says
+chunks closest to the camera are uploaded first
+(\texttt{MyApp.cpp:1499--1501}), but no distance is computed. The cap is a
+compile-time call argument (16).
+
+\textbf{Impact.} The nearest terrain can appear after distant chunks; the
+last 16 chunks arrive at whatever the frame rate is, independent of their
+importance. The 16/frame rate was sized for the old CPU-upload path and the
+iGPU watchdog; the current path publishes GPU-resident meshes and only writes
+bookkeeping.
+
+\textbf{Fix.} A distance/frustum priority queue, a time budget derived from
+the previous frame (e.g.\ 8\,ms or 10\% of frame time), and an explicit
+first-visible set. Prompt~4.
+
+\subsection{Medium}
+
+\subsubsection*{S6: Eager, Oversubscribed Thread Pools}
+
+\textbf{Evidence.} Three octree pools of \texttt{hardware\_concurrency()}
+(\texttt{space/Octree.hpp:34}), one unused LocalScene pool of the same size
+(\texttt{utils/LocalScene.cpp:280}), three debug pools of
+\texttt{hw/2} (\texttt{vulkan/renderer/SceneLayerState.cpp:8}), four streamer
+workers, three dispatch threads, plus decode/async transients. On a 16-thread
+CPU that is $\sim$96 threads.
+
+\textbf{Impact.} Scheduler noise during the load, memory for stacks, and no
+benefit: the apply chain uses one tree's pool at a time and the topology GPU
+section is serialized anyway.
+
+\textbf{Fix.} One shared pool sized \texttt{hw-1} used by apply, dispatch and
+debug walks; remove the unused LocalScene pool; make per-layer pools lazy or
+single-threaded; delete or gate the streamer. Prompt~4.
+
+\subsubsection*{S7: Duplicate and Legacy Setup Work}
+
+\textbf{Evidence.} \texttt{VegetationRenderer::init(VulkanApp*)} is called
+from \texttt{MyApp.cpp:1043} and again from
+\texttt{SceneRenderer.cpp:581}. The second call re-creates the descriptor
+layout, wind UBO, concatenated instance buffers, placement scratch and
+culling buffers without a guard. The streaming engine is initialized with
+32$\times$4\,MiB staging and four workers
+(\texttt{SceneRenderer.cpp:510--514}; \texttt{UploadManager.cpp:59--81}), but
+its only upload entry point has no callers; the first frame still performs a
+blocking \texttt{flush()} (\texttt{MyApp.cpp:1564--1570}).
+\texttt{onSwapchainResized()} is invoked twice per resize
+(\texttt{VulkanApp.cpp:4870,4935}).
+
+\textbf{Impact.} Seconds of duplicate buffer/descriptor work and 128\,MB of
+staging memory that the current path never uses.
+
+\textbf{Fix.} A single owner for vegetation init (early init creates only the
+wind resources needed by the impostor capture); gate or remove the streamer
+from the GPU-resident path; dedupe the resize notification. Prompt~4.
+
+\subsubsection*{S8: The Shared Pipeline Cache Is Not Host-Synchronized}
+
+\textbf{Evidence.} Four \texttt{std::async} groups call
+\texttt{vkCreateGraphicsPipelines} with \texttt{app->getPipelineCache()}
+(\texttt{SceneRenderer.cpp:545--578}; \texttt{RendererUtils.hpp:190});
+\texttt{OctreeTopologyCompute} and widget paths use the same handle. No lock
+exists around the cache. Vulkan requires external synchronization for host
+access to a \texttt{VkPipelineCache}.
+
+\textbf{Impact.} Undefined behavior that happens to work on current drivers.
+It becomes a real risk exactly when the parallel init is widened, which is
+one of this report's recommendations.
+
+\textbf{Fix.} Per-thread pipeline caches merged at the end, or a small mutex
+around \texttt{vkCreate*Pipelines}. Prompt~4.
+
+\subsubsection*{S9: Setup Has No Always-On Phase Instrumentation}
+\label{sec:instrument}
+
+\textbf{Evidence.} \texttt{setupStep()} prints only the top-level steps and
+only when \texttt{VULKAN\_SETUP\_DIAG} is set
+(\texttt{MyApp.cpp:782--793}). It does not cover \texttt{createWorldAndBrushes},
+the content build, the future joins, or the publish path. The topology
+service has a good profiler (\texttt{OctreeTopologyCompute.cpp:517--670}) but
+it is opt-in and only prints every 256 chunks.
+
+\textbf{Impact.} The setup half of the timeline cannot be attributed, which
+makes every optimization estimate in this report a range.
+
+\textbf{Fix.} Always log a compact \texttt{[boot]} line per stage (name,
+milliseconds, thread), add counters for chunks expected/published, and keep
+the existing opt-in detail. Prompt~1 and Prompt~5.
+
+\subsection{Low}
+
+\subsubsection*{S10: The Remote Probe Blocks setup() for Up to Four Seconds}
+
+\textbf{Evidence.} \texttt{createWorldAndBrushes()} connects synchronously
+(\texttt{MyApp.cpp:984--999}); \texttt{RemoteScene::connect()} defaults to a
+4000\,ms timeout (\texttt{utils/RemoteScene.hpp:65}). The log shows the
+failure fallback at \texttt{run.log:16--17}.
+
+\textbf{Impact.} Up to 4\,s of dead time before any UI appears, on every
+launch with an unreachable server.
+
+\textbf{Fix.} Probe on a worker, start the local scene immediately, and swap
+to remote only if the handshake completes before the content build starts.
+
+\subsubsection*{S11: The File Path Decompresses Through 1\,KB Buffers and
+Duplicates the Bundle}
+
+\textbf{Evidence.} \texttt{gzipDecompressFromIfstream()} uses 1024-byte input
+and output buffers and appends into a \texttt{stringstream}
+(\texttt{math/Math.cpp:29--69}); \texttt{LocalScene::load()} then reads from
+that copy (\texttt{utils/LocalScene.cpp:915}).
+
+\textbf{Impact.} Many small \texttt{inflate} calls and two full copies of the
+bundle in host memory. The cost is small compared with the octree
+reconstruction, but it is free to fix.
+
+\textbf{Fix.} 1\,MB buffers and decompression into a pre-sized
+\texttt{std::vector<char>} (or a mapped file) on the content worker.
+
+% =====================================================================
+\section{Target Architecture: Staged Boot, Streaming Content}
+% =====================================================================
+
+\subsection{Three Gates Instead of One Boolean}
+
+Replace \texttt{isLoading} with three independent states:
+
+\begin{lstlisting}
+bool uiReady        = true;    // ImGui + menu bar + boot panel
+bool sceneHooksReady = false;   // preRenderPass() / draw() may run
+bool contentReady   = false;   // the octree has been built and emitted
+\end{lstlisting}
+
+The frame loop becomes:
+
+\begin{lstlisting}
+while (!glfwWindowShouldClose(window)) {
+    glfwPollEvents();
+    pumpBoot(/*budgetMs*/ 8.0);   // advances or polls one boot stage
+    drawFrame();                  // always builds UI, presents
+}
+\end{lstlisting}
+
+\texttt{drawFrame()} changes in four places:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item always call \texttt{renderImGui()} (and a new
+\texttt{renderBootPanel()}), never only the background draw list;
+\item call \texttt{updateUi(dt)} every frame (input, camera, boot panel);
+\item call \texttt{updateScene(dt)} only when \texttt{sceneHooksReady};
+\item call \texttt{preRenderPass()}/\texttt{draw()} only when
+\texttt{sceneHooksReady}; the loading path stays as the text/composite
+fallback.
+\end{itemize}
+
+\texttt{renderImGui()} must be split. Today it dereferences
+\texttt{sceneRenderer->solidRenderer} unconditionally in the stats overlay
+(\texttt{MyApp.cpp:3826--3835}) and assumes every panel exists. The boot
+panel, menu bar and stats overlay are always-safe; each widget panel is
+registered only when its dependencies exist. A per-widget readiness mask is
+enough.
+
+\begin{table}[h]
+\centering
+\footnotesize
+\begin{tabular}{@{}L{3.4cm}L{5.6cm}L{5.2cm}@{}}
+\toprule
+\textbf{Ready class} & \textbf{Examples} & \textbf{Unlocked by} \\
+\midrule
+Always & menu bar, boot panel, settings, camera, light, graphics quality, queue timeline, Vulkan resources & ImGui init (stage 0) \\
+Assets ready & texture viewer, texture mixer, video, brush 3D, impostor & \texttt{setupTextures()} (stage 3) \\
+Renderers ready & render targets, wind, raymarch, grass, SDF, water, RT & \texttt{SceneRenderer::init()} (stage 4) \\
+Content ready & layers, octree explorer, droplets, chunk-mesh stats, save, scene server & content build (stage 3b) \\
+\bottomrule
+\end{tabular}
+\caption{Which UI is safe to show when. The first row must not touch
+\texttt{sceneRenderer} handles: the current stats overlay does
+(\texttt{MyApp.cpp:3826--3835}), so it needs a null guard even for the
+``always'' class.}
+\end{table}
+
+This gives the user something useful to do from the first second: open the
+settings, move the camera, read the boot progress, or open a log panel, while
+the world is still being built.
+
+\subsection{Boot Stages and Their Execution Kind}
+
+\begin{table}[h]
+\centering
+\footnotesize
+\begin{tabular}{@{}L{3.4cm}L{4.2cm}L{2.8cm}L{3.7cm}@{}}
+\toprule
+\textbf{Stage} & \textbf{Work} & \textbf{Kind} & \textbf{Depends on} \\
+\midrule
+0 UI shell & menu bar, boot panel, stats overlay & main, short & initVulkan \\
+1 Layout/queues & descriptor layout, SceneQueues & main, short & 0 \\
+2 World & World, LocalScene, collectors & main, short & 1 \\
+2b Remote probe & handshake & worker, $\le4$\,s & 2 \\
+3 Textures/materials & arrays, decode, mixers, video, materials & main + decode workers & 2 \\
+3b Content build & 315 applies / bundle load & \textbf{worker}, long & 3 (material indices) \\
+4 Renderers & async groups + post-init wiring & async + main join & 1, 3 \\
+5 Widgets & panels, brush/layer widgets & main, short & 4 (or lazy) \\
+6 Dispatch & one thread per layer & workers & 3b, 4 \\
+7 Publish & priority queue + time budget & main, per frame & 6 \\
+\bottomrule
+\end{tabular}
+\caption{Target boot order. The important change is 3b running beside 4 and
+5, with the UI and the 3D sky already live.}
+\end{table}
+
+Two rules keep this safe:
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+\item \textbf{A stage never blocks the main thread for longer than one
+frame's budget.} If a stage's work is long, its implementation must be a
+worker task plus a non-blocking poll. The existing async renderer-init groups
+already have the right shape; they only need to be polled instead of joined
+inside one call.
+\item \textbf{Every main-thread consumer of scene state is gated.} While the
+content worker holds the tree's write lock, the raymarch rebuild, droplet
+region table, octree explorer, layers widget, scene save and scene server
+must not touch the tree. \texttt{Octree::apply()} already takes the unique
+lock, so an ungated reader blocks rather than corrupts; blocking the main
+thread is still a stall and must be prevented.
+\end{enumerate}
+
+\subsection{Content Worker and Progress}
+
+The content build is CPU-only until the dispatch threads start. Move it to a
+dedicated \texttt{contentThread}, not \texttt{sceneProcessThread}: the latter
+is joined by \texttt{resetSceneState()} and is also the dispatch loop.
+
+Start it as soon as the material indices are known (they are set in
+\texttt{setupTextures()} at \texttt{MyApp.cpp:710,721}), while
+\texttt{SceneRenderer::init()} is still running in its async groups. The
+worker performs:
+
+\begin{lstlisting}
+resetSceneState (main-thread GPU part first, then hand off)
+load bundle / generate map     -> tree + collectors
+on success: contentReady = true
+on failure: report; keep empty world; do not terminate
+\end{lstlisting}
+
+Progress needs two numbers: expected chunks and published chunks. Expected is
+free: after the build, the collector's dedup map contains exactly one entry
+per changed node; summing its size over layers before dispatch gives a
+reliable total (the recorded scene is 1024). Published is already tracked:
+\texttt{IndirectRenderer::getMeshCount()} or a counter incremented in
+\texttt{publishPendingMeshes()}. Expose both through atomics:
+
+\begin{lstlisting}
+struct LoadProgress {
+    std::atomic<uint32_t> stageIndex{0}, stageCount{0};
+    std::atomic<uint64_t> chunksExpected{0}, chunksPublished{0};
+    std::atomic<float>    stageFraction{0.0f};
+    std::atomic<bool>     contentReady{false};
+    std::atomic<const char*> stageName{nullptr};
+};
+\end{lstlisting}
+
+The boot panel displays stage, elapsed, a determinate bar while expected is
+known, an indeterminate spinner otherwise, and an ETA based on a moving
+average of chunk time. When \texttt{sceneHooksReady} flips, the panel
+collapses to a small non-modal pill; the loading screen is gone as soon as
+the sky and camera are usable.
+
+\subsection{Publishing the World Before It Is Complete}
+
+Once renderers are initialized, the scene can be drawn with zero chunks. The
+engine already does this on the first frames (the log shows empty pools,
+\texttt{run.log:304--308}). The target behaviour is:
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+\item As soon as \texttt{sceneHooksReady} is true, render the sky, water and
+vegetation with whatever is resident; let the camera move.
+\item Keep the content worker and the topology workers running; publish as
+results arrive.
+\item Show the progress pill and a small ``N/M chunks'' readout.
+\item If the user closes the window, join the content worker and destroy
+everything through the existing cleanup path.
+\end{enumerate}
+
+This is the single biggest perceived-load improvement: the app stops looking
+frozen after the renderer init, not after the whole world is built.
+
+\subsection{Batched Topology}
+
+The topology service should operate on batches, not chunks. The existing
+per-chunk code already contains the hard parts: span reservation, overflow
+retry, barriers, and counter validation. The batch version:
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+\item Flatten $N$ chunks on the layer workers (CPU) and append their node
+tables to one host-visible arena, one slice per chunk.
+\item Reserve one span per chunk from the pool; on overflow, retry only that
+chunk (rare).
+\item Allocate one descriptor set per chunk against the arena slice; record
+all dispatches (fill, optional refine, geometry) into one command buffer with
+the existing per-chunk barriers; submit once.
+\item Read all counters with one map, one or two frames later. Reserve the
+exact spans, record the fill/dedup/index passes for the whole batch, submit
+once, and publish the batch.
+\item Feature-detect a distinct same-family graphics queue for the submit;
+otherwise use the graphics queue. Never use the transfer family.
+\end{enumerate}
+
+The one- or two-frame readback latency is invisible if the publisher uses the
+priority queue: the nearest batch is submitted first, and the rest arrive
+while the camera is already moving. The expected effect is a drop from 1024
+submits/waits to tens, and from 28.8\,s to the 5--8\,s range on this scene.
+The per-chunk shader math and the resulting triangle set do not change.
+
+\subsection{Publishing with Priority and a Time Budget}
+
+Replace the fixed 16 with a priority drain:
+
+\begin{lstlisting}
+budget = clamp(lastFrameCpuMs * 0.10, 2.0, 12.0);   // ms
+while (elapsed < budget && !queue.empty()) {
+    entry = queue.popNearest(camera, frustum);
+    publish(entry);
+}
+// always publish at least one entry if any is pending
+\end{lstlisting}
+
+The queue is keyed by chunk id; ordering is by distance to the camera with a
+frustum bonus. The first $K$ entries after \texttt{contentReady} are the ones
+inside the view frustum and within the near LOD band, so the first visible
+frame has terrain under the camera instead of a random subset. Lava rebuilds
+and vegetation placement should be coalesced (once per 100--250\,ms during
+the stream) rather than once per published frame; today
+\texttt{rebuildLavaIfDirty()} runs in every \texttt{processPendingMeshes()}
+(\texttt{SceneRenderer.cpp:1918--1921}) and the log shows 15 rebuilds during
+the stream (\texttt{run.log:319--344}).
+
+\subsection{Thread Budget and Lifetime}
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item One shared pool of \texttt{max(1, hw-1)} for content apply, topology
+flattening and debug walks. \texttt{ThreadPool::runOneTask()} already lets
+waiting threads help (\texttt{space/ThreadPool.cpp:72--84}), so nested
+fork/join keeps working.
+\item Delete \texttt{LocalScene::threadPool}; it is unused.
+\item Construct \texttt{Octree} with a pool reference instead of a private
+pool, or construct its pool lazily on first \texttt{apply()}.
+\item Make the per-layer debug pools \texttt{max(1, hw/8)} or lazy; they only
+serve the two optional overlays.
+\item Gate \texttt{TerrainStreamer} on an actual producer; otherwise remove
+its 128\,MB staging and four threads from the boot path.
+\item Give each async pipeline-creation group its own \texttt{VkPipelineCache}
+and merge them, or serialize creation; the shared-cache race is the only
+spec-level issue in the already-parallel init.
+\end{itemize}
+
+\subsection{Defer, Cache, Repeat}
+
+Three cache layers cut the loading screen without touching geometry:
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+\item \textbf{Pipeline cache.} The log reports 0 bytes loaded
+(\texttt{run.log:12}). Ensure the cache is written at shutdown and that a
+warm cache is part of the working directory. This removes driver shader
+compilation from every cold start.
+\item \textbf{Generated scene cache.} The procedural map is deterministic.
+After a successful \texttt{generateMap()}, save the scene bundle (the save
+path already exists, \texttt{LocalScene::save()},
+\texttt{utils/LocalScene.cpp:852}) to a cache keyed by a version hash of the
+loader/settings. Next launch loads the bundle instead of replaying 315
+applies. Expected: a large fraction of the 30.10\,s disappears.
+\item \textbf{Optional topology cache.} The packed vertex/index bytes are
+portable. Persist the batch output keyed by the scene hash and the chunk
+layout; validate with a checksum and fall back to a rebuild on mismatch. This
+is the only way to remove the remaining 5--8\,s of batched topology.
+\end{enumerate}
+
+Defer what nobody is looking at: video clips, initial texture-mixer
+generation, impostor capture, droplet region table, Wiimote scan, audio
+engine and the remote probe all have a safe lazy-trigger point. The boot
+panel can show them as background tasks instead of blocking on them.
+
+% =====================================================================
+\section{Prompt Pack}
+% =====================================================================
+
+The prompts below are implementation briefs, not summaries. Each one names
+the files to inspect first, the invariants, and an acceptance check. They are
+ordered so that the first prompt makes the rest observable.
+
+\begin{tcolorbox}[promptbox={Prompt 1 --- Staged boot scheduler with ImGui from frame zero}]
+Goal: make the application responsive from the first presented frame and
+stop hiding the UI behind a single \texttt{isLoading} boolean.
+
+Read first: \texttt{vulkan/core/VulkanApp.cpp:389--394,192--213,3983--4190,
+4408--4486,5873--5906}; \texttt{vulkan/core/VulkanApp.hpp:267--280};
+\texttt{MyApp.cpp:779--806,1121--1240,3751--3835}.
+
+Steps: (1) audit \texttt{MyApp::setup()} into stages with an explicit
+dependency list; classify each stage as \emph{main-short},
+\emph{main-long-but-async-startable}, or \emph{worker-safe}; (2) add a
+\texttt{BootStage} vector and \texttt{pumpBoot(budget)} called from
+\texttt{mainLoop()} before \texttt{drawFrame()}; never run a blocking long
+stage on the main thread --- start it (e.g.\ the four existing
+\texttt{std::async} groups) and poll it; (3) replace \texttt{isLoading} with
+\texttt{uiReady}, \texttt{sceneHooksReady} and \texttt{contentReady}; always
+call \texttt{renderImGui()}, feed it a minimal boot panel plus menu bar, and
+gate the scene hooks; (4) split \texttt{renderImGui()} into a menu/overlay
+part, a boot panel, and per-widget panels behind a readiness mask; the stats
+overlay currently dereferences \texttt{sceneRenderer->solidRenderer}
+unconditionally (\texttt{MyApp.cpp:3826--3835}); (5) allow close/ESC during
+every stage; on exception, abort to the existing cleanup path; (6) keep the
+existing loading frame as the first-frame fallback, but make it a real
+progress panel rather than a static string.
+
+Invariants: no Vulkan object is created before its dependency; ImGui calls
+stay on the main thread; the derived app is never asked to draw a scene
+renderer that has not been initialized; a stage can be re-entered after an
+exception without double-destroying resources.
+
+Acceptance: menu bar and boot panel visible within one second of window
+creation; no main-thread stall above 100\,ms after the first frame (join
+points reported explicitly); resize/minimize/close work during every stage;
+\texttt{VULKAN\_SETUP\_DIAG=1 make run-debug} shows one line per stage;
+validation-clean.
+\end{tcolorbox}
+
+\begin{tcolorbox}[promptbox={Prompt 2 --- Background content build and live progress}]
+Goal: remove the 30.6\,s first-frame freeze and show the world being built.
+
+Read first: \texttt{MyApp.cpp:1305--1320}, \texttt{:5526--5560},
+\texttt{:5828--5927}, \texttt{:5928--6058}, \texttt{:5785--5826};
+\texttt{utils/\allowbreak LocalScene.cpp:834--850,1004--1014};
+\texttt{space/\allowbreak UniqueChangeCollector.hpp:46--57};
+\texttt{vulkan/\allowbreak renderer/\allowbreak SceneRenderer.cpp:1694--1831}.
+
+Steps: (1) add a dedicated \texttt{contentThread} (not
+\texttt{sceneProcessThread}, which \texttt{resetSceneState()} joins); move
+\texttt{generateMap()} and \texttt{loadSceneFromFile()} there, including the
+gzip load; (2) start it as soon as the material indices are known
+(\texttt{setupTextures()} sets them), so it overlaps
+\texttt{SceneRenderer::init()} and widget creation; (3) gate every main-thread
+tree reader while the worker holds the write lock: raymarch rebuild, droplet
+table, octree explorer, layers widget, scene save and scene server; (4) copy
+\texttt{Settings} into the worker and apply the loaded settings on the main
+thread after completion (do not write the live \texttt{Settings} from the
+worker); (5) publish expected/published chunk counters through atomics and a
+boot progress panel; (6) fix the ordering bug: create droplets, raymarch
+tables and the server only after \texttt{contentReady}, and make
+\texttt{generateMap()} destroy an existing droplet sim exactly like
+\texttt{loadSceneFromFile()} does; (7) keep camera/input alive while the
+build runs.
+
+Invariants: the octree is never read and written concurrently without the
+existing lock discipline; the worker touches no Vulkan object; a failed
+build leaves an empty but valid scene and logs the error; the final per-node
+event set is identical to today's.
+
+Acceptance: a 30\,s build produces no \texttt{[frame] > 250\,ms} entries
+(or the max is documented); ESC/window close works within one frame during
+the build; the progress value is monotonic and the ETA stays within 20\%;
+chunk count, triangle total and fixed-camera screenshots match the current
+build.
+\end{tcolorbox}
+
+\begin{tcolorbox}[promptbox={Prompt 3 --- Batched, non-blocking chunk topology}]
+Goal: replace 1024 blocking per-chunk GPU round trips with tens of batched
+submissions, without changing a triangle.
+
+Read first: \texttt{services/\allowbreak OctreeTopologyCompute.cpp:682--1067},
+\texttt{:497--544}; \texttt{services/\allowbreak OctreeTopologyTypes.hpp};
+\texttt{shaders/\allowbreak computation/\allowbreak octree/\allowbreak OctreeTriangles.comp};
+\texttt{vulkan/\allowbreak core/\allowbreak VulkanApp.cpp:1059--1233};
+\texttt{vulkan/\allowbreak renderer/\allowbreak SceneRenderer.cpp:2416--2445}.
+
+Steps: (1) add a per-layer arena holding all chunks' node tables, a slice of
+counters per chunk, and a \texttt{nodeBase}/\texttt{counterBase} push-constant
+field; rebase offsets by integer addition only; (2) flatten a batch of
+chunks on the worker, reserve one span per chunk, allocate one descriptor set
+per chunk, record fill + optional refine + geometry dispatches into one
+command buffer, submit once; (3) read all counters with one map one batch
+later, validate, and record the fill/dedup/index passes for the batch, submit
+once; (4) keep the existing per-chunk barriers, retry policy and overflow
+handling; on overflow release and re-record only that chunk; (5) keep the
+old per-chunk path behind a debug flag for A/B; (6) feature-detect a distinct
+graphics-family queue (never the transfer family) and fall back to the main
+queue.
+
+Invariants: same dispatch set, same push constants, same barriers per chunk;
+same triangle set after canonical sort; no device-local readback other than
+the integer counters; no new host-visible buffer growth per frame.
+
+Acceptance: mesh-identical A/B on the reference scene; 1024 chunks fully
+resident in $\le 8$\,s on this machine (target, to be measured); submits and
+fence waits reduced by at least $10\times$; synchronization validation and
+\texttt{VULKAN\_GPU\_ASSISTED=1 make run-debug} clean.
+\end{tcolorbox}
+
+\begin{tcolorbox}[promptbox={Prompt 4 --- Priority publish, thread budget, and cleanup}]
+Goal: show the nearest chunks first, stop oversubscribing the CPU, and remove
+duplicate/legacy init work.
+
+Read first: \texttt{vulkan/\allowbreak renderer/\allowbreak SceneRenderer.cpp:1694--1960,479--598};
+\texttt{MyApp.cpp:1496--1517,1393--1409,1043};
+\texttt{vulkan/\allowbreak renderer/\allowbreak SceneLayerState.cpp:6--9};
+\texttt{space/\allowbreak Octree.hpp:34}; \texttt{utils/\allowbreak LocalScene.cpp:280,289--299};
+\texttt{vulkan/\allowbreak streaming/\allowbreak UploadManager.cpp:59--81};
+\texttt{vulkan/\allowbreak core/\allowbreak VulkanApp.cpp:4870,4935}.
+
+Steps: (1) replace \texttt{std::unordered\_map} draining with a
+distance/frustum priority queue and a time budget from the previous frame's
+CPU cost; publish at least one entry when work is pending; (2) coalesce lava
+anchors and vegetation placement to $\sim$4--10\,Hz during the stream;
+(3) create one shared \texttt{ThreadPool} sized \texttt{hw-1} and route
+apply, topology flattening and debug walks through it; delete the unused
+LocalScene pool; make per-layer pools lazy and single-threaded; (4) remove
+the streamer from boot when no producer exists, including its
+\texttt{flush()}; (5) call the heavyweight vegetation init exactly once
+(early wind-only init for the impostor capture); (6) dedupe
+\texttt{onSwapchainResized()}; (7) give pipeline creation per-thread caches
+or a mutex, then merge.
+
+Invariants: publish order never changes which slots exist, only when they
+appear; engine-created worker threads plus the main thread never exceed the
+hardware thread count (driver and validation threads are not counted);
+removing the streamer changes no rendered byte.
+
+Acceptance: first chunk visible under the camera within 1\,s of
+\texttt{contentReady}; all 1024 chunks published within 10\,s; engine worker
+threads at boot $\le$ hardware threads; no new validation messages; no
+double-created vegetation buffers (log object counts).
+\end{tcolorbox}
+
+\begin{tcolorbox}[promptbox={Prompt 5 --- Defer, cache, and progressive assets}]
+Goal: make the remaining loading screen as short as possible and move
+everything optional off the critical path.
+
+Read first: \texttt{MyApp.cpp:896--1078,1121--1173,4860--4878};
+\texttt{vulkan/resources/TextureArrayManager.cpp:255--340,462--634};
+\texttt{vulkan/core/VulkanApp.cpp:216--275,600--620};
+\texttt{utils/LocalScene.cpp:852--986}; \texttt{utils/RemoteScene.cpp:162--175}.
+
+Steps: (1) make the remote probe asynchronous and start the local scene
+immediately; (2) upload texture triples in batches with a per-layer ready
+flag, so layer 0 is usable before the last decode finishes, and update
+material averages as layers arrive; (3) defer the initial texture-mixer
+generation, video clips, impostor capture, droplet table, Wiimote scan and
+audio until after the first interactive frame, or run them as visible
+background tasks; (4) verify the pipeline cache is written on shutdown and
+read on startup; ship a warm cache; (5) after a successful procedural build,
+save a versioned scene bundle and load it on the next launch; add a
+\texttt{--regenerate} override; (6) optional: persist batched topology output
+keyed by scene hash plus checksum, rebuild on mismatch; (7) add
+\texttt{[boot]} lines for every stage and a ``background tasks'' list in the
+boot panel.
+
+Invariants: a deferred task never changes scene content; cache misses fall
+back silently; cached bytes are validated before use; disabling a cache never
+changes a pixel.
+
+Acceptance: time to first interactive frame reduced by at least 30\% on a
+cold launch (target, measured by \texttt{VULKAN\_SETUP\_DIAG}); second launch
+with a warm scene cache is at least $3\times$ faster than the cold procedural
+build; no validation errors; scene content identical to a regenerated build.
+\end{tcolorbox}
+
+% =====================================================================
+\section{Validation and Risks}
+% =====================================================================
+
+\subsection{Validation Checklist}
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item Build and run the debug configuration:
+\texttt{make -j8 debug} and \texttt{VULKAN\_SETUP\_DIAG=1 make run-debug}.
+The program is closed by the user; do not add timeouts or redirection.
+\item Check \texttt{logs/build.log} for compiler errors and
+\texttt{logs/run.log} for \texttt{[setup-diag]}, \texttt{[boot]},
+\texttt{[frame]}, \texttt{[OctreeTopology]} and
+\texttt{Validation Error|VUID|ERROR}.
+\item Re-run with \texttt{VULKAN\_GPU\_ASSISTED=1 make run-debug} after the
+topology change and after any new descriptor path.
+\item A/B the geometry: fixed camera via \texttt{VULKAN\_CAMERA}, fixed scene,
+compare exit screenshots and the \texttt{[chunkmesh]} totals (chunk count,
+vertex/index counts, combined utilization).
+\item Test the boot path with: no scene file (procedural), a saved bundle,
+an unreachable remote endpoint, a window resize during every stage, close
+during every stage, and a minimized window during the content build.
+\item Verify thread count at boot (\texttt{/proc/self/status} or a log line)
+and that all workers are joined during cleanup (validation object tracker
+and no \texttt{vkDestroy*} warnings).
+\end{itemize}
+
+\subsection{Risks and Their Mitigations}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}L{4.6cm}L{5.4cm}L{5.4cm}@{}}
+\toprule
+\textbf{Risk} & \textbf{Why} & \textbf{Mitigation} \\
+\midrule
+Resize during async init & \texttt{SceneRenderer::init()} captures
+\texttt{getWidth()/getHeight()} once & re-read at finalize; keep
+\texttt{onSwapchainResized()} idempotent and single-call \\
+Pipeline creation from workers & shared \texttt{VkPipelineCache} needs host
+sync & per-thread caches + merge, or a mutex \\
+Content worker and tree readers & unique lock vs.\ UI shared locks & explicit
+\texttt{contentReady} gate; no tree reads from UI during the build \\
+Settings data race & \texttt{LocalScene::load()} writes \texttt{Settings*} &
+copy in/out on the main thread \\
+Exception during a stage & partial device/swapchain & abort flag, stop
+workers, call existing cleanup; never destroy from the worker \\
+ImGui descriptors on resize & backend shutdown/re-init & reuse
+\texttt{preImGuiShutdown()} / \texttt{onImGuiRecreated()} \\
+Device lost during load & in-flight batched submits & check
+\texttt{VK\_ERROR\_DEVICE\_LOST}, stop publishing, follow the existing
+device-lost cleanup path \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The most delicate change is the content worker. The octree is already protected
+by its own lock, but the UI readers are not all gated, and
+\texttt{resetSceneState()} assumes it owns the only build thread. Implement
+Prompt~2 before Prompt~3: it removes the largest visible freeze and gives the
+progress model that Prompt~3's batching needs.
+
+% =====================================================================
+\section{Roadmap and Expected Deltas}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}L{0.5cm}L{5.3cm}L{2.0cm}L{6.0cm}@{}}
+\toprule
+\textbf{\#} & \textbf{Change} & \textbf{Effort} & \textbf{Expected effect (estimate)} \\
+\midrule
+1 & Staged boot + always-on ImGui (Prompt~1) & M & setup freeze disappears; UI from the first second; all later numbers become measurable \\
+2 & Background content build + progress (Prompt~2) & M & removes the 30.6\,s freeze; overlaps the 30.1\,s build with renderer init \\
+3 & Batched topology (Prompt~3) & L & 28.8\,s $\rightarrow$ 5--8\,s target; 1024 submits $\rightarrow$ tens \\
+4 & Priority publish + thread budget (Prompt~4) & M & nearest chunks first; 96 $\rightarrow$ $\sim$16 threads; removes duplicate/legacy init \\
+5 & Defer + caches (Prompt~5) & M & cold setup shorter; second launch up to $3\times$ faster with a scene cache \\
+\bottomrule
+\end{tabular}
+\caption{Order and rough effort. Items 1--2 are the user-visible wins; item 3
+is the load-time win; items 4--5 consolidate and extend. All deltas are
+targets to be confirmed by \texttt{VULKAN\_SETUP\_DIAG}, not measurements
+from this log.}
+\end{table}
+
+The recommended order is 1, 2, 4, 3, 5. Item 1 is a prerequisite for honest
+measurement; item 2 removes the most visible freeze; item 4 makes the stream
+pleasant and removes waste; item 3 then attacks the remaining topology cost
+with the progress machinery already in place; item 5 reduces the cold start
+further once the shape of the boot is stable.
+
+An explicit non-goal: do not try to pipeline the 315 brush applies into the
+tessellation. The collector barrier is correct, and a partial tree would
+re-tessellate chunks repeatedly. The content build should overlap
+\emph{other work}, not itself.
+
+% =====================================================================
+\section{Conclusion}
+% =====================================================================
+
+The engine's bring-up already contains real parallelism, and the change to a
+GPU-resident chunk path removed the largest historical upload cost. What
+remains is a scheduling problem. A single boolean \texttt{isLoading} conflates
+three different states, a 30.1\,s CPU build runs inside a post-present hook,
+1024 chunk builds each pay a fence wait behind a global lock, and 96 threads
+compete for 16 hardware threads. The recorded run makes the cost visible:
+30.10\,s for the octree, 30.59\,s for the first frame that builds it,
+28.80\,s of topology (25.8\,s of it in the first 512 chunks), and 100--350\,ms
+frames throughout the stream---all while the user sees no progress at all.
+
+The five prompts turn that into a staged boot: UI in the first second, the
+world visible as soon as the renderers exist, the content built on a worker
+with real progress, topology submitted in batches, chunks published nearest
+first, and optional work deferred or cached. None of them changes a node
+value, a triangle or a pixel; they change when the work happens and what the
+user sees while it happens.
+
+\appendix
+
+\section{File and Line Index}
+
+{\footnotesize
+\begin{longtable}{@{}L{8.2cm}L{7.0cm}@{}}
+\toprule
+\textbf{Item} & \textbf{Reference} \\
+\midrule
+\endhead
+\texttt{run()} loading frame + blocking setup & \texttt{VulkanApp.cpp:5884--5889} \\
+\texttt{isLoading} declaration & \texttt{VulkanApp.hpp:274--275} \\
+Loading text path & \texttt{VulkanApp.cpp:4175--4188} \\
+Skipped hooks while loading & \texttt{VulkanApp.cpp:4166,4408,4477} \\
+Post-present hook & \texttt{VulkanApp.cpp:4665} \\
+Single-time submit and fence wait & \texttt{VulkanApp.cpp:1059--1162} \\
+Duplicate resize notification & \texttt{VulkanApp.cpp:4870,4935} \\
+Setup order & \texttt{MyApp.cpp:779--806} \\
+Infrastructure/world & \texttt{MyApp.cpp:896--1035} \\
+Renderer init sequence & \texttt{MyApp.cpp:1037--1078} \\
+Texture arrays and decode & \texttt{MyApp.cpp:568--777} \\
+Initial scene scheduling & \texttt{MyApp.cpp:1305--1320} \\
+Main-thread drain (16/frame) & \texttt{MyApp.cpp:1515} \\
+First-frame blocking flush & \texttt{MyApp.cpp:1564--1570} \\
+Whole-tree apply & \texttt{Octree.cpp:338--361} \\
+Shape fork band & \texttt{Octree.cpp:375--385,392--506} \\
+Unused LocalScene pool & \texttt{LocalScene.cpp:280,289--299} \\
+Load and emit & \texttt{LocalScene.cpp:834--850,1004--1014} \\
+Collector dispatch & \texttt{UniqueChangeCollector.hpp:46--57} \\
+Scene load / generate & \texttt{MyApp.cpp:5828--5927} \\
+Scene post-submit order & \texttt{MyApp.cpp:5928--6058} \\
+Droplet ordering bug & \texttt{MyApp.cpp:5785--5826,5959,6040} \\
+Reset and \texttt{deviceWaitIdle} & \texttt{MyApp.cpp:5526--5560} \\
+Per-layer dispatch & \texttt{MyApp.cpp:1393--1409} \\
+Per-layer worker body & \texttt{MyApp.cpp:5562--5603} \\
+Texture decode pool & \texttt{TextureArrayManager.cpp:462--634} \\
+Async renderer init groups & \texttt{SceneRenderer.cpp:545--578} \\
+Streamer init (no producers) & \texttt{SceneRenderer.cpp:510--514} \\
+Packed pools & \texttt{SceneRenderer.cpp:1169--1174,2064--2160} \\
+Publish core & \texttt{SceneRenderer.cpp:1694--1831} \\
+Fixed unordered drain & \texttt{SceneRenderer.cpp:1833--1850} \\
+Process/publish per frame & \texttt{SceneRenderer.cpp:1852--1960} \\
+Topology service lock & \texttt{OctreeTopologyCompute.cpp:690} \\
+Topology submit/wait & \texttt{OctreeTopologyCompute.cpp:825}, \texttt{VulkanApp.cpp:1155} \\
+Topology counters readback & \texttt{OctreeTopologyCompute.cpp:958} \\
+Cumulative stats print & \texttt{OctreeTopologyCompute.cpp:498--514} \\
+Debug pool sizing & \texttt{SceneLayerState.cpp:6--9} \\
+Octree pool sizing & \texttt{Octree.hpp:34} \\
+Remote probe timeout & \texttt{RemoteScene.hpp:65; MyApp.cpp:984--999} \\
+Gzip 1\,KB buffers & \texttt{math/Math.cpp:29--69} \\
+\bottomrule
+\end{longtable}
+}
+
+\section{How to Measure a Boot Run}
+
+\begin{lstlisting}
+# Build and run with the existing setup profiler.
+make -j8 debug
+VULKAN_SETUP_DIAG=1 make run-debug
+
+# After the user closes the app, inspect:
+grep -n "\[setup-diag\]\|\[OctreeTopology\]\|\[frame\]" logs/run.log
+grep -n "Validation Error\|VUID\|ERROR" logs/run.log
+
+# GPU-assisted pass after the topology batch change.
+VULKAN_GPU_ASSISTED=1 make run-debug
+\end{lstlisting}
+
+The log already prints the chunk-count windows every 256 chunks and every
+frame above 100\,ms. Add one \texttt{[boot]} line per stage (name,
+milliseconds, thread) and two counters (chunks expected, chunks published)
+to turn the perceived timeline into an asserted one. The acceptance numbers
+in the prompts are targets; only the recorded values in
+Section~\ref{sec:budgets} are measurements.
+
+\end{document}
