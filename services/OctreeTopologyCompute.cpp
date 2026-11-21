@@ -87,9 +87,33 @@ constexpr uint32_t kMaxSpanRetries = 3;
 } // namespace
 
 OctreeTopologyCompute* OctreeTopologyCompute::globalInstance = nullptr;
+OctreeTopologyCompute* OctreeTopologyCompute::globalLanes[OctreeTopologyCompute::kMaxLanes] = {};
+std::atomic<uint32_t> OctreeTopologyCompute::globalLaneCount{0};
+std::atomic<uint32_t> OctreeTopologyCompute::globalLaneNext{0};
+
+void OctreeTopologyCompute::registerLane(OctreeTopologyCompute* lane) {
+    if (lane == nullptr) return;
+    const uint32_t idx = globalLaneCount.fetch_add(1, std::memory_order_acq_rel);
+    if (idx < kMaxLanes) globalLanes[idx] = lane;
+    if (globalInstance == nullptr) globalInstance = lane;
+}
+
+OctreeTopologyCompute* OctreeTopologyCompute::getGlobal() {
+    // Thread-local binding: a layer worker keeps its lane for the whole load,
+    // so its buffers/descriptor set/command slot stay private. New workers
+    // (e.g. the next scene load) are assigned round-robin.
+    static thread_local OctreeTopologyCompute* lane = nullptr;
+    if (lane != nullptr) return lane;
+    const uint32_t n = std::min<uint32_t>(
+        globalLaneCount.load(std::memory_order_acquire), kMaxLanes);
+    if (n == 0) return globalInstance;
+    const uint32_t idx = globalLaneNext.fetch_add(1, std::memory_order_relaxed) % n;
+    lane = globalLanes[idx];
+    return lane;
+}
 
 OctreeTopologyCompute::OctreeTopologyCompute() {
-    globalInstance = this;
+    registerLane(this);
     // Cached once: every timing site below is guarded by this flag, so the
     // normal path does no clock reads, no string work and no output.
     setupDiag = std::getenv("VULKAN_SETUP_DIAG") != nullptr;
@@ -110,14 +134,17 @@ OctreeTopologyCompute::OctreeTopologyCompute() {
         refineProject = !(v[0] == '0' && v[1] == '\0');
     }
 
-    std::cerr << "[OctreeTopology] virtual refinement "
-              << (refineEnabled.load() ? "on" : "off")
-              << " depth=" << refineMaxDepth
-              << " budget=" << refineBudget
-              << " minPriority=" << refineMinPriority
-              << " featureSlope=" << refineFeatureSlope
-              << " tol=" << refineTolerance
-              << " project=" << (refineProject ? 1 : 0) << "\n";
+    static std::atomic<bool> refineBannerPrinted{false};
+    if (!refineBannerPrinted.exchange(true, std::memory_order_relaxed)) {
+        std::cerr << "[OctreeTopology] virtual refinement "
+                  << (refineEnabled.load() ? "on" : "off")
+                  << " depth=" << refineMaxDepth
+                  << " budget=" << refineBudget
+                  << " minPriority=" << refineMinPriority
+                  << " featureSlope=" << refineFeatureSlope
+                  << " tol=" << refineTolerance
+                  << " project=" << (refineProject ? 1 : 0) << "\n";
+    }
 }
 
 OctreeTopologyCompute::~OctreeTopologyCompute() {
@@ -125,7 +152,15 @@ OctreeTopologyCompute::~OctreeTopologyCompute() {
     // owned by the app's resource manager), so the destructor guarantees the
     // final profiler table still reaches the log. Silent when diag is off.
     printProfileSummary();
-    if (globalInstance == this) globalInstance = nullptr;
+    for (auto& lane : globalLanes) {
+        if (lane == this) lane = nullptr;
+    }
+    if (globalInstance == this) {
+        globalInstance = nullptr;
+        for (OctreeTopologyCompute* lane : globalLanes) {
+            if (lane != nullptr) { globalInstance = lane; break; }
+        }
+    }
 }
 
 void OctreeTopologyCompute::init(VulkanApp* vkApp) {

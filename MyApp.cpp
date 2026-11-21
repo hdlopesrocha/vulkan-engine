@@ -501,7 +501,10 @@ public:
     std::shared_ptr<VideoTextureWidget> videoTextureWidget;
     int videoCubeMaterialIndex = -1;   // material used by MainSceneLoader's video cube
     int sdfGivenMaterialIndex = -1;    // material used by MainSceneLoader's SdfGiven cube
-    std::shared_ptr<OctreeTopologyCompute> octreeTopologyCompute;
+    // S3: one topology service per scene layer. Each lane owns its input
+    // buffers, descriptor set and submission slot; getGlobal() binds each
+    // layer worker to one lane, removing the old process-wide mutex convoy.
+    std::vector<std::shared_ptr<OctreeTopologyCompute>> octreeTopologyLanes;
     // ── Water droplets: GPU particle simulation + SDF ray-marched rendering ─
     // The simulation owns device-local state buffers and collides against the
     // cropped octree SDF table (same node layout as the topology pass), so the
@@ -670,8 +673,17 @@ public:
         // Surface Cartesian vertices are extracted only on the GPU (the
         // topology pass writes the packed pools). There is no CPU vertex
         // solver and no readback path to compare against any more.
-        octreeTopologyCompute = std::make_shared<OctreeTopologyCompute>();
-        octreeTopologyCompute->init(this);
+        // S3: three independent topology lanes (opaque/water/video). Init is
+        // cheap now that the pipeline cache is warm; each lane still owns all
+        // its GPU state, so workers never share a mutex or descriptor set.
+        constexpr uint32_t kTopologyLanes = 3;
+        octreeTopologyLanes.clear();
+        octreeTopologyLanes.reserve(kTopologyLanes);
+        for (uint32_t lane = 0; lane < kTopologyLanes; ++lane) {
+            auto service = std::make_shared<OctreeTopologyCompute>();
+            service->init(this);
+            octreeTopologyLanes.push_back(std::move(service));
+        }
         textureMixer->attachTextureArrayManager(&textureArrayManager);
         // Record into member so UI can display counts
         textureLayerCount_ = layerCount;
@@ -1260,6 +1272,7 @@ public:
         if (const char* env = std::getenv("VULKAN_DROPLET_RADIUS")) {
             settings.dropletRadius = std::max(0.05f, static_cast<float>(std::atof(env)));
         }
+
     }
 
     void createSceneInfrastructure(const std::function<void(const char*)>& step) {

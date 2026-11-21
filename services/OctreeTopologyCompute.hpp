@@ -35,8 +35,18 @@ using OctreeTopologyReleaseCallback = std::function<void(uint32_t slotIndex)>;
 // appends indices directly and writes each referenced vertex once.
 class OctreeTopologyCompute {
 public:
-    static OctreeTopologyCompute* globalInstance __attribute__((weak));
-    static OctreeTopologyCompute* getGlobal() __attribute__((weak)) { return globalInstance; }
+    // S3: per-thread topology lanes. Each instance owns its own input buffers,
+    // descriptor set and single-time submission slot, so the layer workers no
+    // longer serialize all chunk dispatches behind one process-wide mutex.
+    // MyApp creates one lane per scene layer; getGlobal() binds a worker
+    // thread to a lane the first time it asks and keeps that binding.
+    static constexpr uint32_t kMaxLanes = 8;
+    static OctreeTopologyCompute* globalInstance;
+    static OctreeTopologyCompute* globalLanes[kMaxLanes];
+    static std::atomic<uint32_t> globalLaneCount;
+    static std::atomic<uint32_t> globalLaneNext;
+    static void registerLane(OctreeTopologyCompute* lane);
+    static OctreeTopologyCompute* getGlobal();
 
     OctreeTopologyCompute();
     ~OctreeTopologyCompute();

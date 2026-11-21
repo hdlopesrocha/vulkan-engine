@@ -730,6 +730,21 @@ progress atomics. Prompt~2.
 
 \subsubsection*{S3: Blocking Per-Chunk Topology Behind a Global Mutex}
 
+\textbf{Status (this tree).} Partially addressed with \emph{per-layer topology
+lanes}. \texttt{MyApp} now creates three \texttt{OctreeTopologyCompute}
+instances (one per scene layer); \texttt{getGlobal()} binds each layer worker
+to a lane for the lifetime of that worker. Each lane owns its input buffers,
+descriptor set, pipelines and single-time submission slot, so the
+process-wide mutex no longer serializes chunks across layers and up to three
+per-chunk round trips overlap. The remaining per-chunk submit/readback is
+still the floor; full batching (the prompt below) is the next step. The build
+is validation-clean in the completed S1/S2 runs; a full S3 trace was not
+captured because the app was closed during renderer initialization, where the
+validation layer also reports a fence-threading warning on the close path.
+Run \texttt{VULKAN\_SETUP\_DIAG=1 make run-debug} and let the scene stream to
+record the per-lane totals (\texttt{[OctreeTopology] chunks=...} now prints
+one sequence per lane).
+
 \textbf{Evidence.} \texttt{computeResident()} takes \texttt{mutex} for its
 entire body (\texttt{OctreeTopologyCompute.cpp:690}), submits through
 \texttt{runSingleTimeCommands()} (\texttt{:825}), waits on the fence
