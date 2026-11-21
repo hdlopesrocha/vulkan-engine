@@ -31,9 +31,12 @@ struct RaymarchNode {
 //   bit0       leaf (no children block)
 //   bit1       derived payload valid: meta.x = resolved material index,
 //              hsv1.z = 1/Lipschitz bound (written by OctreeDerive.comp)
+//   bit2       QEF payload valid: RaymarchPayload[id] holds the QEF
+//              position and normal (written by OctreeDerive.comp)
 //   bits8..15  mask of surface children pruned by the node cap (per slot)
 //   bits16..31 two-bit SpaceType per child slot (non-surface leaves only)
 const uint RM_FLAG_LEAF = 1u;
 const uint RM_FLAG_PAYLOAD = 2u;
+const uint RM_FLAG_QEF = 4u;
 
 #endif // OCTREE_RAYMARCH_NODE_RECORD_GLSL

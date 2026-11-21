@@ -3,8 +3,9 @@
 
 // GPU mirror of utils/OctreeRaymarchTable.hpp.
 //
-// One flat node array per frame slot (set=2 binding=0) plus the per-layer root
-// entries (binding=1: node index + stable Layer::Id). The table stores surface
+// One flat node array per frame slot (set=2 binding=0), the per-layer root
+// entries (binding=1: node index + stable Layer::Id) and the derived QEF
+// payload (binding=2, hit-only). The table stores surface
 // octree nodes only; the parent's meta.w packs the information the descent
 // needs for absent children (see RaymarchNodeRecord.glsl for the flag layout).
 //
@@ -16,6 +17,7 @@
 // optional scalarBlockLayout device feature.
 
 #include "RaymarchNodeRecord.glsl"
+#include "RaymarchPayload.glsl"
 
 // Root entry: node index + stable Layer::Id + renderer kind (0 = Solid,
 // 1 = Water) + the layer's conservative surface AABB. The AABB bounds every
@@ -37,6 +39,12 @@ layout(std430, set = 2, binding = 0) readonly buffer RaymarchNodes {
 };
 layout(std430, set = 2, binding = 1) readonly buffer RaymarchRoots {
     RaymarchRoot rmRoots[];
+};
+// Once-per-revision derived QEF position/normal. Only hit-time ring lookups
+// read it, so it stays a separate hit-only stream instead of growing the
+// traversal record.
+layout(std430, set = 2, binding = 2) readonly buffer RaymarchPayloads {
+    RaymarchPayload rmPayload[];
 };
 
 const int RM_TYPE_EMPTY = 0;

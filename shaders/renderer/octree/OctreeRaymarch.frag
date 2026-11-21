@@ -180,8 +180,15 @@ int rmResolveMaterialAt(uint id, vec3 qefPos) {
     return rmResolveMaterialAtCorners(raw, sdf, mn, sz, qefPos, n);
 }
 
+bool rmQefCached(uint id) {
+    return (uint(rmNodes[id].meta.w) & RM_FLAG_QEF) != 0u;
+}
+
 // Node QEF vertex position (the same value the raster vertex payload carries).
+// OctreeDerive.comp computed it once per revision; the fragment only solves it
+// when the payload is unavailable (derive module missing / allocation failure).
 vec3 rmCellQef(uint id) {
+    if (rmQefCached(id)) return rmPayload[id].qef.xyz;
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
     return sdfCellPosition(sdf, rmNodeMin(id), rmNodeSize(id));
@@ -217,6 +224,14 @@ vec3 rmNodeNormal(uint id, vec3 p) {
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
     return sdfCellNormal(sdf, rmNodeMin(id), rmNodeSize(id), p);
+}
+
+// Normal at the node's QEF vertex. Exact consumers (the ring) can use the
+// stored vector; hit-point consumers keep rmNodeNormal() because their sample
+// position differs from the QEF vertex.
+vec3 rmNodeNormalAtQef(uint id, vec3 qp) {
+    if (rmQefCached(id)) return rmPayload[id].normal.xyz;
+    return rmNodeNormal(id, qp);
 }
 
 // Per-invocation material cache. rmResolvedBrush() runs the QEF solver
@@ -546,7 +561,7 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
         }
         if (!duplicate && ringCount < 4) {
             int m = rmRingMaterial(id, qp);
-            vec3 n = rmNodeNormal(id, qp);
+            vec3 n = rmNodeNormalAtQef(id, qp);
             float disp = rmDisplacementN(id, m, qp, n);
             ringId[ringCount] = id;
             ringBase[ringCount] = qp;

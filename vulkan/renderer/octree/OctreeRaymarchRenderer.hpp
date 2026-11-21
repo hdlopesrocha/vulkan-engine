@@ -12,8 +12,9 @@
 
 // Octree SDF raymarch terrain path (Settings::octreeRaymarchEnabled).
 //
-// Owns the set-2 descriptor layout (node table + layer roots), one host-visible
-// buffer pair per frame in flight and the fullscreen raymarch pipeline. The
+// Owns the set-2 descriptor layout (node table + layer roots + derived QEF
+// payload), the per-slot node/root/payload buffers and the fullscreen raymarch
+// pipeline. The
 // table covers EVERY terrain layer (Solid + Water): the shader marches all
 // layer roots and keeps the nearest hit, so solid and water surfaces occlude
 // each other in one pass. Solid hits shade through the shared solid surface
@@ -25,7 +26,7 @@
 // The table itself is built by the CPU (Scene::buildRaymarchTable) on a debounce
 // and uploaded here only when its revision differs from the slot's revision.
 // The table buffers are allocated on the first upload: the mode is off by
-// default, so paying ~48 MB per frame slot at startup would be wasteful.
+// default, so paying ~64 MB per frame slot at startup would be wasteful.
 //
 // Synchronization: upload() is called from MyApp::update(), which runs after
 // the frame-slot fence wait (VulkanApp::drawFrame). The slot's previous GPU
@@ -38,8 +39,9 @@ class OctreeRaymarchRenderer : public Renderer {
 public:
     static constexpr uint32_t RAYMARCH_FRAMES = VulkanApp::MAX_FRAMES_IN_FLIGHT;
 
-    // Hard CPU-side cap: 524288 nodes * 96 B = 48 MiB per frame slot (144 MiB
-    // for the three slots, allocated only once the mode is enabled). The
+    // Hard CPU-side cap: 524288 nodes * 96 B = 48 MiB per frame slot, plus
+    // 16 MiB of derived QEF payload (64 MiB per slot, 192 MiB for the three
+    // slots, allocated only once the mode is enabled). The
     // default procedural scene's terrain tree (solid + water) is larger than
     // this, so the breadth-first walk stores the shallow levels whole and
     // prunes the deepest surface children; the parent's trilinear field keeps
@@ -114,10 +116,10 @@ public:
               VkDescriptorSet mainSet, VkDescriptorSet brushSet);
 
 private:
-    // Allocate this slot's node/root buffers and point the slot's descriptor
-    // set at them. Called from upload() on the main thread (after the slot's
-    // fence wait) the first time a revision needs publishing. Returns false on
-    // allocation failure; the caller keeps the raster path.
+    // Allocate this slot's node/root/payload buffers and point the slot's
+    // descriptor set at them. Called from upload() on the main thread (after
+    // the slot's fence wait) the first time a revision needs publishing.
+    // Returns false on allocation failure; the caller keeps the raster path.
     bool ensureSlotBuffers(uint32_t fi);
 
     VulkanApp* app_ = nullptr;
@@ -125,6 +127,9 @@ private:
     std::array<VkDescriptorSet, RAYMARCH_FRAMES> sets_{};
     std::array<Buffer, RAYMARCH_FRAMES> nodeBuffers_{};
     std::array<Buffer, RAYMARCH_FRAMES> rootBuffers_{};
+    // Device-local, derived QEF position/normal per node (32 B). Written by
+    // OctreeDerive.comp; read only by the hit ring. Never mapped by the host.
+    std::array<Buffer, RAYMARCH_FRAMES> payloadBuffers_{};
     std::array<uint64_t, RAYMARCH_FRAMES> uploadedVersion_{};
     std::array<uint32_t, RAYMARCH_FRAMES> rootCounts_{};
     // Slot states for the payload derive pass: node count of the upload that
@@ -136,8 +141,9 @@ private:
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     // Once-per-revision payload derive pass (OctreeDerive.comp): writes the
     // resolved material, 1/Lipschitz bound and the payload flag into the
-    // record's dead bytes. Null when the module/pipeline was unavailable; the
-    // fragment march then keeps its QEF / fixed-0.5 fallback.
+    // record's dead bytes, and the QEF position/normal into payloadBuffers_.
+    // Null when the module/pipeline was unavailable; the fragment march then
+    // keeps its QEF / fixed-0.5 fallback.
     VkPipeline derivePipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout deriveLayout_ = VK_NULL_HANDLE;
     // RT fragment variant (same march; shadeSolidSurface with inline ray

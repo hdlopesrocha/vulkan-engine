@@ -12,6 +12,7 @@
 
 namespace {
 constexpr size_t kNodeBytes = sizeof(OctreeRaymarchNode);
+constexpr size_t kPayloadBytes = sizeof(OctreeRaymarchPayload);
 } // namespace
 
 void OctreeRaymarchRenderer::init(VulkanApp* app) {
@@ -31,31 +32,33 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
 
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
-    // Set=2: binding 0 = node table, binding 1 = layer roots. Binding 0 is also
-    // read/written by the payload derive compute pass, so its stage mask spans
+    // Set=2: binding 0 = node table, binding 1 = layer roots, binding 2 =
+    // derived QEF payload. Bindings 0 and 2 are read by the fragment march and
+    // written by the payload derive compute pass, so their stage masks span
     // both stages; binding 1 stays fragment-only.
-    VkDescriptorSetLayoutBinding bindings[2]{};
-    for (uint32_t b = 0; b < 2; ++b) {
+    VkDescriptorSetLayoutBinding bindings[3]{};
+    for (uint32_t b = 0; b < 3; ++b) {
         bindings[b].binding = b;
         bindings[b].descriptorCount = 1;
         bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     }
     bindings[0].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
-    setLayout_ = descAlloc.createLayout(bindings, 2, 0, nullptr,
+    bindings[2].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
+    setLayout_ = descAlloc.createLayout(bindings, 3, 0, nullptr,
                                         "OctreeRaymarchRenderer: set2 layout");
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 2u * RAYMARCH_FRAMES;
+    poolSize.descriptorCount = 3u * RAYMARCH_FRAMES;
     VkDescriptorPool pool = descAlloc.createPool(
         &poolSize, 1, RAYMARCH_FRAMES, 0, "OctreeRaymarchRenderer: pool");
     descAlloc.allocateSets(pool, setLayout_, RAYMARCH_FRAMES, sets_.data(),
                            "OctreeRaymarchRenderer: set");
 
-    // The per-frame node/root buffers are allocated lazily in upload(): the
-    // raymarch mode is off by default and a slot costs ~48 MB at the full cap,
-    // so nothing is reserved until a table actually needs publishing.
+    // The per-frame node/root/payload buffers are allocated lazily in upload():
+    // the raymarch mode is off by default and a slot costs ~64 MB at the full
+    // cap, so nothing is reserved until a table actually needs publishing.
 
     // Fullscreen raymarch pipeline. Set order matches the shader: 0 = main
     // scene, 1 = brush params (PAINT/REMOVE tint), 2 = octree node table.
@@ -208,6 +211,8 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
             if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
         for (auto& buf : rootBuffers_)
             if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
+        for (auto& buf : payloadBuffers_)
+            if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
         // The derive pipeline/layout are registered with VulkanResourceManager
         // at creation; remove before destroying so shutdown does not free them
         // twice (same contract as RayTracingResources).
@@ -224,6 +229,7 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     deriveLayout_ = VK_NULL_HANDLE;
     nodeBuffers_.fill(Buffer{});
     rootBuffers_.fill(Buffer{});
+    payloadBuffers_.fill(Buffer{});
     sets_.fill(VK_NULL_HANDLE);
     uploadedVersion_.fill(0);
     rootCounts_.fill(0);
@@ -244,12 +250,17 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
 bool OctreeRaymarchRenderer::ensureSlotBuffers(uint32_t fi) {
     if (!app_ || fi >= RAYMARCH_FRAMES) return false;
     if (nodeBuffers_[fi].buffer != VK_NULL_HANDLE &&
-        rootBuffers_[fi].buffer != VK_NULL_HANDLE)
+        rootBuffers_[fi].buffer != VK_NULL_HANDLE &&
+        payloadBuffers_[fi].buffer != VK_NULL_HANDLE)
         return true;
     if (sets_[fi] == VK_NULL_HANDLE) return false;
 
-    // Host-visible and persistently mapped: MyApp::update() rewrites the slot
-    // after its fence wait, and draw() records the HOST -> FRAGMENT barrier.
+    // Node table and roots are host-visible and persistently mapped:
+    // MyApp::update() rewrites the slot after its fence wait, and draw() records
+    // the HOST -> FRAGMENT barrier. The QEF payload is device-local and is
+    // written only by OctreeDerive.comp; the fragment reads it after the
+    // derive's COMPUTE -> FRAGMENT barrier. zeroInit=false is safe because the
+    // payload flag is only set by the derive invocation that writes the entry.
     nodeBuffers_[fi] = app_->createBuffer(
         static_cast<VkDeviceSize>(maxNodes_ * kNodeBytes),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -258,15 +269,28 @@ bool OctreeRaymarchRenderer::ensureSlotBuffers(uint32_t fi) {
         static_cast<VkDeviceSize>(ROOT_CAP * sizeof(OctreeRaymarchRoot)),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    // Without a derive pipeline the flag is never set and the fragment keeps
+    // its QEF fallback, so a one-entry dummy keeps the descriptor valid without
+    // reserving the full payload.
+    const size_t payloadNodes =
+        (derivePipeline_ != VK_NULL_HANDLE && deriveLayout_ != VK_NULL_HANDLE)
+            ? maxNodes_ : 1;
+    payloadBuffers_[fi] = app_->createBuffer(
+        static_cast<VkDeviceSize>(payloadNodes * kPayloadBytes),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
 
     if (nodeBuffers_[fi].buffer == VK_NULL_HANDLE ||
-        rootBuffers_[fi].buffer == VK_NULL_HANDLE) {
+        rootBuffers_[fi].buffer == VK_NULL_HANDLE ||
+        payloadBuffers_[fi].buffer == VK_NULL_HANDLE) {
         std::cerr << "[OctreeRaymarchRenderer] failed to create per-frame table resources"
                   << std::endl;
         if (nodeBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(nodeBuffers_[fi]);
         if (rootBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(rootBuffers_[fi]);
+        if (payloadBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(payloadBuffers_[fi]);
         nodeBuffers_[fi] = Buffer{};
         rootBuffers_[fi] = Buffer{};
+        payloadBuffers_[fi] = Buffer{};
         return false;
     }
 
@@ -277,6 +301,9 @@ bool OctreeRaymarchRenderer::ensureSlotBuffers(uint32_t fi) {
         .writeBuffer(sets_[fi], 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                      rootBuffers_[fi].buffer, 0,
                      app_->getClampedWholeSizeRange(rootBuffers_[fi].buffer))
+        .writeBuffer(sets_[fi], 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     payloadBuffers_[fi].buffer, 0,
+                     app_->getClampedWholeSizeRange(payloadBuffers_[fi].buffer))
         .flush();
     return true;
 }
@@ -348,7 +375,8 @@ void OctreeRaymarchRenderer::recordDerive(VkCommandBuffer cmd, uint32_t frameInd
     // revision, or an empty table). Publish the host writes straight to the
     // fragment stage exactly as before.
     if (derivePipeline_ == VK_NULL_HANDLE || deriveLayout_ == VK_NULL_HANDLE ||
-        sets_[fi] == VK_NULL_HANDLE || !needsDerive_[fi] || nodeCounts_[fi] == 0) {
+        sets_[fi] == VK_NULL_HANDLE || payloadBuffers_[fi].buffer == VK_NULL_HANDLE ||
+        !needsDerive_[fi] || nodeCounts_[fi] == 0) {
         recordHostWriteBarrier(cmd);
         return;
     }

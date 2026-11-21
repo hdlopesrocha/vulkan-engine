@@ -11,9 +11,12 @@
 //   hsv1.z  = 1 / Lipschitz bound L (max cell step becomes |f| / L)
 //   meta.w |= RM_FLAG_PAYLOAD
 //
-// No memory is added: the record stays 96 bytes. Nodes that predate the pass
-// (or slots whose pipeline failed to build) keep the fragment-side QEF
-// fallback and the fixed 0.5 factor.
+// The same invocation already solved the QEF position/normal for the
+// classifier. They are written to the parallel RaymarchPayloads buffer
+// (set=2 binding=2) and flagged with RM_FLAG_QEF, so the hit ring can read
+// them instead of re-solving per pixel. The node record itself stays 96
+// bytes. Nodes that predate the pass (or slots whose pipeline failed to build)
+// keep the fragment-side QEF fallback and the fixed 0.5 factor.
 //
 // One invocation per node, each invocation owns exactly one record, so there
 // is no cross-invocation dependency and no atomics.
@@ -27,12 +30,18 @@ layout(local_size_x = 64) in;
 // The record declaration is shared with RaymarchTable.glsl (96 bytes, same
 // field order) so the two stages cannot drift apart.
 #include "../../includes/octree/RaymarchNodeRecord.glsl"
+#include "../../includes/octree/RaymarchPayload.glsl"
 #include "../../includes/octree/RaymarchMaterial.glsl"
 
 // Set=2 binding=0: the same node table the march reads; the derive pass owns
 // the writes to meta.x / hsv1.z / meta.w.
 layout(std430, set = 2, binding = 0) buffer RaymarchNodes {
     RaymarchNode nodes[];
+};
+
+// Set=2 binding=2: derived QEF position/normal consumed by the hit ring.
+layout(std430, set = 2, binding = 2) writeonly buffer RaymarchPayloads {
+    RaymarchPayload payloads[];
 };
 
 layout(push_constant) uniform PC {
@@ -57,9 +66,13 @@ void main() {
     int mat = rmResolveMaterialAtCorners(int(nodes[i].meta.z), sdf, mn, sz, qef, n);
     float lip = rmLipBound(sdf, sz);
 
+    // Store the values the hit ring would otherwise re-solve per pixel.
+    payloads[i].qef = vec4(qef, 1.0);
+    payloads[i].normal = vec4(n, 0.0);
+
     // The 1e-3 floor caps the step multiplier at 1000 for a degenerate bound;
     // the march still clamps every step to the child-cell exit.
     nodes[i].meta.x = mat;
     nodes[i].hsv1.z = 1.0 / max(lip, 1e-3);
-    nodes[i].meta.w |= int(RM_FLAG_PAYLOAD);
+    nodes[i].meta.w |= int(RM_FLAG_PAYLOAD | RM_FLAG_QEF);
 }

@@ -59,6 +59,19 @@ static_assert(sizeof(OctreeRaymarchRoot) == 48,
               "OctreeRaymarchRoot must stay 48 bytes (4 x 4 B + 2 x vec4) to "
               "match the std430 RaymarchRoot in RaymarchTable.glsl");
 
+// Device-only derived payload, one per stored node, written by
+// OctreeDerive.comp and read by the hit ring. The host never fills this struct;
+// it is declared here to keep the GPU stride and field order unambiguous.
+// Must match RaymarchPayload in shaders/includes/octree/RaymarchPayload.glsl.
+struct OctreeRaymarchPayload {
+    glm::vec4 qef;    // xyz = QEF position, w = 1
+    glm::vec4 normal; // xyz = QEF normal, w = 0
+};
+
+static_assert(sizeof(OctreeRaymarchPayload) == 32,
+              "OctreeRaymarchPayload must stay 32 bytes (2 x vec4) to match "
+              "the std430 RaymarchPayload in RaymarchPayload.glsl");
+
 // CPU-side owner of one raymarch table revision. The owner (MyApp) rebuilds it
 // on a debounce and hands it to OctreeRaymarchRenderer, which uploads the same
 // revision into each frame slot exactly once (version match = already there).
@@ -69,12 +82,16 @@ public:
     //   bit1       derived payload valid (RM_FLAG_PAYLOAD): meta.x = resolved
     //              material index, hsv1.z = 1/Lipschitz bound. Written by the
     //              renderer's once-per-revision OctreeDerive.comp pass.
+    //   bit2       QEF payload valid (RM_FLAG_QEF): OctreeRaymarchPayload[node]
+    //              holds the QEF position/normal. Also written by the derive
+    //              pass, in the same invocation as bit1.
     //   bits8..15  mask of surface children pruned by the node cap (per slot)
     //   bits16..31 two-bit SpaceType per child slot (non-surface leaves only)
     // meta.y is the stored-child base (NOT a SpaceType): all stored nodes are
     // Surface by construction, and their children are contiguous.
     static constexpr uint32_t FLAG_LEAF = 1u;
     static constexpr uint32_t FLAG_PAYLOAD = 1u << 1;
+    static constexpr uint32_t FLAG_QEF = 1u << 2;
     static constexpr uint32_t PRUNED_CHILD_SHIFT = 8u;
     static constexpr uint32_t CHILD_TYPE_SHIFT = 16u;
 
