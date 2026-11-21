@@ -18,7 +18,7 @@ const int LAND_BRUSH_INDEX = 255;
 // node: keep only nodes facing +Y, the rest are discarded.
 const int NORMAL_BRUSH = 254;
 
-const int LAND_SOURCE_COUNT   = 24;
+const int LAND_SOURCE_COUNT   = 26;
 const int LAND_MIXER_FIRST    = LAND_SOURCE_COUNT;
 
 const int LAND_UNDERGROUND    = -1;

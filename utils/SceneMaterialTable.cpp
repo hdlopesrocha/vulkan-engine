@@ -26,6 +26,8 @@ std::vector<SceneTextureTriple> sceneTextureTriples() {
         { "textures/Ground_Dirt_008/COLOR.jpg", "textures/Ground_Dirt_008/NORMAL.jpg", "textures/Ground_Dirt_008/HEIGHT.jpg", "textures/Ground_Dirt_008/ROUGH.jpg", "textures/Ground_Dirt_008/OCC.jpg" },
         { "textures/Ground_Grass_001/COLOR.jpg", "textures/Ground_Grass_001/NORMAL.jpg", "textures/Ground_Grass_001/HEIGHT.jpg", "textures/Ground_Grass_001/ROUGH.jpg", "textures/Ground_Grass_001/OCC.jpg" },
         { "textures/Terracotta_Floor_Tiles_005/COLOR.jpg", "textures/Terracotta_Floor_Tiles_005/NORMAL.jpg", "textures/Terracotta_Floor_Tiles_005/HEIGHT.jpg", "textures/Terracotta_Floor_Tiles_005/ROUGH.jpg", "textures/Terracotta_Floor_Tiles_005/OCC.jpg" },
+        { "textures/Rough_rock_018/COLOR.jpg", "textures/Rough_rock_018/NORMAL.jpg", "textures/Rough_rock_018/HEIGHT.jpg", "textures/Rough_rock_018/ROUGH.jpg", "textures/Rough_rock_018/OCC.jpg" },
+        { "textures/Rough_rock_001/COLOR.jpg", "textures/Rough_rock_001/NORMAL.jpg", "textures/Rough_rock_001/HEIGHT.jpg", "textures/Rough_rock_001/ROUGH.jpg", "textures/Rough_rock_001/OCC.jpg" },
     };
 }
 

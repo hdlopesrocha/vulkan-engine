@@ -23,7 +23,7 @@
 constexpr uint32_t kSceneMixerCount = 9;
 constexpr uint32_t kScenePaintMargin = 2;  // editable placeholder + spare
 
-// The 24 hard-coded texture triples, in layer order (index = vector position).
+// The 26 hard-coded texture triples, in layer order (index = vector position).
 std::vector<SceneTextureTriple> sceneTextureTriples();
 
 // The nine generated blend layers; targets continue after the source triples.
