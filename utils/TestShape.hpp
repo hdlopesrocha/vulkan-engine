@@ -6,6 +6,13 @@
 enum class TestShape {
     Tetrahedron = 0,
     Octrahedron,
+    Dodecahedron,
+    Icosahedron,
+    StarTetrahedron,
+    StarOctahedron,
+    StarDodecahedron,
+    StarIcosahedron,
+    StarHexahedron,
     Pyramid,
     Torus,
     Cone,
@@ -27,7 +34,5 @@ enum class TestShape {
     CubeProjectionZ,
     CubeAngular,
     Interpolation,
-    Dodecahedron,
-    Icosahedron,
     Count
 };

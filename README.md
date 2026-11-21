@@ -223,7 +223,7 @@ A single fullscreen composite (`postprocess.frag`) assembles the frame: equirect
 
 The `sdf/` directory implements a full SDF primitive and composition library:
 
-**Primitives** — Box, sphere, capsule, tapered capsule, cylinder, tapered cylinder, cone, torus, octahedron, pyramid, triangle strip, sweep, road spline, and height-map terrain (with GeoTIFF support via GDAL).
+**Primitives** — Box, sphere, capsule, tapered capsule, cylinder, tapered cylinder, cone, torus, tetrahedron, octahedron, dodecahedron, icosahedron, pyramid, triangle strip, sweep, road spline, height-map terrain (with GeoTIFF support via GDAL), and the star (stellated) variants of the tetrahedron, octahedron, hexahedron, dodecahedron and icosahedron.
 
 **CSG operations:**
 - Hard: union, subtraction, intersection, XOR

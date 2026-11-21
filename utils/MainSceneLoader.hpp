@@ -28,6 +28,11 @@
 #include "../sdf/primitives/TetrahedronDistanceFunction.hpp"
 #include "../sdf/primitives/DodecahedronDistanceFunction.hpp"
 #include "../sdf/primitives/IcosahedronDistanceFunction.hpp"
+#include "../sdf/primitives/StarTetrahedronDistanceFunction.hpp"
+#include "../sdf/primitives/StarOctahedronDistanceFunction.hpp"
+#include "../sdf/primitives/StarDodecahedronDistanceFunction.hpp"
+#include "../sdf/primitives/StarIcosahedronDistanceFunction.hpp"
+#include "../sdf/primitives/StarHexahedronDistanceFunction.hpp"
 #include "../sdf/primitives/TorusDistanceFunction.hpp"
 #include "../sdf/primitives/ConeDistanceFunction.hpp"
 #include "../sdf/primitives/CylinderDistanceFunction.hpp"
@@ -315,6 +320,36 @@ public:
             case TestShape::Icosahedron: {
                 std::cout << "\topaqueLayer.add(icosahedron)" << std::endl;
                 IcosahedronDistanceFunction function(model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::StarTetrahedron: {
+                std::cout << "\topaqueLayer.add(starTetrahedron)" << std::endl;
+                StarTetrahedronDistanceFunction function(model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::StarOctahedron: {
+                std::cout << "\topaqueLayer.add(starOctahedron)" << std::endl;
+                StarOctahedronDistanceFunction function(model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::StarDodecahedron: {
+                std::cout << "\topaqueLayer.add(starDodecahedron)" << std::endl;
+                StarDodecahedronDistanceFunction function(model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::StarIcosahedron: {
+                std::cout << "\topaqueLayer.add(starIcosahedron)" << std::endl;
+                StarIcosahedronDistanceFunction function(model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::StarHexahedron: {
+                std::cout << "\topaqueLayer.add(starHexahedron)" << std::endl;
+                StarHexahedronDistanceFunction function(model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
