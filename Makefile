@@ -446,6 +446,7 @@ server: $(SERVER_OBJS) web
 	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
 	@if [ -d scripts ]; then mkdir -p $(OUT_DIR)/scripts && cp -a scripts/. $(OUT_DIR)/scripts/ || true; fi
 	@if [ -d svg ]; then cp -a svg $(OUT_DIR)/ || true; fi
+	@if [ -d models ]; then cp -a models $(OUT_DIR)/ || true; fi
 
 $(OUT): $(BUILD_MODE_STAMP) $(OBJS)
 	@echo "Linking: $(OUT)"
@@ -456,6 +457,7 @@ $(OUT): $(BUILD_MODE_STAMP) $(OBJS)
 	@if [ -d textures ]; then cp -a textures $(OUT_DIR)/ || true; fi
 	@if [ -d fonts ]; then cp -a fonts $(OUT_DIR)/ || true; fi
 	@if [ -d scenes ]; then cp -a scenes $(OUT_DIR)/ || true; fi
+	@if [ -d models ]; then cp -a models $(OUT_DIR)/ || true; fi
 	@if [ -d scripts ]; then mkdir -p $(OUT_DIR)/scripts && cp -a scripts/. $(OUT_DIR)/scripts/ || true; fi
 	@if [ -d svg ]; then cp -a svg $(OUT_DIR)/ || true; fi
 	@if [ -f imgui.ini ]; then cp imgui.ini $(OUT_DIR)/ || true; fi

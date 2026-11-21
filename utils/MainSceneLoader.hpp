@@ -59,6 +59,7 @@
 #include "../sdf/primitives/TriangleStripDistanceFunction.hpp"
 #include "../sdf/primitives/SvgShape.hpp"
 #include "../sdf/primitives/SvgPolygonDistanceFunction.hpp"
+#include "../sdf/primitives/ObjDistanceFunction.hpp"
 
 
 #include "../brushPainters/LandBrush.hpp"
@@ -309,6 +310,16 @@ public:
                 BoxDistanceFunction target(model, tileSize);
                 InterpolatedDistanceFunction mixed(source, target, 0.5f, model, tileSize);
                 opaqueLayer.apply(AddSignedDistanceOperation(), mixed, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::ObjMesh: {
+                std::cout << "\topaqueLayer.add(obj mesh models/bunny.obj)" << std::endl;
+                // Texture coordinates from the OBJ are ignored; the brush uses
+                // triplanar mapping like every other catalogue entry.
+                ObjDistanceFunction function("models/bunny.obj", model, tileSize);
+                if (!function.empty()) {
+                    opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                }
                 break;
             }
             case TestShape::Dodecahedron: {
