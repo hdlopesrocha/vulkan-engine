@@ -1530,8 +1530,31 @@ void main() {
     // reflection/refraction directions stable pixel-to-pixel.
     vec3 normal;
     if (isWater) {
-        normal = normalize(rmNodeNormal(nearestNode, hitPos));
-        if (dot(normal, rd) > 0.0) normal = -normal;
+        vec3 sdfNormal = normalize(rmNodeNormal(nearestNode, hitPos));
+        if (dot(sdfNormal, rd) > 0.0) sdfNormal = -sdfNormal;
+
+        // The analytic gradient above is the TRILINEAR cell gradient, so it
+        // jumps at every cell boundary and flat-shades curved water bodies
+        // (the transparent spheres) into large facets. The raster water mesh
+        // does not show those facets because it interpolates the per-vertex
+        // cell normals across each Surface-Nets triangle. Reconstruct the same
+        // local fan and barycentrically blend its corner normals. Flat water
+        // (|n.y| ~ 1) keeps the cheap analytic normal: there are no visible
+        // facets to remove and the lake covers most of the screen.
+        normal = sdfNormal;
+        if (abs(sdfNormal.y) < 0.999) {
+            uint rootNode = rmRoots[nearestRoot].node;
+            bool nonSurfaceStop;
+            uint blendCell = rmFindNodeAt(rootNode, hitPos, nonSurfaceStop);
+            if (blendCell == RM_INVALID_NODE || nonSurfaceStop) blendCell = nearestNode;
+            // Displacement/material payload is irrelevant here; only the
+            // interpolated normal is consumed.
+            RmSurfaceBlend waterBlend = rmBlendAtHit(rootNode, blendCell, hitPos, hitPos);
+            if (dot(waterBlend.normal, waterBlend.normal) > 1e-12) {
+                normal = normalize(waterBlend.normal);
+                if (dot(normal, rd) > 0.0) normal = -normal;
+            }
+        }
     } else {
         // Material / mapping payload of the hit cell. rmResolveHitShading()
         // reconstructs the same up-to-three-material barycentric blend the
