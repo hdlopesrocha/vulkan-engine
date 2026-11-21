@@ -151,10 +151,18 @@ Reproduced equations:
   base colour (Blender's HSV is 0..1; the engine's hue is degrees).
 
 Texture colour spaces: albedo tiles are `sRGB`, normal/roughness/AO tiles are
-`Non-Color`. The generated mixer layers (indices 26–34) have no source files;
+`Non-Color`. The generated mixer layers (indices 26–37) have no source files;
 the exporter bakes them on the CPU with the same two source layers and the same
 equations as `TextureMixer.comp` (Perlin-scale/octave/contrast/brightness),
 so they are included as ordinary tiles.
+
+LandBrush classifies flat terrain into a five-material grass biome palette
+(`Grass_001`, `Ground_Grass_001`, `Dead_leaves_001`, `Ground_Dirt_007`,
+`Ground_Dirt_008`) and steep terrain into a four-material rock palette
+(`Rough_rock_021`, `Rough_rock_006`, `Rough_rock_018`, `Rough_rock_001`).
+Both use a Perlin field with a flattened band distribution; the seam between
+adjacent palette entries is a generated mix layer, and the rock sources and
+seams share the default rock's tessellation settings.
 
 ## Grass
 

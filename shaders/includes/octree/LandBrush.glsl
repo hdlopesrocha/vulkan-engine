@@ -34,6 +34,20 @@ const int LAND_ROCK_MIX_GRASS = LAND_MIXER_FIRST + 2;
 const int LAND_ROCK_MIX_SNOW  = LAND_MIXER_FIRST + 3;
 const int LAND_ROCK_MIX_SAND  = LAND_MIXER_FIRST + 4;
 
+// ── Terrain biomes ──────────────────────────────────────────────────────────
+// Shared biome-field shape: two Perlin octaves give the broad patches and a
+// higher-frequency third octave warps the band edges so the seams are organic
+// instead of clean contour lines around the world origin. The tanh transfer
+// flattens Perlin's bell-shaped value distribution so every palette band
+// covers a similar share of the map instead of only the middle bands
+// appearing.
+float landBiomeShape(vec2 p, vec2 warpP) {
+    float base = perlin2(p) + 0.5 * perlin2(p * 2.07 + vec2(19.3, -7.1));
+    float warp = perlin2(warpP);
+    float n = clamp((base * 0.6667 + warp * 0.12) * 1.9, -1.0, 1.0);
+    return 0.5 + 0.5 * tanh(2.5 * n);
+}
+
 // ── Grass-band biomes ───────────────────────────────────────────────────────
 // The flat band that used to be a single LAND_GRASS material is a linear
 // Perlin palette. Mixer LAND_BIOME_MIX_FIRST + i blends palette entry i into
@@ -55,18 +69,8 @@ int landBiomeBase(int band) {
     return LAND_BIOME_BARE_DIRT;
 }
 
-// Smooth [0,1] biome field. Two Perlin octaves give the broad patches and a
-// higher-frequency third octave warps the band edges so the seams are organic
-// instead of clean contour lines around the world origin. The tanh transfer
-// flattens Perlin's bell-shaped value distribution so every palette band
-// covers a similar share of the map instead of only the middle bands
-// appearing.
 float landBiomeField(vec2 xz) {
-    vec2 p = xz * 0.01;
-    float base = perlin2(p) + 0.5 * perlin2(p * 2.07 + vec2(19.3, -7.1));
-    float warp = perlin2(xz * 0.075 + vec2(4.7, 23.9));
-    float n = clamp((base * 0.6667 + warp * 0.12) * 1.9, -1.0, 1.0);
-    return 0.5 + 0.5 * tanh(2.5 * n);
+    return landBiomeShape(xz * 0.01, xz * 0.075 + vec2(4.7, 23.9));
 }
 
 int landBiomeMaterial(vec2 xz) {
@@ -82,6 +86,43 @@ int landBiomeMaterial(vec2 xz) {
     return landBiomeBase(band);
 }
 
+// ── Rock biomes ─────────────────────────────────────────────────────────────
+// Steep faces are no longer a single LAND_ROCK material: a second, coarser
+// Perlin field (different frequency and offsets from the grass field, so the
+// patterns are independent) picks one of the four Rough_rock sets. The rock
+// seam mixers are appended after the grass ones.
+// Palette order: Rough_rock_021, Rough_rock_006, Rough_rock_018,
+// Rough_rock_001.
+const int LAND_ROCK_BIOME_006      = 17;  // textures/Rough_rock_006
+const int LAND_ROCK_BIOME_018      = 24;  // textures/Rough_rock_018
+const int LAND_ROCK_BIOME_001      = 25;  // textures/Rough_rock_001
+const int LAND_ROCK_BIOME_MIX_FIRST = LAND_BIOME_MIX_FIRST + 4;
+
+int landRockBase(int band) {
+    if (band <= 0) return LAND_ROCK;  // Rough_rock_021
+    if (band == 1) return LAND_ROCK_BIOME_006;
+    if (band == 2) return LAND_ROCK_BIOME_018;
+    return LAND_ROCK_BIOME_001;
+}
+
+float landRockField(vec2 xz) {
+    return landBiomeShape(xz * 0.006 + vec2(11.7, -3.9),
+                          xz * 0.055 + vec2(31.2, -17.6));
+}
+
+int landRockMaterial(vec2 xz) {
+    const int kRockCount = 4;
+    const float kBlend = 0.18; // fraction of a band that uses the mix layer
+
+    float t = landRockField(xz) * float(kRockCount);
+    int band = clamp(int(floor(t)), 0, kRockCount - 1);
+    float f = t - float(band);
+
+    if (band + 1 < kRockCount && f > 1.0 - kBlend) return LAND_ROCK_BIOME_MIX_FIRST + band;
+    if (band > 0 && f < kBlend) return LAND_ROCK_BIOME_MIX_FIRST + (band - 1);
+    return landRockBase(band);
+}
+
 int landMaterialIndex(in vec3 pos, in vec3 normal) {
     vec3 n = normalize(normal);
     float steepness = dot(vec3(0.0, 1.0, 0.0), n);
@@ -93,10 +134,10 @@ int landMaterialIndex(in vec3 pos, in vec3 normal) {
     if (steepness <= 0.01) {
         brushIndex = LAND_UNDERGROUND;
     } else if (steepness < 0.980) {
-        brushIndex = LAND_ROCK;
+        brushIndex = landRockMaterial(pos.xz);
     } else if (steepness < 0.985) {
         if (pos.y < softSandLevel) {
-            brushIndex = LAND_ROCK;
+            brushIndex = landRockMaterial(pos.xz);
         } else if (pos.y < sandLevel) {
             brushIndex = LAND_ROCK_MIX_SAND;
         } else if (pos.y < grassLevel) {

@@ -36,10 +36,12 @@ std::vector<SceneMixerDesc> sceneMixerDescs() {
     std::vector<SceneMixerDesc> mixers;
     mixers.reserve(kSceneMixerCount);
     // LandBrush uses generated blend layers for the slope/height transition
-    // bands (grass/sand, grass/snow, rock/grass, rock/snow, rock/sand) and,
-    // after those, for the grass-band biome seams (biome i <-> biome i+1 in
-    // the LandBrush.glsl palette order: Grass_001, Ground_Grass_001,
-    // Dead_leaves_001, Ground_Dirt_007, Ground_Dirt_008).
+    // bands (grass/sand, grass/snow, rock/grass, rock/snow, rock/sand), then
+    // for the grass-band biome seams (biome i <-> biome i+1 in the
+    // LandBrush.glsl palette order: Grass_001, Ground_Grass_001,
+    // Dead_leaves_001, Ground_Dirt_007, Ground_Dirt_008), and finally for the
+    // rock-band biome seams (Rough_rock_021, Rough_rock_006, Rough_rock_018,
+    // Rough_rock_001).
     const uint32_t sources[kSceneMixerCount][2] = {
         {3u, 8u}, // grassMixSand
         {3u, 9u}, // grassMixSnow
@@ -50,6 +52,9 @@ std::vector<SceneMixerDesc> sceneMixerDescs() {
         {22u, 2u}, // biomeMixGroundGrassLeaves
         {2u, 1u},  // biomeMixLeavesDirt
         {1u, 21u}, // biomeMixDirtBareDirt
+        {7u, 17u}, // rockBiomeMixRoughRock021_006
+        {17u, 24u}, // rockBiomeMixRoughRock006_018
+        {24u, 25u}, // rockBiomeMixRoughRock018_001
     };
     for (uint32_t i = 0; i < kSceneMixerCount; ++i) {
         SceneMixerDesc d;
@@ -113,8 +118,11 @@ std::vector<MaterialProperties> sceneMaterialProperties(size_t materialCount) {
         { 14u, 5.0f, 2.0f, 16.0f,  8.0f, 0.0f },
         { 15u, 5.0f, 2.0f, 16.0f,  8.0f, 0.0f },
         { 16u, 5.0f, 2.0f, 16.0f, 32.0f, 0.0f },
+        { 17u, 2.0f, 2.0f, 16.0f,  8.0f, 0.2f },
         { 18u, 5.0f, 2.0f, 16.0f, 32.0f, 0.0f },
         { 20u, 5.0f, 2.0f, 16.0f, 32.0f, 0.0f },
+        { 24u, 2.0f, 2.0f, 16.0f,  8.0f, 0.2f },
+        { 25u, 2.0f, 2.0f, 16.0f,  8.0f, 0.2f },
     };
     for (const MaterialInit& mi : kMaterialInits) {
         if (mi.index >= materials.size()) continue;
@@ -126,6 +134,27 @@ std::vector<MaterialProperties> sceneMaterialProperties(size_t materialCount) {
         mat.tessHeightScale = mi.tessHeightScale;
         mat.invertHeight = true;
         mat.reflectionStrength = mi.reflectionStrength;
+    }
+    // The rock biome seam layers must displace like the rock sources they
+    // blend, otherwise the tessellation/bump detail drops out exactly at the
+    // biome boundaries. Derive their layer indices from the mixer table so a
+    // future texture import cannot desynchronise them.
+    constexpr uint64_t kRockMask = (uint64_t{1} << 7) | (uint64_t{1} << 17) |
+                                   (uint64_t{1} << 24) | (uint64_t{1} << 25);
+    for (const SceneMixerDesc& mixer : sceneMixerDescs()) {
+        if (mixer.target >= materials.size()) continue;
+        if (mixer.primary >= 64 || mixer.secondary >= 64) continue;
+        const bool primaryRock = ((kRockMask >> mixer.primary) & 1ull) != 0ull;
+        const bool secondaryRock = ((kRockMask >> mixer.secondary) & 1ull) != 0ull;
+        if (!primaryRock || !secondaryRock) continue;
+        MaterialProperties& mat = materials[mixer.target];
+        mat.mappingMode = true;
+        mat.tessLevel = 2.0f;
+        mat.tessMinLevel = 2.0f;
+        mat.tessMaxLevel = 16.0f;
+        mat.tessHeightScale = 8.0f;
+        mat.invertHeight = true;
+        mat.reflectionStrength = 0.2f;
     }
     return materials;
 }

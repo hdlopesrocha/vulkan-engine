@@ -17,16 +17,17 @@
 //
 // Index conventions match the texture array layers exactly:
 //   [0, triples.size())       source triples, one image set per entry
-//   [triples.size(), +9)      generated mixer layers (Perlin blends)
+//   [triples.size(), +12)     generated mixer layers (Perlin blends)
 //   next two                  editable paint placeholder + spare
 
-constexpr uint32_t kSceneMixerCount = 9;
+constexpr uint32_t kSceneMixerCount = 12;
 constexpr uint32_t kScenePaintMargin = 2;  // editable placeholder + spare
 
 // The 26 hard-coded texture triples, in layer order (index = vector position).
 std::vector<SceneTextureTriple> sceneTextureTriples();
 
-// The nine generated blend layers; targets continue after the source triples.
+// The twelve generated blend layers; targets continue after the source
+// triples.
 std::vector<SceneMixerDesc> sceneMixerDescs();
 
 // Bit i set = material i seeds grass-blade placement. Covers the LandBrush
