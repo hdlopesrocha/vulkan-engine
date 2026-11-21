@@ -203,6 +203,16 @@ int rmResolvedBrush(uint id) {
     return rmResolveMaterialAt(id, rmCellQef(id));
 }
 
+// Ring material lookup. The payload pass resolved the identical LandBrush /
+// NormalBrush classifier result into meta.x, so the hit ring must not rerun the
+// branchy Perlin classifier per quadrant cell. Cells without a payload (derive
+// unavailable) keep the fragment-side classifier, using the ring's already
+// solved QEF position instead of solving it again.
+int rmRingMaterial(uint id, vec3 qp) {
+    if ((uint(rmNodes[id].meta.w) & RM_FLAG_PAYLOAD) != 0u) return rmNodes[id].meta.x;
+    return rmResolveMaterialAt(id, qp);
+}
+
 vec3 rmNodeNormal(uint id, vec3 p) {
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
@@ -535,7 +545,7 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
             }
         }
         if (!duplicate && ringCount < 4) {
-            int m = rmResolveMaterialAt(id, qp);
+            int m = rmRingMaterial(id, qp);
             vec3 n = rmNodeNormal(id, qp);
             float disp = rmDisplacementN(id, m, qp, n);
             ringId[ringCount] = id;
