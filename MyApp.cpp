@@ -558,6 +558,10 @@ public:
     glm::vec3 benchCameraBasePos_{0.0f};
     glm::quat benchCameraBaseOri_{1.0f, 0.0f, 0.0f, 0.0f};
     uint64_t benchCameraFrame_ = 0;
+    // Optional headless A/B capture: close after N ready frames so the exit
+    // screenshot is taken at the same post-load frame in each run.
+    uint64_t benchReadyFrames_ = 0;
+    uint64_t benchExitAfterFrames_ = 0;
     void applyBenchCameraPath();
     Light light = Light(glm::vec3(-1.0f, -1.0f, -1.0f));
     EventManager eventManager;
@@ -1279,6 +1283,19 @@ public:
         if (const char* env = std::getenv("VULKAN_OCTREE_NO_FALLBACK")) {
             if (env[0] != '0') settings.octreeRaymarchNoFallback = true;
         }
+        // VULKAN_OCTREE_SCREEN_EPS=<px>: Phase 3 A/B capture of the
+        // screen-space hit tolerance. 0 keeps the world-space epsilon.
+        if (const char* env = std::getenv("VULKAN_OCTREE_SCREEN_EPS")) {
+            settings.octreeRaymarchScreenEps =
+                std::clamp(static_cast<float>(std::atof(env)), 0.0f, 8.0f);
+        }
+        // VULKAN_BENCH_EXIT_AFTER=<frames>: request a clean exit (and the
+        // normal exit screenshot) after N frames rendered once content is
+        // ready. Used by scripts/compare_raymarch_eps.sh; 0 disables.
+        if (const char* env = std::getenv("VULKAN_BENCH_EXIT_AFTER")) {
+            const long frames = std::atol(env);
+            benchExitAfterFrames_ = frames > 0 ? static_cast<uint64_t>(frames) : 0;
+        }
         // VULKAN_CAMERA_PATH=static|pan5|pan60|dolly|strafe: deterministic
         // benchmark camera derived from VULKAN_CAMERA (or the default pose).
         // The path advances once per update; dolly/strafe use 1 m and 0.5 m
@@ -1912,6 +1929,19 @@ public:
         // Phase 0: deterministic benchmark camera overrides any input motion
         // after the event queue has been processed.
         applyBenchCameraPath();
+
+        // Phase 3 capture helper: count only post-load frames, then request
+        // the normal clean exit so the existing exit-screenshot path saves the
+        // final swapchain image.
+        if (benchExitAfterFrames_ > 0 && contentReady_.load(std::memory_order_acquire) &&
+            !contentLoading_.load(std::memory_order_acquire)) {
+            if (++benchReadyFrames_ >= benchExitAfterFrames_) {
+                std::cout << "[Bench] capture frame reached (" << benchExitAfterFrames_
+                          << " ready frames); requesting exit" << std::endl;
+                benchExitAfterFrames_ = 0;
+                requestClose();
+            }
+        }
 
         shadowParams.update(camera.getPosition(), light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
 
@@ -5658,6 +5688,15 @@ static void computeBrushBounds(const BrushEntry& entry, const glm::vec3& sweepSt
 // octree and no tessellation: moving/scaling the brush is just a UBO rewrite.
 void MyApp::applyBenchCameraPath() {
     if (benchCameraPath_ == BenchCameraPath::None) return;
+
+    // Hold the start pose while content is building, then advance from frame
+    // zero of the ready period. This keeps two A/B runs aligned even when
+    // their load times differ.
+    if (!contentReady_.load(std::memory_order_acquire) ||
+        contentLoading_.load(std::memory_order_acquire)) {
+        camera.setPose(benchCameraBasePos_, benchCameraBaseOri_);
+        return;
+    }
 
     // Frame-indexed so an A/B pair sees the same pose at the same frame,
     // independent of wall-clock timing. Nominal cadence: 60 fps.
