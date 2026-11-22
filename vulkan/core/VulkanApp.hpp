@@ -351,6 +351,33 @@ public:
         // indefinitely; any other value returns VK_TIMEOUT if not signaled in time
         // (used by the async ring watchdog).
         static VkResult waitFence(VkDevice device, VkFence fence, uint64_t timeoutNs = UINT64_MAX);
+        // Serialized host-side fence calls. VkFence is externally synchronized:
+        // the frame loop, the async-submit pump and worker threads all query the
+        // same fences, and the validation layer reports a THREADING error when
+        // two threads enter vkGetFenceStatus / vkResetFences / vkDestroyFence on
+        // one fence concurrently. These helpers hold a process-wide fence mutex
+        // for the non-blocking driver call only (never across a poll sleep), so
+        // waiters serialize on the object without blocking each other's waits.
+        static VkResult getFenceStatus(VkDevice device, VkFence fence);
+        static VkResult resetFence(VkDevice device, VkFence fence);
+        static void destroyFence(VkDevice device, VkFence fence);
+        // Submit while serializing the fence parameter with the same mutex.
+        // vkQueueSubmit/vkQueueSubmit2 list their fence as externally
+        // synchronized, and the async paths publish the pending entry (and thus
+        // expose the fence to the pump) before calling submit. Without this the
+        // pump's vkGetFenceStatus can overlap the submit of the same fence.
+        static VkResult submitWithFence(VkQueue queue, uint32_t submitCount,
+                                        const VkSubmitInfo2* submits, VkFence fence);
+        // Status of a fence tracked by this app (submitted through the async
+        // paths). The tracking check and the query run under m_submissionMutex,
+        // atomic with respect to the pump's removeFence + vkDestroyFence pair;
+        // an untracked fence reports VK_SUCCESS because it can only have been
+        // freed after signaling.
+        VkResult trackedFenceStatus(VkFence fence);
+        // Blocking wait for a tracked fence. Re-validates tracking on every
+        // poll, so it never dereferences a fence the pump destroyed after the
+        // handle was captured. Untracked fences count as complete.
+        VkResult waitTrackedFence(VkFence fence, uint64_t timeoutNs = UINT64_MAX);
         void processPendingCommandBuffers();
         // Apply any pending layout updates recorded for a command buffer
         // (transfers per-CB pending updates into the authoritative map).

@@ -99,13 +99,10 @@ void TextureMixer::pollPendingGenerations(VulkanApp* app) {
 			VkFence f = std::get<0>(*it);
 			uint32_t layer = std::get<1>(*it);
 			if (!app) { ++it; continue; }
-			// If VulkanApp doesn't know about this fence any more, treat it as completed (it was cleaned up elsewhere)
-			if (!app || !app->isFencePending(f)) {
-				completed.push_back(*it);
-				it = pendingFences.erase(it);
-				continue;
-			}
-			VkResult st = vkGetFenceStatus(app->getDevice(), f);
+			// trackedFenceStatus keeps the "still tracked?" test and the status
+			// query atomic with respect to the app's deferred-destroy pump: an
+			// untracked fence was already freed after signaling, not lost.
+			VkResult st = app->trackedFenceStatus(f);
 			if (st == VK_SUCCESS) {
 				// generation complete
 				completed.push_back(*it);

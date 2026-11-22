@@ -1078,7 +1078,7 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
     // recreate + defer-destroy path, which forced a full vkQueueWaitIdle(q) per
     // rotation inside processPendingCommandBuffers() and serialized the queue.
     // Fence reset does not require a queue idle.
-    vkResetFences(device, 1, &fence);
+    resetFence(device, fence);
     vkResetCommandBuffer(cmd, 0);
 
     VkCommandBufferBeginInfo beginInfo{};
@@ -1103,7 +1103,7 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         {
             std::lock_guard<std::mutex> lock(getQueueSubmitMutex(graphicsQueue));
             SubmissionTracker::record("sync");
-            VkResult sr = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
+            VkResult sr = submitWithFence(graphicsQueue, 1, &submitInfo, fence);
             if (sr == VK_ERROR_DEVICE_LOST) {
                 deviceLost.store(true);
                 throw;
@@ -1140,7 +1140,7 @@ void VulkanApp::runSingleTimeCommands(const std::function<void(VkCommandBuffer)>
         preApplyPendingLayoutsBeforeSubmit(cmd);
 
         SubmissionTracker::record("single");
-        VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
+        VkResult submitRes = submitWithFence(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes != VK_SUCCESS) {
             if (submitRes == VK_ERROR_DEVICE_LOST) {
                 deviceLost.store(true);
@@ -1225,6 +1225,49 @@ void VulkanApp::runSingleTimeCommandsOnTransfer(const std::function<void(VkComma
     runSingleTimeCommands(fn);
 }
 
+namespace {
+// Process-wide serialization for host-side VkFence access. VkFence is
+// externally synchronized by the Vulkan spec, and this app queries the same
+// fences from the frame loop, the deferred-destroy pump (which may run on a
+// worker via throttleIfTooManyPending) and renderer worker threads. Without
+// this mutex the validation layer reports
+//   vkGetFenceStatus(): THREADING ERROR : object of type VkFence is
+//   simultaneously used ...
+// It is held only for the non-blocking driver call, so a poll loop still
+// sleeps between polls and never blocks unrelated fence waits for long.
+std::mutex g_fenceAccessMutex;
+} // namespace
+
+VkResult VulkanApp::getFenceStatus(VkDevice device, VkFence fence) {
+    if (fence == VK_NULL_HANDLE) return VK_SUCCESS;
+    std::lock_guard<std::mutex> lk(g_fenceAccessMutex);
+    return vkGetFenceStatus(device, fence);
+}
+
+VkResult VulkanApp::resetFence(VkDevice device, VkFence fence) {
+    if (fence == VK_NULL_HANDLE) return VK_SUCCESS;
+    std::lock_guard<std::mutex> lk(g_fenceAccessMutex);
+    return vkResetFences(device, 1, &fence);
+}
+
+void VulkanApp::destroyFence(VkDevice device, VkFence fence) {
+    if (fence == VK_NULL_HANDLE) return;
+    std::lock_guard<std::mutex> lk(g_fenceAccessMutex);
+    vkDestroyFence(device, fence, nullptr);
+}
+
+VkResult VulkanApp::submitWithFence(VkQueue queue, uint32_t submitCount,
+                                    const VkSubmitInfo2* submits, VkFence fence) {
+    if (fence == VK_NULL_HANDLE)
+        return vkQueueSubmit2(queue, submitCount, submits, fence);
+    // The fence parameter is externally synchronized by the spec (vk.xml
+    // externsync="true"). The async path publishes its pending entry before
+    // submitting, so another thread's pump may already poll this fence; hold
+    // the same mutex those queries use for the duration of the submit call.
+    std::lock_guard<std::mutex> lk(g_fenceAccessMutex);
+    return vkQueueSubmit2(queue, submitCount, submits, fence);
+}
+
 VkResult VulkanApp::waitFence(VkDevice device, VkFence fence, uint64_t timeoutNs) {
     if (fence == VK_NULL_HANDLE) return VK_SUCCESS;
     // Poll the fence status instead of vkWaitForFences. The validation layer's
@@ -1236,9 +1279,46 @@ VkResult VulkanApp::waitFence(VkDevice device, VkFence fence, uint64_t timeoutNs
     const uint64_t pollNs = 100'000ULL; // 100 µs between polls
     uint64_t waited = 0;
     while (true) {
-        VkResult r = vkGetFenceStatus(device, fence);
+        VkResult r = getFenceStatus(device, fence);
         if (r == VK_SUCCESS || r == VK_ERROR_DEVICE_LOST) return r;
         if (r != VK_NOT_READY) return r; // unexpected error — surface it
+        if (timeoutNs != UINT64_MAX) {
+            if (waited >= timeoutNs) return VK_TIMEOUT;
+            uint64_t sleepNs = std::min(pollNs, timeoutNs - waited);
+            std::this_thread::sleep_for(std::chrono::nanoseconds(sleepNs));
+            waited += sleepNs;
+        } else {
+            std::this_thread::sleep_for(std::chrono::nanoseconds(pollNs));
+        }
+    }
+}
+
+VkResult VulkanApp::trackedFenceStatus(VkFence fence) {
+    if (fence == VK_NULL_HANDLE) return VK_SUCCESS;
+    std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+    // The pump erases the pending entry and untracks the fence before it is
+    // destroyed, so an untracked handle means "completed and freed", never a
+    // fence we may still query.
+    if (!resources.find((uintptr_t)fence).has_value()) return VK_SUCCESS;
+    return getFenceStatus(device, fence);
+}
+
+VkResult VulkanApp::waitTrackedFence(VkFence fence, uint64_t timeoutNs) {
+    if (fence == VK_NULL_HANDLE) return VK_SUCCESS;
+    const uint64_t pollNs = 100'000ULL;
+    uint64_t waited = 0;
+    while (true) {
+        VkResult r;
+        {
+            // Atomic with the pump's removeFence + vkDestroyFence: if the fence
+            // is still tracked here, it cannot be destroyed until we release
+            // m_submissionMutex after the (non-blocking) status query.
+            std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+            if (!resources.find((uintptr_t)fence).has_value()) return VK_SUCCESS;
+            r = getFenceStatus(device, fence);
+        }
+        if (r == VK_SUCCESS || r == VK_ERROR_DEVICE_LOST) return r;
+        if (r != VK_NOT_READY) return r;
         if (timeoutNs != UINT64_MAX) {
             if (waited >= timeoutNs) return VK_TIMEOUT;
             uint64_t sleepNs = std::min(pollNs, timeoutNs - waited);
@@ -1269,16 +1349,19 @@ VkResult VulkanApp::deviceWaitIdle() {
 }
 
 void VulkanApp::waitForFrameFences() {
-    // Copy current in-flight fences under getQueueSubmitMutex(graphicsQueue) then wait on them.
-    // thread_local: callable from worker threads (VegetationRenderer) too.
+    // Copy current in-flight fences under m_submissionMutex (the mutex that
+    // guards the slot list and the deferred-destroy callback that clears it),
+    // then use waitTrackedFence so a fence destroyed by a worker's pump between
+    // the copy and the poll is treated as complete instead of dereferenced.
+    // thread_local: callable from worker threads too.
     static thread_local std::vector<VkFence> fences;
     {
-        std::lock_guard<std::mutex> lock(getQueueSubmitMutex(graphicsQueue));
+        std::lock_guard<std::recursive_mutex> lock(m_submissionMutex);
         fences = inFlightFences;
     }
     for (VkFence f : fences) {
         if (f != VK_NULL_HANDLE) {
-            waitFence(device, f);
+            waitTrackedFence(f);
         }
     }
 }
@@ -1530,14 +1613,14 @@ void VulkanApp::processPendingCommandBuffers() {
                 // so we rely on fence state rather than timeline value.
                 bool allPendingSignaled = true;
                 for (const auto& pcb : m_pendingCommandBuffers) {
-                    VkResult fs = vkGetFenceStatus(device, pcb.second);
+                    VkResult fs = getFenceStatus(device, pcb.second);
                     if (fs == VK_NOT_READY) { allPendingSignaled = false; break; }
                 }
                 if (allPendingSignaled) {
                     bool fenceCheck = true;
                     for (uint32_t fi = 0; fi < inFlightFences.size(); fi++) {
                         if (inFlightFences[fi] == VK_NULL_HANDLE) continue;
-                        VkResult fs = vkGetFenceStatus(device, inFlightFences[fi]);
+                        VkResult fs = getFenceStatus(device, inFlightFences[fi]);
                         if (fs == VK_NOT_READY) { fenceCheck = false; break; }
                     }
                     if (fenceCheck) canRun = true;
@@ -1549,7 +1632,7 @@ void VulkanApp::processPendingCommandBuffers() {
                 if (!resources.find((uintptr_t)f).has_value()) {
                     canRun = true;
                 } else {
-                    VkResult st = vkGetFenceStatus(device, f);
+                    VkResult st = getFenceStatus(device, f);
                     if (st == VK_SUCCESS) canRun = true;
                 }
             }
@@ -1583,7 +1666,7 @@ void VulkanApp::processPendingCommandBuffers() {
             if (!resources.find((uintptr_t)fence).has_value()) {
                 signaledOrGone = true;
                 } else {
-                VkResult st = vkGetFenceStatus(device, fence);
+                VkResult st = getFenceStatus(device, fence);
                 if (st == VK_SUCCESS) signaledOrGone = true;
             }
             if (signaledOrGone) {
@@ -1636,7 +1719,7 @@ void VulkanApp::processPendingCommandBuffers() {
                 }
             }
             resources.removeFence(fence);
-            vkDestroyFence(device, fence, nullptr);
+            destroyFence(device, fence);
         }
     }
     // Flush any per-fence deferred-destruction closures collected above,
@@ -1730,8 +1813,10 @@ void VulkanApp::waitForAllPendingCommandBuffers() {
         for (auto &p : m_pendingCommandBuffers) fences.push_back(p.second);
     }
     if (!fences.empty()) {
-        // Wait indefinitely until all tracked fences signal
-        for (VkFence f : fences) waitFence(device, f);
+        // Wait until all snapshot fences signal. waitTrackedFence re-checks
+        // tracking on every poll: another thread's pump may signal, untrack and
+        // destroy a fence while we are waiting, which must count as complete.
+        for (VkFence f : fences) waitTrackedFence(f);
         // Clear out any completed entries
         processPendingCommandBuffers();
     }
@@ -1765,13 +1850,10 @@ bool VulkanApp::isFencePending(VkFence fence) {
 // Ground-truth completion query (see header): never sticks, unlike the
 // tracking-list membership test above when the pump is not running.
 bool VulkanApp::isFenceDone(VkFence fence) {
-    if (fence == VK_NULL_HANDLE) return true;
-    std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
     // Freed by the pump only after signaling: untracked means complete.
-    // (Mirrors the pump's own guard at the pending-list cleanup.)
-    if (!resources.find((uintptr_t)fence).has_value()) return true;
-    VkResult st = vkGetFenceStatus(device, fence);
-    return st == VK_SUCCESS;
+    // trackedFenceStatus performs the tracking check and the query atomically
+    // with respect to the pump's removeFence + destroy pair.
+    return trackedFenceStatus(fence) == VK_SUCCESS;
 }
 
 
@@ -1806,7 +1888,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
             if (vkCreateSemaphore(device, &semInfo, nullptr, &semaphore) != VK_SUCCESS) {
                 resources.removeFence(fence);
-                vkDestroyFence(device, fence, nullptr);
+                destroyFence(device, fence);
                 throw std::runtime_error("failed to create semaphore");
             }
             createdSemaphore = true;
@@ -1915,7 +1997,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
                     vkDestroySemaphore(device, semaphore, nullptr);
                 }
                 resources.removeFence(fence);
-                vkDestroyFence(device, fence, nullptr);
+                destroyFence(device, fence);
                 throw std::runtime_error("Double-use of command buffer detected");
             }
         }
@@ -1957,7 +2039,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
         SubmissionTracker::record("async-q");
         // The per-queue submit mutex is already held by the enclosing block
         // (opened before the pending-entry bookkeeping), so no second lock here.
-        VkResult submitRes = vkQueueSubmit2(targetQueue, 1, &submitInfo, fence);
+        VkResult submitRes = submitWithFence(targetQueue, 1, &submitInfo, fence);
         if (submitRes == VK_SUCCESS) {
             // Also under the same queue lock; signalRingSlotFence must not lock.
             signalRingSlotFence(commandBuffer, targetQueue);
@@ -1993,7 +2075,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
                     m_pendingCommandBuffersSet.erase(commandBuffer);
                 }
                 resources.removeFence(fence);
-                vkDestroyFence(device, fence, nullptr);
+                destroyFence(device, fence);
                 throw std::runtime_error("failed to submit async command buffer to target queue");
             }
         }
@@ -2074,7 +2156,7 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
         SubmissionTracker::record("sync-2");
         // The enclosing block already holds this queue's submit mutex; locking
         // it again here self-deadlocks (std::mutex is not recursive).
-        VkResult submitRes = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, fence);
+        VkResult submitRes = submitWithFence(graphicsQueue, 1, &submitInfo, fence);
         if (submitRes == VK_SUCCESS) {
             // Also under the same queue lock; signalRingSlotFence must not lock.
             signalRingSlotFence(commandBuffer, graphicsQueue);
@@ -2113,7 +2195,7 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
         }
                 return;
             }
-            vkDestroyFence(device, fence, nullptr);
+            destroyFence(device, fence);
             throw std::runtime_error("failed to submit command buffer in submitCommandBufferAndWait");
         }
     }
@@ -2123,7 +2205,7 @@ void VulkanApp::submitCommandBufferAndWait(VkCommandBuffer commandBuffer) {
     // The command buffer has completed execution; apply any pending layout
     // updates that were recorded into it.
     applyPendingLayoutUpdatesForCommandBuffer(commandBuffer);
-    vkDestroyFence(device, fence, nullptr);
+    destroyFence(device, fence);
 }
 
 // File-scope helpers shared by every image-layout transition path in this
@@ -2248,7 +2330,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
             // recreate + defer-destroy path, which forced a full vkQueueWaitIdle(q)
             // per rotation inside processPendingCommandBuffers() and serialized the
             // queue.  Fence reset does not require a queue idle.
-            vkResetFences(device, 1, &slotFence);
+            resetFence(device, slotFence);
 
             // The fence wait above proves the previous submission using this
             // ring slot has COMPLETED on the GPU, so any pending-entry for this
@@ -2377,7 +2459,7 @@ void VulkanApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLay
         emptySubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
         // Callers (submitCommandBufferAsyncToQueue / submitCommandBufferAndWait)
         // already hold this queue's submit mutex; do not lock again.
-        VkResult sr = vkQueueSubmit2(queue, 1, &emptySubmit, slotFence);
+        VkResult sr = submitWithFence(queue, 1, &emptySubmit, slotFence);
         if (sr != VK_SUCCESS && sr != VK_ERROR_DEVICE_LOST) {
             std::cerr << "[VulkanApp] WARNING: signalRingSlotFence failed for slot "
                       << ringSlot << " (VkResult=" << sr << ")\n";
@@ -3190,7 +3272,11 @@ void VulkanApp::createSyncObjects() {
     // semaphore signal). The frame-in-flight limit is enforced by waiting on the
     // previous fence of the same slot (reliable binary vkWaitForFences) plus the
     // timeline semaphore governor below.
-    inFlightFences.assign(maxFrames, VK_NULL_HANDLE);
+    // Guarded: worker-thread pumps iterate inFlightFences under this mutex.
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+        inFlightFences.assign(maxFrames, VK_NULL_HANDLE);
+    }
 
     // Create the frame timeline semaphore (replaces per-frame binary fences for frame pacing).
     // Enables finer CPU↔GPU overlap by allowing intermediate signal points per frame.
@@ -3214,10 +3300,13 @@ void VulkanApp::createSyncObjects() {
     imagesInFlight.clear();
     imagesInFlight.resize(numImages, 0);
 
-    // async submission bookkeeping
-    m_pendingCommandBuffers.clear();
-    m_pendingCommandBuffersSet.clear();
-    m_extraWaitSemaphores.clear();
+    // async submission bookkeeping (worker pumps touch these under the mutex)
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
+        m_pendingCommandBuffers.clear();
+        m_pendingCommandBuffersSet.clear();
+        m_extraWaitSemaphores.clear();
+    }
 }
 
 VkSampler VulkanApp::createSampler(const VkSamplerCreateInfo& info, const char* name) {
@@ -4077,10 +4166,19 @@ void VulkanApp::drawFrame() {
     // only freed once the previous slot submission that waits on it completes. Waiting
     // here guarantees the semaphore has no pending operations, satisfying
     // VUID-vkAcquireNextImageKHR-semaphore-01779.
-    VkFence prevFrameFence = inFlightFences[currentFrame];
+    VkFence prevFrameFence = VK_NULL_HANDLE;
+    {
+        // The deferred-destroy callback clears this slot from a worker's pump,
+        // so the slot read must be under the same mutex.
+        std::lock_guard<std::recursive_mutex> cmdlk(m_submissionMutex);
+        prevFrameFence = inFlightFences[currentFrame];
+    }
     if (prevFrameFence != VK_NULL_HANDLE) {
         double waitT0 = glfwGetTime();
-        VkResult waitForFenceResult = waitFence(device, prevFrameFence);
+        // waitTrackedFence tolerates the pump destroying this fence after the
+        // handle was captured: it re-checks tracking under m_submissionMutex on
+        // every poll, so a signaled-then-freed fence counts as complete.
+        VkResult waitForFenceResult = waitTrackedFence(prevFrameFence);
         double waitMs = (glfwGetTime() - waitT0) * 1000.0;
         if (waitMs > 500.0) {
             // The ring has been busy for >0.5s on this frame slot. During the
@@ -4317,7 +4415,7 @@ void VulkanApp::drawFrame() {
         }
         if (resources.find((uintptr_t)frameFence).has_value()) {
             resources.removeFence(frameFence);
-            vkDestroyFence(device, frameFence, nullptr);
+            destroyFence(device, frameFence);
         }
         // The previous fence for this slot (if any) was already waited on above
         // and is released by its own deferred callback; clearing the slot only
@@ -4595,7 +4693,7 @@ void VulkanApp::drawFrame() {
         // sees populated layouts for affected subresources.
         preApplyPendingLayoutsBeforeSubmit(commandBuffer);
 
-        r = vkQueueSubmit2(graphicsQueue, 1, &submitInfo, frameFence);
+        r = submitWithFence(graphicsQueue, 1, &submitInfo, frameFence);
         if (r == VK_SUCCESS) {
             frameTimelineValue.store(nextTimelineValue);
             // The exit-screenshot copy rides in this command buffer, so a
@@ -4603,18 +4701,28 @@ void VulkanApp::drawFrame() {
             if (screenshotRequested) screenshotCopySubmitted = true;
         }
         // Track the live fence for this slot so the deferred-destroy gate and
-        // waitForFrameFences() observe the correct in-flight state.
-        inFlightFences[currentFrame] = frameFence;
+        // waitForFrameFences() observe the correct in-flight state. Guarded by
+        // m_submissionMutex because the deferred callback below clears the slot
+        // from whichever thread pumps.
+        {
+            std::lock_guard<std::recursive_mutex> cmdlk(m_submissionMutex);
+            inFlightFences[currentFrame] = frameFence;
+        }
         // Register pending layout updates recorded into this frame's command
         // buffer so they are applied when the frame fence signals, then destroy
         // the (never-reset) fence. The slot pointer is cleared first so a later
         // reuse of this slot does not wait on / destroy an already-freed fence.
         deferDestroyUntilFence(frameFence, [this, frameFence, commandBuffer, slot = currentFrame]() {
             applyPendingLayoutUpdatesForCommandBuffer(commandBuffer);
+            // Clear the slot and destroy the fence under m_submissionMutex so
+            // this is atomic with waitTrackedFence's tracking check: a waiter
+            // that captured this handle either polls it before this callback
+            // runs, or sees it untracked and treats it as complete.
+            std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
             if (inFlightFences[slot] == frameFence) inFlightFences[slot] = VK_NULL_HANDLE;
             if (resources.find((uintptr_t)frameFence).has_value()) {
                 resources.removeFence(frameFence);
-                vkDestroyFence(device, frameFence, nullptr);
+                destroyFence(device, frameFence);
             }
         });
     }

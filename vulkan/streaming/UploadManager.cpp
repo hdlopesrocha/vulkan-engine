@@ -119,7 +119,7 @@ bool UploadManager::isComplete(const StagingSlot& s) const {
     // UNASSIGNED-VkSemaphore-state-timeout false positive
     // (KhronosGroup/Vulkan-ValidationLayers#4968 / #8461), which aborts the app.
     // The fence is the reliable, validation-clean completion signal.
-    return vkGetFenceStatus(device_, s.fence) == VK_SUCCESS;
+    return VulkanApp::getFenceStatus(device_, s.fence) == VK_SUCCESS;
 }
 
 VkSemaphore UploadManager::makeBinarySemaphore() {
@@ -248,7 +248,7 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
     {
         std::lock_guard<std::mutex> lk(pickMutex());
         SubmissionTracker::record("upload");
-        VkResult r = vkQueueSubmit2(queue_, 1, &si, s.fence);
+        VkResult r = VulkanApp::submitWithFence(queue_, 1, &si, s.fence);
         if (r != VK_SUCCESS)
             throw std::runtime_error("UploadManager: vkQueueSubmit2 failed");
     }

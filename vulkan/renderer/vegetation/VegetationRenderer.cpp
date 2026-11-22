@@ -92,7 +92,6 @@ void VegetationRenderer::cleanup(VulkanApp* app) {
 
 void VegetationRenderer::destroyCulling() {
     if (!appPtr) return;
-    VkDevice device = appPtr->getDevice();
     if (concatenatedInstanceBuffer.buffer != VK_NULL_HANDLE) {
         appPtr->destroyBuffer(concatenatedInstanceBuffer);
         concatenatedInstanceBuffer = {};
@@ -161,7 +160,9 @@ void VegetationRenderer::destroyCulling() {
         }
     }
     if (consolidationFence != VK_NULL_HANDLE) {
-        VulkanApp::waitFence(device, consolidationFence);
+        // Tracked wait: the submission pump may free this fence from a worker
+        // thread once it signals, so re-check tracking on every poll.
+        appPtr->waitTrackedFence(consolidationFence);
     }
     consolidationPending = false;
     vegNumChunks = 0;
