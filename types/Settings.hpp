@@ -163,6 +163,10 @@ public:
     // (set=2 binding=3). Off by default; profiling-only because the counter
     // shader variant uses fragment atomics.
     bool octreeRaymarchProfile = false;
+    // Phase 2: bind the no-fallback fragment twin (QEF solver and LandBrush
+    // classifier compiled out). Only used when the derive pass is available;
+    // otherwise the normal fallback variant stays active.
+    bool octreeRaymarchNoFallback = false;
     bool shadowTessellationEnabled = false;
     // Deferred depth prepass for the solid pass (perf report 21 C2 gate).
     // true = depth prepass, then color with loaded depth (current behavior);

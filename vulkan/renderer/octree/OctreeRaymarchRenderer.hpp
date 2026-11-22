@@ -8,15 +8,15 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include <glm/glm.hpp>
 
 // Octree SDF raymarch terrain path (Settings::octreeRaymarchEnabled).
 //
 // Owns the set-2 descriptor layout (node table + layer roots + derived QEF
-// payload + Phase 0 counters), the per-slot node/root/payload/counter buffers
-// and the fullscreen raymarch
-// pipeline. The
+// payload + Phase 0 counters), the revision-shared node/root/payload buffers,
+// the per-slot counter buffers and the fullscreen raymarch pipeline. The
 // table covers EVERY terrain layer (Solid + Water): the shader marches all
 // layer roots and keeps the nearest hit, so solid and water surfaces occlude
 // each other in one pass. Solid hits shade through the shared solid surface
@@ -107,18 +107,25 @@ public:
     // never created).
     void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
 
-    // Publish this frame slot's host-side table upload and, when the slot
-    // received a new revision, run the once-per-revision payload derive pass
-    // (OctreeDerive.comp) before the march. MUST be recorded OUTSIDE any
+    // Phase 2: bind the no-fallback fragment twin when the derive pass is
+    // available. The normal fallback pipelines remain the default.
+    void setNoFallbackEnabled(bool enabled) {
+        noFallbackEnabled_.store(enabled, std::memory_order_relaxed);
+    }
+
+    // Publish the shared revision's host-side table/root upload and, when the
+    // revision has not been derived yet, run the once-per-revision payload
+    // derive pass (OctreeDerive.comp) before the march. MUST be recorded OUTSIDE any
     // dynamic rendering scope: HOST is not a framebuffer-space stage, and
     // vkCmdPipelineBarrier2 / compute dispatches inside
     // vkCmdBeginRendering/vkCmdEndRendering are illegal. Call immediately
     // before beginning the solid color pass.
     void recordDerive(VkCommandBuffer cmd, uint32_t frameIndex);
 
-    // Make the host writes to this frame slot's mapped table buffers visible
-    // to fragment shader reads. Kept for the fragment-only fallback path;
-    // MyApp records recordDerive(), which calls this when no derive pass runs.
+    // Make the host writes to the shared revision's mapped table/root buffers
+    // visible to fragment shader reads. Kept for the fragment-only fallback
+    // path; MyApp records recordDerive(), which calls this when no derive pass
+    // runs.
     void recordHostWriteBarrier(VkCommandBuffer cmd);
 
     // Record the fullscreen pass into the already-begun solid color+depth
@@ -129,38 +136,52 @@ public:
               VkDescriptorSet mainSet, VkDescriptorSet brushSet);
 
 private:
-    // Allocate this slot's node/root/payload buffers and point the slot's
-    // descriptor set at them. Called from upload() on the main thread (after
-    // the slot's fence wait) the first time a revision needs publishing.
-    // Returns false on allocation failure; the caller keeps the raster path.
+    // Allocate this slot's small, slot-local resources (the Phase 0 counter
+    // buffer) and point binding 3 at it. The table, roots and payload are
+    // revision-shared (below), so they are bound separately. Called from
+    // upload() on the main thread after the slot's fence wait.
     bool ensureSlotBuffers(uint32_t fi);
+
+    // One immutable table revision shared by every frame slot that displays
+    // it. users counts the slot descriptors currently pointing here; when it
+    // reaches zero the buffers are destroyed (the last user has passed its
+    // fence). This is the F18 lifetime protocol.
+    struct SharedRevision {
+        Buffer node;
+        Buffer root;
+        Buffer payload;
+        uint64_t version = 0;
+        uint32_t nodeCount = 0;
+        uint32_t rootCount = 0;
+        uint32_t users = 0;
+        bool derived = false;
+    };
+    bool bindSlotRevision(uint32_t fi, int revision);
+    void releaseSlotRevision(uint32_t fi);
+    int acquireRevision();
+    void destroyRevisionBuffers(SharedRevision& revision);
+    // Phase 2 no-fallback pipelines: same descriptor/push-constant layout as
+    // the normal twins, but the shader module has the QEF/classifier fallbacks
+    // compiled out. Created only when the derive pass is available.
+    bool createNoFallbackPipelines(VulkanApp* app);
+    bool noFallbackVariantActive() const;
 
     VulkanApp* app_ = nullptr;
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, RAYMARCH_FRAMES> sets_{};
-    std::array<Buffer, RAYMARCH_FRAMES> nodeBuffers_{};
-    std::array<Buffer, RAYMARCH_FRAMES> rootBuffers_{};
-    // Device-local, derived QEF position/normal per node (32 B). Written by
-    // OctreeDerive.comp; read only by the hit ring. Never mapped by the host.
-    std::array<Buffer, RAYMARCH_FRAMES> payloadBuffers_{};
+    std::vector<SharedRevision> revisions_;
+    std::array<int, RAYMARCH_FRAMES> slotRevision_{-1, -1, -1};
     // Host-visible Phase 0 counters (OctreeRaymarchCounters). Reset by
     // recordDerive() after the slot fence, atomically incremented by the
     // OCTREE_PROFILE fragment variant while the push-constant gate is set.
     std::array<Buffer, RAYMARCH_FRAMES> counterBuffers_{};
-    std::array<uint64_t, RAYMARCH_FRAMES> uploadedVersion_{};
-    std::array<uint32_t, RAYMARCH_FRAMES> rootCounts_{};
-    // Slot states for the payload derive pass: node count of the upload that
-    // still needs its derived fields, and whether that pass is pending. Both
-    // are per-slot because a revision is uploaded into each slot separately.
-    std::array<uint32_t, RAYMARCH_FRAMES> nodeCounts_{};
-    std::array<bool, RAYMARCH_FRAMES> needsDerive_{};
 
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     // Once-per-revision payload derive pass (OctreeDerive.comp): writes the
     // resolved material, 1/Lipschitz bound and the payload flag into the
-    // record's dead bytes, and the QEF position/normal into payloadBuffers_.
-    // Null when the module/pipeline was unavailable; the fragment march then
-    // keeps its QEF / fixed-0.5 fallback.
+    // record's dead bytes, and the QEF position/normal into the shared
+    // revision payload. Null when the module/pipeline was unavailable; the
+    // fragment march then keeps its QEF / fixed-0.5 fallback.
     VkPipeline derivePipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout deriveLayout_ = VK_NULL_HANDLE;
     // RT fragment variant (same march; shadeSolidSurface with inline ray
@@ -171,6 +192,11 @@ private:
     // the profile modules are unavailable; the normal variants stay active.
     VkPipeline pipelineProfile_ = VK_NULL_HANDLE;
     VkPipeline pipelineProfileRt_ = VK_NULL_HANDLE;
+    // Phase 2 no-fallback twins. Null when the derive pass is unavailable or
+    // the modules are missing; the normal fallback twins stay active.
+    VkPipeline pipelineNoFallback_ = VK_NULL_HANDLE;
+    VkPipeline pipelineNoFallbackRt_ = VK_NULL_HANDLE;
+    std::atomic<bool> noFallbackEnabled_{false};
     bool profileCountersSupported_ = false;
     std::atomic<bool> profileCountersEnabled_{false};
     OctreeRaymarchCounters profileStats_{};

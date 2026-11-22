@@ -1274,6 +1274,11 @@ public:
         if (const char* env = std::getenv("VULKAN_OCTREE_PROFILE")) {
             if (env[0] != '0') settings.octreeRaymarchProfile = true;
         }
+        // VULKAN_OCTREE_NO_FALLBACK=1 starts with the no-fallback twin on
+        // (only selected when the derive pass is available).
+        if (const char* env = std::getenv("VULKAN_OCTREE_NO_FALLBACK")) {
+            if (env[0] != '0') settings.octreeRaymarchNoFallback = true;
+        }
         // VULKAN_CAMERA_PATH=static|pan5|pan60|dolly|strafe: deterministic
         // benchmark camera derived from VULKAN_CAMERA (or the default pose).
         // The path advances once per update; dolly/strafe use 1 m and 0.5 m
@@ -2177,6 +2182,7 @@ public:
         if (sceneRenderer && sceneRenderer->octreeRaymarchRenderer) {
             auto* octree = sceneRenderer->octreeRaymarchRenderer.get();
             octree->setProfileCountersEnabled(settings.octreeRaymarchProfile);
+            octree->setNoFallbackEnabled(settings.octreeRaymarchNoFallback);
             octree->readProfile(frameIdx);
             if (settings.octreeRaymarchProfile && octree->profileStats().enabled != 0u) {
                 static uint32_t octreePrintTick = 0;

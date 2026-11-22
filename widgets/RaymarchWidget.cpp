@@ -134,6 +134,19 @@ void RaymarchWidget::render() {
                 "descents. Profiling-only (fragment atomics); the counters are "
                 "logged every 64 frames.");
         }
+        {
+            bool noFallback = settings->octreeRaymarchNoFallback;
+            ImGui::PushID("NoFallback##octree");
+            if (ImGui::Checkbox("No-fallback shader", &noFallback)) {
+                settings->octreeRaymarchNoFallback = noFallback;
+            }
+            ImGui::PopID();
+            ImGuiComponents::TooltipOnHover(
+                "Phase 2: bind the fragment twin with the QEF solver and "
+                "LandBrush classifier compiled out. Only active when the "
+                "once-per-revision derive pass is available; otherwise the "
+                "normal fallback shader stays bound.");
+        }
     });
 
     // 0: Shape (generic SDF rig: cloud / sphere / cube + translation,

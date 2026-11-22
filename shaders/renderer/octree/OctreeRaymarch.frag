@@ -104,7 +104,8 @@ void rmCount(int idx) {
     if ((pc.flags & 1u) != 0u) atomicAdd(rmCounters[idx], 1u);
 }
 #else
-void rmCount(int idx) { }
+// Production/no-fallback variants compile the counter calls out entirely.
+#define rmCount(idx)
 #endif
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
@@ -175,7 +176,8 @@ float rmHitEpsilon(float nodeSize, float t) {
 // march's cache (position solved from the node) and the hit-time material
 // blend (positions solved once for every ring cell). The classifier itself
 // lives in RaymarchMaterial.glsl so OctreeDerive.comp resolves the identical
-// index into meta.x.
+// index into meta.x. The no-fallback variant compiles this classifier out.
+#ifndef OCTREE_NO_FALLBACK
 int rmResolveMaterialAt(uint id, vec3 qefPos) {
     int raw = rmNodes[id].meta.z;
     if (raw != LAND_BRUSH_INDEX && raw != NORMAL_BRUSH) return raw;
@@ -188,6 +190,7 @@ int rmResolveMaterialAt(uint id, vec3 qefPos) {
     vec3 n = sdfCellNormal(sdf, mn, sz, qefPos);
     return rmResolveMaterialAtCorners(raw, sdf, mn, sz, qefPos, n);
 }
+#endif
 
 bool rmQefCached(uint id) {
     return (uint(rmNodes[id].meta.w) & RM_FLAG_QEF) != 0u;
@@ -201,10 +204,16 @@ vec3 rmCellQef(uint id) {
         rmCount(RM_COUNTER_QEF_PAYLOAD);
         return rmPayload[id].qef.xyz;
     }
+#ifdef OCTREE_NO_FALLBACK
+    // Defined degradation without the solver. The renderer only selects this
+    // variant when the derive pass is available, so this path is defensive.
+    return rmNodeMin(id) + 0.5 * rmNodeSize(id);
+#else
     rmCount(RM_COUNTER_QEF_SOLVES);
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
     return sdfCellPosition(sdf, rmNodeMin(id), rmNodeSize(id));
+#endif
 }
 
 // Final material of a node, bit-for-bit the OctreeTriangles.comp
@@ -220,7 +229,14 @@ int rmResolvedBrush(uint id) {
     if ((uint(rmNodes[id].meta.w) & RM_FLAG_PAYLOAD) != 0u) return rmNodes[id].meta.x;
     int raw = rmNodes[id].meta.z;
     if (raw != LAND_BRUSH_INDEX && raw != NORMAL_BRUSH) return raw;
+#ifdef OCTREE_NO_FALLBACK
+    // No classifier in this variant. A sentinel brush without a payload is a
+    // precondition violation (the renderer only selects it when derive ran);
+    // fall back to material 0 rather than an out-of-range sentinel index.
+    return 0;
+#else
     return rmResolveMaterialAt(id, rmCellQef(id));
+#endif
 }
 
 // Ring material lookup. The payload pass resolved the identical LandBrush /
@@ -230,7 +246,12 @@ int rmResolvedBrush(uint id) {
 // solved QEF position instead of solving it again.
 int rmRingMaterial(uint id, vec3 qp) {
     if ((uint(rmNodes[id].meta.w) & RM_FLAG_PAYLOAD) != 0u) return rmNodes[id].meta.x;
+#ifdef OCTREE_NO_FALLBACK
+    int raw = rmNodes[id].meta.z;
+    return (raw == LAND_BRUSH_INDEX || raw == NORMAL_BRUSH) ? 0 : raw;
+#else
     return rmResolveMaterialAt(id, qp);
+#endif
 }
 
 vec3 rmNodeNormal(uint id, vec3 p) {

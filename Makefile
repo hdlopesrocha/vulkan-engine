@@ -267,6 +267,8 @@ OUT_SPVS = \
 	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchRT.frag.spv \
 	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfile.frag.spv \
 	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfileRT.frag.spv \
+	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchNoFallback.frag.spv \
+	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchNoFallbackRT.frag.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv \
 	$(OUT_DIR)/shaders/renderer/sdf/SdfRendererSurface.frag.spv \
@@ -342,6 +344,13 @@ $(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfile.frag.spv: shaders/rende
 	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DOCTREE_PROFILE=1,--D OCTREE_PROFILE=1,)
 $(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfileRT.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DRT_ENABLED -DOCTREE_PROFILE=1,--D RT_ENABLED --D OCTREE_PROFILE=1,)
+
+# Phase 2 no-fallback twins: the QEF solver and LandBrush classifier are
+# compiled out. Only created at runtime when the derive pass is available.
+$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchNoFallback.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DOCTREE_NO_FALLBACK=1,--D OCTREE_NO_FALLBACK=1,)
+$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchNoFallbackRT.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DRT_ENABLED -DOCTREE_NO_FALLBACK=1,--D RT_ENABLED --D OCTREE_NO_FALLBACK=1,)
 
 # WaterRenderer fragment variants: RT (hardware ray tracing) and WATER_NO_BODY
 # (single color attachment, no blur aux outputs). Per-op RT profiling needs the

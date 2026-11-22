@@ -29,6 +29,7 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
         return;
     }
     app_ = app;
+    revisions_.reserve(4);
     profileCountersSupported_ = app->fragmentStoresAndAtomicsSupported;
     std::cout << "[OctreeRaymarchRenderer] Phase 0 counters "
               << (profileCountersSupported_ ? "available" : "unavailable (no fragment atomics)")
@@ -250,16 +251,84 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
             derivePipeline_ = VK_NULL_HANDLE;
         }
     }
+
+    // Phase 2: the no-fallback twins depend on a working derive pass. If it is
+    // unavailable they are simply not created and the normal fallback path is
+    // the only option (the correct behavior for unsupported/partial devices).
+    if (derivePipeline_ != VK_NULL_HANDLE && deriveLayout_ != VK_NULL_HANDLE)
+        createNoFallbackPipelines(app);
+}
+
+bool OctreeRaymarchRenderer::createNoFallbackPipelines(VulkanApp* app) {
+    if (!app || pipelineLayout_ == VK_NULL_HANDLE || setLayout_ == VK_NULL_HANDLE ||
+        derivePipeline_ == VK_NULL_HANDLE || deriveLayout_ == VK_NULL_HANDLE)
+        return false;
+    if (app->getDescriptorSetLayout() == VK_NULL_HANDLE ||
+        app->getBrushParamsDescriptorSetLayout() == VK_NULL_HANDLE)
+        return false;
+
+    try {
+        std::vector<VkDescriptorSetLayout> setLayouts = {
+            app->getDescriptorSetLayout(),
+            app->getBrushParamsDescriptorSetLayout(),
+            setLayout_
+        };
+        VkPushConstantRange pushRange{};
+        pushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushRange.offset = 0;
+        pushRange.size = sizeof(PushConstants);
+
+        GraphicsPipelineConfig cfg{};
+        cfg.cullMode = VK_CULL_MODE_NONE;
+        cfg.depthTestEnable = true;
+        cfg.depthWriteEnable = true;
+        cfg.depthCompareOp = VK_COMPARE_OP_LESS;
+        cfg.colorFormats = { app->getSwapchainImageFormat() };
+        cfg.depthFormat = VK_FORMAT_D32_SFLOAT;
+
+        ShaderStage vertStage(
+            app->getOrCreateShaderModule("shaders/renderer/Fullscreen.vert.spv"),
+            VK_SHADER_STAGE_VERTEX_BIT);
+
+        ShaderStage fragStage(
+            app->getOrCreateShaderModule(
+                "shaders/renderer/octree/OctreeRaymarchNoFallback.frag.spv"),
+            VK_SHADER_STAGE_FRAGMENT_BIT);
+        pipelineNoFallback_ = app->createGraphicsPipelineWithLayout(
+            { vertStage.info, fragStage.info },
+            std::vector<VkVertexInputBindingDescription>{},
+            std::vector<VkVertexInputAttributeDescription>{},
+            setLayouts, &pushRange, cfg, pipelineLayout_);
+
+        if (pipelineRt_ != VK_NULL_HANDLE) {
+            ShaderStage fragRtStage(
+                app->getOrCreateShaderModule(
+                    "shaders/renderer/octree/OctreeRaymarchNoFallbackRT.frag.spv"),
+                VK_SHADER_STAGE_FRAGMENT_BIT);
+            pipelineNoFallbackRt_ = app->createGraphicsPipelineWithLayout(
+                { vertStage.info, fragRtStage.info },
+                std::vector<VkVertexInputBindingDescription>{},
+                std::vector<VkVertexInputAttributeDescription>{},
+                setLayouts, &pushRange, cfg, pipelineLayout_);
+        }
+        std::cout << "[OctreeRaymarchRenderer] no-fallback variants ready"
+                  << (pipelineNoFallbackRt_ != VK_NULL_HANDLE ? " (RT included)" : "")
+                  << std::endl;
+        return pipelineNoFallback_ != VK_NULL_HANDLE;
+    } catch (const std::exception& e) {
+        std::cerr << "[OctreeRaymarchRenderer] no-fallback variant unavailable ("
+                  << e.what() << "); using the fallback pipelines." << std::endl;
+        pipelineNoFallback_ = VK_NULL_HANDLE;
+        pipelineNoFallbackRt_ = VK_NULL_HANDLE;
+        return false;
+    }
 }
 
 void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     if (app) {
-        for (auto& buf : nodeBuffers_)
-            if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
-        for (auto& buf : rootBuffers_)
-            if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
-        for (auto& buf : payloadBuffers_)
-            if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
+        for (auto& revision : revisions_)
+            destroyRevisionBuffers(revision);
+        revisions_.clear();
         for (auto& buf : counterBuffers_)
             if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
         // The derive pipeline/layout are registered with VulkanResourceManager
@@ -276,15 +345,9 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     }
     derivePipeline_ = VK_NULL_HANDLE;
     deriveLayout_ = VK_NULL_HANDLE;
-    nodeBuffers_.fill(Buffer{});
-    rootBuffers_.fill(Buffer{});
-    payloadBuffers_.fill(Buffer{});
     counterBuffers_.fill(Buffer{});
     sets_.fill(VK_NULL_HANDLE);
-    uploadedVersion_.fill(0);
-    rootCounts_.fill(0);
-    nodeCounts_.fill(0);
-    needsDerive_.fill(false);
+    slotRevision_.fill(-1);
     app_ = nullptr;
     // The layout/pool/pipeline are registered with VulkanResourceManager at
     // creation and destroyed by it at shutdown (same contract as the other
@@ -294,8 +357,11 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     pipelineRt_ = VK_NULL_HANDLE;
     pipelineProfile_ = VK_NULL_HANDLE;
     pipelineProfileRt_ = VK_NULL_HANDLE;
+    pipelineNoFallback_ = VK_NULL_HANDLE;
+    pipelineNoFallbackRt_ = VK_NULL_HANDLE;
     pipelineLayout_ = VK_NULL_HANDLE;
     rtShadingEnabled_ = false;
+    noFallbackEnabled_.store(false, std::memory_order_relaxed);
     profileCountersSupported_ = false;
     profileCountersEnabled_.store(false, std::memory_order_relaxed);
     profileStats_ = OctreeRaymarchCounters{};
@@ -303,73 +369,22 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
 }
 
 bool OctreeRaymarchRenderer::ensureSlotBuffers(uint32_t fi) {
-    if (!app_ || fi >= RAYMARCH_FRAMES) return false;
-    if (nodeBuffers_[fi].buffer != VK_NULL_HANDLE &&
-        rootBuffers_[fi].buffer != VK_NULL_HANDLE &&
-        payloadBuffers_[fi].buffer != VK_NULL_HANDLE &&
-        counterBuffers_[fi].buffer != VK_NULL_HANDLE)
-        return true;
-    if (sets_[fi] == VK_NULL_HANDLE) return false;
+    if (!app_ || fi >= RAYMARCH_FRAMES || sets_[fi] == VK_NULL_HANDLE) return false;
+    if (counterBuffers_[fi].buffer != VK_NULL_HANDLE) return true;
 
-    // Node table and roots are host-visible and persistently mapped:
-    // MyApp::update() rewrites the slot after its fence wait, and draw() records
-    // the HOST -> FRAGMENT barrier. The QEF payload is device-local and is
-    // written only by OctreeDerive.comp; the fragment reads it after the
-    // derive's COMPUTE -> FRAGMENT barrier. zeroInit=false is safe because the
-    // payload flag is only set by the derive invocation that writes the entry.
-    nodeBuffers_[fi] = app_->createBuffer(
-        static_cast<VkDeviceSize>(maxNodes_ * kNodeBytes),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    rootBuffers_[fi] = app_->createBuffer(
-        static_cast<VkDeviceSize>(ROOT_CAP * sizeof(OctreeRaymarchRoot)),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    // Without a derive pipeline the flag is never set and the fragment keeps
-    // its QEF fallback, so a one-entry dummy keeps the descriptor valid without
-    // reserving the full payload.
-    const size_t payloadNodes =
-        (derivePipeline_ != VK_NULL_HANDLE && deriveLayout_ != VK_NULL_HANDLE)
-            ? maxNodes_ : 1;
-    payloadBuffers_[fi] = app_->createBuffer(
-        static_cast<VkDeviceSize>(payloadNodes * kPayloadBytes),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
-    // Phase 0 counters: one host-visible block per slot. reset+gate happens in
+    // Phase 0 counters are the only slot-local buffer. reset+gate happens in
     // recordDerive() (outside dynamic rendering), so the persistent mapping is
     // written on the frame thread after the slot fence.
     counterBuffers_[fi] = app_->createBuffer(
         static_cast<VkDeviceSize>(sizeof(OctreeRaymarchCounters)),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    if (nodeBuffers_[fi].buffer == VK_NULL_HANDLE ||
-        rootBuffers_[fi].buffer == VK_NULL_HANDLE ||
-        payloadBuffers_[fi].buffer == VK_NULL_HANDLE ||
-        counterBuffers_[fi].buffer == VK_NULL_HANDLE) {
-        std::cerr << "[OctreeRaymarchRenderer] failed to create per-frame table resources"
+    if (counterBuffers_[fi].buffer == VK_NULL_HANDLE) {
+        std::cerr << "[OctreeRaymarchRenderer] failed to create the slot counter buffer"
                   << std::endl;
-        if (nodeBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(nodeBuffers_[fi]);
-        if (rootBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(rootBuffers_[fi]);
-        if (payloadBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(payloadBuffers_[fi]);
-        if (counterBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(counterBuffers_[fi]);
-        nodeBuffers_[fi] = Buffer{};
-        rootBuffers_[fi] = Buffer{};
-        payloadBuffers_[fi] = Buffer{};
-        counterBuffers_[fi] = Buffer{};
         return false;
     }
-
     DescriptorWriter(app_->getDevice())
-        .writeBuffer(sets_[fi], 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                     nodeBuffers_[fi].buffer, 0,
-                     app_->getClampedWholeSizeRange(nodeBuffers_[fi].buffer))
-        .writeBuffer(sets_[fi], 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                     rootBuffers_[fi].buffer, 0,
-                     app_->getClampedWholeSizeRange(rootBuffers_[fi].buffer))
-        .writeBuffer(sets_[fi], 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                     payloadBuffers_[fi].buffer, 0,
-                     app_->getClampedWholeSizeRange(payloadBuffers_[fi].buffer))
         .writeBuffer(sets_[fi], 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                      counterBuffers_[fi].buffer, 0,
                      app_->getClampedWholeSizeRange(counterBuffers_[fi].buffer))
@@ -377,34 +392,158 @@ bool OctreeRaymarchRenderer::ensureSlotBuffers(uint32_t fi) {
     return true;
 }
 
-void OctreeRaymarchRenderer::upload(uint32_t frameIndex, const OctreeRaymarchTable& table) {
-    const uint32_t fi = frameIndex % RAYMARCH_FRAMES;
-    if (uploadedVersion_[fi] == table.version) return;
-    if (!ensureSlotBuffers(fi)) return;
-    if (nodeBuffers_[fi].mappedData == nullptr || rootBuffers_[fi].mappedData == nullptr)
+bool OctreeRaymarchRenderer::bindSlotRevision(uint32_t fi, int revision) {
+    if (!ensureSlotBuffers(fi)) return false;
+    if (revision < 0 || static_cast<size_t>(revision) >= revisions_.size())
+        return false;
+    if (slotRevision_[fi] == revision) return true;
+
+    SharedRevision& rev = revisions_[revision];
+    if (rev.node.buffer == VK_NULL_HANDLE || rev.root.buffer == VK_NULL_HANDLE ||
+        rev.payload.buffer == VK_NULL_HANDLE)
+        return false;
+
+    // Descriptor updates happen on the frame thread after this slot's fence,
+    // so the old revision cannot still be read by this slot. Other slots keep
+    // their own user count; the last release destroys the buffers.
+    DescriptorWriter(app_->getDevice())
+        .writeBuffer(sets_[fi], 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     rev.node.buffer, 0,
+                     app_->getClampedWholeSizeRange(rev.node.buffer))
+        .writeBuffer(sets_[fi], 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     rev.root.buffer, 0,
+                     app_->getClampedWholeSizeRange(rev.root.buffer))
+        .writeBuffer(sets_[fi], 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     rev.payload.buffer, 0,
+                     app_->getClampedWholeSizeRange(rev.payload.buffer))
+        .flush();
+
+    if (slotRevision_[fi] >= 0) {
+        if (static_cast<size_t>(slotRevision_[fi]) < revisions_.size()) {
+            SharedRevision& old = revisions_[slotRevision_[fi]];
+            if (old.users > 0) --old.users;
+            if (old.users == 0) destroyRevisionBuffers(old);
+        }
+        slotRevision_[fi] = -1;
+    }
+    ++rev.users;
+    slotRevision_[fi] = revision;
+    return true;
+}
+
+void OctreeRaymarchRenderer::releaseSlotRevision(uint32_t fi) {
+    if (fi >= RAYMARCH_FRAMES || slotRevision_[fi] < 0 ||
+        static_cast<size_t>(slotRevision_[fi]) >= revisions_.size())
         return;
+    const int index = slotRevision_[fi];
+    slotRevision_[fi] = -1;
+    SharedRevision& rev = revisions_[index];
+    if (rev.users > 0) --rev.users;
+    if (rev.users == 0) destroyRevisionBuffers(rev);
+}
 
-    const size_t nodeCount = std::min(table.nodes.size(), maxNodes_);
-    if (nodeCount > 0) {
-        memcpy(nodeBuffers_[fi].mappedData, table.nodes.data(), nodeCount * kNodeBytes);
-        // The host records carry the raw brush/lod fields only. Ask
-        // recordDerive() to run the payload pass before this slot's next march;
-        // a version match returns early above and never re-derives.
-        nodeCounts_[fi] = static_cast<uint32_t>(nodeCount);
-        needsDerive_[fi] = true;
-    } else {
-        nodeCounts_[fi] = 0;
-        needsDerive_[fi] = false;
+int OctreeRaymarchRenderer::acquireRevision() {
+    for (size_t i = 0; i < revisions_.size(); ++i) {
+        if (revisions_[i].users == 0) {
+            destroyRevisionBuffers(revisions_[i]);
+            return static_cast<int>(i);
+        }
+    }
+    revisions_.emplace_back();
+    return static_cast<int>(revisions_.size() - 1);
+}
+
+void OctreeRaymarchRenderer::destroyRevisionBuffers(SharedRevision& revision) {
+    if (revision.version != 0)
+        std::cout << "[OctreeRaymarchRenderer] revision " << revision.version
+                  << " released" << std::endl;
+    if (app_) {
+        if (revision.node.buffer != VK_NULL_HANDLE) app_->destroyBuffer(revision.node);
+        if (revision.root.buffer != VK_NULL_HANDLE) app_->destroyBuffer(revision.root);
+        if (revision.payload.buffer != VK_NULL_HANDLE) app_->destroyBuffer(revision.payload);
+    }
+    revision.node = Buffer{};
+    revision.root = Buffer{};
+    revision.payload = Buffer{};
+    revision.version = 0;
+    revision.nodeCount = 0;
+    revision.rootCount = 0;
+    revision.users = 0;
+    revision.derived = false;
+}
+
+void OctreeRaymarchRenderer::upload(uint32_t frameIndex, const OctreeRaymarchTable& table) {
+    if (!app_) return;
+    const uint32_t fi = frameIndex % RAYMARCH_FRAMES;
+    if (table.nodes.empty() || table.layerRoots.empty()) {
+        releaseSlotRevision(fi);
+        return;
     }
 
-    const size_t rootCount = std::min(table.layerRoots.size(), ROOT_CAP);
-    if (rootCount > 0) {
-        memcpy(rootBuffers_[fi].mappedData, table.layerRoots.data(),
+    const int current = slotRevision_[fi];
+    if (current >= 0 && revisions_[current].version == table.version) return;
+
+    // Reuse an immutable revision another slot already displays; otherwise
+    // publish a new one. The current slot's old revision is released before
+    // allocating, so a new revision never peaks above the three-slot budget.
+    int revision = -1;
+    for (size_t i = 0; i < revisions_.size(); ++i) {
+        if (revisions_[i].version == table.version &&
+            revisions_[i].node.buffer != VK_NULL_HANDLE) {
+            revision = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if (revision < 0) {
+        releaseSlotRevision(fi);
+        revision = acquireRevision();
+        SharedRevision& rev = revisions_[revision];
+        const size_t nodeCount = std::min(table.nodes.size(), maxNodes_);
+        const size_t rootCount = std::min(table.layerRoots.size(), ROOT_CAP);
+        // Node table and roots stay host-visible and persistently mapped; only
+        // the QEF payload is device-local (written by OctreeDerive.comp).
+        rev.node = app_->createBuffer(
+            static_cast<VkDeviceSize>(nodeCount * kNodeBytes),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        rev.root = app_->createBuffer(
+            static_cast<VkDeviceSize>(rootCount * sizeof(OctreeRaymarchRoot)),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        const size_t payloadNodes =
+            (derivePipeline_ != VK_NULL_HANDLE && deriveLayout_ != VK_NULL_HANDLE)
+                ? nodeCount : 1;
+        rev.payload = app_->createBuffer(
+            static_cast<VkDeviceSize>(payloadNodes * kPayloadBytes),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
+        if (rev.node.buffer == VK_NULL_HANDLE || rev.root.buffer == VK_NULL_HANDLE ||
+            rev.payload.buffer == VK_NULL_HANDLE ||
+            rev.node.mappedData == nullptr || rev.root.mappedData == nullptr) {
+            std::cerr << "[OctreeRaymarchRenderer] failed to create revision buffers"
+                      << std::endl;
+            destroyRevisionBuffers(rev);
+            return;
+        }
+        memcpy(rev.node.mappedData, table.nodes.data(), nodeCount * kNodeBytes);
+        memcpy(rev.root.mappedData, table.layerRoots.data(),
                rootCount * sizeof(OctreeRaymarchRoot));
+        rev.version = table.version;
+        rev.nodeCount = static_cast<uint32_t>(nodeCount);
+        rev.rootCount = static_cast<uint32_t>(rootCount);
+        rev.users = 0;
+        rev.derived = false;
+        std::cout << "[OctreeRaymarchRenderer] revision " << rev.version
+                  << " shared: " << rev.nodeCount << " nodes, " << rev.rootCount
+                  << " roots, " << revisions_.size() << " pool entries" << std::endl;
     }
 
-    rootCounts_[fi] = static_cast<uint32_t>(rootCount);
-    uploadedVersion_[fi] = table.version;
+    if (!bindSlotRevision(fi, revision) &&
+        revision >= 0 && static_cast<size_t>(revision) < revisions_.size() &&
+        revisions_[revision].users == 0) {
+        destroyRevisionBuffers(revisions_[revision]);
+    }
 }
 
 bool OctreeRaymarchRenderer::hasTable(uint32_t frameIndex) const {
@@ -412,8 +551,13 @@ bool OctreeRaymarchRenderer::hasTable(uint32_t frameIndex) const {
     // Requires a usable pipeline/pipeline layout too: if shader loading failed
     // the caller must keep the raster path (and its depth prepass), otherwise
     // the solid depth target would stay cleared.
-    return pipeline_ != VK_NULL_HANDLE && pipelineLayout_ != VK_NULL_HANDLE &&
-           sets_[fi] != VK_NULL_HANDLE && rootCounts_[fi] > 0;
+    if (pipeline_ == VK_NULL_HANDLE || pipelineLayout_ == VK_NULL_HANDLE ||
+        sets_[fi] == VK_NULL_HANDLE || slotRevision_[fi] < 0 ||
+        static_cast<size_t>(slotRevision_[fi]) >= revisions_.size())
+        return false;
+    const SharedRevision& rev = revisions_[slotRevision_[fi]];
+    return rev.node.buffer != VK_NULL_HANDLE && rev.root.buffer != VK_NULL_HANDLE &&
+           rev.rootCount > 0;
 }
 
 bool OctreeRaymarchRenderer::profileVariantActive() const {
@@ -422,6 +566,14 @@ bool OctreeRaymarchRenderer::profileVariantActive() const {
         return false;
     return rtPipelineActive() ? pipelineProfileRt_ != VK_NULL_HANDLE
                               : pipelineProfile_ != VK_NULL_HANDLE;
+}
+
+bool OctreeRaymarchRenderer::noFallbackVariantActive() const {
+    if (derivePipeline_ == VK_NULL_HANDLE || deriveLayout_ == VK_NULL_HANDLE ||
+        !noFallbackEnabled_.load(std::memory_order_relaxed))
+        return false;
+    return rtPipelineActive() ? pipelineNoFallbackRt_ != VK_NULL_HANDLE
+                              : pipelineNoFallback_ != VK_NULL_HANDLE;
 }
 
 void OctreeRaymarchRenderer::readProfile(uint32_t frameIndex) {
@@ -479,21 +631,23 @@ void OctreeRaymarchRenderer::recordDerive(VkCommandBuffer cmd, uint32_t frameInd
         counters->enabled = profileVariantActive() ? 1u : 0u;
     }
 
-    // Fallback: no derive pass for this slot (pipeline unavailable, no new
-    // revision, or an empty table). Publish the host writes straight to the
-    // fragment stage exactly as before.
+    if (slotRevision_[fi] < 0 ||
+        static_cast<size_t>(slotRevision_[fi]) >= revisions_.size()) {
+        recordHostWriteBarrier(cmd);
+        return;
+    }
+    SharedRevision& rev = revisions_[slotRevision_[fi]];
     if (derivePipeline_ == VK_NULL_HANDLE || deriveLayout_ == VK_NULL_HANDLE ||
-        sets_[fi] == VK_NULL_HANDLE || payloadBuffers_[fi].buffer == VK_NULL_HANDLE ||
-        !needsDerive_[fi] || nodeCounts_[fi] == 0) {
+        sets_[fi] == VK_NULL_HANDLE || rev.payload.buffer == VK_NULL_HANDLE ||
+        rev.nodeCount == 0) {
         recordHostWriteBarrier(cmd);
         return;
     }
 
-    // The node table is persistently mapped and rewritten on the host in
-    // update(), after this frame slot's fence wait. Coherent mapped memory
-    // needs no explicit flush. Two destination scopes share the host writes:
-    // the derive pass (node-table read + payload write) and the fragment
-    // march, which still reads the host-written root buffer.
+    // The shared node/root buffers are persistently mapped and rewritten on
+    // the host in update(), after the slot fence. Two destination scopes share
+    // the host writes: the derive pass (node-table read + payload write) and
+    // the fragment march (node/root/counter reads).
     VkMemoryBarrier2 hostBarriers[2]{};
     hostBarriers[0].sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     hostBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
@@ -514,20 +668,27 @@ void OctreeRaymarchRenderer::recordDerive(VkCommandBuffer cmd, uint32_t frameInd
     hostDep.pMemoryBarriers = hostBarriers;
     vkCmdPipelineBarrier2(cmd, &hostDep);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, derivePipeline_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, deriveLayout_,
-                            2, 1, &sets_[fi], 0, nullptr);
+    // Derive once per revision, not once per frame slot. Slots that bind an
+    // already-derived revision only need the two barriers above and the
+    // compute->fragment dependency below.
+    if (!rev.derived) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, derivePipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, deriveLayout_,
+                                2, 1, &sets_[fi], 0, nullptr);
 
-    struct {
-        uint32_t nodeCount;
-        uint32_t flags;
-    } derivePush{nodeCounts_[fi], 0u};
-    vkCmdPushConstants(cmd, deriveLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                       sizeof(derivePush), &derivePush);
-    vkCmdDispatch(cmd, (nodeCounts_[fi] + 63u) / 64u, 1u, 1u);
+        struct {
+            uint32_t nodeCount;
+            uint32_t flags;
+        } derivePush{rev.nodeCount, 0u};
+        vkCmdPushConstants(cmd, deriveLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(derivePush), &derivePush);
+        vkCmdDispatch(cmd, (rev.nodeCount + 63u) / 64u, 1u, 1u);
+        rev.derived = true;
+    }
 
     // Publish the derived payload (meta.x / hsv1.z / meta.w) to the fragment
-    // march that follows in this command buffer.
+    // march. For an already-derived revision this makes the earlier compute
+    // writes visible to this slot's command buffer too.
     VkMemoryBarrier2 deriveBarrier{};
     deriveBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     deriveBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -540,8 +701,6 @@ void OctreeRaymarchRenderer::recordDerive(VkCommandBuffer cmd, uint32_t frameInd
     deriveDep.memoryBarrierCount = 1;
     deriveDep.pMemoryBarriers = &deriveBarrier;
     vkCmdPipelineBarrier2(cmd, &deriveDep);
-
-    needsDerive_[fi] = false;
 }
 
 void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
@@ -551,8 +710,14 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
     const uint32_t fi = frameIndex % RAYMARCH_FRAMES;
     if (!app || cmd == VK_NULL_HANDLE || width == 0 || height == 0 ||
         pipeline_ == VK_NULL_HANDLE || sets_[fi] == VK_NULL_HANDLE ||
-        rootCounts_[fi] == 0 || mainSet == VK_NULL_HANDLE ||
-        brushSet == VK_NULL_HANDLE) {
+        slotRevision_[fi] < 0 ||
+        static_cast<size_t>(slotRevision_[fi]) >= revisions_.size() ||
+        mainSet == VK_NULL_HANDLE || brushSet == VK_NULL_HANDLE) {
+        return;
+    }
+    const SharedRevision& rev = revisions_[slotRevision_[fi]];
+    if (rev.rootCount == 0 || rev.node.buffer == VK_NULL_HANDLE ||
+        rev.root.buffer == VK_NULL_HANDLE) {
         return;
     }
 
@@ -561,9 +726,15 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
     // render scope).
 
     const bool useProfile = profileVariantActive();
+    // The no-fallback module assumes the revision's payload flags are set;
+    // recordDerive() normally guarantees that before draw, but keep the normal
+    // fallback pipeline for a revision that is somehow still underived.
+    const bool useNoFallback = !useProfile && rev.derived && noFallbackVariantActive();
     VkPipeline activePipeline = rtPipelineActive() ? pipelineRt_ : pipeline_;
     if (useProfile) {
         activePipeline = rtPipelineActive() ? pipelineProfileRt_ : pipelineProfile_;
+    } else if (useNoFallback) {
+        activePipeline = rtPipelineActive() ? pipelineNoFallbackRt_ : pipelineNoFallback_;
     }
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, activePipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
@@ -595,9 +766,9 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
     PushConstants pc{};
     pc.viewport = glm::vec4(static_cast<float>(width),
                             static_cast<float>(height), 0.0f, 0.0f);
-    pc.rootCount = rootCounts_[fi];
-    pc.tableVersion = static_cast<uint32_t>(uploadedVersion_[fi]);
-    pc.nodeCount = nodeCounts_[fi];
+    pc.rootCount = rev.rootCount;
+    pc.tableVersion = static_cast<uint32_t>(rev.version);
+    pc.nodeCount = rev.nodeCount;
     pc.flags = useProfile ? 1u : 0u;
     vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
