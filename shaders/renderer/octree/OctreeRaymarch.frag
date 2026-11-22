@@ -981,26 +981,62 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
             float nudge = max(nodeSize * 1.0e-5, 1.0e-4);
             float tn = t + nudge;
             vec3 pn = ro + rd * tn;
+            float childSize = nodeSize * 0.5;
+
             vec3 local = (pn - mn) / max(nodeSize, 1e-8);
             ivec3 cell = clamp(ivec3(floor(local * 2.0)), ivec3(0), ivec3(1));
             int slot = cell.x * 4 + cell.y * 2 + cell.z;
-            int child = rmNodeChild(node, slot);
-
-            float childSize = nodeSize * 0.5;
             vec3 childMin = mn + vec3(cell) * childSize;
 
-            // Exit of the child cell measured from the nudged point. It is
-            // strictly inside the cell, so the slab test is well defined even
-            // when the un-nudged ray sits on a face.
-            float c0, c1;
-            if (rmRayBoxInv(childMin, childSize, pn, invRd, c0, c1) && c1 > 0.0) {
+            if ((pc.flags & 2u) != 0u) {
+                // Phase 4 F5: only the child's far-plane exit is needed
+                // because pn is already inside the selected cell. Pick the far
+                // plane by ray direction instead of running the full slab
+                // entry test. childMin and the plane arithmetic match the
+                // slab's a/b values, so the exit is bit-identical.
+                float c1 = 1.0e30;
+                bool valid = true;
+                bool haveAxis = false;
+                if (abs(rd.x) > 1.0e-9) {
+                    float plane = rd.x > 0.0 ? childMin.x + childSize : childMin.x;
+                    float d = (plane - pn.x) * invRd.x;
+                    if (!(d > 0.0)) valid = false;
+                    else { c1 = min(c1, d); haveAxis = true; }
+                }
+                if (abs(rd.y) > 1.0e-9) {
+                    float plane = rd.y > 0.0 ? childMin.y + childSize : childMin.y;
+                    float d = (plane - pn.y) * invRd.y;
+                    if (!(d > 0.0)) valid = false;
+                    else { c1 = min(c1, d); haveAxis = true; }
+                }
+                if (abs(rd.z) > 1.0e-9) {
+                    float plane = rd.z > 0.0 ? childMin.z + childSize : childMin.z;
+                    float d = (plane - pn.z) * invRd.z;
+                    if (!(d > 0.0)) valid = false;
+                    else { c1 = min(c1, d); haveAxis = true; }
+                }
+                if (!valid || !haveAxis) {
+                    // Degenerate ray/plane result: advance a hair and retry.
+                    t = min(t + nudge, nodeExit);
+                    continue;
+                }
                 cellExit = min(nodeExit, tn + c1);
             } else {
-                // Degenerate slab result: advance a hair and re-evaluate the
-                // cell next iteration instead of skipping to the parent exit.
-                t = min(t + nudge, nodeExit);
-                continue;
+                // Exit of the child cell measured from the nudged point. It is
+                // strictly inside the cell, so the slab test is well defined
+                // even when the un-nudged ray sits on a face.
+                float c0, c1;
+                if (rmRayBoxInv(childMin, childSize, pn, invRd, c0, c1) && c1 > 0.0) {
+                    cellExit = min(nodeExit, tn + c1);
+                } else {
+                    // Degenerate slab result: advance a hair and re-evaluate
+                    // the cell next iteration instead of skipping to the
+                    // parent exit.
+                    t = min(t + nudge, nodeExit);
+                    continue;
+                }
             }
+            int child = rmNodeChild(node, slot);
 
             if (child >= 0) {
                 if (depth < RM_MAX_STACK) {

@@ -113,6 +113,11 @@ public:
         noFallbackEnabled_.store(enabled, std::memory_order_relaxed);
     }
 
+    // Phase 4 research: parametric child selection/exit (push-constant bit 1).
+    void setParametricChildEnabled(bool enabled) {
+        parametricChildEnabled_.store(enabled, std::memory_order_relaxed);
+    }
+
     // Publish the shared revision's host-side table/root upload and, when the
     // revision has not been derived yet, run the once-per-revision payload
     // derive pass (OctreeDerive.comp) before the march. MUST be recorded OUTSIDE any
@@ -197,6 +202,7 @@ private:
     VkPipeline pipelineNoFallback_ = VK_NULL_HANDLE;
     VkPipeline pipelineNoFallbackRt_ = VK_NULL_HANDLE;
     std::atomic<bool> noFallbackEnabled_{false};
+    std::atomic<bool> parametricChildEnabled_{false};
     bool profileCountersSupported_ = false;
     std::atomic<bool> profileCountersEnabled_{false};
     OctreeRaymarchCounters profileStats_{};

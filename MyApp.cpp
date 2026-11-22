@@ -1283,6 +1283,10 @@ public:
         if (const char* env = std::getenv("VULKAN_OCTREE_NO_FALLBACK")) {
             if (env[0] != '0') settings.octreeRaymarchNoFallback = true;
         }
+        // VULKAN_OCTREE_PARAMETRIC_CHILD=1: Phase 4 F5 child selection/exit.
+        if (const char* env = std::getenv("VULKAN_OCTREE_PARAMETRIC_CHILD")) {
+            if (env[0] != '0') settings.octreeRaymarchParametricChild = true;
+        }
         // VULKAN_OCTREE_SCREEN_EPS=<px>: Phase 3 A/B capture of the
         // screen-space hit tolerance. 0 keeps the world-space epsilon.
         if (const char* env = std::getenv("VULKAN_OCTREE_SCREEN_EPS")) {
@@ -2213,12 +2217,14 @@ public:
             auto* octree = sceneRenderer->octreeRaymarchRenderer.get();
             octree->setProfileCountersEnabled(settings.octreeRaymarchProfile);
             octree->setNoFallbackEnabled(settings.octreeRaymarchNoFallback);
+            octree->setParametricChildEnabled(settings.octreeRaymarchParametricChild);
             octree->readProfile(frameIdx);
             if (settings.octreeRaymarchProfile && octree->profileStats().enabled != 0u) {
                 static uint32_t octreePrintTick = 0;
                 if ((++octreePrintTick & 0x3F) == 0) {
                     const auto& s = octree->profileStats();
-                    std::cout << "[octree] rays=" << s.rays
+                    std::cout << "[octree] ms=" << profileOctreeMarch
+                              << " rays=" << s.rays
                               << " rootTests=" << s.rootTests
                               << " rootMarches=" << s.rootMarches
                               << " nodes=" << s.nodeVisits

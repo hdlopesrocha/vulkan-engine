@@ -167,6 +167,9 @@ public:
     // classifier compiled out). Only used when the derive pass is available;
     // otherwise the normal fallback variant stays active.
     bool octreeRaymarchNoFallback = false;
+    // Phase 4 research: compute only the child's far-plane exit instead of
+    // re-running the full slab test. Bit-exact; default off for A/B.
+    bool octreeRaymarchParametricChild = false;
     bool shadowTessellationEnabled = false;
     // Deferred depth prepass for the solid pass (perf report 21 C2 gate).
     // true = depth prepass, then color with loaded depth (current behavior);

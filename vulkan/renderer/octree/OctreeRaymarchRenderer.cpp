@@ -362,6 +362,7 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     pipelineLayout_ = VK_NULL_HANDLE;
     rtShadingEnabled_ = false;
     noFallbackEnabled_.store(false, std::memory_order_relaxed);
+    parametricChildEnabled_.store(false, std::memory_order_relaxed);
     profileCountersSupported_ = false;
     profileCountersEnabled_.store(false, std::memory_order_relaxed);
     profileStats_ = OctreeRaymarchCounters{};
@@ -769,7 +770,8 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
     pc.rootCount = rev.rootCount;
     pc.tableVersion = static_cast<uint32_t>(rev.version);
     pc.nodeCount = rev.nodeCount;
-    pc.flags = useProfile ? 1u : 0u;
+    pc.flags = (useProfile ? 1u : 0u) |
+               (parametricChildEnabled_.load(std::memory_order_relaxed) ? 2u : 0u);
     vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
 

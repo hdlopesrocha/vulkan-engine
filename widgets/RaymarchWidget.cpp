@@ -147,6 +147,18 @@ void RaymarchWidget::render() {
                 "once-per-revision derive pass is available; otherwise the "
                 "normal fallback shader stays bound.");
         }
+        {
+            bool parametric = settings->octreeRaymarchParametricChild;
+            ImGui::PushID("ParametricChild##octree");
+            if (ImGui::Checkbox("Parametric child exit", &parametric)) {
+                settings->octreeRaymarchParametricChild = parametric;
+            }
+            ImGui::PopID();
+            ImGuiComponents::TooltipOnHover(
+                "Phase 4 research: compute only the selected child's far-plane "
+                "exit instead of the full child slab test. Bit-exact; off by "
+                "default for A/B.");
+        }
     });
 
     // 0: Shape (generic SDF rig: cloud / sphere / cube + translation,
