@@ -121,6 +121,19 @@ void RaymarchWidget::render() {
                 "over-resolution at distance and on grazing rays; hit positions "
                 "move by at most this many pixels.");
         }
+        {
+            bool profile = settings->octreeRaymarchProfile;
+            ImGui::PushID("ProfileCounters##octree");
+            if (ImGui::Checkbox("Profile counters", &profile)) {
+                settings->octreeRaymarchProfile = profile;
+            }
+            ImGui::PopID();
+            ImGuiComponents::TooltipOnHover(
+                "Phase 0 instrumentation: count march nodes, field/gradient "
+                "evaluations, QEF fallbacks, payload loads and hit-path "
+                "descents. Profiling-only (fragment atomics); the counters are "
+                "logged every 64 frames.");
+        }
     });
 
     // 0: Shape (generic SDF rig: cloud / sphere / cube + translation,

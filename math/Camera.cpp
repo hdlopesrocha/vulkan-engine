@@ -27,6 +27,11 @@ void Camera::setProjection(const glm::mat4 &proj) {
     projection = proj;
 }
 
+void Camera::setPose(const glm::vec3 &pos, const glm::quat &orient) {
+    position = pos;
+    orientation = glm::normalize(orient);
+}
+
 void Camera::rotateEuler(float yawDeg, float pitchDeg, float rollDeg) {
     // Convert degrees to radians and apply yaw (around world up), pitch (around right), roll (around forward)
     float yaw = glm::radians(yawDeg);

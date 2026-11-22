@@ -72,6 +72,37 @@ static_assert(sizeof(OctreeRaymarchPayload) == 32,
               "OctreeRaymarchPayload must stay 32 bytes (2 x vec4) to match "
               "the std430 RaymarchPayload in RaymarchPayload.glsl");
 
+// Phase 0 instrumentation counters, one block per frame slot. Only the
+// OCTREE_PROFILE fragment variant touches this buffer (fragment atomics
+// gated by the push-constant flag), so the production variants pay no
+// atomics. Layout must match shaders/includes/octree/RaymarchCounters.glsl.
+struct OctreeRaymarchCounters {
+    uint32_t rays = 0;                 // fragment invocations
+    uint32_t rootTests = 0;            // root AABB / interval tests
+    uint32_t rootMarches = 0;          // rmMarchRoot calls that entered
+    uint32_t nodeVisits = 0;           // distinct node entries (push/pop)
+    uint32_t leafIters = 0;            // iterations with leaf == true
+    uint32_t nonLeafIters = 0;         // iterations that descend/test a child
+    uint32_t fieldEvals = 0;           // march rmTrilinear calls
+    uint32_t gradientEvals = 0;        // rmNodeNormal calls
+    uint32_t qefSolves = 0;            // sdfCellPosition calls (fallback)
+    uint32_t qefPayloadLoads = 0;      // rmPayload[id].qef reads
+    uint32_t ringDescents = 0;         // root-fallback descents from the hit path
+    uint32_t ringCells = 0;            // ring cells considered
+    uint32_t ringDuplicates = 0;       // ring cells dropped as duplicates
+    uint32_t materialClassifiers = 0;  // rmResolveMaterialAt fallback calls
+    uint32_t carryHits = 0;            // carry-forward reuses
+    uint32_t earlyRoots = 0;           // roots skipped by AABB/order
+    uint32_t bisectEvals = 0;          // field evaluations inside bisection
+    uint32_t waterSecondary = 0;       // secondary SDF root-list marches
+    uint32_t hits = 0;                 // accepted primary hits
+    uint32_t discardSkips = 0;         // hits rejected by material / back face
+    uint32_t enabled = 0;              // CPU-written gate: 1 = counters on
+};
+static_assert(sizeof(OctreeRaymarchCounters) == 84,
+              "OctreeRaymarchCounters must stay 21 x uint32 to match "
+              "shaders/includes/octree/RaymarchCounters.glsl");
+
 // CPU-side owner of one raymarch table revision. The owner (MyApp) rebuilds it
 // on a debounce and hands it to OctreeRaymarchRenderer, which uploads the same
 // revision into each frame slot exactly once (version match = already there).

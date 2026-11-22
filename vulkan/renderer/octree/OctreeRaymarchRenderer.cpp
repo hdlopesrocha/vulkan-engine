@@ -29,15 +29,20 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
         return;
     }
     app_ = app;
+    profileCountersSupported_ = app->fragmentStoresAndAtomicsSupported;
+    std::cout << "[OctreeRaymarchRenderer] Phase 0 counters "
+              << (profileCountersSupported_ ? "available" : "unavailable (no fragment atomics)")
+              << std::endl;
 
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
     // Set=2: binding 0 = node table, binding 1 = layer roots, binding 2 =
-    // derived QEF payload. Bindings 0 and 2 are read by the fragment march and
-    // written by the payload derive compute pass, so their stage masks span
-    // both stages; binding 1 stays fragment-only.
-    VkDescriptorSetLayoutBinding bindings[3]{};
-    for (uint32_t b = 0; b < 3; ++b) {
+    // derived QEF payload, binding 3 = Phase 0 profile counters. Bindings 0
+    // and 2 are read by the fragment march and written by the payload derive
+    // compute pass, so their stage masks span both stages; bindings 1 and 3
+    // stay fragment-only.
+    VkDescriptorSetLayoutBinding bindings[4]{};
+    for (uint32_t b = 0; b < 4; ++b) {
         bindings[b].binding = b;
         bindings[b].descriptorCount = 1;
         bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -45,12 +50,12 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
     }
     bindings[0].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[2].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
-    setLayout_ = descAlloc.createLayout(bindings, 3, 0, nullptr,
+    setLayout_ = descAlloc.createLayout(bindings, 4, 0, nullptr,
                                         "OctreeRaymarchRenderer: set2 layout");
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 3u * RAYMARCH_FRAMES;
+    poolSize.descriptorCount = 4u * RAYMARCH_FRAMES;
     VkDescriptorPool pool = descAlloc.createPool(
         &poolSize, 1, RAYMARCH_FRAMES, 0, "OctreeRaymarchRenderer: pool");
     descAlloc.allocateSets(pool, setLayout_, RAYMARCH_FRAMES, sets_.data(),
@@ -126,6 +131,48 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
                           << e.what() << "); using the non-RT shading fallback."
                           << std::endl;
                 pipelineRt_ = VK_NULL_HANDLE;
+            }
+        }
+
+        // Phase 0 profile twins: same march/layout, with the gated counter
+        // atomics. They are only built when fragment stores/atomics are
+        // available; a missing module leaves the counters disabled and the
+        // production pipelines untouched. The RT profile twin is built only
+        // when the non-profile RT twin exists, so RT shading stays matched.
+        if (profileCountersSupported_) {
+            try {
+                ShaderStage fragProfileStage(
+                    app->getOrCreateShaderModule(
+                        "shaders/renderer/octree/OctreeRaymarchProfile.frag.spv"),
+                    VK_SHADER_STAGE_FRAGMENT_BIT);
+                pipelineProfile_ = app->createGraphicsPipelineWithLayout(
+                    { vertStage.info, fragProfileStage.info },
+                    std::vector<VkVertexInputBindingDescription>{},
+                    std::vector<VkVertexInputAttributeDescription>{},
+                    setLayouts, &pushRange, cfg, pipelineLayout_);
+                fragProfileStage.info.module = VK_NULL_HANDLE;
+            } catch (const std::exception& e) {
+                std::cerr << "[OctreeRaymarchRenderer] profile variant unavailable ("
+                          << e.what() << "); counters stay disabled." << std::endl;
+                pipelineProfile_ = VK_NULL_HANDLE;
+            }
+            if (pipelineRt_ != VK_NULL_HANDLE) {
+                try {
+                    ShaderStage fragProfileRtStage(
+                        app->getOrCreateShaderModule(
+                            "shaders/renderer/octree/OctreeRaymarchProfileRT.frag.spv"),
+                        VK_SHADER_STAGE_FRAGMENT_BIT);
+                    pipelineProfileRt_ = app->createGraphicsPipelineWithLayout(
+                        { vertStage.info, fragProfileRtStage.info },
+                        std::vector<VkVertexInputBindingDescription>{},
+                        std::vector<VkVertexInputAttributeDescription>{},
+                        setLayouts, &pushRange, cfg, pipelineLayout_);
+                    fragProfileRtStage.info.module = VK_NULL_HANDLE;
+                } catch (const std::exception& e) {
+                    std::cerr << "[OctreeRaymarchRenderer] RT profile variant unavailable ("
+                              << e.what() << "); RT counters stay disabled." << std::endl;
+                    pipelineProfileRt_ = VK_NULL_HANDLE;
+                }
             }
         }
 
@@ -213,6 +260,8 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
             if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
         for (auto& buf : payloadBuffers_)
             if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
+        for (auto& buf : counterBuffers_)
+            if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
         // The derive pipeline/layout are registered with VulkanResourceManager
         // at creation; remove before destroying so shutdown does not free them
         // twice (same contract as RayTracingResources).
@@ -230,6 +279,7 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     nodeBuffers_.fill(Buffer{});
     rootBuffers_.fill(Buffer{});
     payloadBuffers_.fill(Buffer{});
+    counterBuffers_.fill(Buffer{});
     sets_.fill(VK_NULL_HANDLE);
     uploadedVersion_.fill(0);
     rootCounts_.fill(0);
@@ -242,8 +292,13 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     setLayout_ = VK_NULL_HANDLE;
     pipeline_ = VK_NULL_HANDLE;
     pipelineRt_ = VK_NULL_HANDLE;
+    pipelineProfile_ = VK_NULL_HANDLE;
+    pipelineProfileRt_ = VK_NULL_HANDLE;
     pipelineLayout_ = VK_NULL_HANDLE;
     rtShadingEnabled_ = false;
+    profileCountersSupported_ = false;
+    profileCountersEnabled_.store(false, std::memory_order_relaxed);
+    profileStats_ = OctreeRaymarchCounters{};
     maxNodes_ = 0;
 }
 
@@ -251,7 +306,8 @@ bool OctreeRaymarchRenderer::ensureSlotBuffers(uint32_t fi) {
     if (!app_ || fi >= RAYMARCH_FRAMES) return false;
     if (nodeBuffers_[fi].buffer != VK_NULL_HANDLE &&
         rootBuffers_[fi].buffer != VK_NULL_HANDLE &&
-        payloadBuffers_[fi].buffer != VK_NULL_HANDLE)
+        payloadBuffers_[fi].buffer != VK_NULL_HANDLE &&
+        counterBuffers_[fi].buffer != VK_NULL_HANDLE)
         return true;
     if (sets_[fi] == VK_NULL_HANDLE) return false;
 
@@ -279,18 +335,28 @@ bool OctreeRaymarchRenderer::ensureSlotBuffers(uint32_t fi) {
         static_cast<VkDeviceSize>(payloadNodes * kPayloadBytes),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
+    // Phase 0 counters: one host-visible block per slot. reset+gate happens in
+    // recordDerive() (outside dynamic rendering), so the persistent mapping is
+    // written on the frame thread after the slot fence.
+    counterBuffers_[fi] = app_->createBuffer(
+        static_cast<VkDeviceSize>(sizeof(OctreeRaymarchCounters)),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     if (nodeBuffers_[fi].buffer == VK_NULL_HANDLE ||
         rootBuffers_[fi].buffer == VK_NULL_HANDLE ||
-        payloadBuffers_[fi].buffer == VK_NULL_HANDLE) {
+        payloadBuffers_[fi].buffer == VK_NULL_HANDLE ||
+        counterBuffers_[fi].buffer == VK_NULL_HANDLE) {
         std::cerr << "[OctreeRaymarchRenderer] failed to create per-frame table resources"
                   << std::endl;
         if (nodeBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(nodeBuffers_[fi]);
         if (rootBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(rootBuffers_[fi]);
         if (payloadBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(payloadBuffers_[fi]);
+        if (counterBuffers_[fi].buffer != VK_NULL_HANDLE) app_->destroyBuffer(counterBuffers_[fi]);
         nodeBuffers_[fi] = Buffer{};
         rootBuffers_[fi] = Buffer{};
         payloadBuffers_[fi] = Buffer{};
+        counterBuffers_[fi] = Buffer{};
         return false;
     }
 
@@ -304,6 +370,9 @@ bool OctreeRaymarchRenderer::ensureSlotBuffers(uint32_t fi) {
         .writeBuffer(sets_[fi], 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                      payloadBuffers_[fi].buffer, 0,
                      app_->getClampedWholeSizeRange(payloadBuffers_[fi].buffer))
+        .writeBuffer(sets_[fi], 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     counterBuffers_[fi].buffer, 0,
+                     app_->getClampedWholeSizeRange(counterBuffers_[fi].buffer))
         .flush();
     return true;
 }
@@ -347,6 +416,31 @@ bool OctreeRaymarchRenderer::hasTable(uint32_t frameIndex) const {
            sets_[fi] != VK_NULL_HANDLE && rootCounts_[fi] > 0;
 }
 
+bool OctreeRaymarchRenderer::profileVariantActive() const {
+    if (!profileCountersSupported_ ||
+        !profileCountersEnabled_.load(std::memory_order_relaxed))
+        return false;
+    return rtPipelineActive() ? pipelineProfileRt_ != VK_NULL_HANDLE
+                              : pipelineProfile_ != VK_NULL_HANDLE;
+}
+
+void OctreeRaymarchRenderer::readProfile(uint32_t frameIndex) {
+    const uint32_t fi = frameIndex % RAYMARCH_FRAMES;
+    if (counterBuffers_[fi].mappedData == nullptr) {
+        profileStats_.enabled = 0u;
+        return;
+    }
+    const auto* counters =
+        static_cast<const OctreeRaymarchCounters*>(counterBuffers_[fi].mappedData);
+    if (counters->enabled == 0u) {
+        // Counters off/unavailable: invalidate the snapshot so the UI and the
+        // throttled log stop reporting stale values.
+        profileStats_.enabled = 0u;
+        return;
+    }
+    profileStats_ = *counters;
+}
+
 void OctreeRaymarchRenderer::recordHostWriteBarrier(VkCommandBuffer cmd) {
     if (cmd == VK_NULL_HANDLE) return;
     // The node buffers are persistently mapped and rewritten on the host in
@@ -358,7 +452,10 @@ void OctreeRaymarchRenderer::recordHostWriteBarrier(VkCommandBuffer cmd) {
     hostBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
     hostBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
     hostBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    hostBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    // The Phase 0 counter buffer is atomically written by the profile variant;
+    // include the write access so the host reset is published before it.
+    hostBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
 
     VkDependencyInfo dep{};
     dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -370,6 +467,17 @@ void OctreeRaymarchRenderer::recordHostWriteBarrier(VkCommandBuffer cmd) {
 void OctreeRaymarchRenderer::recordDerive(VkCommandBuffer cmd, uint32_t frameIndex) {
     if (cmd == VK_NULL_HANDLE) return;
     const uint32_t fi = frameIndex % RAYMARCH_FRAMES;
+
+    // Phase 0 counters: reset this slot after its fence wait and before the
+    // host barrier below publishes the reset to the fragment atomics. The
+    // enabled word is also the readback validity tag; the shader gate itself
+    // is the push-constant flag set in draw().
+    if (counterBuffers_[fi].mappedData != nullptr) {
+        auto* counters =
+            static_cast<OctreeRaymarchCounters*>(counterBuffers_[fi].mappedData);
+        *counters = OctreeRaymarchCounters{};
+        counters->enabled = profileVariantActive() ? 1u : 0u;
+    }
 
     // Fallback: no derive pass for this slot (pipeline unavailable, no new
     // revision, or an empty table). Publish the host writes straight to the
@@ -397,7 +505,8 @@ void OctreeRaymarchRenderer::recordDerive(VkCommandBuffer cmd, uint32_t frameInd
     hostBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
     hostBarriers[1].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
     hostBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    hostBarriers[1].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    hostBarriers[1].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
 
     VkDependencyInfo hostDep{};
     hostDep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -451,8 +560,11 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
     // color pass (host barriers and the derive dispatch are illegal inside a
     // render scope).
 
-    const VkPipeline activePipeline =
-        (rtShadingEnabled_ && pipelineRt_ != VK_NULL_HANDLE) ? pipelineRt_ : pipeline_;
+    const bool useProfile = profileVariantActive();
+    VkPipeline activePipeline = rtPipelineActive() ? pipelineRt_ : pipeline_;
+    if (useProfile) {
+        activePipeline = rtPipelineActive() ? pipelineProfileRt_ : pipelineProfile_;
+    }
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, activePipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
 
@@ -484,6 +596,9 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
     pc.viewport = glm::vec4(static_cast<float>(width),
                             static_cast<float>(height), 0.0f, 0.0f);
     pc.rootCount = rootCounts_[fi];
+    pc.tableVersion = static_cast<uint32_t>(uploadedVersion_[fi]);
+    pc.nodeCount = nodeCounts_[fi];
+    pc.flags = useProfile ? 1u : 0u;
     vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
 

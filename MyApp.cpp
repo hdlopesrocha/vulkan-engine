@@ -403,6 +403,7 @@ public:
     float profileImGui = 0.0f;
     float profileRTDispatch = 0.0f; // hybrid-RT water pipeline traceRays (slots 20-21)
     float profileSdf = 0.0f;        // SDF engine ray-march pass (slots 22-23)
+    float profileOctreeMarch = 0.0f; // octree SDF raymarch draw (slots 0-1)
     // SDF march counters (opt-in, set=1 binding 10): fragment atomics gated by
     // SdfRenderer::setProfileCounters; read back with a 3-frame slot latency.
     bool sdfProfilingEnabled_ = false;
@@ -549,6 +550,15 @@ public:
 
     // Camera and input
     Camera camera = Camera(glm::vec3(-512.0f, 2048.0f, 0.0f), Math::eulerToQuat(-90.0f, 0.0f, 0.0f));
+    // Phase 0 deterministic benchmark path (VULKAN_CAMERA_PATH). The pose is
+    // derived from the start pose and a frame counter, so two runs with the
+    // same frame count see exactly the same cameras regardless of input/fps.
+    enum class BenchCameraPath { None, Static, Pan5, Pan60, Dolly, Strafe };
+    BenchCameraPath benchCameraPath_ = BenchCameraPath::None;
+    glm::vec3 benchCameraBasePos_{0.0f};
+    glm::quat benchCameraBaseOri_{1.0f, 0.0f, 0.0f, 0.0f};
+    uint64_t benchCameraFrame_ = 0;
+    void applyBenchCameraPath();
     Light light = Light(glm::vec3(-1.0f, -1.0f, -1.0f));
     EventManager eventManager;
     KeyboardPublisher keyboardPublisher;
@@ -1260,6 +1270,33 @@ public:
         if (const char* env = std::getenv("VULKAN_OCTREE_RAYMARCH")) {
             if (env[0] != '0') settings.octreeRaymarchEnabled = true;
         }
+        // VULKAN_OCTREE_PROFILE=1 starts with the Phase 0 counter variant on.
+        if (const char* env = std::getenv("VULKAN_OCTREE_PROFILE")) {
+            if (env[0] != '0') settings.octreeRaymarchProfile = true;
+        }
+        // VULKAN_CAMERA_PATH=static|pan5|pan60|dolly|strafe: deterministic
+        // benchmark camera derived from VULKAN_CAMERA (or the default pose).
+        // The path advances once per update; dolly/strafe use 1 m and 0.5 m
+        // per frame at the nominal 60 fps benchmark cadence.
+        if (const char* path = std::getenv("VULKAN_CAMERA_PATH")) {
+            const std::string s(path);
+            if (s == "static") benchCameraPath_ = BenchCameraPath::Static;
+            else if (s == "pan5") benchCameraPath_ = BenchCameraPath::Pan5;
+            else if (s == "pan60") benchCameraPath_ = BenchCameraPath::Pan60;
+            else if (s == "dolly") benchCameraPath_ = BenchCameraPath::Dolly;
+            else if (s == "strafe") benchCameraPath_ = BenchCameraPath::Strafe;
+            else if (!s.empty())
+                std::cerr << "[Camera] unknown VULKAN_CAMERA_PATH '" << s
+                          << "'; expected static|pan5|pan60|dolly|strafe" << std::endl;
+            if (benchCameraPath_ != BenchCameraPath::None) {
+                benchCameraBasePos_ = camera.getPosition();
+                benchCameraBaseOri_ = camera.getOrientation();
+                benchCameraFrame_ = 0;
+                std::cout << "[Camera] deterministic path '" << s << "' from ("
+                          << benchCameraBasePos_.x << ", " << benchCameraBasePos_.y
+                          << ", " << benchCameraBasePos_.z << ")" << std::endl;
+            }
+        }
 
         // VULKAN_DROPLET_DT forces a fixed per-frame simulation delta (headless
         // validation on slow software rasterizers, where the real frame delta
@@ -1867,6 +1904,10 @@ public:
             radialMenuVisible = radialMenuHandler->update(loadedTextureLayers);
         }
 
+        // Phase 0: deterministic benchmark camera overrides any input motion
+        // after the event queue has been processed.
+        applyBenchCameraPath();
+
         shadowParams.update(camera.getPosition(), light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
 
         // Drain the pending mesh queue populated by the background scene-loading
@@ -2130,6 +2171,41 @@ public:
 
         uint32_t frameIdx = getCurrentFrame();
 
+        // Phase 0 octree counters: publish the CPU toggle, then snapshot the
+        // slot's last completed use (same fence-safe point as the SDF
+        // profiler). recordDerive() resets and re-gates the slot later.
+        if (sceneRenderer && sceneRenderer->octreeRaymarchRenderer) {
+            auto* octree = sceneRenderer->octreeRaymarchRenderer.get();
+            octree->setProfileCountersEnabled(settings.octreeRaymarchProfile);
+            octree->readProfile(frameIdx);
+            if (settings.octreeRaymarchProfile && octree->profileStats().enabled != 0u) {
+                static uint32_t octreePrintTick = 0;
+                if ((++octreePrintTick & 0x3F) == 0) {
+                    const auto& s = octree->profileStats();
+                    std::cout << "[octree] rays=" << s.rays
+                              << " rootTests=" << s.rootTests
+                              << " rootMarches=" << s.rootMarches
+                              << " nodes=" << s.nodeVisits
+                              << " leafIters=" << s.leafIters
+                              << " nonLeafIters=" << s.nonLeafIters
+                              << " field=" << s.fieldEvals
+                              << " grad=" << s.gradientEvals
+                              << " qef=" << s.qefSolves
+                              << " payload=" << s.qefPayloadLoads
+                              << " ring=" << s.ringDescents
+                              << " ringCells=" << s.ringCells
+                              << " ringDups=" << s.ringDuplicates
+                              << " classify=" << s.materialClassifiers
+                              << " carry=" << s.carryHits
+                              << " early=" << s.earlyRoots
+                              << " bisect=" << s.bisectEvals
+                              << " water=" << s.waterSecondary
+                              << " hits=" << s.hits
+                              << " discards=" << s.discardSkips << std::endl;
+                }
+            }
+        }
+
         // Per-frame cull buffers: each IndirectRenderer needs its own per-frame
         // compact/visibleCount buffer to avoid cross-frame overwrite races.
         // Must be set BEFORE prepareCull below so culls and drawPrepared use
@@ -2196,6 +2272,14 @@ public:
                         && timestampPeriod > 0.0f) {
                     if (tsD[0].availability) profileSdf = msDiff(tsD[1].value, tsD[0].value);
                 }
+                // Dedicated octree raymarch interval (slots 0/1).
+                struct { uint64_t value; uint64_t availability; } tsO[2] = {};
+                if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 0, 2,
+                        sizeof(tsO), tsO, sizeof(tsO[0]),
+                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS
+                        && timestampPeriod > 0.0f) {
+                    if (tsO[0].availability) profileOctreeMarch = msDiff(tsO[1].value, tsO[0].value);
+                }
                 // SDF march counters (set=1 binding 10): snapshot the slot's
                 // last completed values (3-frame latency) for the panel.
                 if (sceneRenderer && sceneRenderer->sdfRenderer) {
@@ -2219,6 +2303,7 @@ public:
                                   << " water=" << profileWater
                                   << " rt=" << profileRTDispatch
                                   << " sdf=" << profileSdf
+                                  << " octree=" << profileOctreeMarch
                                   << " post=" << profilePostProcess
                                   << " imgui=" << profileImGui
                                   << " fps=" << profileFps << std::endl;
@@ -2937,8 +3022,11 @@ public:
                 // below start from a clean state. Slots 12-13 belong to the
                 // vegetation CB and 14-15/20-23 to the water/SDF CBs; the main
                 // CB resets 16-19.
-                if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE) {
+                    // Slots 0/1: dedicated octree raymarch draw interval.
+                    vkCmdResetQueryPool(solidCmd, queryPools[frameIdx], 0, 2);
                     vkCmdResetQueryPool(solidCmd, queryPools[frameIdx], 6, 6);
+                }
 
                 // ── Sky offscreen moved to its own queue (asyncSkyFuture) so the
                 //    equirectangular sky image is produced in parallel with the solid
@@ -3120,9 +3208,15 @@ public:
                             ? this->sceneRenderer->brushRenderer->getParamsDescriptorSet(frameIdx)
                             : VK_NULL_HANDLE;
                         if (solidRaymarch) {
+                            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                                vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                                    queryPools[frameIdx], 0);
                             this->sceneRenderer->octreeRaymarchRenderer->draw(
                                 solidCmd, this, frameIdx, solidW, solidH,
                                 getMainDescriptorSet(), brushParamsSet);
+                            if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
+                                vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                                    queryPools[frameIdx], 1);
                         } else {
                             this->sceneRenderer->solidRenderer->drawColor(
                                 solidCmd, this, getMainDescriptorSet(), brushParamsSet);
@@ -4341,6 +4435,15 @@ public:
                     ImGui::Text("Water:         %.2f", profileWater);
                     ImGui::Text("RT Dispatch:   %.2f", profileRTDispatch);
                     ImGui::Text("SDF Engine:    %.2f", profileSdf);
+                    if (sceneRenderer && sceneRenderer->octreeRaymarchRenderer) {
+                        ImGui::Text("Octree March:  %.2f", profileOctreeMarch);
+                        if (settings.octreeRaymarchProfile) {
+                            const auto& s = sceneRenderer->octreeRaymarchRenderer->profileStats();
+                            if (s.enabled != 0u)
+                                ImGui::Text("Octree counters: rays=%u nodes=%u field=%u qef=%u ring=%u",
+                                            s.rays, s.nodeVisits, s.fieldEvals, s.qefSolves, s.ringDescents);
+                        }
+                    }
                     ImGui::Text("PostProcess:   %.2f", profilePostProcess);
                     ImGui::Text("ImGui:         %.2f", profileImGui);
                     ImGui::Text("--- GPU Total:  %.2f ---", gpuTotal);
@@ -5547,6 +5650,42 @@ static void computeBrushBounds(const BrushEntry& entry, const glm::vec3& sweepSt
 // description into the BrushSdfRenderer's UBO (consumed by the preview
 // raymarcher and by the solid shader's PAINT/REMOVE intersection test). No
 // octree and no tessellation: moving/scaling the brush is just a UBO rewrite.
+void MyApp::applyBenchCameraPath() {
+    if (benchCameraPath_ == BenchCameraPath::None) return;
+
+    // Frame-indexed so an A/B pair sees the same pose at the same frame,
+    // independent of wall-clock timing. Nominal cadence: 60 fps.
+    const float frame = static_cast<float>(benchCameraFrame_++);
+    glm::vec3 pos = benchCameraBasePos_;
+    glm::quat ori = benchCameraBaseOri_;
+    const glm::vec3 forward = glm::normalize(glm::rotate(
+        benchCameraBaseOri_, glm::vec3(0.0f, 0.0f, -1.0f)));
+    glm::vec3 right = glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f));
+    right = (glm::dot(right, right) > 1e-8f) ? glm::normalize(right)
+                                             : glm::vec3(1.0f, 0.0f, 0.0f);
+    switch (benchCameraPath_) {
+        case BenchCameraPath::Static:
+            break;
+        case BenchCameraPath::Pan5:
+        case BenchCameraPath::Pan60: {
+            const float rate = (benchCameraPath_ == BenchCameraPath::Pan5) ? 5.0f : 60.0f;
+            const float yaw = glm::radians(rate) * (frame / 60.0f);
+            ori = glm::normalize(glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                                 benchCameraBaseOri_);
+            break;
+        }
+        case BenchCameraPath::Dolly:
+            pos += forward * frame;           // 1 m/frame
+            break;
+        case BenchCameraPath::Strafe:
+            pos += right * (0.5f * frame);    // 0.5 m/frame
+            break;
+        case BenchCameraPath::None:
+            break;
+    }
+    camera.setPose(pos, ori);
+}
+
 void MyApp::updateBrushPreview(uint32_t frameIndex) {
     if (!sceneRenderer || !sceneRenderer->brushRenderer) return;
 

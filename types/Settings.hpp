@@ -159,6 +159,10 @@ public:
     // start; larger values cut distant/grazing march steps at a sub-pixel
     // accuracy cost.
     float octreeRaymarchScreenEps = 0.0f;
+    // Phase 0 instrumentation: collect the octree march's GPU counters
+    // (set=2 binding=3). Off by default; profiling-only because the counter
+    // shader variant uses fragment atomics.
+    bool octreeRaymarchProfile = false;
     bool shadowTessellationEnabled = false;
     // Deferred depth prepass for the solid pass (perf report 21 C2 gate).
     // true = depth prepass, then color with loaded depth (current behavior);

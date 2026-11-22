@@ -265,6 +265,8 @@ OUT_SPVS = \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRT.frag.spv \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv \
 	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchRT.frag.spv \
+	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfile.frag.spv \
+	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfileRT.frag.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv \
 	$(OUT_DIR)/shaders/renderer/sdf/SdfRendererSurface.frag.spv \
@@ -333,6 +335,13 @@ $(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv: shaders/renderer
 # OctreeRaymarch.frag.spv (procedural-sky fallback).
 $(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchRT.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DRT_ENABLED,--D RT_ENABLED,)
+
+# Phase 0 profile twins: same march with the gated counter atomics. Only
+# created at runtime when fragment stores/atomics are available.
+$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfile.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DOCTREE_PROFILE=1,--D OCTREE_PROFILE=1,)
+$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfileRT.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
+	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DRT_ENABLED -DOCTREE_PROFILE=1,--D RT_ENABLED --D OCTREE_PROFILE=1,)
 
 # WaterRenderer fragment variants: RT (hardware ray tracing) and WATER_NO_BODY
 # (single color attachment, no blur aux outputs). Per-op RT profiling needs the

@@ -5,6 +5,7 @@
 #include "../../../utils/OctreeRaymarchTable.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -13,7 +14,8 @@
 // Octree SDF raymarch terrain path (Settings::octreeRaymarchEnabled).
 //
 // Owns the set-2 descriptor layout (node table + layer roots + derived QEF
-// payload), the per-slot node/root/payload buffers and the fullscreen raymarch
+// payload + Phase 0 counters), the per-slot node/root/payload/counter buffers
+// and the fullscreen raymarch
 // pipeline. The
 // table covers EVERY terrain layer (Solid + Water): the shader marches all
 // layer roots and keeps the nearest hit, so solid and water surfaces occlude
@@ -54,11 +56,11 @@ public:
     static constexpr size_t ROOT_CAP = 256;
 
     struct PushConstants {
-        glm::vec4 viewport;      // xy = solid target extent, zw unused
-        uint32_t rootCount = 0;  // roots uploaded for this frame slot
-        uint32_t pad0 = 0;
-        uint32_t pad1 = 0;
-        uint32_t pad2 = 0;
+        glm::vec4 viewport;         // xy = solid target extent, zw unused
+        uint32_t rootCount = 0;     // roots uploaded for this frame slot
+        uint32_t tableVersion = 0;  // low 32 bits of the table revision
+        uint32_t nodeCount = 0;     // records uploaded for this frame slot
+        uint32_t flags = 0;         // bit0: profile counters enabled
     };
     static_assert(sizeof(PushConstants) == 32,
                   "OctreeRaymarchRenderer::PushConstants must match OctreeRaymarchPush");
@@ -86,6 +88,17 @@ public:
     // created) and holds at least one layer root. When false the caller keeps
     // the raster path and its depth prepass.
     bool hasTable(uint32_t frameIndex) const;
+
+    // Phase 0 instrumentation. The profile shader variants (OCTREE_PROFILE)
+    // are only built when the device supports fragment stores/atomics; the
+    // production variants never execute the counter atomics. readProfile()
+    // snapshots the slot's last completed use after its fence.
+    void setProfileCountersEnabled(bool enabled) {
+        profileCountersEnabled_.store(enabled, std::memory_order_relaxed);
+    }
+    bool profileCountersSupported() const { return profileCountersSupported_; }
+    void readProfile(uint32_t frameIndex);
+    const OctreeRaymarchCounters& profileStats() const { return profileStats_; }
 
     // Runtime RT-shading selector (mirrors SolidRenderer::setRtShadingEnabled).
     // Binds the ray-query fragment variant while reflections / local shadows
@@ -130,6 +143,10 @@ private:
     // Device-local, derived QEF position/normal per node (32 B). Written by
     // OctreeDerive.comp; read only by the hit ring. Never mapped by the host.
     std::array<Buffer, RAYMARCH_FRAMES> payloadBuffers_{};
+    // Host-visible Phase 0 counters (OctreeRaymarchCounters). Reset by
+    // recordDerive() after the slot fence, atomically incremented by the
+    // OCTREE_PROFILE fragment variant while the push-constant gate is set.
+    std::array<Buffer, RAYMARCH_FRAMES> counterBuffers_{};
     std::array<uint64_t, RAYMARCH_FRAMES> uploadedVersion_{};
     std::array<uint32_t, RAYMARCH_FRAMES> rootCounts_{};
     // Slot states for the payload derive pass: node count of the upload that
@@ -149,7 +166,22 @@ private:
     // RT fragment variant (same march; shadeSolidSurface with inline ray
     // queries). Created only when the device supports ray queries.
     VkPipeline pipelineRt_ = VK_NULL_HANDLE;
+    // Phase 0 profile variants (OCTREE_PROFILE). Same layout/march, with the
+    // gated counter atomics. Null when the device lacks fragment atomics or
+    // the profile modules are unavailable; the normal variants stay active.
+    VkPipeline pipelineProfile_ = VK_NULL_HANDLE;
+    VkPipeline pipelineProfileRt_ = VK_NULL_HANDLE;
+    bool profileCountersSupported_ = false;
+    std::atomic<bool> profileCountersEnabled_{false};
+    OctreeRaymarchCounters profileStats_{};
     bool rtShadingEnabled_ = false;
+    // True when the current RT selection has a matching profile pipeline and
+    // the caller enabled counters; used to gate both the pipeline choice and
+    // the push-constant flag.
+    bool profileVariantActive() const;
+    bool rtPipelineActive() const {
+        return rtShadingEnabled_ && pipelineRt_ != VK_NULL_HANDLE;
+    }
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     size_t maxNodes_ = 0;
 };

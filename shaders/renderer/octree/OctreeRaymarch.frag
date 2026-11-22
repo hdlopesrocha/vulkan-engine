@@ -92,12 +92,20 @@ layout(set = 0, binding = 20) uniform sampler2D ssrDepthTex;
 // Set=2: octree node table (bindings declared in RaymarchTable.glsl).
 
 layout(push_constant) uniform OctreeRaymarchPush {
-    vec4 viewport;  // xy = solid pass target extent in pixels
-    uint rootCount; // number of layer roots in the set-2 root buffer
-    uint pad0;
-    uint pad1;
-    uint pad2;
+    vec4 viewport;     // xy = solid pass target extent in pixels
+    uint rootCount;    // number of layer roots in the set-2 root buffer
+    uint tableVersion; // low 32 bits of the table revision (future caches)
+    uint nodeCount;    // records uploaded for this frame slot
+    uint flags;        // bit0: profile counters enabled
 } pc;
+
+#ifdef OCTREE_PROFILE
+void rmCount(int idx) {
+    if ((pc.flags & 1u) != 0u) atomicAdd(rmCounters[idx], 1u);
+}
+#else
+void rmCount(int idx) { }
+#endif
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
@@ -172,6 +180,7 @@ int rmResolveMaterialAt(uint id, vec3 qefPos) {
     int raw = rmNodes[id].meta.z;
     if (raw != LAND_BRUSH_INDEX && raw != NORMAL_BRUSH) return raw;
 
+    rmCount(RM_COUNTER_MATERIAL_CLASSIFY);
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
     vec3 mn = rmNodeMin(id);
@@ -188,7 +197,11 @@ bool rmQefCached(uint id) {
 // OctreeDerive.comp computed it once per revision; the fragment only solves it
 // when the payload is unavailable (derive module missing / allocation failure).
 vec3 rmCellQef(uint id) {
-    if (rmQefCached(id)) return rmPayload[id].qef.xyz;
+    if (rmQefCached(id)) {
+        rmCount(RM_COUNTER_QEF_PAYLOAD);
+        return rmPayload[id].qef.xyz;
+    }
+    rmCount(RM_COUNTER_QEF_SOLVES);
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
     return sdfCellPosition(sdf, rmNodeMin(id), rmNodeSize(id));
@@ -221,6 +234,7 @@ int rmRingMaterial(uint id, vec3 qp) {
 }
 
 vec3 rmNodeNormal(uint id, vec3 p) {
+    rmCount(RM_COUNTER_GRADIENT_EVALS);
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = rmNodeSdf(id, i);
     return sdfCellNormal(sdf, rmNodeMin(id), rmNodeSize(id), p);
@@ -313,6 +327,7 @@ float rmRefineHit(uint node, vec3 ro, vec3 rd, int material,
         if (abs(den) < 1e-12) break;
         float tn = clamp(t1 - f1 * (t1 - t0) / den, min(t0, t1), max(t0, t1));
         tn = clamp(tn, t - eps, t + eps);   // never move off the hit band
+        rmCount(RM_COUNTER_BISECT_EVALS);
         float bBase, bMax;
         float fn = rmField(node, ro + rd * tn, material, bBase, bMax);
         if (isnan(fn)) break;
@@ -354,6 +369,13 @@ float rmTessLevel(uint id, int material, vec3 p) {
 
 const uint RM_INVALID_NODE = 0xFFFFFFFFu;
 
+// Phase 1: the nearest accepted hit's ancestor chain. rmMarchRoot copies its
+// local stack here on acceptance, so the hit path can start its node queries
+// from a containing ancestor instead of re-descending from the layer root.
+// Invocation-local, like the material cache below.
+uint rmHitStackNode[RM_MAX_STACK];
+int rmHitStackDepth = 0;
+
 struct RmSurfaceBlend {
     ivec3 indices; // up to three unique material indices (unused = index 0)
     ivec3 types;   // parallel per-vertex texture types
@@ -370,14 +392,8 @@ struct RmSurfaceBlend {
 // ended because the point lies in a Solid/Empty/absent child, in which case the
 // caller must not treat the parent as a surface ring vertex (findCellAt would
 // have returned that non-surface cell and isSurfaceCell would have rejected it).
-uint rmFindNodeAt(uint root, vec3 pos, out bool nonSurfaceStop) {
+uint rmDescendFrom(uint idx, vec3 pos, out bool nonSurfaceStop) {
     nonSurfaceStop = false;
-    vec3 rootMin = rmNodeMin(root);
-    float rootSize = rmNodeSize(root);
-    if (any(lessThan(pos, rootMin)) || any(greaterThan(pos, rootMin + vec3(rootSize)))) {
-        return RM_INVALID_NODE;
-    }
-    uint idx = root;
     for (int i = 0; i < RM_MAX_STACK; ++i) {
         if (rmNodeIsLeaf(idx)) break;
         vec3 mn = rmNodeMin(idx);
@@ -397,6 +413,50 @@ uint rmFindNodeAt(uint root, vec3 pos, out bool nonSurfaceStop) {
         idx = uint(child);
     }
     return idx;
+}
+
+bool rmNodeContains(uint id, vec3 pos) {
+    vec3 mn = rmNodeMin(id);
+    return all(greaterThanEqual(pos, mn)) &&
+           all(lessThanEqual(pos, mn + vec3(rmNodeSize(id))));
+}
+
+// Half-open membership matches the >= child-slot rule: a point on a shared
+// face belongs to the positive child. Used when deciding whether a stacked
+// ancestor is a safe starting point, so an exact boundary point cannot start
+// in the sibling the root descent would not choose.
+bool rmNodeContainsInterior(uint id, vec3 pos) {
+    vec3 mn = rmNodeMin(id);
+    return all(greaterThanEqual(pos, mn)) &&
+           all(lessThan(pos, mn + vec3(rmNodeSize(id))));
+}
+
+uint rmFindNodeAtImpl(uint root, vec3 pos, out bool nonSurfaceStop) {
+    nonSurfaceStop = false;
+    if (!rmNodeContains(root, pos)) return RM_INVALID_NODE;
+    return rmDescendFrom(root, pos, nonSurfaceStop);
+}
+
+uint rmFindNodeAt(uint root, vec3 pos, out bool nonSurfaceStop) {
+    rmCount(RM_COUNTER_RING_DESCENTS);
+    return rmFindNodeAtImpl(root, pos, nonSurfaceStop);
+}
+
+// Phase 1 ancestor-start descent. The nearest accepted hit's node and its
+// copied ancestor chain are safe starting points when they contain `pos`: the
+// child choices below a containing node depend only on `pos`, so skipping the
+// ancestors cannot change the result. Fall back to the layer root otherwise.
+uint rmFindNodeFromStack(uint root, uint hitNode, vec3 pos, out bool nonSurfaceStop) {
+    if (hitNode != RM_INVALID_NODE && rmNodeContainsInterior(hitNode, pos))
+        return rmDescendFrom(hitNode, pos, nonSurfaceStop);
+    for (int d = rmHitStackDepth - 1; d >= 0; --d) {
+        uint n = rmHitStackNode[d];
+        if (rmNodeContainsInterior(n, pos)) return rmDescendFrom(n, pos, nonSurfaceStop);
+    }
+    // Only a fallback that restarts at the layer root is a "ring descent" in
+    // the counter sense; ancestor starts are the saving Phase 1 measures.
+    rmCount(RM_COUNTER_RING_DESCENTS);
+    return rmFindNodeAtImpl(root, pos, nonSurfaceStop);
 }
 
 // EdgeCell::isSurface() + nodeTopologyAllowed() from OctreeTriangles.comp: a
@@ -555,6 +615,7 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
     int ringCount = 0;
     float dedupEps = max(sz * 1e-4, 1e-6);
     for (int q = 0; q < 4; ++q) {
+        rmCount(RM_COUNTER_RING_CELLS);
         int su, sv;
         rmQuadrantSigns(bestAxis, q, su, sv);
         vec3 sp = vec3(0.0);
@@ -563,13 +624,14 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
         sp[bestV] = bestFixedV + (sv < 0 ? -offset : offset);
 
         bool nonSurfaceStop;
-        uint id = rmFindNodeAt(root, sp, nonSurfaceStop);
+        uint id = rmFindNodeFromStack(root, hitId, sp, nonSurfaceStop);
         if (nonSurfaceStop || id == RM_INVALID_NODE || !rmBlendCellValid(id)) continue;
         vec3 qp = rmCellQef(id);
         bool duplicate = false;
         for (int k = 0; k < ringCount; ++k) {
             vec3 dq = qp - ringBase[k];
             if (ringId[k] == id || dot(dq, dq) <= dedupEps * dedupEps) {
+                rmCount(RM_COUNTER_RING_DUPLICATES);
                 duplicate = true;
                 break;
             }
@@ -798,23 +860,41 @@ float rmCellDepth(uint rootNode, uint node) {
 //          horizontal faces with either sign of n.y; reject the near-vertical
 //          volume sides, which are the NormalBrush discards that used to
 //          appear as water walls.
-bool rmHitAllowed(uint node, vec3 p, vec3 rd, int material, bool waterRoot) {
-    if (waterRoot) return abs(normalize(rmNodeNormal(node, p)).y) > 1.0e-3;
+bool rmHitAllowed(uint node, vec3 p, vec3 rd, int material, bool waterRoot,
+                  out vec3 normal) {
+    // rmNodeNormal is already normalized; keep that single-normalization value
+    // for the consumers that previously used it directly (displacement base
+    // step and ring fallback). The visibility tests retain the historical
+    // extra normalize so their last-bit behavior is unchanged.
+    normal = rmNodeNormal(node, p);
+    if (waterRoot) return abs(normalize(normal).y) > 1.0e-3;
     if (material == RAYMARCH_DISCARD_BRUSH) return false;
-    return dot(normalize(rmNodeNormal(node, p)), rd) < 0.0;
+    return dot(normalize(normal), rd) < 0.0;
 }
 
-bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
+bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
+                 float tMax, bool haveRootInterval, float rootT0, float rootT1,
                  out uint hitNode, out float hitT, out int hitBrush,
-                 bool waterRoot) {
-    // Hoist the three direction reciprocals: every non-leaf iteration tests a
-    // child box, and rmInvComp is a division.
-    vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
+                 out vec3 hitNormal, bool waterRoot) {
+    hitNormal = vec3(0.0);
     float t0, t1;
-    if (!rmRayBoxInv(rmNodeMin(root), rmNodeSize(root), ro, invRd, t0, t1)) return false;
+    if (haveRootInterval) {
+        // The caller already tested the root cube with the same invRd (the
+        // tessellation-displacement rejection box is the root cube).
+        t0 = rootT0;
+        t1 = rootT1;
+    } else if (!rmRayBoxInv(rmNodeMin(root), rmNodeSize(root), ro, invRd, t0, t1)) {
+        rmCount(RM_COUNTER_EARLY_ROOTS);
+        return false;
+    }
     t1 = min(t1, tMax);
     float t = max(t0, 0.0);
-    if (t >= t1) return false;
+    if (t >= t1) {
+        rmCount(RM_COUNTER_EARLY_ROOTS);
+        return false;
+    }
+    rmCount(RM_COUNTER_ROOT_MARCHES);
+    rmCount(RM_COUNTER_NODE_VISITS);
 
     uint stackNode[RM_MAX_STACK];
     float stackExit[RM_MAX_STACK];
@@ -856,6 +936,8 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
 
         vec3 p = ro + rd * t;
         float nodeSize = rmNodeSize(node);
+        if (rmNodeIsLeaf(node)) rmCount(RM_COUNTER_LEAF_ITERS);
+        else rmCount(RM_COUNTER_NONLEAF_ITERS);
 
         // The step below must never jump over the child cell that contains p:
         // stored Surface children are only noticed when the sample lands inside
@@ -906,6 +988,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
                     ++depth;
                     node = uint(child);
                     nodeExit = cellExit;
+                    rmCount(RM_COUNTER_NODE_VISITS);
                     continue; // p is already inside the child: keep t
                 }
             } else if (!rmNodeChildPruned(node, slot) &&
@@ -942,10 +1025,12 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
         float d;
         if (node == cachedNode && t == cachedT) {
             // Exact reuse: same node, same parameter, same expression.
+            rmCount(RM_COUNTER_CARRY_HITS);
             d = cachedD;
             baseD = cachedBase;
             maxDisp = cachedMaxDisp;
         } else {
+            rmCount(RM_COUNTER_FIELD_EVALS);
             d = rmField(node, p, material, baseD, maxDisp);
         }
         if (isnan(d)) d = 1.0; // defensive: never let a bad sample freeze the march
@@ -962,12 +1047,20 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
             // Raster-parity visibility: solid back faces and DISCARD_BRUSH_INDEX
             // cells are not shaded; water accepts only the +Y surface (top
             // plane, from either side), not the volume sides/bottom.
-            if (rmHitAllowed(node, ro + rd * tHit, rd, material, waterRoot)) {
+            vec3 candidateNormal;
+            if (rmHitAllowed(node, ro + rd * tHit, rd, material, waterRoot,
+                             candidateNormal)) {
                 hitNode = node;
                 hitT = tHit;
                 hitBrush = material;
+                hitNormal = candidateNormal;
+                // Preserve this hit's ancestor chain for the hit path; later
+                // root marches only overwrite it when they find a nearer hit.
+                rmHitStackDepth = depth;
+                for (int i = 0; i < depth; ++i) rmHitStackNode[i] = stackNode[i];
                 return true;
             }
+            rmCount(RM_COUNTER_DISCARD_SKIPS);
             t += eps;
             prevNode = 0xFFFFFFFFu;
             continue;
@@ -1005,6 +1098,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
         float tNext = min(t + stepLen, cellExit);
         float dNextBase;
         float dNextMax;
+        rmCount(RM_COUNTER_FIELD_EVALS);
         float dNext = rmField(node, ro + rd * tNext, material, dNextBase, dNextMax);
         if (isnan(dNext)) {
             // Cache only finite values: the displacement branch consumes
@@ -1020,6 +1114,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
             float hi = tNext;
             for (int b = 0; b < RM_BISECT_STEPS; ++b) {
                 float mid = 0.5 * (lo + hi);
+                rmCount(RM_COUNTER_BISECT_EVALS);
                 float bBase;
                 float bMax;
                 float dm = rmField(node, ro + rd * mid, material, bBase, bMax);
@@ -1027,12 +1122,18 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, float tMax,
                 if (dm > 0.0) lo = mid; else hi = mid;
             }
             float tHit = 0.5 * (lo + hi);
-            if (rmHitAllowed(node, ro + rd * tHit, rd, material, waterRoot)) {
+            vec3 candidateNormal;
+            if (rmHitAllowed(node, ro + rd * tHit, rd, material, waterRoot,
+                             candidateNormal)) {
                 hitNode = node;
                 hitT = tHit;
                 hitBrush = material;
+                hitNormal = candidateNormal;
+                rmHitStackDepth = depth;
+                for (int i = 0; i < depth; ++i) rmHitStackNode[i] = stackNode[i];
                 return true;
             }
+            rmCount(RM_COUNTER_DISCARD_SKIPS);
             t = tHit + eps;
             prevNode = 0xFFFFFFFFu;
             continue;
@@ -1064,7 +1165,7 @@ struct RmHitShading {
 };
 
 RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
-                                 vec3 hitPos, vec3 rd) {
+                                 vec3 hitPos, vec3 rd, vec3 acceptedNormal) {
     RmHitShading h;
     // Tessellation parity: the raster TES samples the height maps at the
     // UNDISPLACED vertex and moves it along the smooth cell normal. Recover
@@ -1073,14 +1174,15 @@ RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
     // Two fixed-point steps; the offset is small relative to the height-map
     // feature scale, so this converges to the raster's undisplaced vertex.
     // With tessellation off (the default) no displacement exists, so the
-    // hit-point gradient is not computed at all; the ring's stored normal is
-    // used for shading. With displacement active, the same normal feeds both
-    // the base-point step and the height-map sample instead of being solved
-    // twice.
-    vec3 sdfNormal = vec3(0.0);
+    // hit-point gradient is not solved again: rmHitAllowed already computed
+    // the accepted normal at this exact point. With displacement active, that
+    // same normal feeds the base-point step and the height-map sample instead
+    // of being solved twice. A zero acceptedNormal is only a safety fallback
+    // for callers that predate the return value.
+    vec3 sdfNormal = acceptedNormal;
+    if (dot(sdfNormal, sdfNormal) <= 1e-12) sdfNormal = rmNodeNormal(node, hitPos);
     float hitDisplacement = 0.0;
     if (rmDisplacementActive(material)) {
-        sdfNormal = rmNodeNormal(node, hitPos);
         hitDisplacement = rmDisplacement(node, material, hitPos, sdfNormal);
     }
     h.basePos = hitPos;
@@ -1096,7 +1198,7 @@ RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
     // The raster material blend belongs to the base (undisplaced) cell: use
     // that cell when it is in the table, otherwise the bumped hit's own cell.
     bool baseCellNonSurface;
-    uint blendCell = rmFindNodeAt(rootNode, h.basePos, baseCellNonSurface);
+    uint blendCell = rmFindNodeFromStack(rootNode, node, h.basePos, baseCellNonSurface);
     if (blendCell == RM_INVALID_NODE || baseCellNonSurface) blendCell = node;
     h.blend = rmBlendAtHit(rootNode, blendCell, h.basePos, hitPos);
 
@@ -1146,13 +1248,15 @@ void rmWriteFragGlobals(vec3 hitPos, RmHitShading h) {
 struct RmRootInterval {
     uint root;
     float t0;
+    float t1;
 };
 
 // Stable insertion into the ascending-t0 list: roots with the same entry keep
 // their table order, so exact ties select the same root as the old unsorted
-// loop.
+// loop. t1 is retained so the march can reuse the caller's root-cube slab
+// result when the rejection box is the root cube (tessellation active).
 void rmInsertRootInterval(inout RmRootInterval iv[RM_MAX_ROOTS],
-                          inout int count, uint root, float t0) {
+                          inout int count, uint root, float t0, float t1) {
     int j = count;
     while (j > 0 && iv[j - 1].t0 > t0) {
         iv[j] = iv[j - 1];
@@ -1160,6 +1264,7 @@ void rmInsertRootInterval(inout RmRootInterval iv[RM_MAX_ROOTS],
     }
     iv[j].root = root;
     iv[j].t0 = t0;
+    iv[j].t1 = t1;
     ++count;
 }
 
@@ -1182,11 +1287,13 @@ void rmRootTestBox(uint root, out vec3 mn, out vec3 mx) {
 // it to reach the lake bed behind the water surface (the primary march stops
 // at the water layer).
 bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
-                       out float hitT, out int hitBrush) {
+                       out float hitT, out int hitBrush, out vec3 hitNormal) {
+    rmCount(RM_COUNTER_WATER_SECONDARY);
     hitT = 1.0e30;
     hitRoot = 0u;
     hitNode = 0u;
     hitBrush = RAYMARCH_DISCARD_BRUSH;
+    hitNormal = vec3(0.0);
     bool found = false;
     // Hoist the reciprocals once: every root AABB test below reuses them.
     vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
@@ -1199,24 +1306,34 @@ bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
         vec3 testMin, testMax;
         rmRootTestBox(i, testMin, testMax);
         float t0, t1;
-        if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) continue;
-        rmInsertRootInterval(iv, ivCount, i, t0);
+        rmCount(RM_COUNTER_ROOT_TESTS);
+        if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) {
+            rmCount(RM_COUNTER_EARLY_ROOTS);
+            continue;
+        }
+        rmInsertRootInterval(iv, ivCount, i, t0, t1);
     }
 
     // Front to back: the first root whose entry is at or behind the nearest
     // hit cannot contribute, and every march stops at that hit.
     for (int k = 0; k < ivCount; ++k) {
-        if (iv[k].t0 >= hitT) break;
+        if (iv[k].t0 >= hitT) {
+            rmCount(RM_COUNTER_EARLY_ROOTS);
+            break;
+        }
         const uint i = iv[k].root;
         uint node;
         float t;
         int brush;
-        if (rmMarchRoot(rmRoots[i].node, ro, rd, hitT, node, t, brush, false) &&
-            t < hitT) {
+        vec3 normal;
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, hitT,
+                        ubo.tessellationEnabled != 0u, iv[k].t0, iv[k].t1,
+                        node, t, brush, normal, false) && t < hitT) {
             hitT = t;
             hitNode = node;
             hitRoot = i;
             hitBrush = brush;
+            hitNormal = normal;
             found = true;
         }
     }
@@ -1228,16 +1345,23 @@ bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
         vec3 testMin, testMax;
         rmRootTestBox(i, testMin, testMax);
         float t0, t1;
-        if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) continue;
+        rmCount(RM_COUNTER_ROOT_TESTS);
+        if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) {
+            rmCount(RM_COUNTER_EARLY_ROOTS);
+            continue;
+        }
         uint node;
         float t;
         int brush;
-        if (rmMarchRoot(rmRoots[i].node, ro, rd, hitT, node, t, brush, false) &&
-            t < hitT) {
+        vec3 normal;
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, hitT,
+                        ubo.tessellationEnabled != 0u, t0, t1,
+                        node, t, brush, normal, false) && t < hitT) {
             hitT = t;
             hitNode = node;
             hitRoot = i;
             hitBrush = brush;
+            hitNormal = normal;
             found = true;
         }
     }
@@ -1313,9 +1437,10 @@ RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N, float detail,
 // Shade one raymarched solid hit: reconstruct the material payload, fill the
 // shared fragment globals and run the raster solid shading body. Returns the
 // shaded color (outColor is the target shadeSolidSurface writes).
-vec3 rmShadeSolidHit(uint root, uint node, int brush, vec3 pos, vec3 rd) {
+vec3 rmShadeSolidHit(uint root, uint node, int brush, vec3 pos, vec3 rd,
+                     vec3 acceptedNormal) {
     RmHitShading h = rmResolveHitShading(rmRoots[root].node, node,
-                                         max(brush, 0), pos, rd);
+                                         max(brush, 0), pos, rd, acceptedNormal);
     rmWriteFragGlobals(pos, h);
     shadeSolidSurface(vec3(0.0));
     return outColor.rgb;
@@ -1378,13 +1503,16 @@ vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
     uint bedRoot, bedNode;
     float bedT;
     int bedBrush;
-    if (rmMarchSolidRoots(refrOrigin, refrDir, bedRoot, bedNode, bedT, bedBrush)) {
+    vec3 bedNormal;
+    if (rmMarchSolidRoots(refrOrigin, refrDir, bedRoot, bedNode, bedT, bedBrush,
+                          bedNormal)) {
         thickness = min(bedT, max(wp.maxThickness, 0.0));
         vec3 bedPos = refrOrigin + refrDir * bedT;
         // Shade the bed with the shared solid shading body (materials,
         // triplanar mapping, displacement parity, CSM shadows). It writes
         // outColor; the water composition below replaces it.
-        vec3 bedColor = rmShadeSolidHit(bedRoot, bedNode, bedBrush, bedPos, refrDir);
+        vec3 bedColor = rmShadeSolidHit(bedRoot, bedNode, bedBrush, bedPos, refrDir,
+                                        bedNormal);
         // Beer-Lambert absorption over the water column, then the same tint
         // ramp the raster surface uses (shore fade + transparency cap).
         vec3 transmittance = exp(-min(
@@ -1417,10 +1545,13 @@ vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
         uint rRoot, rNode;
         float rT;
         int rBrush;
+        vec3 reflNormal;
         vec3 reflOrigin = shadePos + Nw * 0.05;
-        if (rmMarchSolidRoots(reflOrigin, reflDir, rRoot, rNode, rT, rBrush)) {
+        if (rmMarchSolidRoots(reflOrigin, reflDir, rRoot, rNode, rT, rBrush,
+                              reflNormal)) {
             vec3 rPos = reflOrigin + reflDir * rT;
-            reflCol = rmShadeSolidHit(rRoot, rNode, rBrush, rPos, reflDir);
+            reflCol = rmShadeSolidHit(rRoot, rNode, rBrush, rPos, reflDir,
+                                      reflNormal);
         } else {
             reflCol = rtProceduralSky(reflDir, sky.horizonColor,
                                       sky.zenithColor, sky.exponent);
@@ -1445,6 +1576,8 @@ vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
 }
 
 void main() {
+    rmCount(RM_COUNTER_RAYS);
+    rmHitStackDepth = 0;
     vec2 extent = max(pc.viewport.xy, vec2(1.0));
     vec2 ndc = gl_FragCoord.xy / extent * 2.0 - 1.0;
 
@@ -1464,6 +1597,7 @@ void main() {
     uint nearestNode = 0u;
     uint nearestRoot = 0u;
     int nearestBrush = RAYMARCH_DISCARD_BRUSH;
+    vec3 nearestNormal = vec3(0.0);
     bool found = false;
     vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
 
@@ -1474,22 +1608,33 @@ void main() {
         vec3 testMin, testMax;
         rmRootTestBox(i, testMin, testMax);
         float t0, t1;
-        if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) continue;
-        rmInsertRootInterval(iv, ivCount, i, t0);
+        rmCount(RM_COUNTER_ROOT_TESTS);
+        if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) {
+            rmCount(RM_COUNTER_EARLY_ROOTS);
+            continue;
+        }
+        rmInsertRootInterval(iv, ivCount, i, t0, t1);
     }
 
     for (int k = 0; k < ivCount; ++k) {
-        if (iv[k].t0 >= nearestT) break;
+        if (iv[k].t0 >= nearestT) {
+            rmCount(RM_COUNTER_EARLY_ROOTS);
+            break;
+        }
         const uint i = iv[k].root;
         uint node;
         float t;
         int brush;
-        if (rmMarchRoot(rmRoots[i].node, ro, rd, nearestT, node, t, brush,
-                        rmRoots[i].kind == 1u) && t < nearestT) {
+        vec3 normal;
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, nearestT,
+                        ubo.tessellationEnabled != 0u, iv[k].t0, iv[k].t1,
+                        node, t, brush, normal, rmRoots[i].kind == 1u) &&
+            t < nearestT) {
             nearestT = t;
             nearestNode = node;
             nearestRoot = i;
             nearestBrush = brush;
+            nearestNormal = normal;
             found = true;
         }
     }
@@ -1500,20 +1645,29 @@ void main() {
         vec3 testMin, testMax;
         rmRootTestBox(i, testMin, testMax);
         float t0, t1;
-        if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) continue;
+        rmCount(RM_COUNTER_ROOT_TESTS);
+        if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) {
+            rmCount(RM_COUNTER_EARLY_ROOTS);
+            continue;
+        }
         uint node;
         float t;
         int brush;
-        if (rmMarchRoot(rmRoots[i].node, ro, rd, nearestT, node, t, brush,
-                        rmRoots[i].kind == 1u) && t < nearestT) {
+        vec3 normal;
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, nearestT,
+                        ubo.tessellationEnabled != 0u, t0, t1,
+                        node, t, brush, normal, rmRoots[i].kind == 1u) &&
+            t < nearestT) {
             nearestT = t;
             nearestNode = node;
             nearestRoot = i;
             nearestBrush = brush;
+            nearestNormal = normal;
             found = true;
         }
     }
     if (!found) discard;
+    rmCount(RM_COUNTER_HITS);
     const bool isWater = rmRoots[nearestRoot].kind == 1u;
     // rmHitAllowed() already rejected solid DISCARD_BRUSH_INDEX cells and
     // non-upward water faces. Keep the solid guard as a defensive backstop;
@@ -1530,7 +1684,10 @@ void main() {
     // reflection/refraction directions stable pixel-to-pixel.
     vec3 normal;
     if (isWater) {
-        vec3 sdfNormal = normalize(rmNodeNormal(nearestNode, hitPos));
+        // Reuse the normal rmHitAllowed already solved at this exact hit.
+        vec3 sdfNormal = (dot(nearestNormal, nearestNormal) > 1e-12)
+            ? normalize(nearestNormal)
+            : normalize(rmNodeNormal(nearestNode, hitPos));
         if (dot(sdfNormal, rd) > 0.0) sdfNormal = -sdfNormal;
 
         // The analytic gradient above is the TRILINEAR cell gradient, so it
@@ -1545,7 +1702,8 @@ void main() {
         if (abs(sdfNormal.y) < 0.999) {
             uint rootNode = rmRoots[nearestRoot].node;
             bool nonSurfaceStop;
-            uint blendCell = rmFindNodeAt(rootNode, hitPos, nonSurfaceStop);
+            uint blendCell = rmFindNodeFromStack(rootNode, nearestNode, hitPos,
+                                                 nonSurfaceStop);
             if (blendCell == RM_INVALID_NODE || nonSurfaceStop) blendCell = nearestNode;
             // Displacement/material payload is irrelevant here; only the
             // interpolated normal is consumed.
@@ -1563,7 +1721,7 @@ void main() {
         int material = max(nearestBrush, 0);
         uint rootNode = rmRoots[nearestRoot].node;
         RmHitShading hit = rmResolveHitShading(rootNode, nearestNode, material,
-                                               hitPos, rd);
+                                               hitPos, rd, nearestNormal);
         normal = hit.normal;
         rmWriteFragGlobals(hitPos, hit);
     }
