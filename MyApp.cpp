@@ -2658,6 +2658,16 @@ public:
                         sceneRenderer->solidRenderer->getRenderHeight());
                 }
             }
+            // Water is raymarched into the solid color/depth; there is no
+            // raster water-depth image to bind. Point binding 9 at the 1x1
+            // water dummy and keep it disabled. Leaving the SdfRenderer's
+            // self-depth placeholder there makes the same image both the
+            // depth attachment and a sampled binding (VUID 00344).
+            if (sceneRenderer->waterRenderer) {
+                sceneRenderer->sdfRenderer->setWaterDepth(
+                    sceneRenderer->waterRenderer->getDummyWaterColorView(),
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false);
+            }
             sceneRenderer->sdfRenderer->setFrame(frameIdx);
             // SDF march counters (profiling UI): re-applied per frame so a
             // renderer rebuild cannot leave a stale gate.
