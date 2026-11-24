@@ -4603,8 +4603,11 @@ void MyApp::generateVegetationFromRaymarchTable() {
 
     constexpr float kBucketSize = 512.0f;
     constexpr size_t kMaxSamples = 4'000'000;
-    constexpr float kDensity = 0.01f; // grass::kDensity
-    constexpr uint32_t kMaxPerPatch = 512;
+    // Same placement rule as grass::kDensity (area-weighted slots), scaled up
+    // for a denser field: the original 1-per-100-area-unit rate.
+    constexpr float kDensity = 0.04f;
+    constexpr uint32_t kMaxPerPatch = 2048;
+    const uint64_t grassMask = sceneGrassBrushMask();
 
     struct Bucket {
         std::vector<glm::vec3> positions;
@@ -4652,8 +4655,11 @@ void MyApp::generateVegetationFromRaymarchTable() {
             n *= 1.0f / std::sqrt(n2);
 
             const int material = landbrush::resolveVertexMaterial(rec.meta.z, p, n);
-            if (material < 0) continue;
-            if (n.y < 0.50f) continue; // cliffs stay bare
+            // Original creation rule: only blade-bearing grass-biome materials
+            // seed tufts (sceneGrassBrushMask). Rock/snow/painted surfaces stay
+            // bare instead of being covered uniformly.
+            if (!grass::isGrassMaterial(grassMask, material)) continue;
+            if (n.y < 0.35f) continue; // cliffs stay bare
             ++grassPatches;
 
             // One sample per ~kDensity of the patch footprint, capped so a
@@ -4702,12 +4708,10 @@ void MyApp::generateVegetationFromRaymarchTable() {
                 Bucket& bucket = buckets[nid];
                 bucket.positions.emplace_back(x, y, z);
                 bucket.normals.push_back(n);
-                // Grass placement rejects samples whose dominant vertex is not
-                // a blade-bearing material. The surface itself can be any
-                // terrain material here, so tag the sample with the primary
-                // grass layer; the biome noise (not the terrain texture)
-                // selects the tuft variant.
-                bucket.brushes.push_back(3);
+                // Keep the resolved terrain material: the shared placement
+                // logic applies the same dominant-vertex grass test as the
+                // raster/export paths.
+                bucket.brushes.push_back(material);
                 ++totalSamples;
             }
         }
