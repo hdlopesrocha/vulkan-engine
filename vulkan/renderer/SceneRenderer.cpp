@@ -10,6 +10,9 @@
 #include <stdexcept>
 #include "../../utils/LocalScene.hpp"
 #include "../../services/OctreeTopologyCompute.hpp"
+#include "../../space/OctreeTriangleTessellator.hpp"
+#include "../../space/Tesselator.hpp"
+#include "../../sdf/core/SDF.hpp"
 #include "../includes/shader/locations.hpp"
 #include "../includes/debug/DebugModes.hpp"
 #include "../../math/geometry/ContainmentType.hpp"
@@ -18,6 +21,7 @@
 #include <array>
 #include <bit>
 #include <cassert>
+#include <cstring>
 #include <chrono>
 #include <thread>
 #include <cmath>
@@ -731,11 +735,9 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (sdfRenderer) sdfRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    // Hybrid RT: no cubemap targets — init the proxy BLAS/TLAS + water RT
-    // pipeline instead. Unsupported devices get a null-safe stub (raster +
-    // CSM fallback). Must run before the set-0 RT bindings below are written.
-    rayTracing = std::make_unique<RayTracingResources>();
-    rayTracing->init(app, app->getWidth(), app->getHeight());
+    // Hardware RT is retired: there are no rasterized scene triangles to
+    // accelerate or trace. Every surface is SDF-raymarched, so no BLAS/TLAS,
+    // RT pipeline, proxy packer or RT descriptor is created.
 
     // Bind water params SSBO to binding 7 of main descriptor set.
     VkDescriptorBufferInfo& waterParamsInfo = writesBuf.emplace_back(waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
@@ -1879,6 +1881,19 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // LayerRendererType), ChunkManager tracking and deferred-slot source.
     [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch);
 
+    // Terrain has no GPU mesh, so vegetation placement is fed from the
+    // disposable CPU surfaces queued by processNodeLayer(). This runs on the
+    // main thread (generateForChunk allocates its per-chunk instance buffer).
+    if (vegetationRenderer && app) {
+        std::deque<PendingVegetationGeometry> vegQueue;
+        {
+            std::lock_guard<std::mutex> lock(pendingVegMutex);
+            vegQueue.swap(pendingVegQueue);
+        }
+        for (auto& pending : vegQueue)
+            vegetationRenderer->generateForChunk(app, pending.nid, pending.geometry);
+    }
+
     // Main stream: age out pending-delete entries that have been waiting longer
     // than MAX_FRAMES_IN_FLIGHT. The octree node is reused with
     // the same NodeID, so a matching entry is normally consumed within 1 frame.
@@ -2333,6 +2348,34 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer::Id layer, NodeID nid, 
                          "local terrain layers\n";
         }
         collectDebugForChunk(scene, layer, nid, nodeData, poolOverride);
+
+        // Vegetation placement still needs a surface. Extract it on the
+        // worker into a disposable CPU geometry and queue it for the main
+        // thread; the terrain never gets a VBO/IBO and the geometry is thrown
+        // away after placement. Only frontier chunks seed grass (ancestor
+        // rungs would duplicate the same blades).
+        if (earlyLayer->renderer() == LayerRendererType::Solid &&
+            vegetationRenderer && nodeData.node &&
+            nodeData.node->getChunkLod() == 1) {
+            if (auto tree = earlyLayer->octreeRef()) {
+                long emitted = 0;
+                Tesselator tess(&emitted);
+                auto vertexFn = [](OctreeNode* node, const BoundingCube& cube) {
+                    CellVertex v;
+                    float sdf[8];
+                    std::memcpy(sdf, node->sdf, sizeof(sdf));
+                    v.position = SDF::getPosition(sdf, cube);
+                    v.normal = SDF::getNormalFromPosition(sdf, cube, v.position);
+                    return v;
+                };
+                OctreeTriangleTessellator(*tree).iterateTriangles(
+                    nodeData.node, nodeData.cube, tess, 1, vertexFn);
+                if (!tess.geometry.indices.empty()) {
+                    std::lock_guard<std::mutex> lock(pendingVegMutex);
+                    pendingVegQueue.push_back({nid, std::move(tess.geometry)});
+                }
+            }
+        }
         return;
     }
 
@@ -2978,10 +3021,6 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
                                   || settings.rtRefractions || settings.rtLocalShadows
                                   || settings.rtWaterDepth;
     rayTracing->setRuntimeEnabled(rtRuntimeEnabled);
-    // Octree raymarch solid path: same selector so both solid paths shade with
-    // the same RT variant (and fall back to the procedural sky with RT off).
-    if (octreeRaymarchRenderer)
-        octreeRaymarchRenderer->setRtShadingEnabled(settings.rtReflections || settings.rtLocalShadows);
     // No ray path enabled: the bound fragment variants compile the RT block
     // out, so nothing samples the params UBO. Skip building RayTracingParams
     // and the per-frame memcpy into the mapped slot (H5).

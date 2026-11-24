@@ -83,12 +83,6 @@ public:
     // An actual upload marks the slot for recordDerive().
     void upload(uint32_t frameIndex, const OctreeRaymarchTable& table);
 
-    // Runtime RT-shading selector. Binds the ray-query fragment variant while
-    // reflections / local shadows are enabled; otherwise the cheap non-RT
-    // variant (procedural-sky fallback) is used. No-op when the device lacks
-    // ray queries (the RT pipeline was never created).
-    void setRtShadingEnabled(bool enabled) { rtShadingEnabled_ = enabled; }
-
     // Publish the shared revision's host-side table/root upload and, when the
     // revision has not been derived yet, run the once-per-revision payload
     // derive pass (OctreeDerive.comp) before the march. MUST be recorded OUTSIDE any
@@ -145,13 +139,7 @@ private:
     // fragment march then keeps its QEF / fixed-0.5 fallback.
     VkPipeline derivePipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout deriveLayout_ = VK_NULL_HANDLE;
-    // RT fragment variant (same march; shadeSolidSurface with inline ray
-    // queries). Created only when the device supports ray queries.
-    VkPipeline pipelineRt_ = VK_NULL_HANDLE;
-    bool rtShadingEnabled_ = false;
-    bool rtPipelineActive() const {
-        return rtShadingEnabled_ && pipelineRt_ != VK_NULL_HANDLE;
-    }
+
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     size_t maxNodes_ = 0;
 };

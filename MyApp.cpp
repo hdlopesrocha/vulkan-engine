@@ -148,10 +148,14 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
 
         if (raymarchOnlyLayer) {
-            // Debug overlays only; the SDF raymarch never touches the chunk
-            // mesh pools. With both overlays off this is a no-op.
+            // Terrain never touches the chunk mesh pools. processNodeLayer()
+            // takes its raymarch-only branch: debug overlays plus the
+            // disposable CPU surface queued for vegetation placement.
             OctreeNodeData nodeCopy = nd;
-            renderer->collectDebugForChunk(*scene, layer, nid, nodeCopy, genPool);
+            renderer->processNodeLayer(
+                *scene, layer, nid, nodeCopy,
+                [](Layer::Id, NodeID, const LoDMesh&) {},
+                minSize, genPool);
             return;
         }
 
