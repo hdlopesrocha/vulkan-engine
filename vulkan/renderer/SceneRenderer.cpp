@@ -1861,6 +1861,20 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
 
     }
 
+    // Terrain has no GPU mesh, so vegetation placement is fed from the
+    // disposable CPU surfaces queued by processNodeLayer(). This must run
+    // before the empty-mesh-batch early-out: terrain never publishes a mesh,
+    // so `batch` is empty on exactly the frames vegetation arrives.
+    if (vegetationRenderer && app) {
+        std::deque<PendingVegetationGeometry> vegQueue;
+        {
+            std::lock_guard<std::mutex> lock(pendingVegMutex);
+            vegQueue.swap(pendingVegQueue);
+        }
+        for (auto& pending : vegQueue)
+            vegetationRenderer->generateForChunk(app, pending.nid, pending.geometry);
+    }
+
     if (batch.empty()) {
         // No new geometry yet (tessellation may still be running). Keep old
         // geometry visible — don't free anything. Still age out the main
@@ -1880,19 +1894,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // layer routes it to the right IndirectRenderer (via the Scene's
     // LayerRendererType), ChunkManager tracking and deferred-slot source.
     [[maybe_unused]] size_t chunksPublished = publishPendingMeshes(app, batch);
-
-    // Terrain has no GPU mesh, so vegetation placement is fed from the
-    // disposable CPU surfaces queued by processNodeLayer(). This runs on the
-    // main thread (generateForChunk allocates its per-chunk instance buffer).
-    if (vegetationRenderer && app) {
-        std::deque<PendingVegetationGeometry> vegQueue;
-        {
-            std::lock_guard<std::mutex> lock(pendingVegMutex);
-            vegQueue.swap(pendingVegQueue);
-        }
-        for (auto& pending : vegQueue)
-            vegetationRenderer->generateForChunk(app, pending.nid, pending.geometry);
-    }
 
     // Main stream: age out pending-delete entries that have been waiting longer
     // than MAX_FRAMES_IN_FLIGHT. The octree node is reused with

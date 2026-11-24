@@ -5583,15 +5583,11 @@ void VulkanApp::createLogicalDevice() {
     // without its feature (or vice versa); inline ray queries need
     // accelerationStructure + rayQuery, the water RT pipeline additionally
     // needs rayTracingPipeline. All disabled gracefully when unsupported.
-    // VULKAN_RT_DISABLE=1 forces the raster + CSM fallback (validation of the
-    // non-RT path, software drivers without usable RT).
-    bool rtForceDisabled = false;
-    if (const char* rtOff = std::getenv("VULKAN_RT_DISABLE")) {
-        if (rtOff[0] != '\0' && rtOff[0] != '0') {
-            rtForceDisabled = true;
-            printf("[VulkanApp] VULKAN_RT_DISABLE=1 — hybrid RT disabled (raster + CSM fallback)\n");
-        }
-    }
+    // Hardware RT is retired: the scene has no rasterized triangles to
+    // accelerate. Do not enable the acceleration-structure/ray-query/
+    // ray-tracing features at the device level. This also keeps all RT
+    // descriptor tables and shader variants out of the render path.
+    constexpr bool rtForceDisabled = true;
     VkPhysicalDeviceAccelerationStructureFeaturesKHR accelFeatQuery{};
     accelFeatQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
     // Shader clock query (per-op RT profiling) rides the same features2 chain.

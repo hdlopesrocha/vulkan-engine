@@ -1103,12 +1103,11 @@ bool VegetationRenderer::ensureVegDescriptorSet(VulkanApp* app) {
 void VegetationRenderer::init(VulkanApp* app) {
     if (!app) return;
     this->appPtr = app;
-    // GPU placement is the default; VULKAN_CPU_VEGETATION=1 forces the legacy
-    // CPU path (RADV iGPU storage-read fallback / A-B debugging).
-    if (std::getenv("VULKAN_CPU_VEGETATION")) {
-        useGpuPlacement = false;
-        std::cerr << "[VegetationRenderer] VULKAN_CPU_VEGETATION set — using CPU placement path\n";
-    }
+    // Terrain has no GPU chunk mesh any more, so vegetation is placed from the
+    // disposable CPU surfaces queued by SceneRenderer::processNodeLayer().
+    // The GPU placement path reads the solid VBO/IBO pools, which no longer
+    // contain terrain, so it is never used.
+    useGpuPlacement = false;
     VkDevice device = app->getDevice();
 
     DescriptorAllocator descAlloc{device, app};
