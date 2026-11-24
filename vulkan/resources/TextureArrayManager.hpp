@@ -72,7 +72,7 @@ public:
     std::vector<VkImageLayout> aoLayerLayouts;
 
     // Per-layer average albedo (linear RGB, computed from the uploaded pixels
-    // at load time). Feeds the RT proxy albedo so secondary rays return
+    // at load time). Feeds the per-layer average albedo reporting so
     // plausible terrain colors instead of flat gray (kills gray-vs-sky
     // rectangular tiles in grazing water reflections/refractions).
     std::vector<std::array<float, 3>> albedoAvg;

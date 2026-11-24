@@ -161,55 +161,6 @@ public:
     // 0 = disabled (every tuft stays geometric).
     float impostorDistance = 512.0f;
 
-    // ── Hybrid RT (raster owns primary, CSM owns macro shadows, RT owns
-    // secondary visibility: solid/water reflections, water refraction/
-    // thickness, selective local/contact shadows) ──
-    bool rtReflections = false;   // solid RT reflections (mirror/SSR rays)
-    bool rtWaterReflections = false; // water RT reflections (own toggle so each ray path is switchable)
-    bool rtRefractions = false;   // water refraction via Snell (IOR below); also carries RT thickness
-    bool rtThickness = false;     // RT water thickness + Beer-Lambert absorption
-    // Water-depth source for the shore-wave regions: true = ray-traced solid
-    // bottom (inline ray query in the water TES, world-space drop); false =
-    // raster only (solid scene depth + water volume back face, world-space
-    // drops). Both modes produce a vertical world-space depth so the region
-    // zones match. Requires RT to be enabled (falls back to raster otherwise).
-    bool rtWaterDepth = false;
-    bool rtLocalShadows = false; // selective RT contact shadows augmenting CSM (off = CSM-only, recommended)
-    bool rtWaterPipeline = false; // water via async RT pipeline outputs (off = inline ray queries)
-    int rtReflectionBounces = 1; // extra mirror rays when a reflection hits a reflective surface (0..3)
-    float rtMaxReflectDist = 500.0f;  // reflection ray Tmax (world units)
-    float rtMaxRefractDist = 300.0f;  // refraction ray Tmax (also deep-water thickness)
-    float rtCoarseBoxSize = 48.0f;  // proxy boxes wider than this are "coarse": unreliable for refraction detail, treated as deep water/sky
-    float rtMaxShadowDist = 12.0f;    // local shadow ray Tmax (contact range only)
-    float rtRoughnessThreshold = 0.6f;// roughness above this skips RT reflections (env approx)
-    // NOTE: water look (IOR, Beer-Lambert absorption, thickness cap) lives in
-    // WaterSettings per water layer (Water Settings widget). The RT params UBO
-    // still carries copies for the layer-unaware async pipeline path, synced
-    // from water layer 0 in SceneRenderer::updateRTParams — there is only one
-    // place to tweak them.
-    // Proxies are thin tight slabs (vertex bounds ±0.15 m pad), so the ray
-    // origin (biased along the shading normal) clears the fragment's own box
-    // well below a meter; grazing rays then stay low enough to hit nearby
-    // thin slabs instead of flying over them to sky. The old 2.0 m default
-    // dated from full-cell-volume proxies and blinded flat-terrain mirrors.
-    float rtSelfSkipDist = 0.05f;     // ignore proxy hits closer than this (own-box guard)
-    // ── Ray-budget controls (runtime A/B, mirrored into RayTracingParams::rayParams) ──
-    // rtRayScale: 0 = full-rate inline rays (reference), 1 = checkerboard
-    //   half-rate (inline trace on even (x+y) pixels only, odd pixels keep the
-    //   sky fallback — ~2x fewer ray queries). Applies to SOLID reflections;
-    //   water reflections always trace full-rate (a skipped mirror is a
-    //   missing mirror) and water refraction is covered by rtSingleRay.
-    // rtRayContribMin: skip the inline ray when the lobe contribution is below
-    //   this (terrain: blendedRefStrength*Fresnel*(1-rough); water: lobe mix).
-    // rtSingleRay: water traces reflection XOR refraction stochastically
-    //   (probability = Fresnel mix). Only the REFRACTION lobe honors the cut
-    //   (it recovers from the raster bottom/sky); reflection always traces.
-    //   off = dual-trace reference. debugModeForcesRtReference (see
-    //   vulkan/includes/debug/DebugModes.hpp) forces reference (dual + full-rate)
-    //   for traced-result debug views so diagnostics show full quality.
-    int rtRayScale = 1;
-    float rtRayContribMin = 0.02f;
-    bool rtSingleRay = true;
     // ── Vegetation offscreen render scale (perf report 22 M12) ─────────────
     // The vegetation color + depth targets render at this fraction of the
     // swapchain size; the composite upsamples (color bilinear; the depth takes

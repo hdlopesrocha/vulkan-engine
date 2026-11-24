@@ -430,19 +430,12 @@ public:
     float profileWater = 0.0f;
     float profilePostProcess = 0.0f;
     float profileImGui = 0.0f;
-    float profileRTDispatch = 0.0f; // hybrid-RT water pipeline traceRays (slots 20-21)
     float profileSdf = 0.0f;        // SDF engine ray-march pass (slots 22-23)
     float profileOctreeMarch = 0.0f; // octree SDF raymarch draw (slots 0-1)
     // SDF march counters (opt-in, set=1 binding 10): fragment atomics gated by
     // SdfRenderer::setProfileCounters; read back with a 3-frame slot latency.
     bool sdfProfilingEnabled_ = false;
     float profileSdfCpu = 0.0f; // CPU record time of the async SDF task
-    // Per-op RT profiling (opt-in): the RT_PROFILE shader variants accumulate
-    // per-op counters + device-clock thread-time into per-frame GPU buffers;
-    // read/reset one frame-slot behind (see preRenderPass). Off by default —
-    // the instrumented pipelines carry atomics and clock reads.
-    bool rtProfilingEnabled_ = false;
-    RTProfileCounters rtProfileStats_{};
     float profileBackface = 0.0f;
     float profileCpuUpdate = 0.0f;
     float profileCpuRecord = 0.0f;
@@ -643,9 +636,6 @@ public:
     BackfaceSlot cachedBackfaceRing[ASYNC_RING_SIZE]{};
     uint32_t ringBackface = 0;
     ThreadPool asyncThreadPool{1}; // single worker for per-frame back-face pass
-
-    // NOTE (hybrid RT §12): the 360° cubemap capture resources were deleted.
-    // Solid/water reflections are hardware ray tracing now.
 
     ~MyApp() {
         // Cooperative cancel: the exporter checks this between chunks/layers,
@@ -1260,18 +1250,6 @@ public:
         // of the cloud raymarch and its wind drift; the default stays off).
         if (const char* env = std::getenv("VULKAN_CLOUDS")) {
             if (env[0] != '0') settings.cloudsEnabled = true;
-        }
-
-        // VULKAN_RT=1 enables the hybrid RT paths (solid/water reflections,
-        // water refraction/thickness/depth) for headless validation; the
-        // default keeps the Settings toggle values.
-        if (const char* env = std::getenv("VULKAN_RT")) {
-            if (env[0] != '0') {
-                settings.rtReflections = true;
-                settings.rtWaterReflections = true;
-                settings.rtRefractions = true;
-                settings.rtWaterDepth = true;
-            }
         }
 
         // VULKAN_SERVE=1: start the scene server for this app's live scene
@@ -2221,14 +2199,6 @@ public:
                     if (tsB[6].availability) profilePostProcess        = msDiff(tsB[7].value, tsB[6].value);
                     if (tsB[8].availability) profileImGui              = msDiff(tsB[9].value, tsB[8].value);
                 }
-                // Group C: indices 20-21 (hybrid-RT water dispatch, own CB slots)
-                struct { uint64_t value; uint64_t availability; } tsC[2] = {};
-                if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 20, 2,
-                        sizeof(tsC), tsC, sizeof(tsC[0]),
-                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS
-                        && timestampPeriod > 0.0f) {
-                    if (tsC[0].availability) profileRTDispatch = msDiff(tsC[1].value, tsC[0].value);
-                }
                 // Group D: indices 22-23 (SDF engine ray-march pass, own CB slots)
                 struct { uint64_t value; uint64_t availability; } tsD[2] = {};
                 if (vkGetQueryPoolResults(getDevice(), queryPools[frameIdx], 22, 2,
@@ -2258,7 +2228,7 @@ public:
                 if ((++profilePrintTick & 0x1F) == 0) {
                     const float gpuTotal = profileDepthPrepass + profileSky +
                         profileSolidDraw + profileVegetationImpostor + profileWater +
-                        profileRTDispatch + profileSdf + profilePostProcess + profileImGui;
+                        profileSdf + profilePostProcess + profileImGui;
                     if (gpuTotal > 40.0f) {
                         std::cout << "[gpu] total=" << gpuTotal
                                   << " depth=" << profileDepthPrepass
@@ -2266,7 +2236,6 @@ public:
                                   << " solid=" << profileSolidDraw
                                   << " veg=" << profileVegetationImpostor
                                   << " water=" << profileWater
-                                  << " rt=" << profileRTDispatch
                                   << " sdf=" << profileSdf
                                   << " octree=" << profileOctreeMarch
                                   << " post=" << profilePostProcess
@@ -2286,21 +2255,6 @@ public:
             // the readback skips it.
             vkCmdResetQueryPool(commandBuffer, queryPools[frameIdx], 16, 4);  // 16-19: postprocess/imgui
             queryPoolReady[frameIdx] = true;
-        }
-
-        // Per-op RT profiling: bind the instrumented (RT_PROFILE) pipeline
-        // variants while the toggle is on, and read + reset this slot's counter
-        // block. The slot was last written MAX_FRAMES_IN_FLIGHT frames ago and
-        // its fence has signaled (per-slot wait in drawFrame), so the read and
-        // the CPU memset never race the GPU's atomics. Requires
-        // VK_KHR_shader_clock (the profile variants are only built with it).
-        if (sceneRenderer && sceneRenderer->rayTracing) {
-            const bool rtProf = rtProfilingEnabled_ && rtProfilingSupported
-                && sceneRenderer->rayTracing->isSupported();
-            if (rtProf) {
-                sceneRenderer->rayTracing->readProfile(frameIdx, rtProfileStats_);
-                sceneRenderer->rayTracing->resetProfile(frameIdx);
-            }
         }
 
         auto cpuRecordT0 = std::chrono::high_resolution_clock::now();
@@ -2357,20 +2311,6 @@ public:
             uboStatic.brushMode = brushMode;
             uboStatic.brushPhase = static_cast<float>(glfwGetTime());
             uboStatic.brushHsv = brushHSV;
-        }
-
-        // Hybrid RT per-frame params (contents stream; handles stable). The
-        // TLAS-readiness flag (debug.y) flips once the first BLAS/TLAS build is
-        // recorded — GPU ordering (samplers wait tlCull, builds precede its
-        // signal) makes same-frame sampling safe.
-        if (sceneRenderer && sceneRenderer->rayTracing) {
-            // Pipeline-path water look mirrors water layer 0 (rgen has no
-            // layer id); the sampled inline path reads per-fragment layers.
-            static const WaterSettings kDefaultWaterLook{};
-            const WaterSettings& waterLook = waterParams.empty() ? kDefaultWaterLook : waterParams[0];
-            sceneRenderer->updateRTParams(this, settings, waterLook, uboStatic.invViewProjection,
-                uboStatic.viewPosition, -uboStatic.lightDirection,
-                uboStatic.lightColor, settings.nearPlane, settings.farPlane);
         }
 
         // Reset command buffer state tracker and wire it to all sub-renderers.
@@ -2521,9 +2461,6 @@ public:
         // using a persistent thread pool to avoid per-frame std::thread creation overhead.
         // Dependency graph (timeline semaphores, one per producer):
         //   cull task      : brush early pass + all GPU culls -> tlCull
-        //                    (the throttled RT BLAS/TLAS rebuild rides its own
-        //                    command buffer on the solid queue, ahead of the
-        //                    solid pass — see the cull task)
         //   shadow task    : shadow map + cascade cull + blur, restores visibleLods/UBO
         //                    (runs after cull on the worker) -> tlShadow
         //                    (not enqueued when shadows are disabled; consumers
@@ -2606,28 +2543,6 @@ public:
                 this->sceneRenderer->solidRenderer->getIndirectRenderer().prepareCull(cullCmd, viewProj, camera.getPosition(), settings.lodBias, settings.maxTargetLod);
                 if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
                     this->sceneRenderer->debugSDFRenderer->prepareCull(cullCmd);
-                // Hybrid RT: (re)build the stable proxy BLAS/TLAS when chunk
-                // changes staged new boxes. Throttled inside (<=1/30 frames);
-                // camera/LOD/tessellation never mark dirty (§6). The build is
-                // recorded on its OWN command buffer and submitted to the solid
-                // queue BEFORE the solid pass, so it no longer serializes with
-                // the graphics-queue cull/main work. Same-queue FIFO orders it
-                // ahead of the solid pass that consumes the new TLAS, and the
-                // water pass waits tlSolid@v (signaled after the build).
-                if (this->sceneRenderer && this->sceneRenderer->rayTracing &&
-                    this->sceneRenderer->rayTracing->wantsBuild()) {
-                    VkCommandBuffer buildCmd = app->allocatePrimaryCommandBuffer();
-                    VkCommandBufferBeginInfo bbegin{};
-                    bbegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                    bbegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                    if (vkBeginCommandBuffer(buildCmd, &bbegin) == VK_SUCCESS &&
-                        this->sceneRenderer->rayTracing->buildIfNeeded(this, buildCmd)) {
-                        app->submitCommandBufferAsyncToQueue(buildCmd, app->getSolidQueue(),
-                            nullptr, {}, false, {}, {}, 0, {}, false);
-                    } else {
-                        app->freeCommandBuffer(buildCmd);
-                    }
-                }
                 // Signal the single cull timeline semaphore; consumers wait on tlCull@v.
                 // Cull is the root producer. The composite does not wait tlCull
                 // directly (it is transitively implied through tlSolid and the
@@ -3202,12 +3117,10 @@ public:
             if (asyncSkyFuture.valid())
                 asyncSkyFuture.get();
         }
-        // --- Solid360 360° capture: REMOVED (hybrid RT §12) ---
+        // --- Solid360 360° capture: REMOVED ---
         // The old per-frame 6-face cubemap rasterization (6 culls + 6 raster
         // CBs + join + mip blits) no longer runs; Solid360Renderer and its
-        // targets/sync/descriptors were deleted. Solid reflections and water
-        // reflection/refraction are hardware ray tracing (proxy TLAS + water
-        // RT pipeline, sky equirect on miss). Water waits tlSolid directly.
+        // targets/sync/descriptors were deleted. Water waits tlSolid directly.
 
         // --- Vegetation pass on its own command buffer (signals semVeg) ---
         // Rendered to its own offscreen color+depth framebuffer (decoupled from
@@ -3837,14 +3750,13 @@ public:
                     ImGui::Separator();
                     ImGui::Text("--- GPU Timing (ms) ---");
                     float gpuTotal = profileDepthPrepass + profileSky + profileSolidDraw +
-                                     profileVegetationImpostor + profileWater + profileRTDispatch +
+                                     profileVegetationImpostor + profileWater +
                                      profileSdf + profilePostProcess + profileImGui;
                     ImGui::Text("Depth Prepass: %.2f", profileDepthPrepass);
                     ImGui::Text("Sky:           %.2f", profileSky);
                     ImGui::Text("Solid Draw:    %.2f", profileSolidDraw);
                     ImGui::Text("Vegetation:    %.2f", profileVegetationImpostor);
                     ImGui::Text("Water:         %.2f", profileWater);
-                    ImGui::Text("RT Dispatch:   %.2f", profileRTDispatch);
                     ImGui::Text("SDF Engine:    %.2f", profileSdf);
                     if (sceneRenderer && sceneRenderer->octreeRaymarchRenderer) {
                         ImGui::Text("Octree March:  %.2f", profileOctreeMarch);
@@ -3852,54 +3764,6 @@ public:
                     ImGui::Text("PostProcess:   %.2f", profilePostProcess);
                     ImGui::Text("ImGui:         %.2f", profileImGui);
                     ImGui::Text("--- GPU Total:  %.2f ---", gpuTotal);
-                    ImGui::Separator();
-                    ImGui::Text("--- Hybrid RT ---");
-                    if (sceneRenderer && sceneRenderer->rayTracing && sceneRenderer->rayTracing->isSupported()) {
-                        ImGui::Text("Proxies: %u  Builds: %u (%.2f ms last)",
-                            sceneRenderer->rayTracing->proxyCount(),
-                            sceneRenderer->rayTracing->buildCount(),
-                            sceneRenderer->rayTracing->lastBuildMs());
-                        ImGui::Text("Pipeline: %s  TLAS: %s",
-                            sceneRenderer->rayTracing->isPipelineReady() ? "ready" : "inline-only",
-                            sceneRenderer->rayTracing->tlasBuilt() ? "built" : "pending");
-                    } else {
-                        ImGui::Text("RT unsupported — raster + CSM fallback");
-                    }
-                    // ── Per-op RT GPU profiling (opt-in) ──
-                    // The instrumented shader variants accumulate per-op ray
-                    // counts, hit counts and device-clock thread-time into a
-                    // per-frame GPU buffer (1/4 of invocations sampled; scaled
-                    // up here). Time is summed over shader invocations: the ops
-                    // run concurrently, so compare the shares, not the absolute
-                    // ms against frame time.
-                    ImGui::Checkbox("RT op profiling", &rtProfilingEnabled_);
-                    if (rtProfilingEnabled_) {
-                        if (!rtProfilingSupported) {
-                            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
-                                "shader clock / storage atomics unsupported - profiling off");
-                        } else {
-                            static const char* kRtOpNames[RTProfileCounters::kOpCount] = {
-                                "Solid refl", "Water refl", "Water refr", "Water depth",
-                                "Bounce/dbl", "Contact shdw", "Water-hit refr"
-                            };
-                            float timeMs[RTProfileCounters::kOpCount];
-                            float totalMs = 0.0f;
-                            for (uint32_t o = 0; o < RTProfileCounters::kOpCount; ++o) {
-                                // Counter unit = 64 ns, 1/4 sampled => 256 ns each.
-                                timeMs[o] = static_cast<float>(rtProfileStats_.time[o])
-                                    * 256.0f * 1e-6f;
-                                totalMs += timeMs[o];
-                            }
-                            ImGui::Text("--- RT Ops (thread-ms, %.1f total) ---", totalMs);
-                            for (uint32_t o = 0; o < RTProfileCounters::kOpCount; ++o) {
-                                const float raysK = static_cast<float>(rtProfileStats_.rays[o]) * 4.0f * 1e-3f;
-                                const float hitsK = static_cast<float>(rtProfileStats_.hits[o]) * 4.0f * 1e-3f;
-                                const float pct = (totalMs > 0.001f) ? (timeMs[o] / totalMs * 100.0f) : 0.0f;
-                                ImGui::Text("%-12s %7.2f ms %5.0f%%  rays %6.0fK hits %6.0fK",
-                                    kRtOpNames[o], timeMs[o], pct, raysK, hitsK);
-                            }
-                        }
-                    }
                     // ── SDF engine (generic raymarch: fire/smoke) ──
                     ImGui::Separator();
                     ImGui::Text("--- SDF Engine ---");

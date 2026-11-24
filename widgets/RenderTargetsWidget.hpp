@@ -25,9 +25,6 @@ private:
 
     // ImGui texture descriptors
     VkDescriptorSet skyDescriptor = VK_NULL_HANDLE;
-    // Hybrid RT output previews (reflection / refraction+thickness).
-    VkDescriptorSet rtReflectDescriptor = VK_NULL_HANDLE;
-    VkDescriptorSet rtRefractDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solidColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solidDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterColorDescriptor = VK_NULL_HANDLE;
@@ -37,8 +34,6 @@ private:
 
     // Ownership flags: true if this widget created the descriptor via ImGui_ImplVulkan_AddTexture
     bool skyDescriptorOwned = false;
-    bool rtReflectDescriptorOwned = false;
-    bool rtRefractDescriptorOwned = false;
     bool solidColorDescriptorOwned = false;
     bool solidDepthDescriptorOwned = false;
     bool waterColorDescriptorOwned = false;
@@ -111,8 +106,6 @@ private:
     // UI: which preview to show (only one at a time)
     enum class PreviewTarget {
         Sky = 0,
-        RTReflect,          // hybrid RT water reflection output
-        RTRefract,          // hybrid RT water refraction + thickness output
         SolidColor,
         SolidDepth,
         BrushColor,

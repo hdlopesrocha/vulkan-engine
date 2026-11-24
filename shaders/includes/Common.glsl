@@ -114,3 +114,10 @@ float sampleHeightTriplanarWLod(vec3 worldPos, vec3 normal, vec3 w, int brushInd
     float h = hX * w.x + hY * w.y + hZ * w.z;
     return clamp(h, 0.0, 1.0);
 }
+
+// Cheap horizon/zenith environment gradient along a direction. Shared by the
+// solid and water shading paths (reflection misses and refraction fallback).
+vec3 proceduralSkyGradient(vec3 dir, vec3 horizon, vec3 zenith, float exponent) {
+    float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+    return mix(horizon, zenith, pow(h, max(exponent, 0.01)));
+}

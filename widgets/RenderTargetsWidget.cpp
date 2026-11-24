@@ -534,8 +534,6 @@ RenderTargetsWidget::~RenderTargetsWidget() {
     removeOwnedDesc(brushColorDescriptor, brushColorDescriptorOwned);
     removeOwnedDesc(brushDepthDescriptor, brushDepthDescriptorOwned);
     removeOwnedDesc(waterColorDescriptor, waterColorDescriptorOwned);
-    removeOwnedDesc(rtReflectDescriptor, rtReflectDescriptorOwned);
-    removeOwnedDesc(rtRefractDescriptor, rtRefractDescriptorOwned);
     removeOwnedDesc(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
     removeOwnedDesc(sdfColorDescriptor, sdfColorDescriptorOwned);
     removeOwnedDesc(sdfDepthDescriptor, sdfDepthDescriptorOwned);
@@ -638,8 +636,6 @@ void RenderTargetsWidget::invalidateImGuiDescriptors() {
     freeAndClear(brushColorDescriptor, brushColorDescriptorOwned);
     freeAndClear(brushDepthDescriptor, brushDepthDescriptorOwned);
     freeAndClear(waterColorDescriptor, waterColorDescriptorOwned);
-    freeAndClear(rtReflectDescriptor, rtReflectDescriptorOwned);
-    freeAndClear(rtRefractDescriptor, rtRefractDescriptorOwned);
     freeAndClear(waterDepthLinearDescriptor, waterDepthLinearDescriptorOwned);
     freeAndClear(sdfColorDescriptor, sdfColorDescriptorOwned);
     freeAndClear(sdfDepthDescriptor, sdfDepthDescriptorOwned);
@@ -707,24 +703,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
             if (v != VK_NULL_HANDLE && brushDepthDescriptor == VK_NULL_HANDLE) {
                 brushDepthDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 brushDepthDescriptorOwned = true;
-            }
-        } break;
-
-        case PreviewTarget::RTReflect: {
-            VkImageView v = (sceneRenderer && sceneRenderer->rayTracing)
-                ? sceneRenderer->rayTracing->getReflectionView() : VK_NULL_HANDLE;
-            if (v != VK_NULL_HANDLE && rtReflectDescriptor == VK_NULL_HANDLE) {
-                rtReflectDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_GENERAL);
-                rtReflectDescriptorOwned = true;
-            }
-        } break;
-
-        case PreviewTarget::RTRefract: {
-            VkImageView v = (sceneRenderer && sceneRenderer->rayTracing)
-                ? sceneRenderer->rayTracing->getRefractionView() : VK_NULL_HANDLE;
-            if (v != VK_NULL_HANDLE && rtRefractDescriptor == VK_NULL_HANDLE) {
-                rtRefractDescriptor = ImGui_ImplVulkan_AddTexture(widgetSampler, v, VK_IMAGE_LAYOUT_GENERAL);
-                rtRefractDescriptorOwned = true;
             }
         } break;
 
@@ -894,12 +872,6 @@ void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
         case PreviewTarget::Sky: 
             previewDescriptor = skyDescriptor; 
             break;
-        case PreviewTarget::RTReflect:
-            previewDescriptor = rtReflectDescriptor;
-            break;
-        case PreviewTarget::RTRefract:
-            previewDescriptor = rtRefractDescriptor;
-            break;            
         case PreviewTarget::SolidColor: 
             previewDescriptor = solidColorDescriptor; 
             break;
@@ -1000,8 +972,6 @@ void RenderTargetsWidget::render() {
     // Items must be in the same order as RenderTargetsWidget::PreviewTarget
     const char* previewItems[] = {
         "Sky",
-        "RTReflect",
-        "RTRefract",
         "SolidColor",
         "SolidDepth",
         "BrushColor",

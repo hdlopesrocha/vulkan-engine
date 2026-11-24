@@ -30,13 +30,12 @@ enum class DebugMode : int {
     // Lighting / shadow
     NdotL,                // both: max(dot(N, L), 0)
     LightVector,          // both: direction to the sun, packed to RGB
-    Shadow,               // solid: R=CSM, G=RT local, B=combined | water: always 0 by design
+    Shadow,               // solid: CSM term | water: always 0 by design
     // Reflection
     ReflectionColor,      // solid: env reflection * Fresnel | water: RT/SSR/sky reflection used
     ReflectionVector,     // both: view reflection direction, packed to RGB
     Fresnel,              // solid: reflection mix factor | water: Schlick Fresnel term
     // Diagnostics (shared)
-    RayMask,              // both: ray-budget coverage mask (must stay budgeted)
     TessHeat,             // solid only: tessellation-level heatmap
     // Water
     SkyReflection,        // water only: raw equirect sky sample
@@ -107,7 +106,6 @@ inline constexpr const char* kDebugModeNames[] = {
     "Reflection Color",
     "Reflection Vector",
     "Fresnel",
-    "Ray Mask",
     "Tessellation Level Heat",
     "Sky Reflection",
     "RT Refraction Color",
@@ -152,19 +150,3 @@ constexpr DebugMode debugModeFromInt(int value) {
         : DebugMode::None;
 }
 
-// Views whose displayed value is produced by traced reflection/refraction
-// rays must force the full-quality reference path (full-rate + dual-trace) or
-// the ray-budget cuts would distort the diagnostics. Ray mask / depth source
-// must NOT force it: they visualize the live budgeted behavior itself.
-constexpr bool debugModeForcesRtReference(DebugMode mode) {
-    switch (mode) {
-        case DebugMode::ReflectionColor:
-        case DebugMode::RefractionColor:
-        case DebugMode::Thickness:
-        case DebugMode::ReflectionSource:
-        case DebugMode::Shadow:
-            return true;
-        default:
-            return false;
-    }
-}

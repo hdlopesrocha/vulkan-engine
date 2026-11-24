@@ -939,11 +939,7 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
                 vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TopologyPC), &pc);
                 vkCmdDispatch(cmd, cellGroups, 1, 1);
 
-                // Pool writes -> the cull's shader reads, the indirect draws and
-                // the ray-tracing build inputs that read the same buffers. The
-                // acceleration-structure bits require VK_KHR_acceleration_structure
-                // and must stay off the raster path (VUID-10751).
-                const bool rtEnabled = app->rayTracingEnabled();
+                // Pool writes -> the cull's shader reads and the indirect draws.
                 VkBufferMemoryBarrier2 pool[2] = {};
                 for (int b = 0; b < 2; ++b) {
                     pool[b].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -956,10 +952,6 @@ OctreeTopologyResidentResult OctreeTopologyCompute::computeResident(
                     pool[b].dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT
                                           | VK_ACCESS_2_INDEX_READ_BIT
                                           | VK_ACCESS_2_SHADER_READ_BIT;
-                    if (rtEnabled) {
-                        pool[b].dstStageMask |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-                        pool[b].dstAccessMask |= VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
-                    }
                     pool[b].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                     pool[b].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                     pool[b].offset = 0;

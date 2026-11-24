@@ -46,11 +46,10 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
 // seeds the secondary-hit fast path below at negligible primary cost.
 float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias, out int cascadeHint) {
     // Global shadow toggle. The raster solid/vegetation/impostor paths gate
-    // their own calls, but the RT reflection/refraction shading (inline ray
-    // hits and the mirror/bounce chains) samples the CSM unconditionally.
-    // Without this guard a disabled CSM still darkens every secondary hit
-    // through its stale or zero-initialized cascade maps — the "shadow
-    // underwater" that survives turning shadows off.
+    // their own calls, but the SDF reflection/refraction shading samples the
+    // CSM unconditionally. Without this guard a disabled CSM still darkens
+    // every secondary hit through its stale or zero-initialized cascade maps —
+    // the "shadow underwater" that survives turning shadows off.
     // Hint default: cascade 0 (also covers the disabled-shadows early-out,
     // whose hint would otherwise be undefined). Overwritten below wherever
     // the selection lands in cascade 1 or 2.

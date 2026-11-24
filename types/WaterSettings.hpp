@@ -27,13 +27,12 @@ struct WaterSettings {
     float waterTint = 0.3f;
     float noiseTimeSpeed = 8.0f;
 
-    // Refraction / absorption — per-layer water look. Single source of truth:
-    // the former global RT duplicates (Water IOR, Absorption RGB/scale, Max
-    // water thickness) were removed so these are tweaked here, per water layer.
+    // Refraction / absorption — per-layer water look. Single source of truth
+    // for the water IOR, absorption RGB/scale and maximum water thickness.
     float ior = 1.333f;              // index of refraction for Snell air<->water
     glm::vec3 absorption = glm::vec3(0.35f, 0.12f, 0.08f); // Beer-Lambert RGB coefficients
     float absorptionScale = 0.3f;    // thickness multiplier for absorption
-    float maxThickness = 64.0f;      // RT refraction hit clamp (m): deeper hits unresolved
+    float maxThickness = 64.0f;      // refraction march clamp (m): deeper hits unresolved
     float shoreFadeDepth = 0.25f;    // water depth (m) over which the shoreline fades from fully transparent
 
     // Reflection / specular controls

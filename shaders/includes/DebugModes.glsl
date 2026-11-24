@@ -22,50 +22,36 @@ const int DEBUG_MODE_SHADOW = 14;
 const int DEBUG_MODE_REFLECTION_COLOR = 15;
 const int DEBUG_MODE_REFLECTION_VECTOR = 16;
 const int DEBUG_MODE_FRESNEL = 17;
-const int DEBUG_MODE_RAY_MASK = 18;
-const int DEBUG_MODE_TESS_HEAT = 19;
-const int DEBUG_MODE_SKY_REFLECTION = 20;
-const int DEBUG_MODE_REFRACTION_COLOR = 21;
-const int DEBUG_MODE_WATER_NOISE = 22;
-const int DEBUG_MODE_DISPLACEMENT = 23;
-const int DEBUG_MODE_THICKNESS = 24;
-const int DEBUG_MODE_ABSORPTION = 25;
-const int DEBUG_MODE_CAUSTICS = 26;
-const int DEBUG_MODE_DEPTH_SOURCE = 27;
-const int DEBUG_MODE_WATER_COMPOSE = 28;
-const int DEBUG_MODE_WATER_COLOR = 29;
-const int DEBUG_MODE_WATER_DEPTH_SOURCES = 30;
-const int DEBUG_MODE_SCENE_DEPTH = 31;
-const int DEBUG_MODE_REFLECTION_SOURCE = 32;
-const int DEBUG_MODE_WATER_SLOPE = 33;
-const int DEBUG_MODE_WATER_CONTACT = 34;
-const int DEBUG_MODE_WATER_SWELL = 35;
-const int DEBUG_MODE_WATER_FOAM_MASK = 36;
-const int DEBUG_MODE_WATER_SPECULAR_NOISE = 37;
-const int DEBUG_MODE_SHORE_DIRECTION = 38;
-const int DEBUG_MODE_WATER_GERSTNER = 39;
-const int DEBUG_MODE_VEGETATION_LOD = 40;
-const int DEBUG_MODE_CLOUD_SDF = 41;
-const int DEBUG_MODE_CLOUD_BASE_DENSITY = 42;
-const int DEBUG_MODE_CLOUD_COVERAGE = 43;
-const int DEBUG_MODE_CLOUD_WARP = 44;
-const int DEBUG_MODE_CLOUD_EROSION = 45;
-const int DEBUG_MODE_CLOUD_FINAL_DENSITY = 46;
-const int DEBUG_MODE_CLOUD_LIGHTING = 47;
-const int DEBUG_MODE_CLOUD_SHADOWS = 48;
-const int DEBUG_MODE_CLOUD_STEPS = 49;
-const int DEBUG_MODE_CLOUD_SKIP = 50;
-const int DEBUG_MODE_OCTREE_SDF_RAYMARCH = 51;
-
-// Views whose displayed value is produced by traced reflection/refraction
-// rays force the full-quality reference path (full-rate + dual-trace) so the
-// ray-budget cuts cannot distort them. Mirrors
-// debugmode::debugModeForcesRtReference; ray mask / depth source stay
-// budgeted because they visualize the live cuts themselves.
-bool debugModeForcesRtReference(int mode) {
-    return mode == DEBUG_MODE_REFLECTION_COLOR
-        || mode == DEBUG_MODE_REFRACTION_COLOR
-        || mode == DEBUG_MODE_THICKNESS
-        || mode == DEBUG_MODE_REFLECTION_SOURCE
-        || mode == DEBUG_MODE_SHADOW;
-}
+const int DEBUG_MODE_TESS_HEAT = 18;
+const int DEBUG_MODE_SKY_REFLECTION = 19;
+const int DEBUG_MODE_REFRACTION_COLOR = 20;
+const int DEBUG_MODE_WATER_NOISE = 21;
+const int DEBUG_MODE_DISPLACEMENT = 22;
+const int DEBUG_MODE_THICKNESS = 23;
+const int DEBUG_MODE_ABSORPTION = 24;
+const int DEBUG_MODE_CAUSTICS = 25;
+const int DEBUG_MODE_DEPTH_SOURCE = 26;
+const int DEBUG_MODE_WATER_COMPOSE = 27;
+const int DEBUG_MODE_WATER_COLOR = 28;
+const int DEBUG_MODE_WATER_DEPTH_SOURCES = 29;
+const int DEBUG_MODE_SCENE_DEPTH = 30;
+const int DEBUG_MODE_REFLECTION_SOURCE = 31;
+const int DEBUG_MODE_WATER_SLOPE = 32;
+const int DEBUG_MODE_WATER_CONTACT = 33;
+const int DEBUG_MODE_WATER_SWELL = 34;
+const int DEBUG_MODE_WATER_FOAM_MASK = 35;
+const int DEBUG_MODE_WATER_SPECULAR_NOISE = 36;
+const int DEBUG_MODE_SHORE_DIRECTION = 37;
+const int DEBUG_MODE_WATER_GERSTNER = 38;
+const int DEBUG_MODE_VEGETATION_LOD = 39;
+const int DEBUG_MODE_CLOUD_SDF = 40;
+const int DEBUG_MODE_CLOUD_BASE_DENSITY = 41;
+const int DEBUG_MODE_CLOUD_COVERAGE = 42;
+const int DEBUG_MODE_CLOUD_WARP = 43;
+const int DEBUG_MODE_CLOUD_EROSION = 44;
+const int DEBUG_MODE_CLOUD_FINAL_DENSITY = 45;
+const int DEBUG_MODE_CLOUD_LIGHTING = 46;
+const int DEBUG_MODE_CLOUD_SHADOWS = 47;
+const int DEBUG_MODE_CLOUD_STEPS = 48;
+const int DEBUG_MODE_CLOUD_SKIP = 49;
+const int DEBUG_MODE_OCTREE_SDF_RAYMARCH = 50;

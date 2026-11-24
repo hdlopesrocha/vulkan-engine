@@ -100,49 +100,11 @@ class VulkanApp {
     bool bufferDeviceAddressSupported = false;
     bool supportsSparseBinding() const { return sparseBufferSupported; }
     bool supportsBufferDeviceAddress() const { return bufferDeviceAddressSupported; }
-    // ── Hybrid ray tracing (raster + RT) ──────────────────────────────────
-    // Feature-detected, never version-checked. When all of
-    // VK_KHR_acceleration_structure + VK_KHR_ray_query are supported AND their
-    // features enabled, ray queries may be used inline in raster shaders
-    // (solid reflections, water RT, selective local shadows). When
-    // VK_KHR_ray_tracing_pipeline is additionally supported, the dedicated RT
-    // pipeline (water reflection/refraction/thickness) is available. When any
-    // piece is missing the renderer falls back to sky/environment sampling —
-    // rasterization, tessellation, displacement, LOD and CSM keep working.
-    bool accelStructSupported = false;
-    bool rayQuerySupported = false;
-    bool rayPipelineSupported = false;
-    // VK_KHR_shader_clock / shaderDeviceClock: enables the device-scope
-    // realtime clock used by the opt-in per-op RT profiling shader variants
-    // (shaders/includes/rt/RtProfile.glsl). Independent of RT support; when
-    // false the profile variants are never created and RT profiling stays off.
-    bool shaderClockSupported = false;
-    // Full per-op RT profiling gate: the RT_PROFILE variants atomically write
-    // a storage buffer from the fragment (fragmentStoresAndAtomics) and the
-    // water TES (vertexPipelineStoresAndAtomics). Creating those pipelines
-    // without the features is invalid (VUID-RuntimeSpirv-NonWritable-06340/41),
-    // so the profile variants are only built when both are supported/enabled.
-    bool rtProfilingSupported = false;
     // Fragment-stage storage-buffer atomics (enabled when advertised). The SDF
     // march counters (SdfRenderer profile buffer, set=1 binding 10) atomicAdd
     // from the fragment shader; the counters stay disabled (CPU gate) and the
     // checkbox is hidden when this is false.
     bool fragmentStoresAndAtomicsSupported = false;
-    bool rayTracingEnabled() const { return accelStructSupported && rayQuerySupported; }
-    bool rayPipelineEnabled() const { return rayTracingEnabled() && rayPipelineSupported; }
-    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProps{};
-    VkPhysicalDeviceAccelerationStructurePropertiesKHR accelProps{};
-    // RT extension entry points, resolved after vkCreateDevice when supported.
-    // Null when the corresponding extension was not enabled — callers must
-    // branch on rayTracingEnabled()/rayPipelineEnabled() first.
-    PFN_vkCreateAccelerationStructureKHR fpCreateAccelerationStructureKHR = nullptr;
-    PFN_vkDestroyAccelerationStructureKHR fpDestroyAccelerationStructureKHR = nullptr;
-    PFN_vkGetAccelerationStructureBuildSizesKHR fpGetAccelerationStructureBuildSizesKHR = nullptr;
-    PFN_vkGetAccelerationStructureDeviceAddressKHR fpGetAccelerationStructureDeviceAddressKHR = nullptr;
-    PFN_vkCmdBuildAccelerationStructuresKHR fpCmdBuildAccelerationStructuresKHR = nullptr;
-    PFN_vkCreateRayTracingPipelinesKHR fpCreateRayTracingPipelinesKHR = nullptr;
-    PFN_vkGetRayTracingShaderGroupHandlesKHR fpGetRayTracingShaderGroupHandlesKHR = nullptr;
-    PFN_vkCmdTraceRaysKHR fpCmdTraceRaysKHR = nullptr;
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptorBufferProps{};
     // Extension entry points, resolved after vkCreateDevice when supported.
     PFN_vkGetDescriptorEXT fpGetDescriptorEXT = nullptr;

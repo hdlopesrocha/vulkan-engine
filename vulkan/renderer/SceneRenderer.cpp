@@ -103,14 +103,6 @@ void SceneRenderer::cleanup(VulkanApp* app) {
         streamer.destroy();
     }
     destroySSRSamplers(app);
-    // Hybrid RT teardown (acceleration structures + pipeline + outputs) while
-    // the device is alive. RT descriptors in set 0 dangle after this, but the
-    // device is being torn down anyway (shutdown path only).
-    if (rayTracing) {
-        rayTracing->cleanup(app);
-        rayTracing.reset();
-    }
-
     // Cleanup all sub-renderers to properly destroy GPU resources (app may be null)
     if (postProcessRenderer && app) {
         postProcessRenderer->cleanup(app);
@@ -311,13 +303,6 @@ void SceneRenderer::removeAllLayerMeshes(Layer::Id layer) {
     if (IndirectRenderer* ir = indirectForLayer(layer)) {
         for (const auto& kv : copy) ir->removeMeshSlotted(kv.second.meshId);
     }
-    {
-        std::lock_guard<std::recursive_mutex> plock(proxyMutex_);
-        for (const auto& kv : copy) {
-            solidProxyData.erase(kv.first);
-            waterProxyData.erase(kv.first);
-        }
-    }
 }
 
 void SceneRenderer::removeAllMeshes() {
@@ -330,11 +315,6 @@ void SceneRenderer::removeAllMeshes() {
         std::lock_guard<std::recursive_mutex> guard(*st->mutex);
         st->chunks.clear();
         st->pendingDeletes.clear();
-    }
-    {
-        std::lock_guard<std::recursive_mutex> plock(proxyMutex_);
-        solidProxyData.clear();
-        waterProxyData.clear();
     }
 }
 
@@ -370,33 +350,6 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
         if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, width, height);
         if (sdfRenderer) sdfRenderer->createRenderTargets(app, width, height);
         if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, width, height);
-        // Hybrid RT outputs are swapchain-sized (half-res): recreate + re-point
-        // bindings 15/16 everywhere (views are new handles). TLAS/params/meta
-        // handles are stable across resizes (no rewrite needed).
-        if (rayTracing && rayTracing->isSupported()) {
-            rayTracing->onSwapchainResized(app, width, height);
-            VkImageView reflView = rayTracing->getReflectionView();
-            VkImageView refrView = rayTracing->getRefractionView();
-            VkSampler rtSampler = rayTracing->getLinearSampler();
-            if (reflView != VK_NULL_HANDLE && refrView != VK_NULL_HANDLE &&
-                rtSampler != VK_NULL_HANDLE) {
-                auto rewriteRTView = [&](VkDescriptorSet ds, uint32_t binding, VkImageView view) {
-                    if (ds == VK_NULL_HANDLE) return;
-                    DescriptorWriter(app->getDevice())
-                        .writeImage(ds, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                    rtSampler, view, VK_IMAGE_LAYOUT_GENERAL)
-                        .flush();
-                };
-                rewriteRTView(app->getStaticDescriptorSet(), 15, reflView);
-                rewriteRTView(app->getStaticDescriptorSet(), 16, refrView);
-                for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi)
-                    rewriteRTView(app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi)), 15, reflView),
-                    rewriteRTView(app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi)), 16, refrView);
-                for (auto ds : shadowDescriptorSets)
-                    rewriteRTView(ds, 15, reflView), rewriteRTView(ds, 16, refrView);
-            }
-            refreshRTSceneViews(app);
-        }
     }
     if (postProcessRenderer) {
         postProcessRenderer->setRenderSize(width, height);
@@ -404,9 +357,6 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     if (skyRenderer) {
         skyRenderer->destroyOffscreenTargets(app);
         skyRenderer->createOffscreenTargets(app, width, height);
-        // Sky views feed the RT pipeline miss shader (per-slot arrays) — the
-        // handles changed above, so refresh the RT scene views too.
-        if (rayTracing && rayTracing->isSupported()) refreshRTSceneViews(app);
     }
     // Solid SSR sources are new handles after the solid render targets above
     // were recreated; re-point bindings 19/20 (resize is idle-safe).
@@ -452,24 +402,7 @@ void SceneRenderer::beginInit(VulkanApp* app, TextureArrayManager* textureArrayM
         std::cerr << "[SceneRenderer::init] app is nullptr!" << std::endl;
         return;
     }
-    // Keep the texture arrays for RT proxy albedo lookups (per-layer averages).
     textureArrays_ = textureArrayManager;
-
-    // Representative water surface tint for reflected water: computed with the
-    // water's OWN params (depth-region colors, max thickness, absorption)
-    // using the exact water shader ramp, so reflected water carries the real
-    // water color — no hardcoded values.
-    {
-        const WaterSettings& wp = waterParams.empty() ? WaterSettings{} : waterParams[0];
-        const float thickness = std::max(wp.maxThickness, 0.0f);
-        const glm::vec3 waterTintColor = waterRegionTint(wp, thickness);
-        // Beer-Lambert absorption (WaterRenderer.frag): the tint seen through the
-        // water column is attenuated.
-        const glm::vec3 transmittance = glm::exp(-glm::min(
-            wp.absorption * std::max(thickness * wp.absorptionScale, 0.0f),
-            glm::vec3(2.5f)));
-        waterReflectionTint_ = waterTintColor * transmittance;
-    }
 
     // Initialize the async streaming orchestrator. It is the ONLY transfer
     // engine: solid/water incremental chunk uploads route through it (32
@@ -735,9 +668,8 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (sdfRenderer) sdfRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-    // Hardware RT is retired: there are no rasterized scene triangles to
-    // accelerate or trace. Every surface is SDF-raymarched, so no BLAS/TLAS,
-    // RT pipeline, proxy packer or RT descriptor is created.
+    // Every surface is SDF-raymarched: no acceleration structures or
+    // ray-tracing resources exist.
 
     // Bind water params SSBO to binding 7 of main descriptor set.
     VkDescriptorBufferInfo& waterParamsInfo = writesBuf.emplace_back(waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
@@ -780,114 +712,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
         writes.push_back(windFieldWrite);
     }
 
-    // ── Hybrid RT set-0 bindings (written once; handles stable) ──────────
-    // 14 = TLAS (valid object from init; contents built on first
-    //      buildIfNeeded — shaders gate sampling on rt.debug.y == tlasReady).
-    // 15/16 = water RT reflection / refraction+thickness outputs (sampled by
-    //      WaterRenderer.frag; GENERAL layout shared with the RT pipeline's writes —
-    //      sampled descriptors use GENERAL to match, avoiding layout churn).
-    // 17 = RT params UBO (contents stream per frame via updateRTParams).
-    // 18 = RT proxy metadata (hit shading for inline ray queries).
-    // When RT is unsupported the views/buffers are NULL and the writes are
-    // skipped — shaders fall back to sky/CSM (tlasReady stays 0).
-    if (rayTracing && rayTracing->isSupported() && rayTracing->getTLAS() != VK_NULL_HANDLE) {
-        // The TLAS object is created once and never recreated (in-place
-        // rebuilds), so this handle stays valid for app lifetime. The static
-        // replay loop below only handles image/buffer writes; the AS write is
-        // applied explicitly right after it (see tlasMirror_ + writeTlasBinding).
-        // Pushed here so the per-frame copy enumeration picks up binding 14.
-        tlasMirror_ = rayTracing->getTLAS();
-        VkWriteDescriptorSet tlasWrite{};
-        tlasWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        tlasWrite.dstSet = staticDs;
-        tlasWrite.dstBinding = 14;
-        tlasWrite.descriptorCount = 1;
-        tlasWrite.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        writes.push_back(tlasWrite);
-    }
-    auto addRTImageWrite = [&](uint32_t binding, VkImageView view) {
-        if (!rayTracing || !rayTracing->isSupported() || view == VK_NULL_HANDLE) return;
-        VkDescriptorImageInfo& info = writesImg.emplace_back();
-        info.sampler = rayTracing->getLinearSampler();
-        info.imageView = view;
-        info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        VkWriteDescriptorSet w{};
-        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w.dstSet = staticDs;
-        w.dstBinding = binding;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        w.descriptorCount = 1;
-        w.pImageInfo = &info;
-        writes.push_back(w);
-    };
-    if (rayTracing && rayTracing->isSupported()) {
-        addRTImageWrite(15, rayTracing->getReflectionView());
-        addRTImageWrite(16, rayTracing->getRefractionView());
-        if (rayTracing->getParamsBuffer() != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo& rtParamsInfo = writesBuf.emplace_back(
-                rayTracing->getParamsBuffer(), 0, sizeof(RayTracingParams));
-            VkWriteDescriptorSet rtParamsWrite{};
-            rtParamsWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            rtParamsWrite.dstSet = staticDs;
-            rtParamsWrite.dstBinding = 17;
-            rtParamsWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            rtParamsWrite.descriptorCount = 1;
-            rtParamsWrite.pBufferInfo = &rtParamsInfo;
-            writes.push_back(rtParamsWrite);
-        }
-        if (rayTracing->getMetaBuffer() != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo& rtMetaInfo = writesBuf.emplace_back(
-                rayTracing->getMetaBuffer(), 0, VK_WHOLE_SIZE);
-            VkWriteDescriptorSet rtMetaWrite{};
-            rtMetaWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            rtMetaWrite.dstSet = staticDs;
-            rtMetaWrite.dstBinding = 18;
-            rtMetaWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            rtMetaWrite.descriptorCount = 1;
-            rtMetaWrite.pBufferInfo = &rtMetaInfo;
-            writes.push_back(rtMetaWrite);
-        }
-        // Real scene-geometry reflection lookups (bindings 21/22): contents are
-        // host-updated per rebuild; the descriptors are stable (preallocated
-        // buffers, never resized).
-        if (rayTracing->getSceneGeomPrimBaseBuffer() != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo& primBaseInfo = writesBuf.emplace_back(
-                rayTracing->getSceneGeomPrimBaseBuffer(), 0, VK_WHOLE_SIZE);
-            VkWriteDescriptorSet w{};
-            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            w.dstSet = staticDs;
-            w.dstBinding = 21;
-            w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            w.descriptorCount = 1;
-            w.pBufferInfo = &primBaseInfo;
-            writes.push_back(w);
-        }
-        if (rayTracing->getSceneGeomMetaBuffer() != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo& sceneMetaInfo = writesBuf.emplace_back(
-                rayTracing->getSceneGeomMetaBuffer(), 0, VK_WHOLE_SIZE);
-            VkWriteDescriptorSet w{};
-            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            w.dstSet = staticDs;
-            w.dstBinding = 22;
-            w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            w.descriptorCount = 1;
-            w.pBufferInfo = &sceneMetaInfo;
-            writes.push_back(w);
-        }
-        if (rayTracing->getSceneGeomInfoBuffer() != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo& sceneGeomInfo = writesBuf.emplace_back(
-                rayTracing->getSceneGeomInfoBuffer(), 0, VK_WHOLE_SIZE);
-            VkWriteDescriptorSet w{};
-            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            w.dstSet = staticDs;
-            w.dstBinding = 23;
-            w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            w.descriptorCount = 1;
-            w.pBufferInfo = &sceneGeomInfo;
-            writes.push_back(w);
-        }
-    }
-
     // ── Static descriptor set ──
     // Write scene-static bindings once. These resources rarely change
     // (texture arrays, materials, shadow maps, sky, water params, RT handles).
@@ -899,7 +723,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
             // Replay accumulated image/buffer writes into the static set
             for (auto &w : writes) {
                 if (w.dstBinding == 0) continue; // binding 0 is per-frame
-                if (w.dstBinding == 14) continue; // TLAS: explicit AS write below
                 if (w.pImageInfo) {
                     staticWriter.writeImage(staticSet, w.dstBinding, w.descriptorType,
                                             w.pImageInfo[0].sampler, w.pImageInfo[0].imageView,
@@ -911,9 +734,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
                 }
             }
             staticWriter.flush();
-            // TLAS binding 14: acceleration-structure write (pNext chain —
-            // DescriptorWriter only handles image/buffer infos).
-            if (tlasMirror_ != VK_NULL_HANDLE) writeTlasBinding(app, staticSet);
         }
     }
 
@@ -1038,22 +858,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
         addImg(8, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // Hybrid RT mirror (shadow pass declares the same set-0 RT bindings via
-        // SolidRenderer.frag; the shadow fast-path early-outs before sampling, but the
-        // descriptors must still be valid). No cubemap binding 11 (removed).
-        if (rayTracing && rayTracing->isSupported()) {
-            if (rayTracing->getLinearSampler() != VK_NULL_HANDLE) {
-                addImg(15, rayTracing->getLinearSampler(), rayTracing->getReflectionView(), VK_IMAGE_LAYOUT_GENERAL);
-                addImg(16, rayTracing->getLinearSampler(), rayTracing->getRefractionView(), VK_IMAGE_LAYOUT_GENERAL);
-            }
-            if (rayTracing->getParamsBuffer() != VK_NULL_HANDLE)
-                wr.writeBuffer(ds, 17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                               rayTracing->getParamsBuffer(), 0, sizeof(RayTracingParams));
-            if (rayTracing->getMetaBuffer() != VK_NULL_HANDLE)
-                wr.writeBuffer(ds, 18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                               rayTracing->getMetaBuffer(), 0, VK_WHOLE_SIZE);
-        }
-
         wr.writeBuffer(ds, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                        materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
         wr.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1077,8 +881,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
         wr.writeBuffer(ds, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                        waterRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
         wr.flush();
-        // TLAS binding 14 (pNext chain — outside DescriptorWriter).
-        if (tlasMirror_ != VK_NULL_HANDLE) writeTlasBinding(app, ds);
     }
     // Shadow descriptor set handles are stable after init (subsequent writes
     // only update them in place), so ShadowRenderer can cache them once.
@@ -1094,10 +896,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     if (textureArrayManager) {
         textureArrayManager->addAllocationListener([this, app, textureArrayManager]() {
             this->updateTextureDescriptorSet(app, textureArrayManager);
-            // Texture (re)allocation changed the per-layer albedo averages:
-            // refresh RT proxy albedos on the render thread (flag consumed in
-            // processPendingMeshes; setProxies dedupes when nothing changed).
-            this->proxyAlbedoRefresh_.store(true, std::memory_order_relaxed);
         });
     }
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
@@ -1124,8 +922,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
         kIndexBytesPerChunk    // per-chunk index ceiling (total = chunks x this)
     );
 
-    // RT pipeline's per-slot sets need the surface-depth + sky views.
-    refreshRTSceneViews(app);
 
 }
 
@@ -1296,7 +1092,7 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
         if (waterParamsBufferSize_ > 0)
             wBuf(7, ssboSize, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterParamsBuffer_.buffer, waterParamsBufferSize_);
         // Binding 6: sky UBO. Binding 10: water render UBO. (Binding 11 removed:
-        // legacy cubemap — reflections are hardware ray tracing now.)
+        // legacy cubemap.)
         wBuf(6, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, skyUBO.buffer, sizeof(SkyUniform));
         wBuf(10, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, waterRenderUBO.buffer, sizeof(WaterRenderUBO));
         // Binding 27: shared wind-field UBO (packed by VegetationRenderer;
@@ -1324,24 +1120,6 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
             }
             if (brushMap != VK_NULL_HANDLE && brushMapSize > 0)
                 wBuf(28, ssboSize, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, brushMap, brushMapSize);
-        }
-        // Hybrid RT mirrors (classic sets stay authoritative while the
-        // descriptor-buffer bind path is inactive). Binding 14 (TLAS) has no
-        // mirror (acceleration structures stay on the classic write path).
-        if (rayTracing && rayTracing->isSupported()) {
-            wImg(15, rayTracing->getLinearSampler(), rayTracing->getReflectionView(), VK_IMAGE_LAYOUT_GENERAL);
-            wImg(16, rayTracing->getLinearSampler(), rayTracing->getRefractionView(), VK_IMAGE_LAYOUT_GENERAL);
-            wBuf(17, uboSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                 rayTracing->getParamsBuffer(static_cast<uint32_t>(fi)), sizeof(RayTracingParams));
-            VkDeviceSize metaSize = VkDeviceSize(sizeof(RTProxyMeta)) * RayTracingResources::kMaxProxies;
-            if (metaSize > 0)
-                wBuf(18, ssboSize, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                     rayTracing->getMetaBuffer(), metaSize);
-            // Binding 26: this frame's RT profiling counters (RT_PROFILE
-            // variants only; the descriptor must exist for the profile
-            // pipelines to be valid).
-            wBuf(26, ssboSize, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                 rayTracing->getProfileBuffer(static_cast<uint32_t>(fi)), sizeof(RTProfileCounters));
         }
     }
     if (failures > 0)
@@ -1549,9 +1327,8 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(s));
             if (mainDs == VK_NULL_HANDLE) continue;
 
-            // Binding 1..4, 8, 9, 12, 13 (textures). Binding 11 removed with the
-            // legacy cubemap (hybrid RT); RT bindings (14-18) are stable since
-            // init and need no propagation here.
+            // Binding 1..4, 8, 9, 12, 13 (textures). Binding 11 (legacy
+            // cubemap) is removed; SSR bindings 19/20 are written separately.
             for (uint32_t b : {1u, 2u, 3u, 4u, 8u, 9u, 12u, 13u}) {
                 VkCopyDescriptorSet c{};
                 c.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
@@ -1719,48 +1496,9 @@ size_t SceneRenderer::publishPendingMeshes(
             world_->chunkManager().setSlotIndex(base, slotIdx);
             world_->chunkManager().finishUpload(base);
         }
-        // Hybrid RT: the scene BLAS reads the merged vertex/index pools the
-        // pass just wrote from another queue. Re-dirty the AS so a build that
-        // overlapped the write cannot leave these chunks' triangles broken (a
-        // stale BLAS is never rebuilt by camera moves/LoD).
-        if (rayTracing) rayTracing->requestSceneBlasRefresh();
-
         {
             auto& chunkMap = layerChunks(layer);
             chunkMap[nid] = Model3DVersion{slotIdx, lod.version};
-        }
-
-        // Hybrid RT proxy source. The host has no Cartesian vertex stream to
-        // measure a tight silhouette from (vertices are GPU-only and never
-        // read back), so the proxy uses the octree cell's world bounds and the
-        // node's material metadata. Solid-mapped chunks feed the solid BLAS;
-        // water-mapped chunks feed the water BLAS so solid reflections see
-        // water.
-        const bool isWaterLayer = (layerRendererType(layer) == LayerRendererType::Water);
-        {
-            std::lock_guard<std::recursive_mutex> lock(proxyMutex_);
-            SolidProxyData pd;
-            pd.minp = cubeMin;
-            pd.maxp = cubeMax;
-            pd.materialId = static_cast<uint32_t>(std::max(0, lod.brushIndex));
-            if (isWaterLayer) {
-                // No CPU surface height exists: keep the reflection slab thin
-                // around the cell's vertical center. The own-cell rejection in
-                // the water shaders still prevents self-hits.
-                const float surf = 0.5f * (cubeMin.y + cubeMax.y);
-                pd.minp.y = surf - 3.0f;
-                pd.maxp.y = surf + 3.0f;
-                pd.hgrid.fill(surf);
-            } else {
-                // Flat top at the cell's upper bound; the GPU tessellation
-                // displacement remains covered by the cell volume.
-                pd.hgrid.fill(cubeMax.y);
-            }
-            pd.rung = static_cast<uint32_t>(lod.lod);
-            if (isWaterLayer)
-                waterProxyData[nid] = pd;
-            else
-                solidProxyData[nid] = pd;
         }
 
         // GPU effect consumers. Vegetation placement reads this chunk's span
@@ -1883,9 +1621,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         uint32_t curFrame = app ? app->getCurrentFrame() : 0;
         ageOutPendingDeletes(curFrame);
         processChunkSwapQueue(app);
-        // Hybrid RT: deletions without publishes still change the proxy set
-        // (fingerprint check inside is O(N) and early-outs when idle).
-        rebuildProxySet(app, false);
         return;
     }
 
@@ -1906,12 +1641,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // This swaps in newly-built RenderProxies and retires old ones.
     processChunkSwapQueue(app);
 
-    // Hybrid RT: stage fresh proxy boxes when publishes happened this frame
-    // (fingerprint dedupes pure camera/LOD frames at O(N) integer cost).
-    // A pending texture-driven albedo refresh forces a repack as well.
-    const bool albedoRefresh =
-        proxyAlbedoRefresh_.exchange(false, std::memory_order_relaxed);
-    rebuildProxySet(app, chunksPublished > 0 || albedoRefresh);
 }
 
 void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame) {
@@ -2072,10 +1801,6 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
                                                        static_cast<uint32_t>(videoVertBytes),
                                                        static_cast<uint32_t>(videoIdxBytes));
     }
-    // Bind the merged pools for real-triangle hit shading (bindings 24/25).
-    // The device is idle here (init), so the classic set rewrite is safe.
-    writeSceneVertexBindings(app);
-
     // Validate the worst-case reservation once at init (slotted-mode
     // ensureCapacity is a pure check — it asserts instead of growing).
     {
@@ -2587,36 +2312,6 @@ size_t SceneRenderer::getTransparentModelCount() {
     return total;
 }
 
-void SceneRenderer::writeTlasBinding(VulkanApp* app, VkDescriptorSet dstSet) {
-    if (!app || dstSet == VK_NULL_HANDLE || tlasMirror_ == VK_NULL_HANDLE) return;
-    if (!app->rayTracingEnabled()) return;
-    VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
-    asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-    asInfo.accelerationStructureCount = 1;
-    asInfo.pAccelerationStructures = &tlasMirror_;
-    VkWriteDescriptorSet w{};
-    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.pNext = &asInfo;
-    w.dstSet = dstSet;
-    w.dstBinding = 14;
-    w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-    vkUpdateDescriptorSets(app->getDevice(), 1, &w, 0, nullptr);
-}
-
-void SceneRenderer::refreshRTSceneViews(VulkanApp* app) {
-    if (!app || !rayTracing || !rayTracing->isSupported()) return;
-    if (!solidRenderer || !skyRenderer) return;
-    VkImageView surfaceDepths[3] = {};
-    VkImageView skyViews[3] = {};
-    for (int i = 0; i < 3; ++i) {
-        // The solid depth now carries the raymarched water surface as well.
-        surfaceDepths[i] = solidRenderer->getDepthView(static_cast<uint32_t>(i));
-        skyViews[i] = skyRenderer->getSkyView(static_cast<uint32_t>(i));
-    }
-    rayTracing->setSceneViews(app, surfaceDepths, skyViews);
-}
-
 void SceneRenderer::initSSRSamplers(VulkanApp* app) {
     if (!app) return;
     if (ssrColorSampler == VK_NULL_HANDLE) {
@@ -2668,32 +2363,6 @@ void SceneRenderer::destroySSRSamplers(VulkanApp* app) {
     }
 }
 
-void SceneRenderer::writeSceneVertexBindings(VulkanApp* app) {
-    if (!app || !solidRenderer) return;
-    VkBuffer vb = solidRenderer->getIndirectRenderer().getVertexBufferHandle();
-    VkBuffer ib = solidRenderer->getIndirectRenderer().getIndexBufferHandle();
-    if (vb == VK_NULL_HANDLE || ib == VK_NULL_HANDLE) return;
-    // Write the merged vertex/index buffers so the ray-hit shader can read any
-    // vertex (including brush index, uv, normal) regardless of position in
-    // the pool. Terrain is SDF-raymarched now, so the solid pool is a tiny
-    // cull-only sentinel (one vertex + one index); VK_WHOLE_SIZE is both valid
-    // and within maxStorageBufferRange. Do NOT derive the range from
-    // vkGetBufferMemoryRequirements: the driver may pad the requirement past
-    // the logical buffer size, which validation rejects (range >
-    // buffer size, VUID-VkDescriptorBufferInfo-range-00342).
-    VkDevice device = app->getDevice();
-    DescriptorWriter writer(device);
-    auto bind = [&](VkDescriptorSet ds) {
-        if (ds == VK_NULL_HANDLE) return;
-        writer.writeBuffer(ds, 24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vb, 0, VK_WHOLE_SIZE);
-        writer.writeBuffer(ds, 25, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ib, 0, VK_WHOLE_SIZE);
-    };
-    bind(app->getStaticDescriptorSet());
-    for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi)
-        bind(app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi)));
-    writer.flush();
-}
-
 void SceneRenderer::writeSSRBindings(VulkanApp* app) {
     if (!app || !solidRenderer) return;
     if (ssrColorSampler == VK_NULL_HANDLE || ssrDepthSampler == VK_NULL_HANDLE) return;
@@ -2718,366 +2387,6 @@ void SceneRenderer::writeSSRBindings(VulkanApp* app) {
     // Keep the static set valid too (it may be bound by passes that don't touch
     // bindings 19/20; slot 0 views are always a legal image).
     bind(app->getStaticDescriptorSet(), 0);
-    // Per-frame RT params (binding 17): each main set reads its own slot's
-    // camera matrices, so in-flight frames never see another frame's view.
-    // Binding 26: per-frame RT profiling counters (same per-slot discipline:
-    // the RT_PROFILE shader variants atomically accumulate into the slot their
-    // frame's set binds, and the app reads/resets that slot after its fence).
-    if (rayTracing && rayTracing->isSupported()) {
-        for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi) {
-            VkDescriptorSet ds = app->getMainDescriptorSetForFrame(static_cast<uint32_t>(fi));
-            VkBuffer pb = rayTracing->getParamsBuffer(static_cast<uint32_t>(fi));
-            if (ds == VK_NULL_HANDLE || pb == VK_NULL_HANDLE) continue;
-            writer.writeBuffer(ds, 17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, pb, 0, sizeof(RayTracingParams));
-            VkBuffer profBuf = rayTracing->getProfileBuffer(static_cast<uint32_t>(fi));
-            if (profBuf != VK_NULL_HANDLE)
-                writer.writeBuffer(ds, 26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, profBuf,
-                                   0, sizeof(RTProfileCounters));
-        }
-        // Static set: slot 0's buffers are always a legal binding.
-        VkDescriptorSet staticSet = app->getStaticDescriptorSet();
-        VkBuffer profBuf0 = rayTracing->getProfileBuffer(0);
-        if (staticSet != VK_NULL_HANDLE && profBuf0 != VK_NULL_HANDLE)
-            writer.writeBuffer(staticSet, 26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, profBuf0,
-                               0, sizeof(RTProfileCounters));
-    }
     writer.flush();
 }
 
-void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
-    if (!rayTracing || !rayTracing->isSupported()) return;
-    // No ray path enabled: keep the proxy maps accumulating but do no repack
-    // work. Re-enabling consumes the force flag so the first frame back
-    // repacks from current chunk state.
-    if (!rayTracing->runtimeEnabled()) return;
-    sceneChanged = sceneChanged || rayTracing->consumeForceProxyRefresh();
-    // Fingerprint both proxy-source registries (count + bounds/material hash).
-    // Camera moves, LOD band switches and tessellation changes never touch
-    // these maps, so they never mark the proxy dirty (§6). O(N), N ~= chunks.
-    uint64_t fp = 0;
-    size_t count = 0;
-    const bool wantWater = rtWaterProxyEnabled;
-    {
-        std::lock_guard<std::recursive_mutex> lock(proxyMutex_);
-        auto hashMap = [&](const std::unordered_map<NodeID, SolidProxyData>& m) {
-            for (const auto& kv : m) {
-                const SolidProxyData& d = kv.second;
-                // Hash the FULL tight bounds + material + rung: Y/Z-only edits
-                // (brush height strokes, water level shifts) must dirty the
-                // TLAS, otherwise refraction keeps sampling the pre-edit lake
-                // bottom (stale color unrelated to the surface underneath).
-                fp += uint64_t(d.materialId) * 1000003ull
-                    + uint64_t(std::bit_cast<uint32_t>(d.minp.x)) * 31ull
-                    + uint64_t(std::bit_cast<uint32_t>(d.minp.y)) * 37ull
-                    + uint64_t(std::bit_cast<uint32_t>(d.minp.z)) * 41ull
-                    + uint64_t(std::bit_cast<uint32_t>(d.maxp.x)) * 43ull
-                    + uint64_t(std::bit_cast<uint32_t>(d.maxp.y)) * 47ull
-                    + uint64_t(std::bit_cast<uint32_t>(d.maxp.z)) * 53ull
-                    + uint64_t(d.rung) * 59ull;
-            }
-        };
-        hashMap(solidProxyData);
-        if (wantWater) hashMap(waterProxyData);
-        count = solidProxyData.size() + (wantWater ? waterProxyData.size() : 0);
-        fp ^= uint64_t(count) * 0x9e3779b97f4a7c15ull;
-        fp ^= wantWater ? 0x12345678ull : 0u;
-    }
-    static thread_local uint64_t lastFp = 0;
-    static thread_local size_t lastCount = 0;
-    {
-        // ── Real scene geometry refresh ────────────────────────────────────
-        // Chunk re-uploads move the packed vertex/index spans even when the
-        // proxy bounds/material fingerprint is unchanged. Refresh the scene
-        // BLAS inputs whenever the span set actually differs, so reflections
-        // never trace spans that newer chunks reclaimed (stale geometry =
-        // wrong positions AND wrong per-vertex brushIndex textures).
-        if (solidRenderer && textureArrays_) {
-            VkBuffer vb = solidRenderer->getIndirectRenderer().getVertexBufferHandle();
-            VkBuffer ib = solidRenderer->getIndirectRenderer().getIndexBufferHandle();
-            std::vector<RTGeometrySpan> spans;
-            // Camera-independent raw snapshot (all resident rungs): the BLAS
-            // is rebuilt only when the chunk set changes (never on camera
-            // moves). The O(n^2) overlap filter below runs only when this
-            // raw set actually differs.
-            solidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(spans);
-            const bool solidok = vb != VK_NULL_HANDLE && ib != VK_NULL_HANDLE;
-            const bool solidChanged = solidok && spans != lastSceneSpans_;
-            if (solidChanged) {
-                lastSceneSpans_ = spans;
-                // Non-overlapping: only the finest resident rung per nested
-                // region survives, so LOD0 is never overlaid with LODN in
-                // the reflection.
-                std::vector<RTGeometrySpan> filtered;
-                if (solidok) IndirectRenderer::filterNonOverlappingSpans(lastSceneSpans_, filtered);
-                // Surviving mesh ids per layer: the proxy packer below drops
-                // entries outside these sets (coarse ancestors), so proxy
-                // boxes never overlay the fine surface for refraction/shadow
-                // rays. Refreshed together with the filtered lists, hence
-                // always consistent with them.
-                keptSolidProxyIds_.clear();
-                for (const auto& s : filtered) keptSolidProxyIds_.insert(s.chunkId);
-                std::lock_guard<std::recursive_mutex> lock(proxyMutex_);
-                VkBufferDeviceAddressInfo q{};
-                q.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-                VkDeviceAddress vaddr = 0, iaddr = 0;
-                if (solidok) {
-                    q.buffer = vb;
-                    vaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
-                    q.buffer = ib;
-                    iaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
-                }
-                std::vector<SceneTriGeometry> solidGeoms;
-                std::vector<SceneTriGeometry> waterGeoms; // raymarched: no raster triangles
-                solidGeoms.reserve(filtered.size());
-                for (const auto& s : filtered) {
-                    SceneTriGeometry g;
-                    g.vertexAddress = vaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
-                    g.indexAddress = iaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
-                    g.vertexBuffer = vb;
-                    g.indexBuffer = ib;
-                    g.vertexCount = s.vertexCount;
-                    g.indexCount = s.indexCount;
-                    g.baseVertex = s.baseVertex;
-                    g.firstIndex = s.firstIndex;
-                    auto it = solidProxyData.find(s.chunkId);
-                    const uint32_t mat = (it != solidProxyData.end()) ? it->second.materialId : 0u;
-                    const auto avg = textureArrays_->albedoAverage(mat);
-                    // albedo.w = the chunk's mirror strength (NOT the material
-                    // id): reflection rays read it to decide whether a hit
-                    // surface is itself reflective (multi-bounce reflections).
-                    const float matRefl = materialManagerPtr
-                        ? materialManagerPtr->reflectionStrength(mat) : 0.0f;
-                    g.albedo = glm::vec4(avg[0], avg[1], avg[2], matRefl);
-                    solidGeoms.push_back(g);
-                }
-                // Water contributes no raster triangles to the scene BLAS;
-                // water reflections/refraction trace the SDF via the octree
-                // raymarch branch.
-                rayTracing->setSceneGeometry(std::move(solidGeoms), std::move(waterGeoms));
-            }
-        }
-    }
-    if (!sceneChanged && fp == lastFp && count == lastCount) return;
-    lastFp = fp;
-    lastCount = count;
-
-    // Fixed water tint for proxy hit shading (a water chunk's brush index
-    // addresses water params, not scene materials, so store the tint directly).
-    constexpr glm::vec3 kWaterProxyAlbedo(0.03f, 0.10f, 0.14f);
-    std::vector<RTProxyBox> solids;
-    std::vector<RTProxyBox> waters;
-    {
-        std::lock_guard<std::recursive_mutex> plock(proxyMutex_);
-        // GC entries for erased chunks (per-layer publish maps are authoritative:
-        // keep a proxy while ANY layer still tracks the NodeID).
-        auto hasChunkAnywhere = [&](NodeID nid) -> bool {
-            std::lock_guard<std::mutex> lock(layerStatesMutex_);
-            for (const auto& st : layerStates_) {
-                if (!st) continue;
-                std::lock_guard<std::recursive_mutex> guard(*st->mutex);
-                if (st->chunks.find(nid) != st->chunks.end()) return true;
-            }
-            return false;
-        };
-        for (auto it = solidProxyData.begin(); it != solidProxyData.end(); ) {
-            if (!hasChunkAnywhere(it->first))
-                it = solidProxyData.erase(it);
-            else ++it;
-        }
-        for (auto it = waterProxyData.begin(); it != waterProxyData.end(); ) {
-            if (!hasChunkAnywhere(it->first))
-                it = waterProxyData.erase(it);
-            else ++it;
-        }
-        auto pack = [&](const std::unordered_map<NodeID, SolidProxyData>& m,
-                        std::vector<RTProxyBox>& out, bool isWater,
-                        const std::unordered_set<uint32_t>& keep) {
-            // Only proxies whose mesh survived the non-overlapping scene
-            // filter are packed: each proxy is clamped inside its own octree
-            // cell, but coarser ancestor rungs still nest OVER the fine ones,
-            // so a downward refraction ray hits the coarse flat top first and
-            // inherits its dominant material (wrong texture) and stepped
-            // height (terraces). Finest-available per region never leaves
-            // holes (a region with only coarse rungs keeps them), unlike a
-            // global finest-rung cut which starved mid/far reflections. Sort
-            // by rung so that if the slot budget truncates, the finest
-            // (closest) boxes survive. An empty keep-set predates the first
-            // refresh: pack everything (legacy behavior, no holes).
-            struct Entry { uint32_t rung; const SolidProxyData* d; NodeID nid; };
-            std::vector<Entry> sorted;
-            sorted.reserve(m.size());
-            for (const auto& kv : m) {
-                const SolidProxyData& d = kv.second;
-                if (!(d.maxp.x > d.minp.x && d.maxp.y > d.minp.y && d.maxp.z > d.minp.z))
-                    continue; // degenerate
-                sorted.push_back(Entry{d.rung, &d, kv.first});
-            }
-            std::sort(sorted.begin(), sorted.end(),
-                      [](const Entry& a, const Entry& b) { return a.rung < b.rung; });
-            for (const auto& [rung, dp, nid] : sorted) {
-                (void)rung;
-                // NodeIDs share the truncated 32-bit domain of
-                // RTGeometrySpan::chunkId (see addMeshSlotted callers).
-                if (!keep.empty() && !keep.count(static_cast<uint32_t>(nid))) continue;
-                const SolidProxyData& d = *dp;
-                glm::vec3 chunkMin = d.minp;
-                glm::vec3 chunkMax = d.maxp;
-                // Grazing secondary rays (the reflected horizon) can slip
-                // between neighbouring chunk boxes when their AABB tops differ:
-                // they thread the vertical gap and stipple the sky/terrain
-                // boundary. Solid boxes tile their cells in X/Z, so extending
-                // each one downward closes those gaps with continuous side
-                // walls. Water boxes keep their true bounds (thickness).
-                if (!isWater) chunkMin.y -= 512.0f;
-
-                auto proxyAlbedo = [&](RTProxyBox& b) {
-                    if (isWater) {
-                        // Actual water surface tint (from the water layer's
-                        // depth-region ramp), not a hardcoded blue — so
-                        // reflected water carries the real water color.
-                        b.albedo = waterReflectionTint_;
-                        b.roughness = 0.15f;
-                    } else if (textureArrays_) {
-                        // Real per-material average albedo (linear) so
-                        // secondary rays return plausible terrain colors
-                        // instead of flat gray.
-                        const auto avg = textureArrays_->albedoAverage(d.materialId);
-                        b.albedo = glm::vec3(avg[0], avg[1], avg[2]);
-                    }
-                };
-
-                if (isWater) {
-                    // Water volumes keep one box: they are thickness volumes,
-                    // not heightfields.
-                    RTProxyBox b{};
-                    b.minp = chunkMin;
-                    b.maxp = chunkMax;
-                    b.materialId = static_cast<float>(d.materialId);
-                    b.flags = 1.0f;
-                    proxyAlbedo(b);
-                    out.push_back(b);
-                    continue;
-                }
-
-                // Solid chunks: one box per 4x4 height-grid cell so secondary
-                // rays hit the chunk's real silhouette (reflection positions
-                // match the terrain surface within ~cell/4 instead of one flat
-                // box top per chunk).
-                constexpr int kGrid = 4;
-                const float w = chunkMax.x - chunkMin.x;
-                const float dep = chunkMax.z - chunkMin.z;
-                const float cw = w / float(kGrid);
-                const float cd = dep / float(kGrid);
-                const float floorY = chunkMin.y;
-                for (int gz = 0; gz < kGrid; ++gz) {
-                    for (int gx = 0; gx < kGrid; ++gx) {
-                        const float h = d.hgrid[gz * kGrid + gx];
-                        if (h <= d.minp.y) continue; // empty cell
-                        RTProxyBox b{};
-                        b.minp = glm::vec3(chunkMin.x + cw * float(gx), floorY,
-                                           chunkMin.z + cd * float(gz));
-                        b.maxp = glm::vec3((gx == kGrid - 1) ? chunkMax.x : b.minp.x + cw,
-                                           h,
-                                           (gz == kGrid - 1) ? chunkMax.z : b.minp.z + cd);
-                        b.materialId = static_cast<float>(d.materialId);
-                        b.flags = 0.0f;
-                        proxyAlbedo(b);
-                        out.push_back(b);
-                    }
-                }
-            }
-        };
-        solids.reserve(solidProxyData.size());
-        pack(solidProxyData, solids, false, keptSolidProxyIds_);
-        if (wantWater) {
-            waters.reserve(waterProxyData.size());
-            pack(waterProxyData, waters, true, keptWaterProxyIds_);
-        }
-        { // Rare (repacks only): pack composition. Only surviving (finest per
-            // nested region) rungs are packed now, so this also fingerprints
-            // whether the filtered proxy set is active in a given binary.
-            static size_t lastKept = SIZE_MAX;
-            const size_t kept = solids.size() + waters.size();
-            if (kept != lastKept) {
-                lastKept = kept;
-                printf("[HybridRT] proxy pack: %zu solid + %zu water boxes (all rungs)\n",
-                    solids.size(), waters.size());
-                fflush(stdout);
-            }
-        }
-    }
-    rayTracing->setProxies(solids, waters);
-}
-
-void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
-                                   const WaterSettings& waterLook,
-                                   const glm::mat4& invViewProj, const glm::vec3& viewPos,
-                                   const glm::vec3& sunDirTo, const glm::vec3& sunColor,
-                                   float nearPlane, float farPlane) {
-    if (!app || !rayTracing || !rayTracing->isSupported()) return;
-    // Runtime gate: with every ray-path toggle off nothing can consume the
-    // acceleration structures, so builds/repacks are skipped entirely. RT
-    // thickness alone cannot trace (it rides the refraction ray).
-    const bool rtRuntimeEnabled = settings.rtReflections || settings.rtWaterReflections
-                                  || settings.rtRefractions || settings.rtLocalShadows
-                                  || settings.rtWaterDepth;
-    rayTracing->setRuntimeEnabled(rtRuntimeEnabled);
-    // No ray path enabled: the bound fragment variants compile the RT block
-    // out, so nothing samples the params UBO. Skip building RayTracingParams
-    // and the per-frame memcpy into the mapped slot (H5).
-    if (!rtRuntimeEnabled) return;
-    RayTracingParams p{};
-    p.reflectionsEnabled = settings.rtReflections ? 1u : 0u;
-    p.refractionsEnabled = settings.rtRefractions ? 1u : 0u;
-    p.thicknessEnabled = settings.rtThickness ? 1u : 0u;
-    p.localShadowsEnabled = settings.rtLocalShadows ? 1u : 0u;
-    p.maxReflectDistance = settings.rtMaxReflectDist;
-    p.maxRefractDistance = settings.rtMaxRefractDist;
-    p.maxShadowDistance = settings.rtMaxShadowDist;
-    p.roughnessThreshold = settings.rtRoughnessThreshold;
-    // Pipeline-path water look mirrors water layer 0 (rgen has no layer id).
-    // The sampled inline path reads each fragment's own WaterSettings instead.
-    p.waterIor = waterLook.ior;
-    p.maxWaterThickness = waterLook.maxThickness;
-    p.coarseBoxSize = settings.rtCoarseBoxSize;
-    p.maxReflectionBounces = std::clamp(settings.rtReflectionBounces, 0, 3);
-    p.absorptionColor = waterLook.absorption;
-    p.absorptionScale = waterLook.absorptionScale;
-    p.debugMode = settings.debugMode;
-    p.tlasReady = rayTracing->tlasBuilt() ? 1u : 0u;
-    p.selfSkipDist = settings.rtSelfSkipDist;
-    p.useWaterPipeline = settings.rtWaterPipeline ? 1u : 0u;
-    p.invViewProj = invViewProj;
-    // Temporal SSR: expose the previous frame's view-projection so solid
-    // reflections can reproject into the previous frame's color/depth instead
-    // of hammering it with the current camera (which stipples while moving).
-    p.prevViewProj = prevViewProj_;
-    prevViewProj_ = glm::inverse(invViewProj);
-    // LoD band inputs for the scene-geometry snapshot (same values the raster
-    // cull uses; consumed on the next rebuild).
-    lastBandCamPos_ = viewPos;
-    lastBandLodBias_ = settings.lodBias;
-    lastBandMaxLod_ = settings.maxTargetLod;
-    p.viewPosition = viewPos;
-    p.rtResolution = glm::vec2(0.0f);
-    p.invRtResolution = glm::vec2(0.0f);
-    p.nearPlane = nearPlane;
-    p.farPlane = farPlane;
-    p.sunDirection = sunDirTo;
-    p.sunColor = sunColor;
-    // Ray-budget A/B: traced-result debug views force the reference path
-    // (full-rate + dual-trace) so diagnostics/screenshots show full quality;
-    // otherwise honor the runtime toggles. Ray mask / depth source stay
-    // budgeted (they visualize the live cuts). Keeps the null-TLAS skip path
-    // (debug.y) unchanged.
-    const bool refMode = debugModeForcesRtReference(debugModeFromInt(settings.debugMode));
-    p.checkerboardReflections = (!refMode && settings.rtRayScale > 0.5f) ? 1u : 0u;
-    p.reflectionContribMin = settings.rtRayContribMin;
-    p.singleRay = (settings.rtSingleRay && !refMode) ? 1u : 0u;
-    p.waterReflections = settings.rtWaterReflections ? 1u : 0u;
-    // Water-region depth source: ray-traced bottom in the water TES vs the
-    // raster path (solid depth + water volume back face). Both return a
-    // world-space vertical drop.
-    p.rayTracedWaterDepth = settings.rtWaterDepth ? 1u : 0u;
-    rayTracing->updateParams(p, app->getCurrentFrame());
-}

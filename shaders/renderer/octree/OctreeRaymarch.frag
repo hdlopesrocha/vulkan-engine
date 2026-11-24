@@ -1,10 +1,4 @@
 #version 460
-// RT_ENABLED is defined for the OctreeRaymarchRT.frag.spv variant (hardware
-// RT path). Without it the shader uses the procedural-sky fallback with
-// identical miss baselines, so non-RT hardware stays validation-clean.
-#ifdef RT_ENABLED
-#extension GL_EXT_ray_query : require
-#endif
 
 // ── Octree SDF raymarcher ───────────────────────────────────────────────────
 // Optional SDF path (Settings: "Octree SDF Raymarch", selected in the Ray
@@ -12,7 +6,7 @@
 // this fullscreen pass marches the octree's stored corner SDFs for EVERY
 // terrain layer (Solid and Water) and shades the nearest isosurface hit. Solid
 // layers go through the same shadeSolidSurface() routine the raster path uses
-// (materials/mapping, CSM shadows, RT reflections/contact shadows); Water
+// (materials/mapping, CSM shadows); Water
 // layers use a water-surface shading branch (Snell-refracted lake bed + SDF
 // mirror ray, composed with the raster surface's Fresnel/strength mix).
 //
@@ -74,18 +68,8 @@
 #include "../../includes/shadow/Shadows.glsl"
 #include "../../includes/Hsv.glsl"
 
-// Hybrid RT: the raymarched surface is shaded by the SAME shadeSolidSurface()
-// body as the raster path, so it must see the same TLAS/params/geometry
-// bindings and reflection helpers. RtParams provides the struct/helpers only;
-// the bindings are compiled out without RT_ENABLED and the shading then falls
-// back to the procedural sky exactly like the non-RT raster variant.
-#include "../../includes/rt/RtParams.glsl"
-#ifdef RT_ENABLED
-#include "../../includes/rt/RtSceneBindings.glsl"
-#endif
-
 // Screen-space reflection refinement (set 0, bindings 19/20) required by
-// shadeSolidSurface(); the RT-less path leaves the env reflection at sky.
+// shadeSolidSurface(); reflections fall back to the procedural sky.
 layout(set = 0, binding = 19) uniform sampler2D ssrColorTex;
 layout(set = 0, binding = 20) uniform sampler2D ssrDepthTex;
 
@@ -1587,7 +1571,6 @@ vec3 rmShadeSolidHit(uint root, uint node, int brush, vec3 pos, vec3 rd,
 //     ray origins, so both images animate with the live wind;
 //   * the two are composed with the raster surface's exact Fresnel/strength
 //     mirror mix, and the CSM surface shadow darkens the result.
-// The RT variant can resolve the exact scene instead (see rtResolveWaterHit).
 vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
                            vec3 N, vec3 Nw, vec3 V) {
     vec3 toSun = normalize(-ubo.lightDirection);
@@ -1651,7 +1634,7 @@ vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
     } else {
         // No bed within the layer: deep water, sky along the refracted ray
         // saturated to the deep tint (raster deep-water continuity).
-        vec3 deep = rtProceduralSky(refrDir, sky.horizonColor,
+        vec3 deep = proceduralSkyGradient(refrDir, sky.horizonColor,
                                     sky.zenithColor, sky.exponent);
         refrCol = mix(deep, wp.waterColor, 0.85);
     }
@@ -1676,7 +1659,7 @@ vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
             reflCol = rmShadeSolidHit(rRoot, rNode, rBrush, rPos, reflDir,
                                       reflNormal);
         } else {
-            reflCol = rtProceduralSky(reflDir, sky.horizonColor,
+            reflCol = proceduralSkyGradient(reflDir, sky.horizonColor,
                                       sky.zenithColor, sky.exponent);
             if (sky.cloudsEnabled != 0u) {
                 float day = smoothstep(-0.2, 0.2, -ubo.lightElevation);
@@ -1900,8 +1883,7 @@ void main() {
     // its top surface. Shade it with the same wind-driven swell + raymarched
     // reflection/refraction response as the raster water surface. The SDF path
     // traces both lobes through the octree itself (no screen-space/previ-
-    // ous-frame dependency). RT variants use the exact scene TLAS when ready;
-    // otherwise the same SDF raymarch supplies both lobes.
+    // ous-frame dependency).
     if (isWater) {
         WaterParamsNamed wp = waterParamsNamed(waterParams[0]);
         vec3 N = normalize(normal);
@@ -1928,18 +1910,7 @@ void main() {
         // below a shallow bed would start the secondary ray inside terrain and
         // produce holes/speckles.
         vec3 shadePos = hitPos + N * min(max(wave.height, 0.0), 1.0);
-        vec3 color;
-#ifdef RT_ENABLED
-        // Use the exact RT resolve whenever the RT scene is ready: it reflects
-        // every scene object (not just SDF layers) and resolves the exact bed.
-        bool rtResolve = (rt.tlasReady != 0u);
-        if (rtResolve) {
-            color = rtResolveWaterHit(wp, hitPos, Nw, rd);
-        } else
-#endif
-        {
-            color = shadeRaymarchWaterSDF(wp, hitPos, shadePos, N, Nw, V);
-        }
+        vec3 color = shadeRaymarchWaterSDF(wp, hitPos, shadePos, N, Nw, V);
         // Sun specular highlight (the raster water adds it separately).
         vec3 toSun = normalize(-ubo.lightDirection);
         vec3 halfDir = normalize(toSun + V);

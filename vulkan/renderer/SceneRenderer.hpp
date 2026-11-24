@@ -43,7 +43,6 @@ class World;
 #include "brush/BrushSdfRenderer.hpp"
 #include "octree/OctreeRaymarchRenderer.hpp"
 #include "indirect/IndirectRenderer.hpp"
-#include "rt/RayTracingResources.hpp"
 #include "../../widgets/CloudSettings.hpp"
 #include "../streaming/UploadManager.hpp"   // TerrainStreamer: async streaming orchestration
 #include "../../world/World.hpp"
@@ -56,7 +55,6 @@ class World;
 #include "SceneLayerState.hpp"
 #include "StreamStats.hpp"
 #include "StreamCounters.hpp"
-#include "SolidProxyData.hpp"
 #include "StaticTextureSignature.hpp"
 #include "Set0DescriptorBuffers.hpp"
 #include "ChunkMeshProfile.hpp"
@@ -96,12 +94,6 @@ public:
     // terrain layer (Solid + Water). Owns the set-2 node-table descriptors and
     // the fullscreen raymarch pipeline.
     std::unique_ptr<OctreeRaymarchRenderer> octreeRaymarchRenderer;
-    // NOTE (hybrid RT §12): the legacy 360° cubemap capture (Solid360Renderer)
-    // was deleted. Solid reflections and water reflection/refraction are
-    // hardware ray tracing now; CSM is unaffected (see shadowMapper).
-    // Hybrid RT: stable proxy BLAS/TLAS + water RT pipeline + SBT. Owns the
-    // secondary-visibility representation (§6/§21). Null-safe when unsupported.
-    std::unique_ptr<RayTracingResources> rayTracing;
     std::unique_ptr<DebugCubeRenderer> debugCubeRenderer;
     std::unique_ptr<DebugCubeRenderer> boundingBoxRenderer;
     std::unique_ptr<DebugSDFRenderer> debugSDFRenderer;
@@ -151,15 +143,9 @@ public:
     // Scene's LayerRendererType (LayersWidget). States are heap-allocated so
     // PublishTarget references stay stable across vector growth.
 
-    // Texture arrays (owned by main): per-layer albedo averages feed the RT
-    // proxy albedo. Set once in init(); read on the render thread.
+    // Texture arrays (owned by main). Set once in init(); read on the render
+    // thread for memory reporting.
     TextureArrayManager* textureArrays_ = nullptr;
-    // Representative water surface tint (from the water layer's depth-region
-    // ramp) used to shade reflected water in RT hit shading.
-    glm::vec3 waterReflectionTint_ = glm::vec3(0.03f, 0.10f, 0.14f);
-    // Set by the texture allocation listener (any thread); consumed on the
-    // render thread in processPendingMeshes to refresh RT proxy albedos.
-    std::atomic<bool> proxyAlbedoRefresh_{false};
 
     // ── Chunk tracking (per Scene layer, index = Layer::Id) ──
     // Slots whose chunks were erased but may be replaced (same NodeID, new
@@ -326,39 +312,7 @@ public:
 
     // Runtime introspection helpers for UI/debug
     size_t getTransparentModelCount();
-    // ── Hybrid RT proxy bookkeeping ──────────────────────────────────────
-    // Stable proxy source per main-scene chunk, recorded at publish time from
-    // the chunk geometry (world bounds + dominant material). Guarded by
-    // solidChunksMutex. Opaque chunks feed the solid BLAS; transparent
-    // (water) chunks feed the water BLAS so solid reflections see water.
-    std::unordered_map<NodeID, SolidProxyData> solidProxyData;
-    std::unordered_map<NodeID, SolidProxyData> waterProxyData;
-    // Guards solidProxyData/waterProxyData (previously solidChunksMutex).
-    mutable std::recursive_mutex proxyMutex_;
-    // When false, water chunks are excluded from the proxy (e.g. water hidden).
-    // Set from the frame settings before processPendingMeshes runs.
-    bool rtWaterProxyEnabled = true;
-    // Collect solid-chunk world AABBs + materials into the RT proxy set.
-    // Called on the main thread after publishes/removals (never per-frame when
-    // idle: caller passes false when the batch was empty and no slot aged out).
-    void rebuildProxySet(VulkanApp* app, bool sceneChanged);
-    // Refresh per-frame RT params UBO contents from camera + settings. Handle
-    // stable (written once at init); this only memcpys. Must be called before
-    // raster sampling each frame (main thread, any time before submit).
-    // waterLook feeds the layer-unaware async pipeline path (rgen IOR + hit
-    // cap, miss absorption): pass water layer 0 — the inline path already
-    // reads each fragment's own layer directly, so WaterSettings stays the
-    // single source of truth for water look.
-    void updateRTParams(VulkanApp* app, const class Settings& settings,
-                        const struct WaterSettings& waterLook,
-                        const glm::mat4& invViewProj, const glm::vec3& viewPos,
-                        const glm::vec3& sunDirTo, const glm::vec3& sunColor,
-                        float nearPlane, float farPlane);
-    // Refresh the RT pipeline's per-slot scene views (water depth + sky).
-    // Called at init and on swapchain resize (handles stable otherwise).
-    void refreshRTSceneViews(VulkanApp* app);
-
-    // ── Hybrid solid SSR (bindings 19/20) ─────────────────────────────────
+    // ── Solid SSR (bindings 19/20) ────────────────────────────────────────
     // SolidRenderer.frag resolves solid reflections against the real rendered scene by
     // marching the *previous* frame's solid color/depth. Each per-frame main
     // descriptor set is bound once to the solid views of the slot it does NOT
@@ -369,32 +323,9 @@ public:
     VkSampler ssrColorSampler = VK_NULL_HANDLE;
     VkSampler ssrDepthSampler = VK_NULL_HANDLE;
     glm::mat4 prevViewProj_ = glm::mat4(1.0f);
-    // Last submitted real-geometry span set: chunk re-uploads move the packed
-    // spans even when the proxy bounds/material stay identical, so the scene
-    // BLAS must refresh on span changes, not only on proxy changes.
-    std::vector<RTGeometrySpan> lastSceneSpans_;
-    // Raw water span set, same change-detection role as lastSceneSpans_
-    // (without it the scene BLAS would rebuild every 30 frames when idle).
-    std::vector<RTGeometrySpan> lastWaterSpans_;
-    // Chunk ids (truncated NodeIDs — the same domain as
-    // RTGeometrySpan::chunkId) surviving the non-overlapping filter, per
-    // layer. The proxy packer drops entries outside these sets so coarse
-    // ancestor boxes never overlay fine ones for refraction/shadow rays
-    // (same LOD-overlap class as the scene BLAS was). Empty = unrestricted
-    // (predates the first refresh — pack everything, no holes).
-    std::unordered_set<uint32_t> keptSolidProxyIds_;
-    std::unordered_set<uint32_t> keptWaterProxyIds_;
-    // Last known LoD band inputs (mirror the raster cull in rebuildProxySet).
-    glm::vec3 lastBandCamPos_ = glm::vec3(0.0f);
-    float lastBandLodBias_ = 8.0f;
-    int lastBandMaxLod_ = 16;
     void initSSRSamplers(VulkanApp* app);
     void writeSSRBindings(VulkanApp* app);
     void destroySSRSamplers(VulkanApp* app);
-    // Bind the merged vertex/index pools (24/25) for real-triangle hit shading.
-    // Must run after IndirectRenderer::initSlots created the buffers (called
-    // from initSlottedMode while the device is idle — no in-flight frames).
-    void writeSceneVertexBindings(VulkanApp* app);
 
     // The solid/water space-change lambdas are constructed by the app
     // (MyApp.cpp) — they need world state, chunk management and debug
@@ -454,12 +385,6 @@ private:
     // The World owns ChunkManager and all chunk state.
     World* world_ = nullptr;
 
-    // Mirror of the RT TLAS handle for descriptor writes (the TLAS object is
-    // created once and never recreated, so one stored handle serves every
-    // vkUpdateDescriptorSets with a pNext AS chain).
-    VkAccelerationStructureKHR tlasMirror_ = VK_NULL_HANDLE;
-    void writeTlasBinding(VulkanApp* app, VkDescriptorSet dstSet);
-
     // Descriptor-buffer migration: change guard for updateTextureDescriptorSet().
     // Static bindings (texture arrays, shadow maps, materials, water params) are
     // written once at init and re-written only when the underlying resources
@@ -487,8 +412,8 @@ private:
     // buffers are warm mirrors (classic sets stay authoritative); once the
     // main layout flips to DESCRIPTOR_BUFFER_BIT, bindSet0ForFrame() becomes
     // the bind path and classic set-0 writes stop.
-    // NOTE (hybrid RT): offsets cover set-0 bindings 0..28 (binding 11 absent
-    // — legacy cubemap removed). Binding 14 (TLAS) has no warm mirror.
+    // Offsets cover the set-0 bindings in use (binding 11 stays absent —
+    // legacy cubemap removed).
     Set0DescriptorBuffers descBuffers_;
 
     // Camera position from the last processPendingMeshes call; used by the

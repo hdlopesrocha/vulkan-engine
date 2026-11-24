@@ -145,25 +145,14 @@ void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
         // COMPUTE_SHADER as a source: the octree topology pass writes the
         // vertex/index pools directly (GPU-resident chunks — no host upload),
         // so its shader writes must be made available to the cull's shader
-        // reads, the indirect draws and the acceleration-structure builds.
+        // reads and the indirect draws.
         barriers[count].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         barriers[count].srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
-        // Acceleration-structure builds read the merged vertex/index buffers as
-        // build inputs (real-geometry reflection BLAS) in the same command
-        // buffer, so the destination must cover the build stage too.
         barriers[count].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
             | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
             | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
             | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
         barriers[count].dstAccessMask = dstAccess | VK_ACCESS_2_SHADER_READ_BIT;
-        if (app_ && app_->rayTracingEnabled()) {
-            // Acceleration-structure builds read the merged vertex/index buffers
-            // as build inputs in the same command buffer, so the destination must
-            // cover the build stage too. Both bits require
-            // VK_KHR_acceleration_structure, so they stay off the raster path.
-            barriers[count].dstStageMask |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-            barriers[count].dstAccessMask |= VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
-        }
         barriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[count].buffer = buf;
@@ -1787,10 +1776,7 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     // in-place without touching other slots or the buffer layout.
 
     // Vertex buffer (device-local). SHADER_DEVICE_ADDRESS + AS build-input
-    // usage feed the real-geometry reflection BLAS (see recordSceneBlas) and
-    // are only valid on the hybrid RT path: the AS usage bit requires
-    // VK_KHR_acceleration_structure and the address bit requires the
-    // bufferDeviceAddress feature, both enabled only when RT is active.
+    // usage feed the GPU-resident chunk writes.
     VkDeviceSize vertexBufferSize = vertexCapacity * sizeof(Vertex);
     VkBufferUsageFlags vertexUsage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
         | VK_BUFFER_USAGE_TRANSFER_DST_BIT
@@ -1798,12 +1784,6 @@ void IndirectRenderer::initSlots(VulkanApp* app,
     VkBufferUsageFlags indexUsage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT
         | VK_BUFFER_USAGE_TRANSFER_DST_BIT
         | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    if (app->rayTracingEnabled()) {
-        vertexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
-            | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-        indexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
-            | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-    }
     vertexBuffer = app->createBuffer(vertexBufferSize, vertexUsage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 

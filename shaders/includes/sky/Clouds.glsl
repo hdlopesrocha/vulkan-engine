@@ -54,9 +54,8 @@
 //     Cheap SDF-backed projection along the sun direction. Used by the
 //     terrain/water shaders to darken direct light (clouds cast shadows).
 //   cloudApproxForReflection(reflDir)
-//     Single-sample coverage for the inline procedural-sky fallback so RT-off
-//     reflections still show clouds (the RT pipeline miss samples the equirect
-//     which already contains the raymarched clouds).
+//     Single-sample coverage for the procedural-sky reflection term so
+//     reflective surfaces still show clouds.
 
 #include "../noise/Perlin.glsl"
 #include "../vegetation/WindField.glsl"

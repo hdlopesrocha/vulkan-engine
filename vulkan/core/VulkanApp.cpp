@@ -23,22 +23,6 @@
 #define VK_KHR_MAINTENANCE5_EXTENSION_NAME "VK_KHR_maintenance5"
 #endif
 
-// Hybrid RT extensions may be missing from older vendored headers. Define the
-// names so runtime feature detection compiles everywhere; support is still
-// queried on the physical device (never assumed from versions).
-#ifndef VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME
-#define VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME "VK_KHR_acceleration_structure"
-#endif
-#ifndef VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME
-#define VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME "VK_KHR_ray_tracing_pipeline"
-#endif
-#ifndef VK_KHR_RAY_QUERY_EXTENSION_NAME
-#define VK_KHR_RAY_QUERY_EXTENSION_NAME "VK_KHR_ray_query"
-#endif
-#ifndef VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME
-#define VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME "VK_KHR_deferred_host_operations"
-#endif
-
 // VK_EXT_descriptor_buffer may not be in older Vulkan headers (pre-1.3.235).
 // Define the extension name so we can check for runtime support.
 #ifndef VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME
@@ -3468,12 +3452,7 @@ void VulkanApp::createDepthResources() {
 
 void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
     // Reserve descriptors: uniform buffers, combined image samplers, storage
-    // buffers for materials, storage images (RT pipeline outputs) and
-    // acceleration structures (hybrid RT TLAS). RT counts are small (a handful
-    // of sets) but must exist or TLAS/output writes fail allocation.
-    // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR is only valid when the
-    // VK_KHR_acceleration_structure extension is enabled, so its pool size is
-    // only added when RT was actually enabled (feature detection above).
+    // buffers for materials and storage images.
     std::array<VkDescriptorPoolSize, 5> poolSizes{};
     uint32_t poolSizeCount = 0;
     poolSizes[poolSizeCount].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -3491,12 +3470,6 @@ void VulkanApp::createDescriptorPool(uint32_t uboCount, uint32_t samplerCount) {
     poolSizes[poolSizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     poolSizes[poolSizeCount].descriptorCount = 32;
     ++poolSizeCount;
-    if (accelStructSupported) {
-        poolSizes[poolSizeCount].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        poolSizes[poolSizeCount].descriptorCount = 32;
-        ++poolSizeCount;
-    }
-
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = poolSizeCount;
@@ -5378,12 +5351,9 @@ void VulkanApp::createLogicalDevice() {
     }
     deviceFeatures.tessellationShader = VK_TRUE;
     deviceFeatures.samplerAnisotropy = VK_TRUE;
-    // Per-op RT profiling (RT_PROFILE variants) atomically accumulates counts
-    // and clock time into a storage buffer from the fragment and water-TES
-    // stages. Without fragmentStoresAndAtomics / vertexPipelineStoresAndAtomics
-    // those shaders are invalid (VUID-RuntimeSpirv-NonWritable-06340/06341), so
-    // the features are enabled when advertised and rtProfilingSupported stays
-    // false otherwise.
+    // Fragment-stage storage atomics back the SDF march counters. Without
+    // fragmentStoresAndAtomics the counter path stays disabled (VUID-
+    // RuntimeSpirv-NonWritable-06340).
     if (supportedFeatures.fragmentStoresAndAtomics) {
         deviceFeatures.fragmentStoresAndAtomics = VK_TRUE;
     }
@@ -5535,11 +5505,6 @@ void VulkanApp::createLogicalDevice() {
     bool dynRenderLocalReadSupported = deviceSupports14; // core in 1.4
     bool maintenance6Supported = deviceSupports14;       // core in 1.4
     bool descriptorBufferExtFound = false;
-    bool accelStructExtFound = false;
-    bool rayPipelineExtFound = false;
-    bool rayQueryExtFound = false;
-    bool deferredHostOpsExtFound = false;
-    bool shaderClockExtFound = false;
     uint32_t availExtCount = 0;
     vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &availExtCount, nullptr);
     if (availExtCount > 0) {
@@ -5561,111 +5526,13 @@ void VulkanApp::createLogicalDevice() {
             if (strcmp(ext.extensionName, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) == 0) {
                 descriptorBufferExtFound = true;
             }
-            if (strcmp(ext.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) == 0) {
-                accelStructExtFound = true;
-            }
-            if (strcmp(ext.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) == 0) {
-                rayPipelineExtFound = true;
-            }
-            if (strcmp(ext.extensionName, VK_KHR_RAY_QUERY_EXTENSION_NAME) == 0) {
-                rayQueryExtFound = true;
-            }
-            if (strcmp(ext.extensionName, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) == 0) {
-                deferredHostOpsExtFound = true;
-            }
-            if (strcmp(ext.extensionName, VK_KHR_SHADER_CLOCK_EXTENSION_NAME) == 0) {
-                shaderClockExtFound = true;
-            }
         }
     }
-    // ── Hybrid RT feature detection (never version checks) ────────────────
-    // Query each RT feature struct individually. An extension may be advertised
-    // without its feature (or vice versa); inline ray queries need
-    // accelerationStructure + rayQuery, the water RT pipeline additionally
-    // needs rayTracingPipeline. All disabled gracefully when unsupported.
-    // Hardware RT is retired: the scene has no rasterized triangles to
-    // accelerate. Do not enable the acceleration-structure/ray-query/
-    // ray-tracing features at the device level. This also keeps all RT
-    // descriptor tables and shader variants out of the render path.
-    constexpr bool rtForceDisabled = true;
-    VkPhysicalDeviceAccelerationStructureFeaturesKHR accelFeatQuery{};
-    accelFeatQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
-    // Shader clock query (per-op RT profiling) rides the same features2 chain.
-    VkPhysicalDeviceShaderClockFeaturesKHR clockFeatQuery{};
-    clockFeatQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR;
-    accelFeatQuery.pNext = &clockFeatQuery;
-    VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatQuery{};
-    rayQueryFeatQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
-    rayQueryFeatQuery.pNext = &accelFeatQuery;
-    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtPipeFeatQuery{};
-    rtPipeFeatQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
-    rtPipeFeatQuery.pNext = &rayQueryFeatQuery;
-    VkPhysicalDeviceFeatures2 rtFeatures2Query{};
-    rtFeatures2Query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    rtFeatures2Query.pNext = &rtPipeFeatQuery;
-    vkGetPhysicalDeviceFeatures2(physicalDevice, &rtFeatures2Query);
-    const bool accelFeatOk = !rtForceDisabled && accelFeatQuery.accelerationStructure == VK_TRUE;
-    const bool rayQueryFeatOk = !rtForceDisabled && rayQueryFeatQuery.rayQuery == VK_TRUE;
-    const bool rtPipeFeatOk = !rtForceDisabled && rtPipeFeatQuery.rayTracingPipeline == VK_TRUE;
-    const bool rtBaseOk = accelStructExtFound && rayQueryExtFound && accelFeatOk && rayQueryFeatOk;
-    const bool rtPipeOk = rtBaseOk && rayPipelineExtFound && rtPipeFeatOk;
-    // Per-op RT profiling needs the DEVICE-scope clock (OpReadClockKHR with
-    // Device scope in the RT_PROFILE shader variants). Independent of RT:
-    // queried unconditionally, enabled when advertised.
-    shaderClockSupported = shaderClockExtFound && clockFeatQuery.shaderDeviceClock == VK_TRUE;
-    if (shaderClockSupported) {
-        printf("[VulkanApp] VK_KHR_shader_clock supported — per-op RT profiling available\n");
-    }
-    // The profile variants also atomically store to a storage buffer in the
-    // fragment and water-TES stages: require (and enable) both
-    // fragmentStoresAndAtomics and vertexPipelineStoresAndAtomics. If the clock
-    // is present without them, the profile pipelines must not be created (the
-    // production variants stay untouched).
-    const bool fragmentStoresOk = supportedFeatures.fragmentStoresAndAtomics == VK_TRUE;
-    const bool vertexStoresOk = supportedFeatures.vertexPipelineStoresAndAtomics == VK_TRUE;
-    fragmentStoresAndAtomicsSupported = fragmentStoresOk;
-    rtProfilingSupported = shaderClockSupported && fragmentStoresOk && vertexStoresOk;
-    if (shaderClockSupported && !(fragmentStoresOk && vertexStoresOk)) {
-        printf("[VulkanApp] shader clock present but storage atomics unsupported (fragment=%d vertex=%d) — per-op RT profiling disabled\n",
-            (int)fragmentStoresOk, (int)vertexStoresOk);
-    }
-    // Enabling structs chained into VkDeviceCreateInfo::pNext only when supported.
-    VkPhysicalDeviceAccelerationStructureFeaturesKHR accelFeatEnable{};
-    accelFeatEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
-    accelFeatEnable.accelerationStructure = VK_TRUE;
-    VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatEnable{};
-    rayQueryFeatEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
-    rayQueryFeatEnable.pNext = &accelFeatEnable;
-    rayQueryFeatEnable.rayQuery = VK_TRUE;
-    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtPipeFeatEnable{};
-    rtPipeFeatEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
-    rtPipeFeatEnable.pNext = &rayQueryFeatEnable;
-    rtPipeFeatEnable.rayTracingPipeline = VK_TRUE;
-    // Shader clock enabling struct (chained below only when supported).
-    VkPhysicalDeviceShaderClockFeaturesKHR clockFeatEnable{};
-    clockFeatEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR;
-    clockFeatEnable.shaderDeviceClock = VK_TRUE;
-    if (rtBaseOk) {
-        // RT needs bufferDeviceAddress (SBT + TLAS addresses + BLAS geometry).
-        vulkan12Features.bufferDeviceAddress = VK_TRUE;
-        extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-        extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
-        if (deferredHostOpsExtFound) {
-            extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
-        }
-        if (rtPipeOk) {
-            extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
-            printf("[VulkanApp] Hybrid RT: acceleration_structure + ray_query + ray_tracing_pipeline enabled\n");
-        } else {
-            printf("[VulkanApp] Hybrid RT: acceleration_structure + ray_query enabled (ray_tracing_pipeline unavailable — water RT pipeline disabled, inline ray queries only)\n");
-        }
-    } else {
-        printf("[VulkanApp] Hybrid RT not supported (accelStruct ext=%d feat=%d, rayQuery ext=%d feat=%d) — raster + CSM fallback, sky for misses\n",
-            (int)accelStructExtFound, (int)accelFeatOk, (int)rayQueryExtFound, (int)rayQueryFeatOk);
-    }
-    if (shaderClockSupported) {
-        extensions.push_back(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
-    }
+    // Hardware RT is retired: no acceleration structures, ray queries or RT
+    // pipelines exist anywhere in the renderer.
+    fragmentStoresAndAtomicsSupported =
+        supportedFeatures.fragmentStoresAndAtomics == VK_TRUE;
+
     // Query VK_EXT_descriptor_buffer feature support via vkGetPhysicalDeviceFeatures2.
     // Feature detection (not version checks): the extension may be advertised
     // without the descriptorBuffer feature, in which case we stay on the
@@ -5716,30 +5583,11 @@ void VulkanApp::createLogicalDevice() {
     if (dynRenderLocalReadSupported) vulkan14Features.dynamicRenderingLocalRead = VK_TRUE;
     if (maintenance6Supported)     vulkan14Features.maintenance6 = VK_TRUE;
 
-    // Rewire pNext for the optional head structs. Every ENABLED feature struct
-    // must appear in the chain (an enabled extension whose feature struct is
-    // missing — e.g. rayTracingPipeline without accelerationStructure — leaves
-    // the driver in an invalid/untested state). Order, innermost first:
-    // vulkan14 <- accelStruct <- rayQuery <- [rayTracingPipeline] <-
-    // [descriptorBuffer] <- createInfo.
+    // Rewire pNext for the optional head structs.
     VkBaseOutStructure* chainHead = reinterpret_cast<VkBaseOutStructure*>(&vulkan14Features);
-    if (rtBaseOk) {
-        accelFeatEnable.pNext = chainHead;
-        chainHead = reinterpret_cast<VkBaseOutStructure*>(&accelFeatEnable);
-        rayQueryFeatEnable.pNext = chainHead;
-        chainHead = reinterpret_cast<VkBaseOutStructure*>(&rayQueryFeatEnable);
-        if (rtPipeOk) {
-            rtPipeFeatEnable.pNext = chainHead;
-            chainHead = reinterpret_cast<VkBaseOutStructure*>(&rtPipeFeatEnable);
-        }
-    }
     if (descriptorBufferFeatSupported) {
         descriptorBufferFeaturesEnable.pNext = chainHead;
         chainHead = reinterpret_cast<VkBaseOutStructure*>(&descriptorBufferFeaturesEnable);
-    }
-    if (shaderClockSupported) {
-        clockFeatEnable.pNext = chainHead;
-        chainHead = reinterpret_cast<VkBaseOutStructure*>(&clockFeatEnable);
     }
     // Always rewired (no-op when no optionals: head == &vulkan14Features).
     createInfo.pNext = chainHead;
@@ -5797,69 +5645,6 @@ void VulkanApp::createLogicalDevice() {
             fprintf(stderr, "[VulkanApp] WARNING: VK_EXT_descriptor_buffer enabled but entry points missing — using fallback\n");
         }
     }
-    // ── Hybrid RT entry points + properties ───────────────────────────────
-    // Resolve only when the corresponding extension was enabled; otherwise the
-    // function pointers stay null and rayTracingEnabled()/rayPipelineEnabled()
-    // gate every use. Properties are queried for SBT alignment when available.
-    accelStructSupported = false;
-    rayQuerySupported = false;
-    rayPipelineSupported = false;
-    if (rtBaseOk) {
-        fpCreateAccelerationStructureKHR = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(
-            vkGetDeviceProcAddr(device, "vkCreateAccelerationStructureKHR"));
-        fpDestroyAccelerationStructureKHR = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(
-            vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureKHR"));
-        fpGetAccelerationStructureBuildSizesKHR = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(
-            vkGetDeviceProcAddr(device, "vkGetAccelerationStructureBuildSizesKHR"));
-        fpGetAccelerationStructureDeviceAddressKHR = reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(
-            vkGetDeviceProcAddr(device, "vkGetAccelerationStructureDeviceAddressKHR"));
-        fpCmdBuildAccelerationStructuresKHR = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(
-            vkGetDeviceProcAddr(device, "vkCmdBuildAccelerationStructuresKHR"));
-        if (fpCreateAccelerationStructureKHR && fpDestroyAccelerationStructureKHR &&
-            fpGetAccelerationStructureBuildSizesKHR && fpGetAccelerationStructureDeviceAddressKHR &&
-            fpCmdBuildAccelerationStructuresKHR) {
-            accelStructSupported = true;
-            rayQuerySupported = true;
-            VkPhysicalDeviceProperties2 props2{};
-            props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-            accelProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
-            props2.pNext = &accelProps;
-            vkGetPhysicalDeviceProperties2(physicalDevice, &props2);
-        } else {
-            fpCreateAccelerationStructureKHR = nullptr;
-            fpDestroyAccelerationStructureKHR = nullptr;
-            fpGetAccelerationStructureBuildSizesKHR = nullptr;
-            fpGetAccelerationStructureDeviceAddressKHR = nullptr;
-            fpCmdBuildAccelerationStructuresKHR = nullptr;
-            fprintf(stderr, "[VulkanApp] WARNING: RT extensions enabled but AS entry points missing — RT disabled\n");
-        }
-    }
-    if (rtPipeOk && accelStructSupported) {
-        fpCreateRayTracingPipelinesKHR = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>(
-            vkGetDeviceProcAddr(device, "vkCreateRayTracingPipelinesKHR"));
-        fpGetRayTracingShaderGroupHandlesKHR = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>(
-            vkGetDeviceProcAddr(device, "vkGetRayTracingShaderGroupHandlesKHR"));
-        fpCmdTraceRaysKHR = reinterpret_cast<PFN_vkCmdTraceRaysKHR>(
-            vkGetDeviceProcAddr(device, "vkCmdTraceRaysKHR"));
-        if (fpCreateRayTracingPipelinesKHR && fpGetRayTracingShaderGroupHandlesKHR && fpCmdTraceRaysKHR) {
-            rayPipelineSupported = true;
-            VkPhysicalDeviceProperties2 props2{};
-            props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-            rtPipelineProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
-            props2.pNext = &rtPipelineProps;
-            vkGetPhysicalDeviceProperties2(physicalDevice, &props2);
-            printf("[VulkanApp] RT pipeline props: handleSize=%u baseAlign=%u handleAlign=%u maxRecursion=%u\n",
-                rtPipelineProps.shaderGroupHandleSize, rtPipelineProps.shaderGroupBaseAlignment,
-                rtPipelineProps.shaderGroupHandleAlignment, rtPipelineProps.maxRayRecursionDepth);
-        } else {
-            fpCreateRayTracingPipelinesKHR = nullptr;
-            fpGetRayTracingShaderGroupHandlesKHR = nullptr;
-            fpCmdTraceRaysKHR = nullptr;
-            fprintf(stderr, "[VulkanApp] WARNING: ray_tracing_pipeline enabled but entry points missing — RT pipeline disabled\n");
-        }
-    }
-    printf("[VulkanApp] Hybrid RT active: accelStruct=%d rayQuery=%d rayPipeline=%d\n",
-        (int)accelStructSupported, (int)rayQuerySupported, (int)rayPipelineSupported);
     // ── Sparse binding + buffer device address support query ──────────────
     // Feature detection (never version checks): sparseBinding and
     // sparseResidencyBuffer come from VkPhysicalDeviceFeatures, while

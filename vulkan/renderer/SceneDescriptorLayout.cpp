@@ -96,11 +96,9 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     // reads the water time from the vertex stage.
     waterRenderUBOBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 
-    // NOTE (hybrid RT): binding 11 (legacy 360° environment cubemap) was
-    // REMOVED. Solid reflections and water reflection/refraction are now
-    // hardware ray tracing (inline ray queries + water RT pipeline) with the
-    // sky equirect as the miss fallback. The old Solid360 cubemap capture
-    // passes, targets, sync and descriptors are deprecated (see SceneRenderer).
+    // NOTE: binding 11 (legacy 360° environment cubemap) was REMOVED. Solid
+    // and water shading use the SDF raymarched surfaces plus the sky fallback;
+    // the old Solid360 cubemap capture passes/targets/descriptors are gone.
 
     // binding 12: roughness map array
     VkDescriptorSetLayoutBinding roughnessSamplerBinding{};
@@ -117,51 +115,6 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     aoSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     aoSamplerBinding.pImmutableSamplers = nullptr;
     aoSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // ── Hybrid RT bindings (fragment stage: inline ray queries; TES also
-    // queries the TLAS for the RT water-region depth) ──────────
-    // binding 14: TLAS (stable proxy BLAS; ray queries in SolidRenderer.frag/WaterRenderer.frag)
-    VkDescriptorSetLayoutBinding tlasBinding{};
-    tlasBinding.binding = 14;
-    tlasBinding.descriptorCount = 1;
-    tlasBinding.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-    tlasBinding.pImmutableSamplers = nullptr;
-    tlasBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
-        | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-
-    // binding 15: RT water reflection output (half-res, sampled by WaterRenderer.frag)
-    VkDescriptorSetLayoutBinding rtReflectBinding{};
-    rtReflectBinding.binding = 15;
-    rtReflectBinding.descriptorCount = 1;
-    rtReflectBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    rtReflectBinding.pImmutableSamplers = nullptr;
-    rtReflectBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 16: RT water refraction + thickness output (rgb=color, a=thickness)
-    VkDescriptorSetLayoutBinding rtRefractBinding{};
-    rtRefractBinding.binding = 16;
-    rtRefractBinding.descriptorCount = 1;
-    rtRefractBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    rtRefractBinding.pImmutableSamplers = nullptr;
-    rtRefractBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 17: RT params UBO (toggles, distances, IOR, absorption, debug)
-    VkDescriptorSetLayoutBinding rtParamsBinding{};
-    rtParamsBinding.binding = 17;
-    rtParamsBinding.descriptorCount = 1;
-    rtParamsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    rtParamsBinding.pImmutableSamplers = nullptr;
-    rtParamsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
-        | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-
-    // binding 18: RT proxy metadata (per-box albedo/flags for ray-query hit
-    // shading in SolidRenderer.frag). Same buffer the RT pipeline samples at its set 0/4.
-    VkDescriptorSetLayoutBinding rtMetaBinding{};
-    rtMetaBinding.binding = 18;
-    rtMetaBinding.descriptorCount = 1;
-    rtMetaBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    rtMetaBinding.pImmutableSamplers = nullptr;
-    rtMetaBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // binding 19: previous-frame solid HDR color (screen-space reflection
     // refinement in SolidRenderer.frag — precise mirror samples of the real scene).
@@ -180,71 +133,13 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     ssrDepthBinding.pImmutableSamplers = nullptr;
     ssrDepthBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // binding 21: scene-geometry partition table. [0] = solid geometry count
-    // (the base the shaders add to a water-instance geometry index); [1..N] =
-    // first primitive of combined geometry i (unused by ray-query shading:
-    // primitive indices are per-BLAS).
-    VkDescriptorSetLayoutBinding scenePrimBaseBinding{};
-    scenePrimBaseBinding.binding = 21;
-    scenePrimBaseBinding.descriptorCount = 1;
-    scenePrimBaseBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    scenePrimBaseBinding.pImmutableSamplers = nullptr;
-    scenePrimBaseBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 22: per-geometry average albedo (vec4 per chunk) for shading
-    // real-geometry reflection hits.
-    VkDescriptorSetLayoutBinding sceneMetaBinding{};
-    sceneMetaBinding.binding = 22;
-    sceneMetaBinding.descriptorCount = 1;
-    sceneMetaBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    sceneMetaBinding.pImmutableSamplers = nullptr;
-    sceneMetaBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 23: per-geometry {baseVertex, firstIndex, primBase, 0} for real
-    // triangle attribute fetches in hit shading.
-    VkDescriptorSetLayoutBinding sceneGeomInfoBinding{};
-    sceneGeomInfoBinding.binding = 23;
-    sceneGeomInfoBinding.descriptorCount = 1;
-    sceneGeomInfoBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    sceneGeomInfoBinding.pImmutableSamplers = nullptr;
-    sceneGeomInfoBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 24: merged vertex pool (float array; Vertex stride 16 floats,
-    // position 0-2, normal 8-10) read by hit shading.
-    VkDescriptorSetLayoutBinding sceneVertsBinding{};
-    sceneVertsBinding.binding = 24;
-    sceneVertsBinding.descriptorCount = 1;
-    sceneVertsBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    sceneVertsBinding.pImmutableSamplers = nullptr;
-    sceneVertsBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 25: merged index pool (uint per index).
-    VkDescriptorSetLayoutBinding sceneIndicesBinding{};
-    sceneIndicesBinding.binding = 25;
-    sceneIndicesBinding.descriptorCount = 1;
-    sceneIndicesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    sceneIndicesBinding.pImmutableSamplers = nullptr;
-    sceneIndicesBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 26: per-op RT profiling counters (RT_PROFILE shader variants
-    // only; fragment + water TES ray-query sites accumulate into it). Declared
-    // in the layout unconditionally so the profile pipelines share this set
-    // layout (production variants simply never reference the binding).
-    VkDescriptorSetLayoutBinding rtProfileBinding{};
-    rtProfileBinding.binding = 26;
-    rtProfileBinding.descriptorCount = 1;
-    rtProfileBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    rtProfileBinding.pImmutableSamplers = nullptr;
-    rtProfileBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
-        | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-
     // binding 27: shared wind-field UBO (ambient + up to 4 tornadoes, packed
     // by VegetationRenderer). Read via shaders/includes/vegetation/WindField.glsl by
     // every consumer (vegetation vertex, fire, SDF, volumetric clouds) so all
     // sample the identical field. Appended after 26: binding 11 stays intentionally
     // absent (legacy 360 cubemap; load-bearing hole — descriptor-buffer
     // offsets, shadow-set comments and the RT-compaction note below assume
-    // it), and appending keeps the TLAS-compaction index below valid.
+    // it), and appending keeps the binding indices stable.
     VkDescriptorSetLayoutBinding windFieldBinding{};
     windFieldBinding.binding = 27;
     windFieldBinding.descriptorCount = 1;
@@ -271,14 +166,12 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
 
     // Binding numbers are sparse by design: 11 (legacy 360 cubemap) is
     // intentionally absent.
-    std::array<VkDescriptorSetLayoutBinding, 28> bindings = {
+    std::array<VkDescriptorSetLayoutBinding, 17> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
         shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
         waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
         roughnessSamplerBinding, aoSamplerBinding,
-        tlasBinding, rtReflectBinding, rtRefractBinding, rtParamsBinding, rtMetaBinding,
-        ssrColorBinding, ssrDepthBinding, scenePrimBaseBinding, sceneMetaBinding,
-        sceneGeomInfoBinding, sceneVertsBinding, sceneIndicesBinding, rtProfileBinding,
+        ssrColorBinding, ssrDepthBinding,
         windFieldBinding, brushMapBinding
     };
     // Fill the material binding at position 5
@@ -288,22 +181,12 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     bindings[5].pImmutableSamplers = nullptr;
     bindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
-    // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR (binding 14, array index
-    // 13) is only valid in a set layout when VK_KHR_acceleration_structure is
-    // enabled. On the raster fallback (RT unsupported or VULKAN_RT_DISABLE)
-    // the extensions are absent and the shader variants are compiled without
-    // RT_ENABLED, so the binding is compacted out of the layout.
-    uint32_t layoutBindingCount = static_cast<uint32_t>(bindings.size());
-    if (!app.rayTracingEnabled()) {
-        for (uint32_t i = 13; i + 1 < layoutBindingCount; ++i)
-            bindings[i] = bindings[i + 1];
-        --layoutBindingCount;
-    }
+    const uint32_t layoutBindingCount = static_cast<uint32_t>(bindings.size());
 
     // No update-after-bind bindings remain: the legacy cubemap binding 11
     // (the only UPDATE_AFTER_BIND binding, for swapchain-resize view churn)
-    // is gone. RT views/TLAS are stable between resizes (rewritten only on
-    // resize/recreate events, never while in flight).
+    // is gone. SSR views are the only resizable image bindings and they are
+    // rewritten only while the device is idle.
     std::array<VkDescriptorBindingFlags, 28> bindingFlags{};
     bindingFlags.fill(0);
 
@@ -337,8 +220,7 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     // Allocate one static descriptor set for the scene-static bindings
     // (textures, materials, sky, water params, shadows). Written once in
     // SceneRenderer::init() and then copied into per-frame descriptor sets so
-    // per-frame updates only touch binding 0 (UBO). RT bindings (14-17) are
-    // written by SceneRenderer alongside (stable handles, resize-only updates).
+    // per-frame updates only touch binding 0 (UBO).
     staticDescriptorSet_ = app.createDescriptorSet(descriptorSetLayout_);
 
     // Create a separate material descriptor layout used for materials only

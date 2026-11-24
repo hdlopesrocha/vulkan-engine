@@ -189,7 +189,7 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
         revisions_.clear();
         // The derive pipeline/layout are registered with VulkanResourceManager
         // at creation; remove before destroying so shutdown does not free them
-        // twice (same contract as RayTracingResources).
+        // twice.
         if (derivePipeline_ != VK_NULL_HANDLE) {
             if (app->resources.removePipeline(derivePipeline_))
                 vkDestroyPipeline(app->getDevice(), derivePipeline_, nullptr);

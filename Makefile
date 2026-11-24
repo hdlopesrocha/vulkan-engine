@@ -234,17 +234,12 @@ DEPS := $(OBJS:.o=.d)
 
 
 # Automatically find all shader source files under shaders/ (any depth) with
-# known extensions. rgen/rmiss/rchit/rint/rahit/rcallable are the KHR
-# ray-tracing stages used by the hybrid-RT water pipeline (compiled with the
-# same vulkan1.3 target; glslc enables GL_EXT_ray_tracing / GL_EXT_ray_query
-# per-shader via #extension). The layout mirrors vulkan/: per-renderer sources
-# live under shaders/renderer/<subsystem>/.
+# known extensions. The layout mirrors vulkan/: per-renderer sources live under
+# shaders/renderer/<subsystem>/.
 SHADER_EXTS = vert frag geom comp tesc tese
-RT_SHADER_EXTS = rgen rmiss rchit rint rahit rcallable
 SHADER_FILES := $(shell find shaders -type f \( \
 	-name '*.vert' -o -name '*.frag' -o -name '*.geom' -o -name '*.comp' \
-	-o -name '*.tesc' -o -name '*.tese' -o -name '*.rgen' -o -name '*.rmiss' \
-	-o -name '*.rchit' -o -name '*.rint' -o -name '*.rahit' -o -name '*.rcallable' \))
+	-o -name '*.tesc' -o -name '*.tese' \))
 SHADER_INCLUDES = $(wildcard shaders/includes/*.glsl shaders/includes/*/*.glsl shaders/includes/*/*/*.glsl shaders/ubo/*.glsl shaders/ssbo/*.glsl shaders/types/*.glsl)
 # glslc optimization flag for the WATER shader modules: -O runs the SPIR-V
 # optimizer (DCE, constant folding, register-friendly codegen) on the modules
@@ -262,7 +257,6 @@ GLSL_OPT = -O
 OUT_SPVS = \
 	$(patsubst shaders/%,$(OUT_DIR)/shaders/%.spv,$(SHADER_FILES)) \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv \
-	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchRT.frag.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv \
 	$(OUT_DIR)/shaders/renderer/sdf/SdfRendererSurface.frag.spv \
@@ -278,8 +272,8 @@ OUT_SPVS = \
 #   VegetationRenderer* -> VegetationRenderer
 #   shared/no-owner     -> Fullscreen.vert
 # compile_shader <source> <output> <glslc defines> <glslang defines> <opt>
-#   <glslc defines>   e.g. "-DRT_ENABLED -DWATER_NO_BODY=1"    (empty if none)
-#   <glslang defines> e.g. "--D RT_ENABLED --D WATER_NO_BODY=1" (empty if none)
+#   <glslc defines>   e.g. "-DWATER_NO_BODY=1"    (empty if none)
+#   <glslang defines> e.g. "--D WATER_NO_BODY=1" (empty if none)
 #   <opt>             $(GLSL_OPT) for optimized modules, empty otherwise
 define compile_shader
 	@echo "Compiling shader: $(1) -> $(2)"
@@ -297,12 +291,6 @@ endef
 $(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv: shaders/renderer/solid/SolidRenderer.vert $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/solid/SolidRenderer.vert,$@,-DSOLID_NO_TESS=1,--D SOLID_NO_TESS=1,$(GLSL_OPT))
 
-
-# Octree raymarch RT variant: same march, shadeSolidSurface() with inline ray
-# queries for reflections/contact shadows. Non-RT hardware keeps the base
-# OctreeRaymarch.frag.spv (procedural-sky fallback).
-$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchRT.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DRT_ENABLED,--D RT_ENABLED,)
 
 # H4 (perf report 21): shadow-only solid TES (position-varying outputs only,
 # displacement preserved) bound by the tessellated shadow pipeline; and the
@@ -473,7 +461,6 @@ $(OUT_DIR)/shaders/%.$(1).spv: shaders/%.$(1) $(SHADER_INCLUDES)
 endef
 
 $(foreach ext,$(SHADER_EXTS),$(eval $(call SHADER_COMPILE_RULE,$(ext))))
-$(foreach ext,$(RT_SHADER_EXTS),$(eval $(call SHADER_COMPILE_RULE,$(ext))))
 
 .PHONY: debug release
 

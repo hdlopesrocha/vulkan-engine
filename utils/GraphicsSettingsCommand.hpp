@@ -4,18 +4,15 @@
 #include "types/Settings.hpp"
 
 // Command that applies a graphics-quality preset to the runtime settings:
-//   Maximum — every secondary-visibility ray path on (RT solid/water
-//             reflections, water refraction, thickness, ray-traced depth),
-//             global water blur on, geometry/wave tessellation on, shadows
-//             on, volumetric clouds on, ray marching on, full-rate dual-trace
-//             rays.
+//   Maximum — water blur on, geometry/wave tessellation on, shadows on,
+//             volumetric clouds on, ray marching on.
 //   Minimal — all of the above off (blur, tessellation, shadows, clouds and
 //             ray marching included), so the renderer falls back to the
-//             cheapest raster paths.
+//             cheapest paths.
 //
 // Global-only and renderer-agnostic: the preset edits Settings fields that
-// gate the per-material water features (blurEnabled, rtWaterReflections,
-// rtRefractions) without holding renderer types, so the headless server can
+// gate the per-material water features (blurEnabled, etc.) without holding
+// renderer types, so the headless server can
 // still include it. The per-layer WaterSettings are authored values and are
 // never touched.
 //
@@ -43,21 +40,6 @@ public:
 
 private:
     static void applyMaximum(Settings& settings) {
-        settings.rtReflections = true;
-        settings.rtWaterReflections = true;
-        settings.rtRefractions = true;
-        settings.rtThickness = true;
-        settings.rtWaterDepth = true;
-        // Ray quality: Maximum means the full-rate, dual-trace reference. The
-        // shipped defaults are the budgeted shortcuts - rtRayScale = 1
-        // (checkerboard half-rate inline rays) and rtSingleRay = true (water
-        // traces reflection XOR refraction as a stochastic pick). With the xor
-        // on ~96% of pixels pick the reflection lobe (reflMixEst is Fresnel
-        // weighted and reflectionStrength pushes it toward 1), so the water
-        // reads as a pure mirror and refraction looks broken. Maximum traces
-        // both lobes at full rate instead.
-        settings.rtRayScale = 0;
-        settings.rtSingleRay = false;
         settings.tessellationEnabled = true;
         settings.shadowTessellationEnabled = true;
         settings.enableShadows = true;
@@ -84,17 +66,6 @@ private:
     }
 
     static void applyMinimal(Settings& settings) {
-        // Local contact shadows are disabled as well so SceneRenderer's RT
-        // runtime gate (any ray path on) turns the RT pipeline off entirely.
-        settings.rtReflections = false;
-        settings.rtWaterReflections = false;
-        settings.rtRefractions = false;
-        settings.rtThickness = false;
-        settings.rtWaterDepth = false;
-        // Keep the budgeted ray shortcuts explicit on the low preset.
-        settings.rtRayScale = 1;
-        settings.rtSingleRay = true;
-        settings.rtLocalShadows = false;
         // The global tessellation toggle drives both the solid and the water
         // TCS (tess level collapses to 1 when it is off).
         settings.tessellationEnabled = false;

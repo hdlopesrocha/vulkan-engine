@@ -237,8 +237,8 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
     float NdotL = max(dot(worldNormal, toLight), 0.0);
 
     // Shadow calculation. The raster solid path keeps the CSM authoritative
-    // macro sun-shadow (RT only adds a selective local/contact term below).
-    // The octree raymarcher defines SOLID_SHADOW_TRACE and replaces the CSM
+    // macro sun-shadow. The octree raymarcher defines SOLID_SHADOW_TRACE and
+    // replaces the CSM
     // sample with a second SDF ray march through the same node table: no
     // terrain chunk meshes exist any more, so the cascades can no longer cast
     // terrain shadows.
@@ -259,38 +259,10 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
             shadow = 1.0;
         }
     }
-    // RT local/contact shadows (default OFF — CSM-only is authoritative).
-    // Only where CSM says lit: nearby proxy geometry adds high-frequency
-    // contact occlusion the cascades cannot resolve. CSM-shadowed pixels keep
-    // the CSM result (no double-darkening: combined as independent occluders).
-    // Compiled out without RT_ENABLED (rtLocalShadow stays 0 = CSM-only).
-    float rtLocalShadow = 0.0;
-#ifdef RT_ENABLED
-    bool rtReady = (rt.tlasReady != 0u);
-    if (rtReady && (rt.localShadowsEnabled != 0u) && shadow < 0.5 && NdotL > 0.01) {
-        vec3 sunDir = -normalize(ubo.lightDirection);
-        float shadowDist = max(rt.maxShadowDistance, 0.5);
-        RT_PROF_BEGIN(rtProfShadow, RT_PROFILE_OP_CONTACT_SHADOW);
-        rayQueryEXT shadowRQ;
-        rayQueryInitializeEXT(shadowRQ, rtTlas, gl_RayFlagsOpaqueEXT, RT_RAY_MASK_ALL,
-            fragPosWorld + worldNormal * 0.05, 0.05, sunDir, shadowDist);
-        while (rayQueryProceedEXT(shadowRQ)) {}
-        RT_PROF_END(rtProfShadow);
-        if (rayQueryGetIntersectionTypeEXT(shadowRQ, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-            RT_PROF_HIT(RT_PROFILE_OP_CONTACT_SHADOW);
-            float hitT = rayQueryGetIntersectionTEXT(shadowRQ, true);
-            // Contact falloff: full occlusion at contact, fading to lit at maxDist.
-            rtLocalShadow = clamp(1.0 - hitT / shadowDist, 0.0, 1.0);
-        }
-    }
-#endif
     float totalShadow = shadow;
-    // Independent-occluder combine: CSM lit + RT lit = lit; either occluded =
-    // occluded. RT never brightens CSM shadows and never double-darkens.
-    totalShadow = 1.0 - (1.0 - shadow) * (1.0 - clamp(rtLocalShadow, 0.0, 1.0));
     // Volumetric cloud shadows: project the fragment along the sun direction
     // onto the three cloud slabs and attenuate direct light. Combined as an
-    // independent occluder with CSM/RT (clouds never brighten either term).
+    // independent occluder with CSM (clouds never brighten the shadow term).
     // Skipped in the shadow pass (isShadowPass fast-path returned above) and
     // when the surface faces away (NdotL == 0 keeps full shadow = 1.0).
     float cloudShadow = 0.0;
@@ -337,21 +309,13 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
     float spec = (NdotL > 0.0) ? pow(max(dot(viewDir, reflectDir), 0.0), specPower) : 0.0;
     vec3 specular = ubo.lightColor * spec * (1.0 - totalShadow) * blendedSpec.x;
 
-    // Environment reflection via HARDWARE RAY TRACING (hybrid RT §7).
-    // The rasterized world position + shading normal seed one secondary ray
-    // through the stable proxy TLAS. On hit the proxy-box material shades the
-    // reflection; on miss the procedural sky is evaluated directly. The old
-    // 360° cubemap capture is removed. Single bounce, roughness-gated for
-    // performance (§16); reflection rays are uncapped (RT_NO_LIMIT) so
-    // distant scenery still mirrors. Very rough materials keep the
-    // cheap sky approximation instead of tracing.
+    // Environment reflection: procedural sky gradient plus the cheap
+    // single-sample cloud approximation, evaluated along the mirror direction.
+    // Terrain is SDF raymarched, so there is no rasterized scene color to
+    // trace against; the sky is the environment for every reflective surface.
     vec3 envReflection = vec3(0.0);
     float blendedRefStrength = 0.0;
     float envFresnelFactor = 0.0;
-    // Ray-budget mask for DEBUG_MODE_RAY_MASK (ray-query pixel ratio): 0 = no
-    // reflective surface, 1 = skipped by roughness/contrib gate, 2 = skipped
-    // by checkerboard half-rate, 3 = inline ray traced.
-    float rtTraceMask = 0.0;
     if (ubo.cubemapCapture == 0u) {
         float refStrength0 = materialNamed(materials[texIndices.x]).reflectionStrength;
         float refStrength1 = materialNamed(materials[texIndices.y]).reflectionStrength;
@@ -359,267 +323,27 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
         blendedRefStrength = refStrength0 * w.x + refStrength1 * w.y + refStrength2 * w.z;
         // Skip non-reflective surfaces (the mix factor below collapses to zero).
         if (blendedRefStrength > 1e-4) {
-            // Use the smooth surface normal for the reflection ray: the
-            // normal-mapped worldNormal carries per-pixel detail that scatters
-            // RT rays (parts of the surface reflect the sky instead of the
-            // scene), while the displaced derivative normal would warp the
-            // reflection along every displacement bump. fragNormal is the
-            // interpolated base-surface normal — clean and stable.
             vec3 reflN = normalize(fragNormal);
             vec3 reflV = normalize(viewDir);
             float cosTheta = clamp(dot(reflN, reflV), 0.0, 1.0);
             float fresnel = 0.04 + 0.96 * pow(1.0 - cosTheta, 5.0);
             float rough = clamp(roughnessValue * roughnessFactor, 0.0, 1.0);
             vec3 reflDir = reflect(-reflV, reflN);
-            // Sky-reflection fallback: used whenever the RT mirror ray is not
-            // traced (RT reflections off / TLAS not ready / roughness gate).
-            // Procedural horizon/zenith gradient from the sky UBO — also the
-            // RT miss value, so toggling RT never pops the miss baseline, and
-            // solid reflections still come "from the sky" in raster-only mode.
-            vec3 skyApprox = rtProceduralSky(normalize(reflDir), sky.horizonColor,
+            vec3 skyApprox = proceduralSkyGradient(normalize(reflDir), sky.horizonColor,
                                              sky.zenithColor, sky.exponent);
             skyApprox *= aoBlend * (1.0 - rough * 0.5);
-            // Clouds in reflections: the RT pipeline miss samples the equirect
-            // (which already contains the raymarched clouds). The inline
-            // procedural fallback above does not, so add the cheap single-sample
-            // cloud approximation here — both reflection paths then show clouds.
             if (sky.cloudsEnabled != 0u) {
                 float reflDay = smoothstep(-0.2, 0.2, -ubo.lightElevation);
                 skyApprox += cloudApproxForReflection(normalize(reflDir),
                     normalize(-ubo.lightDirection), reflDay) * aoBlend;
             }
-            vec3 rtColor = skyApprox;
-            // Set when the ray-query resolved the reflection to a WATER proxy:
-            // the SSR refinement samples the previous frame's SOLID render,
-            // which contains the lake BOTTOM terrain (water is a transparent
-            // pass), so it would overwrite the water surface tint with the
-            // underwater ground — "water not visible in the reflection".
-            bool waterHit = false;
-            // Ray-budget gate (perf: 2-4x fewer inline rays, no visible change):
-            // roughness gate (existing) + contribution gate + checkerboard
-            // half-rate + global toggle + TLAS readiness (ray queries compiled
-            // out without RT_ENABLED — sky fallback). contrib = the exact lobe
-            // weight mixed into the final color below, so skipping contrib <
-            // contribMin (rt.reflectionContribMin, default 0.02) only drops rays whose
-            // result would be invisible. Checkerboard (rt.checkerboardReflections)
-            // traces even (x+y) pixels only; strong mirrors (contrib > 0.5)
-            // stay full-rate so polished surfaces never dither, and any debug
-            // view of a traced result (see debugModeForcesRtReference) forces
-            // full-rate reference. The null-TLAS skip path (rt.tlasReady) is
-            // unchanged.
-            float roughThreshold = 0.6;
-#ifdef RT_ENABLED
-            roughThreshold = clamp(rt.roughnessThreshold, 0.0, 1.0);
-            float contrib = clamp(blendedRefStrength, 0.0, 1.0) * fresnel
-                * (1.0 - clamp(rough, 0.0, 1.0));
-            float contribMin = clamp(rt.reflectionContribMin, 0.0, 1.0);
-            // Ray mask / depth source visualize the budgeted behavior itself,
-            // so they must not force reference (otherwise the counters could
-            // never show the live behavior).
-            bool refMode = debugModeForcesRtReference(rt.debugMode);
-            bool checkerOn = (rt.checkerboardReflections != 0u) && !refMode;
-            // Checkerboard only claims pixels that survived every other gate
-            // (else gated pixels would misreport as half-rate in the mask).
-            bool gatedOut = !(((rt.tlasReady != 0u)) && (rt.reflectionsEnabled != 0u)
-                && rough <= roughThreshold && contrib >= contribMin);
-            bool checkerSkip = checkerOn && !gatedOut
-                && ((int(gl_FragCoord.x) + int(gl_FragCoord.y)) & 1) == 1
-                && contrib <= 0.5;
-            bool doRTTrace = !gatedOut && !checkerSkip;
-            // Mask for DEBUG_MODE_RAY_MASK.
-            rtTraceMask = checkerSkip ? 2.0 : ((doRTTrace ? 3.0 : 1.0));
-#else
-            bool doRTTrace = false;
-            rtTraceMask = 1.0;
-#endif
-            if (doRTTrace) {
-#ifdef RT_ENABLED
-                // The BLAS holds the UNDISPLACED CPU mesh — use the undisplaced
-                // position + base normal so the ray starts on the BLAS surface.
-                // A small bias clears it; no displacement-dependent bias is
-                // needed (the BLAS itself must not displace, per design).
-                float selfSkip = max(rt.selfSkipDist, 0.15);
-                vec3 origin = fragPosWorldNotDisplaced + reflN * selfSkip;
-                RT_PROF_BEGIN(rtProfRefl, RT_PROFILE_OP_SOLID_REFLECTION);
-                rayQueryEXT rq;
-                // Mirror reflections trace the real scene-geometry instances
-                // ONLY (exact chunk triangles: solids + the real water mesh,
-                // the latter flagged by geomInfo.w). The water proxy boxes are
-                // deliberately excluded: they are coarse thickness slabs whose
-                // side walls stick up above the lake surface while neighbouring
-                // chunks leave vertical gaps — grazing mirror rays either slam
-                // into a wall (a flat water block, faded to sky at the top,
-                // where distant terrain should be) or thread a gap (sky leak),
-                // printing chunk-sized shards and cracks across the reflection.
-                // Cull ray-front faces: scene triangles wind CW-outward (the
-                // rasterizer draws them with BACK+CW culling), and ray-front
-                // is fixed CCW — so this keeps exactly the rasterizer-visible
-                // faces and skips inward faces the main pass would cull.
-                rayQueryInitializeEXT(rq, rtTlas, gl_RayFlagsOpaqueEXT |
-                    gl_RayFlagsCullFrontFacingTrianglesEXT,
-                    RT_RAY_MASK_SCENE | RT_RAY_MASK_SCENE_WATER,
-                    origin, 0.05, normalize(reflDir), RT_NO_LIMIT);
-                while (rayQueryProceedEXT(rq)) {}
-                RT_PROF_END(rtProfRefl);
-                if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-                    RT_PROF_HIT(RT_PROFILE_OP_SOLID_REFLECTION);
-                    float hitT = rayQueryGetIntersectionTEXT(rq, true);
-                    // Own-surface guard: hits closer than selfSkip are the
-                    // reflector's own triangles, not true scenery.
-                    if (hitT >= selfSkip) {
-                        // Mask-selected: only the real scene-geometry instances
-                        // can report hits (see the SCENE masks above).
-                        const uint inst = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
-                        if (rtIsSceneInstance(inst)) {
-                        // The primitive index is LOCAL to the hit geometry
-                        // (per GLSL_EXT_ray_query: "the index of the primitive
-                        // within the geometry of the BLAS"). The geometry index
-                        // maps through rtSceneGeomIndex() onto the combined
-                        // solid/water lookup buffers — never binary search
-                        // cumulative primBase (that maps local indices onto
-                        // the wrong chunk for every geometry after the first,
-                        // corrupting brushIndex/UV/normal reads).
-                        const uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
-                        const uint lo = rtSceneGeomIndex(inst,
-                            uint(rayQueryGetIntersectionGeometryIndexEXT(rq, true)));
-                        // Real interpolated triangle normal from the merged
-                        // vertex pool (Vertex stride 16 floats: position 0-2,
-                        // normal 8-10) via the hit barycentrics.
-                        vec3 hitPos = origin + normalize(reflDir) * hitT;
-                        // (Screen-space color lookup removed: it pasted the
-                        // previous frame's solid render — including the sky —
-                        // over the accurate RT reflection. The ray-query
-                        // shading below is the real reflection.)
-                        {
-                        uvec4 gi = rtSceneGeomInfo[lo];
-                        // prim is already local to this geometry (ray-query
-                        // semantics) — do NOT subtract the cumulative base.
-                        uint localPrim = prim;
-                        const uint kVertStride = 16u;
-                        vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
-                        // Real water mesh (gi.w): shade with a constant UP
-                        // normal. Bindings 24/25 address the SOLID vertex
-                        // pools while water vertices live in the WATER pools,
-                        // so fetching here would light the water with another
-                        // chunk's normals (faceted shards). Water is a
-                        // heightfield, so UP matches the surface.
-                        vec3 hitN = vec3(0.0, 1.0, 0.0);
-                        uint i0 = 0u, i1 = 0u, i2 = 0u;
-                        if (gi.w == 0u) {
-                            i0 = rtSceneIndices[gi.y + localPrim * 3u + 0u] + gi.x;
-                            i1 = rtSceneIndices[gi.y + localPrim * 3u + 1u] + gi.x;
-                            i2 = rtSceneIndices[gi.y + localPrim * 3u + 2u] + gi.x;
-                            vec3 n0 = vec3(rtSceneVerts[i0 * kVertStride + 8u],
-                                           rtSceneVerts[i0 * kVertStride + 9u],
-                                           rtSceneVerts[i0 * kVertStride + 10u]);
-                            vec3 n1 = vec3(rtSceneVerts[i1 * kVertStride + 8u],
-                                           rtSceneVerts[i1 * kVertStride + 9u],
-                                           rtSceneVerts[i1 * kVertStride + 10u]);
-                            vec3 n2 = vec3(rtSceneVerts[i2 * kVertStride + 8u],
-                                           rtSceneVerts[i2 * kVertStride + 9u],
-                                           rtSceneVerts[i2 * kVertStride + 10u]);
-                            hitN = normalize(n0 * (1.0 - bary.x - bary.y) + n1 * bary.x + n2 * bary.y);
-                        }
-                        if (dot(hitN, reflDir) > 0.0) hitN = -hitN; // face the incoming ray
-                        // Mirror strength of this primary hit (drives the
-                        // in-reflection bounce below); set by each branch.
-                        float hitReflectivity = 0.0;
-                        // Water chunk marker (geomInfo.w): the real water mesh
-                        // is in the scene BLAS; shade it as water (sky
-                        // reflection + tint), never the terrain albedo lookup
-                        // (a water chunk's brushIndex addresses water params).
-                        if (gi.w > 0u) {
-                            // Reflected water: SAME composition as the raster
-                            // water surface (tint base + Fresnel/strength sky
-                            // reflection) so water inside a mirror matches the
-                            // water itself. The underwater bottom is not traced
-                            // from inside a mirror, so the refraction term
-                            // collapses to the tint (refraction-off water).
-                            int nWLM = max(waterParams.length(), 1);
-                            int wIdM = int(rtSceneAlbedo[lo].w + 0.5);
-                            int wLayer = (wIdM >= 0 && wIdM < nWLM) ? wIdM : 0;
-                            WaterParamsNamed wp = waterParamsNamed(waterParams[wLayer]);
-                            rtColor = rtResolveWaterHit(wp, hitPos, hitN, reflDir, solidCascadeHint);
-                            waterHit = true;
-                            // No bounce off water hits (see rtHitReflectivity):
-                            // the water look already includes its mirror and
-                            // recursive water rays self-intersect the flat
-                            // BLAS mesh (water-on-water triangle noise).
-                        } else {
-                        // Real painted material at this triangle (Vertex float
-                        // offset 11 = brushIndex): the proxy registry only
-                        // knows the chunk's DOMINANT brush, which loses the
-                        // ground-cover mix painted per vertex.
-                        int maxLayer = max(int(textureSize(albedoArray, 0).z) - 1, 0);
-                        // brushIndex is an int stored in the float-typed vertex pool: read its
-                        // bit pattern (reading it as a float yields a denormal, decoding to 0).
-                        const int matId = clamp(floatBitsToInt(rtSceneVerts[i0 * kVertStride + 11u]), 0, maxLayer);
-                        // Exact raster texture lookup: three corner materials
-                        // compressed into unique slots and blended by the hit
-                        // barycentrics (SolidRenderer.tesc + SolidRenderer.frag) — fixes wrong
-                        // material identity at in-triangle boundaries.
-                        vec3 hitAlbedo = rtSceneSampleReflectionAlbedo(
-                            i0, i1, i2, bary, hitPos, hitN, maxLayer, 0.0);
-                        // Macro shadows stay CSM-owned (no RT shadow recompute).
-                        // The sky ambient fill matches WaterRenderer.frag's hit shading
-                        // so reflections read as lit scenery, not dark plates.
-                        // Full shading for the reflected hit: real texture
-                        // albedo, real interpolated normal, sun diffuse (CSM
-                        // shadowed) + sky ambient.
-                        vec3 toLight = -normalize(ubo.lightDirection);
-                        float ndl = max(dot(hitN, toLight), 0.0);
-                        // H6: primary-cascade hint; strict hits resolve to the
-                        // exact single sample, others take the full path.
-                        float hitShadow = ShadowCalculationSecondary(hitPos, solidCascadeHint, 0.0015);
-                        // Albedo-scaled sky ambient (raster convention), not
-                        // a dark constant: grazing/off-screen terrain hits in
-                        // mirrors no longer read as near-black plates.
-                        rtColor = hitAlbedo * (ubo.lightColor * ndl * (1.0 - hitShadow)
-                                               + vec3(0.26));
-                        // A mirror's reflection is not occluded by AO nor dimmed by
-                            // the surface roughness (the RT roughness gate already
-                            // handles scatter): the reflection is full-strength.
-                            rtColor *= 1.0;
-                        // Chunk mirror strength (packed in rtSceneAlbedo[].w by
-                        // the proxy/geometry builder) gates the bounce below.
-                        hitReflectivity = clamp(rtSceneAlbedo[lo].w, 0.0, 1.0);
-                        } // terrain else
-                        // Reflection-inside-reflection: when the primary hit is
-                        // itself reflective, chain extra mirror rays up to the
-                        // configured bounce count (rt.maxReflectionBounces, 0 = single).
-                        {
-                            int extraBounces = clamp(rt.maxReflectionBounces, 0, 3) - 1;
-                            if (hitReflectivity > 0.02 && extraBounces >= 0) {
-                                vec3 nextDir = normalize(reflect(normalize(reflDir), hitN));
-                                vec3 bounceCol = rtTraceMirror(hitPos + hitN * 0.05,
-                                                               nextDir, extraBounces,
-                                                               selfSkip, solidCascadeHint);
-                                rtColor = mix(rtColor, bounceCol, hitReflectivity);
-                            }
-                        }
-                        } // !ssHit
-                    }
-                }
-            }
-#endif
-            }
-            // SSR refinement: where the reflected scene is on screen, the
-            // previous frame's real color/depth resolve the mirror per pixel;
-            // the proxy/sky result above stays the fallback for the rest.
-#ifdef RT_ENABLED
-            // (Screen-space refinement removed: the inline ray query hits the
-            // real geometry and shades it accurately. The previous-frame SSR
-            // pasted the old solid render — including the sky — on top of the
-            // reflection, progressively replacing it with stale content.)
-#endif
-            envReflection = rtColor;
+            envReflection = skyApprox;
             // Reflectivity: the material's reflectionStrength lerps between a
             // physical Fresnel mirror (0) and a full mirror at every angle
             // (1) — same convention as the water reflectionStrength — shaped
             // by the Schlick Fresnel term, then faded by the rasterized
             // material roughness (smooth ≈ full mirror, rough ≈ matte lit
-            // color only). The RT roughness gate above already skips the trace
-            // for very rough surfaces; this factor fades the result smoothly.
+            // color only).
             envFresnelFactor = mix(fresnel, 1.0, clamp(blendedRefStrength, 0.0, 1.0))
                 * (1.0 - clamp(rough, 0.0, 1.0));
         }
@@ -756,8 +480,9 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
         return;
     }
     if (debugMode == DEBUG_MODE_SHADOW) {
-        // R = CSM, G = RT local/contact, B = combined term actually shaded.
-        outColor = vec4(shadow, clamp(rtLocalShadow, 0.0, 1.0), totalShadow, 1.0);
+        // R = CSM, G = (unused, kept for channel stability), B = combined
+        // term actually shaded.
+        outColor = vec4(shadow, shadow, totalShadow, 1.0);
         return;
     }
     if (debugMode == DEBUG_MODE_REFLECTION_COLOR) {
@@ -772,18 +497,6 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
     }
     if (debugMode == DEBUG_MODE_FRESNEL) {
         outColor = vec4(vec3(envFresnelFactor), 1.0);
-        return;
-    }
-    if (debugMode == DEBUG_MODE_RAY_MASK) {
-        // Ray-query budget mask: white = inline traced, mid-grey =
-        // checkerboard-skipped (pipeline/sky fallback), dark = gated
-        // (roughness/contrib), black = non-reflective. The traced-pixel
-        // fraction must drop >=50% vs full-rate with default settings.
-        vec3 maskCol = vec3(0.0);
-        if (rtTraceMask > 2.5) maskCol = vec3(1.0);
-        else if (rtTraceMask > 1.5) maskCol = vec3(0.45);
-        else if (rtTraceMask > 0.5) maskCol = vec3(0.12);
-        outColor = vec4(maskCol, 1.0);
         return;
     }
     if (debugMode == DEBUG_MODE_TESS_HEAT) {

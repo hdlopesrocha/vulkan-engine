@@ -27,8 +27,8 @@ void SettingsWidget::render() {
     // ---- be moved as a whole into another column when the current one fills up.
     // ---- Order is deliberate: everyday render controls first, advanced/debug
     // ---- last. Tiny related groups are merged (Display & Performance, Input)
-    // ---- and the oversized Hybrid RT block is split, so every block is
-    // ---- similarly sized and columns pack without big empty gaps.
+    // ---- so every block stays similarly sized and columns pack without big
+    // ---- empty gaps.
     std::vector<ImGuiComponents::ColumnSection> sections;
     sections.reserve(12);
 
@@ -141,99 +141,6 @@ void SettingsWidget::render() {
             // toggled
         }
         ImGuiComponents::TooltipOnHover("Globally enable/disable ambient occlusion mapping");
-    });
-
-    // 1: Hybrid RT toggles (raster owns primary, CSM macro shadows,
-    // RT secondary visibility)
-    sections.emplace_back([this]() {
-        ImGui::Text("Hybrid RT");
-        ImGuiComponents::ColSeparator();
-        ImGui::TextWrapped("Raster=primary, CSM=macro shadows, RT=secondary (reflections, refraction, thickness, contact).");
-        if (ImGui::Checkbox("RT solid reflections", &settings.rtReflections)) {
-        }
-        ImGuiComponents::TooltipOnHover("Solid mirror/SSR reflection rays (sky on miss/off).");
-        if (ImGui::Checkbox("RT water reflections", &settings.rtWaterReflections)) {
-        }
-        ImGuiComponents::TooltipOnHover("Water surface reflection rays (inline and RT-pipeline).\n"
-                       "Per-material 'Enable Reflection' still gates each water layer.");
-        if (ImGui::Checkbox("RT refractions", &settings.rtRefractions)) {
-        }
-        ImGuiComponents::TooltipOnHover("Water refraction via Snell IOR (the same ray also carries RT thickness).\n"
-                       "Off = NO water refraction at all: the sky-fallback bent ray is disabled too.");
-        if (ImGui::Checkbox("RT water thickness", &settings.rtThickness)) {
-        }
-        ImGuiComponents::TooltipOnHover("Use the refraction ray's path length as water thickness + Beer-Lambert absorption.\n"
-                       "Off = thickness comes only from the raster back face.");
-        if (ImGui::Checkbox("RT water depth (regions)", &settings.rtWaterDepth)) {
-        }
-        ImGuiComponents::TooltipOnHover("Shore-wave region depth from a ray-traced solid bottom (world-space drop)\n"
-                       "instead of the raster solid + water back-face depth. Requires RT;\n"
-                       "falls back to the raster path where the ray misses.");
-        if (ImGui::Checkbox("RT local/contact shadows (augment CSM)", &settings.rtLocalShadows)) {
-        }
-        ImGuiComponents::TooltipOnHover("Selective RT contact shadows augmenting CSM (off = CSM-only, recommended)");
-        if (ImGui::Checkbox("Water via RT pipeline (off = inline queries)", &settings.rtWaterPipeline)) {
-        }
-        ImGuiComponents::TooltipOnHover("Water via async RT pipeline outputs (off = inline ray queries)");
-        ImGuiComponents::FieldLabel("Reflection bounces", "Extra mirror rays on reflective hits");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderInt("##Reflection bounces", &settings.rtReflectionBounces, 0, 3);
-        ImGuiComponents::TooltipOnHover("Extra mirror rays when a water/solid reflection hits another\n"
-                       "reflective surface (0 = single reflection, 1 = reflection inside\n"
-                       "the reflection, up to 3). More bounces cost more ray work.");
-    });
-
-    // 2: RT Distances (split out so the RT block packs into columns)
-    sections.emplace_back([this]() {
-        ImGui::Text("RT Distances");
-        ImGuiComponents::ColSeparator();
-        ImGuiComponents::FieldLabel("Max reflect dist", "Reflection ray Tmax (world units)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Max reflect dist", &settings.rtMaxReflectDist, 10.0f, 2000.0f, "%.0f");
-        ImGuiComponents::TooltipOnHover("Reflection ray Tmax (world units)");
-        ImGuiComponents::FieldLabel("Max refract dist", "Refraction ray Tmax (also deep-water thickness)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Max refract dist", &settings.rtMaxRefractDist, 10.0f, 1000.0f, "%.0f");
-        ImGuiComponents::TooltipOnHover("Refraction ray Tmax (also deep-water thickness)");
-        ImGuiComponents::FieldLabel("Max contact dist", "Local shadow ray Tmax (contact range only)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Max contact dist", &settings.rtMaxShadowDist, 1.0f, 60.0f, "%.1f");
-        ImGuiComponents::TooltipOnHover("Local shadow ray Tmax (contact range only)");
-        ImGuiComponents::FieldLabel("Roughness threshold", "Roughness above this skips RT reflections (env approx)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Roughness threshold", &settings.rtRoughnessThreshold, 0.0f, 1.0f, "%.2f");
-        ImGuiComponents::TooltipOnHover("Roughness above this skips RT reflections (env approx)");
-        ImGuiComponents::FieldLabel("Self-skip dist", "Ignore proxy hits closer than this (own-box guard)");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Self-skip dist", &settings.rtSelfSkipDist, 0.0f, 15.0f, "%.2f");
-        ImGuiComponents::TooltipOnHover("Ignore proxy hits closer than this (own-box guard)");
-    });
-
-    // 3: RT Ray Budget
-    sections.emplace_back([this]() {
-        ImGui::Text("RT Ray Budget");
-        ImGuiComponents::ColSeparator();
-        ImGui::TextWrapped("Ray budget (2-4x fewer inline rays, no visible change):");
-        ImGuiComponents::FieldLabel("Ray scale", "0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
-        const char* rayScales[] = {"Full-rate (reference)", "Checkerboard half-rate"};
-        int rayIdx = (settings.rtRayScale == 1) ? 1 : 0;
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        if (ImGui::Combo("##Ray scale", &rayIdx, rayScales, 2)) {
-            settings.rtRayScale = (rayIdx == 1) ? 1 : 0;
-        }
-        ImGuiComponents::TooltipOnHover("0 = full-rate inline rays (reference), 1 = checkerboard half-rate");
-        ImGuiComponents::FieldLabel("Ray contrib min", "Skip the inline ray when the lobe contribution is below this");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Ray contrib min", &settings.rtRayContribMin, 0.0f, 0.2f, "%.3f");
-        ImGuiComponents::TooltipOnHover("Skip the inline ray when the lobe contribution is below this");
-        if (ImGui::Checkbox("Water single-ray (Fresnel xor, off = dual reference)", &settings.rtSingleRay)) {
-        }
-        ImGuiComponents::TooltipOnHover("Water traces reflection XOR refraction stochastically (probability = Fresnel mix).\n"
-                       "Only the REFRACTION ray is cut (it recovers from the raster bottom/sky);\n"
-                       "reflection always traces full-rate. Checkerboard applies to solid reflections.");
-
-        ImGui::TextWrapped("Water look (IOR, absorption, depth cap, shore fade) lives in Water Settings, per water layer.");
-        ImGui::TextWrapped("CSM stays authoritative: keep RT local shadows OFF unless inspecting contact detail. Proxy BLAS is coarse by design — never use RT for macro terrain shadows.");
     });
 
     // 4: Display & Performance (merged: presentation controls in one place)
