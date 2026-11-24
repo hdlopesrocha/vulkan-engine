@@ -2631,24 +2631,18 @@ void SceneRenderer::writeSceneVertexBindings(VulkanApp* app) {
     if (vb == VK_NULL_HANDLE || ib == VK_NULL_HANDLE) return;
     // Write the merged vertex/index buffers so the ray-hit shader can read any
     // vertex (including brush index, uv, normal) regardless of position in
-    // the pool. The spec caps a storage descriptor's effective range at
-    // VkPhysicalDeviceLimits::maxStorageBufferRange (128 MB on this RADV
-    // build, while the merged pools are 768/192 MB): binding VK_WHOLE_SIZE
-    // there is a spec violation the validation layer aborts on. Clamp to the
-    // limit — the ray-hit shader's geometry-base reads stay inside the
-    // clamped window on devices reporting a smaller limit.
+    // the pool. Terrain is SDF-raymarched now, so the solid pool is a tiny
+    // cull-only sentinel (one vertex + one index); VK_WHOLE_SIZE is both valid
+    // and within maxStorageBufferRange. Do NOT derive the range from
+    // vkGetBufferMemoryRequirements: the driver may pad the requirement past
+    // the logical buffer size, which validation rejects (range >
+    // buffer size, VUID-VkDescriptorBufferInfo-range-00342).
     VkDevice device = app->getDevice();
-    const VkDeviceSize maxRange = app->getMaxStorageBufferRange();
-    auto clampedRange = [&](VkBuffer buf) {
-        VkMemoryRequirements reqs{};
-        vkGetBufferMemoryRequirements(device, buf, &reqs);
-        return (reqs.size < maxRange) ? reqs.size : maxRange;
-    };
     DescriptorWriter writer(device);
     auto bind = [&](VkDescriptorSet ds) {
         if (ds == VK_NULL_HANDLE) return;
-        writer.writeBuffer(ds, 24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vb, 0, clampedRange(vb));
-        writer.writeBuffer(ds, 25, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ib, 0, clampedRange(ib));
+        writer.writeBuffer(ds, 24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vb, 0, VK_WHOLE_SIZE);
+        writer.writeBuffer(ds, 25, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ib, 0, VK_WHOLE_SIZE);
     };
     bind(app->getStaticDescriptorSet());
     for (size_t fi = 0; fi < app->getMainDescriptorSetCount(); ++fi)
