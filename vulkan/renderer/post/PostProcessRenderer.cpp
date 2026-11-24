@@ -3,7 +3,8 @@
 #include "../DescriptorAllocator.hpp"
 #include "../DescriptorWriter.hpp"
 #include "../RendererUtils.hpp"
-#include "../water/WaterRenderer.hpp"   // WaterSettings, WaterUBO
+#include "../water/WaterRenderer.hpp"   // WaterSettings
+#include "../../ubo/WaterUBO.hpp"
 #include "../../ubo/WindField.hpp" // sizeof(WindField) for binding-27 range
 #include "../../../utils/FileReader.hpp"
 #include <cassert>

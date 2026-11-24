@@ -18,7 +18,6 @@
 
 #include "RaymarchNodeRecord.glsl"
 #include "RaymarchPayload.glsl"
-#include "RaymarchCounters.glsl"
 
 // Root entry: node index + stable Layer::Id + renderer kind (0 = Solid,
 // 1 = Water) + the layer's conservative surface AABB. The AABB bounds every
@@ -47,15 +46,6 @@ layout(std430, set = 2, binding = 1) readonly buffer RaymarchRoots {
 layout(std430, set = 2, binding = 2) readonly buffer RaymarchPayloads {
     RaymarchPayload rmPayload[];
 };
-// Phase 0 profiling counters. Only the OCTREE_PROFILE variant declares the
-// writable buffer and executes atomics; the production variants leave the
-// descriptor binding unused so they keep their original feature set.
-#ifdef OCTREE_PROFILE
-layout(std430, set = 2, binding = 3) buffer RaymarchCounters {
-    uint rmCounters[RM_COUNTER_COUNT];
-};
-#endif
-
 const int RM_TYPE_EMPTY = 0;
 const int RM_TYPE_SURFACE = 1;
 const int RM_TYPE_SOLID = 2;

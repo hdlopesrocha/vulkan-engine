@@ -40,16 +40,6 @@ void SettingsWidget::render() {
             // toggled
         }
         ImGuiComponents::TooltipOnHover("Toggle rendering of the main solid scene (terrain/meshes)");
-        if (ImGui::Checkbox("Render Water", &settings.waterEnabled)) {
-            // toggled
-        }
-        ImGuiComponents::TooltipOnHover("When off, water passes are skipped and only the solid scene is composited");
-        if (ImGui::Checkbox("Water Blur (global)", &settings.blurEnabled)) {
-            // toggled
-        }
-        ImGuiComponents::TooltipOnHover("Global gate for the per-material refraction/tint blur.\n"
-                       "The blur runs only where this AND the layer's 'Enable Blur' are on.\n"
-                       "Reflections and surface highlights are never blurred.");
         // Grass representation selector: bladed tufts + impostors, or none.
         {
             const char* kGrassModes[] = { "Bladed", "None" };
@@ -191,19 +181,6 @@ void SettingsWidget::render() {
         ImGuiComponents::TooltipOnHover("Extra mirror rays when a water/solid reflection hits another\n"
                        "reflective surface (0 = single reflection, 1 = reflection inside\n"
                        "the reflection, up to 3). More bounces cost more ray work.");
-        if (ImGui::Checkbox("Water in main pass (Phase-1, blend into solid)", &settings.waterInMainPass)) {
-        }
-        ImGuiComponents::TooltipOnHover("Draw water with the alpha-blended main pipeline into the solid color/depth targets "
-                       "(no separate water pass/composite water). Smoother work-in-progress: in-trace "
-                       "screen lookups use the previous frame's solid/vegetation targets.");
-        ImGuiComponents::FieldLabel("Water render scale", "Offscreen water resolution");
-        ImGui::SetNextItemWidth(kSettingsColWidth);
-        ImGui::SliderFloat("##Water render scale", &settings.waterRenderScale, 0.25f, 1.0f, "%.2f");
-        ImGuiComponents::TooltipOnHover("Water offscreen targets render at this fraction of the swapchain size\n"
-                       "(1.0 = full resolution). The water surface is a smooth translucent layer,\n"
-                       "so 0.5 cuts the shaded water pixels 4x. The composite upsamples the water\n"
-                       "color and takes the closest of the 2x2 depth taps for the occlusion test.\n"
-                       "Applied immediately (one device idle on the frame it changes).");
     });
 
     // 2: RT Distances (split out so the RT block packs into columns)
@@ -263,14 +240,6 @@ void SettingsWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Display & Performance");
         ImGuiComponents::ColSeparator();
-        if (ImGui::Checkbox("Wireframe Mode", &settings.wireframeMode)) {
-            // toggle wireframe rendering
-        }
-        ImGuiComponents::TooltipOnHover("Render meshes in wireframe (requires GPU support)");
-        if (ImGui::Checkbox("Water Wireframe", &settings.waterWireframeMode)) {
-            // toggle water wireframe only
-        }
-        ImGuiComponents::TooltipOnHover("Render water surface in white wireframe");
         if (ImGui::Button("Reset to Defaults")) {
             resetToDefaults();
         }
@@ -379,10 +348,6 @@ void SettingsWidget::render() {
             // toggled globally
         }
         ImGuiComponents::TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
-        if (ImGui::Checkbox("Solid Depth Prepass", &settings.solidDepthPrepass)) {
-            // toggled globally; takes effect on the next frame
-        }
-        ImGuiComponents::TooltipOnHover("Off = single forward pass with depth write (perf report 21 C2). Consider off when tessellation is on; forced on while solid RT paths run.");
         ImGuiComponents::FieldLabel("Tessellation Factor", "Multiplies per-material min/max tess levels globally");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Tessellation Factor", &settings.tessellationFactor, 0.0f, 8.0f, "%.2f");

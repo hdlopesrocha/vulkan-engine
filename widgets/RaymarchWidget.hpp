@@ -15,7 +15,7 @@ class Settings;
 // copy. Replaces the former SdfWidget (generic part) + SmokeBulletWidget
 // (effect part), merged so all SDF logic lives in one place.
 //
-// Also hosts the terrain solid-path selector (Settings::octreeRaymarchEnabled):
+// Terrain path: the octree SDF raymarch is the only solid/water renderer.
 // the octree SDF raymarch is the full-screen equivalent of the tessellated
 // raster chunks, including tessellation displacement folded into the SDF.
 class RaymarchWidget : public Widget {

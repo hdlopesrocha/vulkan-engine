@@ -152,14 +152,6 @@ constexpr DebugMode debugModeFromInt(int value) {
         : DebugMode::None;
 }
 
-// Views that are produced by the octree SDF raymarch pass. Selecting one must
-// take the raymarch path even when Settings::octreeRaymarchEnabled is off,
-// otherwise the solid surface would rasterize and the view would fall through
-// to normal shading.
-constexpr bool debugModeForcesOctreeRaymarch(DebugMode mode) {
-    return mode == DebugMode::OctreeSdfRaymarch;
-}
-
 // Views whose displayed value is produced by traced reflection/refraction
 // rays must force the full-quality reference path (full-rate + dual-trace) or
 // the ray-budget cuts would distort the diagnostics. Ray mask / depth source

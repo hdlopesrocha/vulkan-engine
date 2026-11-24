@@ -262,35 +262,21 @@ GLSL_OPT = -O
 OUT_SPVS = \
 	$(patsubst shaders/%,$(OUT_DIR)/shaders/%.spv,$(SHADER_FILES)) \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv \
-	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRT.frag.spv \
-	$(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv \
 	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchRT.frag.spv \
-	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfile.frag.spv \
-	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfileRT.frag.spv \
-	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchNoFallback.frag.spv \
-	$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchNoFallbackRT.frag.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv \
 	$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv \
 	$(OUT_DIR)/shaders/renderer/sdf/SdfRendererSurface.frag.spv \
 	$(OUT_DIR)/shaders/renderer/vegetation/ImpostorCapture.vert.spv \
 	$(OUT_DIR)/shaders/renderer/vegetation/VegetationRendererImpostorShadow.vert.spv \
-	$(OUT_DIR)/shaders/renderer/water/WaterRendererNoTess.vert.spv \
-	$(OUT_DIR)/shaders/renderer/water/WaterRendererRT.frag.spv \
-	$(OUT_DIR)/shaders/renderer/water/WaterRendererNoBody.frag.spv \
-	$(OUT_DIR)/shaders/renderer/water/WaterRendererRTNoBody.frag.spv \
-	$(OUT_DIR)/shaders/renderer/water/WaterRendererRT.tese.spv \
-	$(OUT_DIR)/shaders/renderer/water/WaterRendererRTProf.frag.spv \
-	$(OUT_DIR)/shaders/renderer/water/WaterRendererRTProf.tese.spv
 
 # ── Compile-time shader variants ──────────────────────────────────────────
 # Each variant reuses a base source plus a define that selects an alternate
 # stage interface or feature set. Shader base names match the owning renderer
 # class; in-class pass qualifiers are concatenated PascalCase:
 #   SolidRenderer*      -> SolidRenderer (also bound by Shadow)
-#   WaterRenderer*      -> WaterRenderer (also bound by WaterBackFaceRenderer)
 #   ShadowRenderer*     -> ShadowRenderer
 #   VegetationRenderer* -> VegetationRenderer
-#   shared/no-owner     -> Fullscreen.vert, DepthOnly.frag
+#   shared/no-owner     -> Fullscreen.vert
 # compile_shader <source> <output> <glslc defines> <glslang defines> <opt>
 #   <glslc defines>   e.g. "-DRT_ENABLED -DWATER_NO_BODY=1"    (empty if none)
 #   <glslang defines> e.g. "--D RT_ENABLED --D WATER_NO_BODY=1" (empty if none)
@@ -305,71 +291,18 @@ define compile_shader
 	fi
 endef
 
-# WaterRenderer base stages go through the SPIR-V optimizer because their
-# per-pixel cost matters most. Explicit rules override the generic
-# WaterRenderer.{vert,frag,tesc,tese} pattern rules below.
-$(OUT_DIR)/shaders/renderer/water/WaterRenderer.vert.spv: shaders/renderer/water/WaterRenderer.vert $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.vert,$@,,,$(GLSL_OPT))
-$(OUT_DIR)/shaders/renderer/water/WaterRenderer.frag.spv: shaders/renderer/water/WaterRenderer.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.frag,$@,,,$(GLSL_OPT))
-$(OUT_DIR)/shaders/renderer/water/WaterRenderer.tesc.spv: shaders/renderer/water/WaterRenderer.tesc $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.tesc,$@,,,$(GLSL_OPT))
-$(OUT_DIR)/shaders/renderer/water/WaterRenderer.tese.spv: shaders/renderer/water/WaterRenderer.tese $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.tese,$@,,,$(GLSL_OPT))
-
 # C1 (perf report 19/21): non-tessellation geometry paths (TRIANGLE_LIST, no
 # TCS/TES). They write the fragment interface directly; selected at runtime
 # when settings.tessellationEnabled is false.
 $(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv: shaders/renderer/solid/SolidRenderer.vert $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/solid/SolidRenderer.vert,$@,-DSOLID_NO_TESS=1,--D SOLID_NO_TESS=1,$(GLSL_OPT))
-$(OUT_DIR)/shaders/renderer/water/WaterRendererNoTess.vert.spv: shaders/renderer/water/WaterRenderer.vert $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.vert,$@,-DWATER_NO_TESS=1,--D WATER_NO_TESS=1,$(GLSL_OPT))
 
-# SolidRenderer fragment variants: the hybrid RT variants (ray queries +
-# TLAS). Non-RT hardware uses plain SolidRenderer.frag.
-$(OUT_DIR)/shaders/renderer/solid/SolidRendererRT.frag.spv: shaders/renderer/solid/SolidRenderer.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/solid/SolidRenderer.frag,$@,-DRT_ENABLED,--D RT_ENABLED,)
-$(OUT_DIR)/shaders/renderer/solid/SolidRendererRTProf.frag.spv: shaders/renderer/solid/SolidRenderer.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/solid/SolidRenderer.frag,$@,-DRT_ENABLED -DRT_PROFILE,--D RT_ENABLED --D RT_PROFILE,)
 
 # Octree raymarch RT variant: same march, shadeSolidSurface() with inline ray
 # queries for reflections/contact shadows. Non-RT hardware keeps the base
 # OctreeRaymarch.frag.spv (procedural-sky fallback).
 $(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchRT.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DRT_ENABLED,--D RT_ENABLED,)
-
-# Phase 0 profile twins: same march with the gated counter atomics. Only
-# created at runtime when fragment stores/atomics are available.
-$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfile.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DOCTREE_PROFILE=1,--D OCTREE_PROFILE=1,)
-$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchProfileRT.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DRT_ENABLED -DOCTREE_PROFILE=1,--D RT_ENABLED --D OCTREE_PROFILE=1,)
-
-# Phase 2 no-fallback twins: the QEF solver and LandBrush classifier are
-# compiled out. Only created at runtime when the derive pass is available.
-$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchNoFallback.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DOCTREE_NO_FALLBACK=1,--D OCTREE_NO_FALLBACK=1,)
-$(OUT_DIR)/shaders/renderer/octree/OctreeRaymarchNoFallbackRT.frag.spv: shaders/renderer/octree/OctreeRaymarch.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/octree/OctreeRaymarch.frag,$@,-DRT_ENABLED -DOCTREE_NO_FALLBACK=1,--D RT_ENABLED --D OCTREE_NO_FALLBACK=1,)
-
-# WaterRenderer fragment variants: RT (hardware ray tracing) and WATER_NO_BODY
-# (single color attachment, no blur aux outputs). Per-op RT profiling needs the
-# shader clock capability and is only created at runtime when supported.
-$(OUT_DIR)/shaders/renderer/water/WaterRendererRT.frag.spv: shaders/renderer/water/WaterRenderer.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.frag,$@,-DRT_ENABLED,--D RT_ENABLED,$(GLSL_OPT))
-$(OUT_DIR)/shaders/renderer/water/WaterRendererNoBody.frag.spv: shaders/renderer/water/WaterRenderer.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.frag,$@,-DWATER_NO_BODY=1,--D WATER_NO_BODY=1,$(GLSL_OPT))
-$(OUT_DIR)/shaders/renderer/water/WaterRendererRTNoBody.frag.spv: shaders/renderer/water/WaterRenderer.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.frag,$@,-DRT_ENABLED -DWATER_NO_BODY=1,--D RT_ENABLED --D WATER_NO_BODY=1,$(GLSL_OPT))
-$(OUT_DIR)/shaders/renderer/water/WaterRendererRTProf.frag.spv: shaders/renderer/water/WaterRenderer.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.frag,$@,-DRT_ENABLED -DRT_PROFILE,--D RT_ENABLED --D RT_PROFILE,$(GLSL_OPT))
-
-# RT water TES: adds the optional inline ray-query water-region depth
-# (rt.waterDepth). The prof variant also instruments the TES ray-query site.
-$(OUT_DIR)/shaders/renderer/water/WaterRendererRT.tese.spv: shaders/renderer/water/WaterRenderer.tese $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.tese,$@,-DRT_ENABLED,--D RT_ENABLED,$(GLSL_OPT))
-$(OUT_DIR)/shaders/renderer/water/WaterRendererRTProf.tese.spv: shaders/renderer/water/WaterRenderer.tese $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/water/WaterRenderer.tese,$@,-DRT_ENABLED -DRT_PROFILE -DRT_PROFILE_TES,--D RT_ENABLED --D RT_PROFILE --D RT_PROFILE_TES,$(GLSL_OPT))
 
 # H4 (perf report 21): shadow-only solid TES (position-varying outputs only,
 # displacement preserved) bound by the tessellated shadow pipeline; and the

@@ -236,9 +236,12 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
     vec3 toLight = -normalize(ubo.lightDirection);
     float NdotL = max(dot(worldNormal, toLight), 0.0);
 
-    // Shadow calculation (CSM authoritative macro sun-shadow — NEVER replaced
-    // by RT; see §2/§21). RT adds an optional selective local/contact term
-    // below, combined without double-darkening.
+    // Shadow calculation. The raster solid path keeps the CSM authoritative
+    // macro sun-shadow (RT only adds a selective local/contact term below).
+    // The octree raymarcher defines SOLID_SHADOW_TRACE and replaces the CSM
+    // sample with a second SDF ray march through the same node table: no
+    // terrain chunk meshes exist any more, so the cascades can no longer cast
+    // terrain shadows.
     float shadow = 0.0;
     // Primary cascade hint for the secondary-hit fast path below (H6).
     // Default 0 reproduces today's secondary behavior wherever unused.
@@ -246,8 +249,12 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
     vec4 adjustedPosLightSpace = fragPosLightSpace;
     if (ubo.shadowsEnabled != 0u) {
         if (NdotL > 0.01) {
+#ifdef SOLID_SHADOW_TRACE
+            shadow = solidShadowTrace(fragPosWorld, worldNormal, toLight, solidCascadeHint);
+#else
             float bias = max(0.002 * (1.0 - NdotL), 0.0005);
             shadow = ShadowCalculation(adjustedPosLightSpace, fragPosWorld, bias, solidCascadeHint);
+#endif
         } else {
             shadow = 1.0;
         }

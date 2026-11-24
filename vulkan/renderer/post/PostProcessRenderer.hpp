@@ -30,7 +30,8 @@ public:
     /// waterGeomDepthView is the raw water geometry depth buffer (D32).
     /// brushAlpha controls the brush overlay opacity (0.0 = invisible, 1.0 = fully opaque).
     /// brushMode: 0=overlay, 2=PAINT (replace solid texture within brush volume).
-    /// waterBlurEnabled: pass WaterRenderer::waterBlurNeeded(). When false (no
+    /// waterBlurEnabled: false now that water is raymarched into the solid
+    /// target (no offscreen water body/column to blur). When false (no
     /// layer has enableBlur && blurRadius > 0, or water-in-main is active) the
     /// composite performs no waterBody/waterColumn fetches at all; the water
     /// pass wrote only the color target (H4, perf report 19).

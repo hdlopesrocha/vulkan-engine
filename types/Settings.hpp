@@ -23,12 +23,6 @@ public:
     bool cloudsEnabled = false;
     // Toggle rendering of the main solid scene (terrain/meshes)
     bool renderSolid = true;
-    bool waterEnabled = true;
-    // Global gate for the per-material refraction/tint blur (WaterSettings::
-    // enableBlur): the final-pass blur runs only when BOTH this and the
-    // layer's own flag are on (same two-way pattern as rtRefractions /
-    // rtWaterReflections with the per-layer reflection/refraction toggles).
-    bool blurEnabled = true;
     // Bladed grass (triangle tufts + impostors). Derived from grassMode every
     // frame (MyApp): true unless GrassMode::None.
     bool vegetationEnabled = false;
@@ -73,8 +67,6 @@ public:
     // smoke). The sky cloud raymarch has its own Volumetric Clouds toggle.
     // Minimal preset turns this off.
     bool rayMarchingEnabled = false;
-    bool wireframeMode = false;
-    bool waterWireframeMode = false;
     bool normalMappingEnabled = true;
     bool roughnessEnabled = true;
     bool aoEnabled = true;
@@ -145,40 +137,17 @@ public:
 
     // Tessellation
     bool tessellationEnabled = false; // user-enabled (was default false)
-    // Terrain render mode: raymarch the octree's stored cell SDFs instead of
-    // drawing tessellated chunks. Applies to EVERY terrain layer (Solid and
-    // Water) in one fullscreen pass; water hits use the water-surface shading
-    // branch. Off by default. Falls back to the tessellated path when no node
-    // table is available (remote scene, no terrain layers). The raymarch
-    // applies the same tessellation height displacement as the raster path by
-    // folding it into the SDF (Settings::tessellationEnabled). Selected in the
-    // Ray Marching widget's terrain-path combo; the debug view
-    // OctreeSdfRaymarch forces it too.
-    bool octreeRaymarchEnabled = false;
+    // Terrain is rendered exclusively by the full-screen octree SDF raymarch
+    // (Solid and Water layers in one pass); there is no terrain rasterizer and
+    // no terrain chunk VBO/IBO path. The raymarch applies the same tessellation
+    // height displacement as the retired raster path by folding it into the
+    // SDF (Settings::tessellationEnabled).
+    //
     // Screen-space hit tolerance in pixels; 0 = off; 0.25 is the recommended
     // start; larger values cut distant/grazing march steps at a sub-pixel
     // accuracy cost.
     float octreeRaymarchScreenEps = 0.0f;
-    // Phase 0 instrumentation: collect the octree march's GPU counters
-    // (set=2 binding=3). Off by default; profiling-only because the counter
-    // shader variant uses fragment atomics.
-    bool octreeRaymarchProfile = false;
-    // Phase 2: bind the no-fallback fragment twin (QEF solver and LandBrush
-    // classifier compiled out). Only used when the derive pass is available;
-    // otherwise the normal fallback variant stays active.
-    bool octreeRaymarchNoFallback = false;
-    // Phase 4 research: compute only the child's far-plane exit instead of
-    // re-running the full slab test. Bit-exact; default off for A/B.
-    bool octreeRaymarchParametricChild = false;
     bool shadowTessellationEnabled = false;
-    // Deferred depth prepass for the solid pass (perf report 21 C2 gate).
-    // true = depth prepass, then color with loaded depth (current behavior);
-    // false = single forward pass, color writes depth. Consider false when
-    // tessellation is on (vertex-bound regime: the prepass then doubles the
-    // dominant stage). Forced on while solid RT paths run (the RT color
-    // variants have no depth-write twin, and uncaptured depth would break
-    // the water/composite passes that sample it).
-    bool solidDepthPrepass = true;
     float tessellationFactor = 1.0f;
     float tessMaxDistance = 512.0f;
     float tessMinDistance = 1.0f;
@@ -241,22 +210,6 @@ public:
     int rtRayScale = 1;
     float rtRayContribMin = 0.02f;
     bool rtSingleRay = true;
-    // ── Water-in-main migration (Phase 1): draw water chunks in the main
-    // pass with the water-blend pipeline (see WaterRenderer.frag)
-    // instead of the separate liquid pass. Default off (old path); consumed
-    // by Phase-1b (draw routing + blend pipeline). No effect yet.
-    bool waterInMainPass = false;
-
-    // ── Water offscreen render scale (perf report 20 H9) ──────────────────
-    // The water color/body/column pair, the water geometry depth and the
-    // back-face depth render at this fraction of the swapchain size; the
-    // composite upsamples (water color bilinear, water geometry depth with the
-    // CLOSEST of the 2x2 taps so terrain in front is never punched through).
-    // The water surface is a smooth translucent layer, so 0.5 is a cheap 4x cut
-    // in shaded water pixels; 1.0 keeps full resolution. Applied when the water
-    // targets are (re)created: immediately on change, or on a swapchain resize.
-    float waterRenderScale = 1.0f;
-
     // ── Vegetation offscreen render scale (perf report 22 M12) ─────────────
     // The vegetation color + depth targets render at this fraction of the
     // swapchain size; the composite upsamples (color bilinear; the depth takes

@@ -31,7 +31,7 @@ private:
     VkDescriptorSet solidColorDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet solidDepthDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet waterColorDescriptor = VK_NULL_HANDLE;
-    VkDescriptorSet backFaceDepthDescriptor = VK_NULL_HANDLE;
+
     VkDescriptorSet waterDepthLinearDescriptor = VK_NULL_HANDLE;
 
 
@@ -42,7 +42,7 @@ private:
     bool solidColorDescriptorOwned = false;
     bool solidDepthDescriptorOwned = false;
     bool waterColorDescriptorOwned = false;
-    bool backFaceDepthDescriptorOwned = false;
+
     bool waterDepthLinearDescriptorOwned = false;
 
     // Offscreen brush preview descriptors (SDF preview color + front depth)
@@ -80,12 +80,6 @@ private:
     VkDeviceMemory waterDepthLinearMemory = VK_NULL_HANDLE;
     VkImageView waterDepthLinearView = VK_NULL_HANDLE;
 
-    VkImage linearBackFaceDepthImage = VK_NULL_HANDLE;
-    VmaAllocation linearBackFaceDepthAllocation = VK_NULL_HANDLE;
-    VkDeviceMemory linearBackFaceDepthMemory = VK_NULL_HANDLE;
-    VkImageView linearBackFaceDepthView = VK_NULL_HANDLE;
-    VkDescriptorSet linearBackFaceDepthDescriptor = VK_NULL_HANDLE;
-    bool linearBackFaceDepthDescriptorOwned = false;
 
     // GPU linearization pass resources
     VkPipeline linearizePipeline = VK_NULL_HANDLE;
@@ -121,8 +115,6 @@ private:
         RTRefract,          // hybrid RT water refraction + thickness output
         SolidColor,
         SolidDepth,
-        BackFaceColor,
-        BackFaceDepth,
         BrushColor,
         BrushDepth,
         WaterColor,

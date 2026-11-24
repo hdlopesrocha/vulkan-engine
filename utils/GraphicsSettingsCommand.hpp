@@ -58,7 +58,6 @@ private:
         // both lobes at full rate instead.
         settings.rtRayScale = 0;
         settings.rtSingleRay = false;
-        settings.blurEnabled = true;
         settings.tessellationEnabled = true;
         settings.shadowTessellationEnabled = true;
         settings.enableShadows = true;
@@ -73,9 +72,6 @@ private:
         settings.sdfMaxSteps = 64;
         settings.sdfSmokeSamples = 12;
         settings.raycastPixelSize = 2;
-        // Full-resolution water targets (perf report 21 M10): the composite
-        // blur is depth-guided, so Maximum keeps 1.0 for the sharpest body.
-        settings.waterRenderScale = 1.0f;
         // Full-resolution vegetation offscreen (perf report 22 M12).
         settings.vegetationRenderScale = 1.0f;
         // NOTE: Settings::textureArraySize is deliberately NOT touched by the
@@ -99,7 +95,6 @@ private:
         settings.rtRayScale = 1;
         settings.rtSingleRay = true;
         settings.rtLocalShadows = false;
-        settings.blurEnabled = false;
         // The global tessellation toggle drives both the solid and the water
         // TCS (tess level collapses to 1 when it is off).
         settings.tessellationEnabled = false;
@@ -118,12 +113,6 @@ private:
         settings.sdfMaxSteps = 32;
         settings.sdfSmokeSamples = 6;
         settings.raycastPixelSize = 4;
-        // Half-resolution water targets (perf report 21 M10): Minimal's water
-        // is blur-tolerant, and the blur disc is authored in screen-space
-        // units, so the look survives while fragment/bandwidth/target costs
-        // quarter. Propagates via the existing per-frame waterRenderScale
-        // check (device-idle target recreation); the slider still overrides.
-        settings.waterRenderScale = 0.5f;
         // Vegetation intentionally stays at FULL resolution on the preset.
         // The half-res target (perf report 22 M12) made thin billboards lose
         // coverage: at 0.5 scale a distant billboard covers few texels, the

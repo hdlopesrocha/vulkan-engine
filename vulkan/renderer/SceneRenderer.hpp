@@ -37,8 +37,6 @@ class World;
 #include "debug/DebugCubeRenderer.hpp"
 #include "debug/DebugSDFRenderer.hpp"
 #include "sdf/SdfRenderer.hpp"
-#include "debug/WireframeRenderer.hpp"
-#include "water/WaterBackFaceRenderer.hpp"
 #include "wind/WindRenderer.hpp"
 #include "wind/WindRaymarchRenderer.hpp"
 #include "brush/BrushSdfRenderer.hpp"
@@ -93,13 +91,10 @@ public:
     std::unique_ptr<VideoRenderer> videoRenderer;
     std::unique_ptr<VegetationRenderer> vegetationRenderer;
     std::unique_ptr<BrushSdfRenderer> brushRenderer;
-    // Optional terrain path: raymarches the octree's stored SDFs of EVERY
-    // terrain layer (Solid + Water) instead of the tessellated chunks
-    // (Settings::octreeRaymarchEnabled). Owns the set-2 node-table descriptors
-    // and the fullscreen raymarch pipeline. When active it replaces the raster
-    // solid pass and the raster water pass at once.
+    // The ONLY terrain renderer: raymarches the octree's stored SDFs of EVERY
+    // terrain layer (Solid + Water). Owns the set-2 node-table descriptors and
+    // the fullscreen raymarch pipeline.
     std::unique_ptr<OctreeRaymarchRenderer> octreeRaymarchRenderer;
-    std::unique_ptr<WaterBackFaceRenderer> backFaceRenderer;
     // NOTE (hybrid RT §12): the legacy 360° cubemap capture (Solid360Renderer)
     // was deleted. Solid reflections and water reflection/refraction are
     // hardware ray tracing now; CSM is unaffected (see shadowMapper).
@@ -114,7 +109,6 @@ public:
     // material + instanced flame SDF + spatial grid). Own offscreen targets,
     // composited by PostProcess after vegetation/water.
     std::unique_ptr<SdfRenderer> sdfRenderer;
-    std::unique_ptr<WireframeRenderer> waterWireframe;
     // Wind-trail particle visualization (Settings::windParticlesEnabled):
     // GPU particles advected by the shared wind field (binding 27) with fading
     // trails. Simulated in preRenderPass, drawn as an overlay after the
@@ -124,8 +118,6 @@ public:
     // a raymarched isosurface overlay (Settings::windRaymarchEnabled).
     std::unique_ptr<WindRaymarchRenderer> windRaymarchRenderer;
 
-    // See setWaterRenderScale().
-    float waterRenderScale_ = 1.0f;
     // See setVegetationRenderScale().
     float vegetationRenderScale_ = 1.0f;
     // Sky settings owned by this renderer
@@ -142,10 +134,7 @@ public:
     void cleanup(VulkanApp* app) override;
 
     // Propagate the shared per-frame command state tracker to every renderer
-    // that only records on the main thread. backFaceRenderer and the water
-    // IndirectRenderer are deliberately excluded: the async back-face task
-    // uses them on a separate thread and keeping cmdState=nullptr there
-    // avoids a data race on frameCmdState.
+    // that records on the main thread.
     void setCmdState(CommandBufferState* state) override;
 
     // Drain generation pools.  Must be called after all Octree pools are
@@ -326,7 +315,6 @@ public:
     // stable-slot mode. Solid and water pools are sized independently (solid is
     // the dense layer, water is sparse). Must be called once on the main thread.
     void initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
-                         uint32_t maxWaterChunks,
                          uint32_t vertexBytesPerChunk = 1u << 20,
                          uint32_t indexBytesPerChunk  = 1u << 19);
 
@@ -413,16 +401,6 @@ public:
 
     // Resize offscreen resources when the swapchain changes
     void onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t height);
-
-    // Water offscreen render scale (Settings::waterRenderScale): the water
-    // color/body/column pair, the water geometry depth and the back-face depth
-    // are created at width*scale x height*scale. recreateWaterTargets() is the
-    // entry point for a runtime change; it does NOT wait for the GPU, so the
-    // caller must have done so (the water targets are written on the water
-    // queue, which a graphics-queue-scoped wait would not cover).
-    void setWaterRenderScale(float scale) { waterRenderScale_ = scale; }
-    float waterRenderScale() const { return waterRenderScale_; }
-    void recreateWaterTargets(VulkanApp* app, uint32_t width, uint32_t height);
 
     // Vegetation offscreen render scale (Settings::vegetationRenderScale): the
     // vegetation color + depth targets are created at width*scale x

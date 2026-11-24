@@ -30,20 +30,15 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
     }
     app_ = app;
     revisions_.reserve(4);
-    profileCountersSupported_ = app->fragmentStoresAndAtomicsSupported;
-    std::cout << "[OctreeRaymarchRenderer] Phase 0 counters "
-              << (profileCountersSupported_ ? "available" : "unavailable (no fragment atomics)")
-              << std::endl;
 
     DescriptorAllocator descAlloc{app->getDevice(), app};
 
     // Set=2: binding 0 = node table, binding 1 = layer roots, binding 2 =
-    // derived QEF payload, binding 3 = Phase 0 profile counters. Bindings 0
-    // and 2 are read by the fragment march and written by the payload derive
-    // compute pass, so their stage masks span both stages; bindings 1 and 3
-    // stay fragment-only.
-    VkDescriptorSetLayoutBinding bindings[4]{};
-    for (uint32_t b = 0; b < 4; ++b) {
+    // derived QEF payload. Bindings 0 and 2 are read by the fragment march and
+    // written by the payload derive compute pass, so their stage masks span
+    // both stages; binding 1 stays fragment-only.
+    VkDescriptorSetLayoutBinding bindings[3]{};
+    for (uint32_t b = 0; b < 3; ++b) {
         bindings[b].binding = b;
         bindings[b].descriptorCount = 1;
         bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -51,20 +46,19 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
     }
     bindings[0].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[2].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
-    setLayout_ = descAlloc.createLayout(bindings, 4, 0, nullptr,
+    setLayout_ = descAlloc.createLayout(bindings, 3, 0, nullptr,
                                         "OctreeRaymarchRenderer: set2 layout");
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 4u * RAYMARCH_FRAMES;
+    poolSize.descriptorCount = 3u * RAYMARCH_FRAMES;
     VkDescriptorPool pool = descAlloc.createPool(
         &poolSize, 1, RAYMARCH_FRAMES, 0, "OctreeRaymarchRenderer: pool");
     descAlloc.allocateSets(pool, setLayout_, RAYMARCH_FRAMES, sets_.data(),
                            "OctreeRaymarchRenderer: set");
 
-    // The per-frame node/root/payload buffers are allocated lazily in upload():
-    // the raymarch mode is off by default and a slot costs ~64 MB at the full
-    // cap, so nothing is reserved until a table actually needs publishing.
+    // The revision buffers are allocated lazily in upload(): a slot costs
+    // ~64 MB at the full cap, so nothing is reserved until a table needs it.
 
     // Fullscreen raymarch pipeline. Set order matches the shader: 0 = main
     // scene, 1 = brush params (PAINT/REMOVE tint), 2 = octree node table.
@@ -132,48 +126,6 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
                           << e.what() << "); using the non-RT shading fallback."
                           << std::endl;
                 pipelineRt_ = VK_NULL_HANDLE;
-            }
-        }
-
-        // Phase 0 profile twins: same march/layout, with the gated counter
-        // atomics. They are only built when fragment stores/atomics are
-        // available; a missing module leaves the counters disabled and the
-        // production pipelines untouched. The RT profile twin is built only
-        // when the non-profile RT twin exists, so RT shading stays matched.
-        if (profileCountersSupported_) {
-            try {
-                ShaderStage fragProfileStage(
-                    app->getOrCreateShaderModule(
-                        "shaders/renderer/octree/OctreeRaymarchProfile.frag.spv"),
-                    VK_SHADER_STAGE_FRAGMENT_BIT);
-                pipelineProfile_ = app->createGraphicsPipelineWithLayout(
-                    { vertStage.info, fragProfileStage.info },
-                    std::vector<VkVertexInputBindingDescription>{},
-                    std::vector<VkVertexInputAttributeDescription>{},
-                    setLayouts, &pushRange, cfg, pipelineLayout_);
-                fragProfileStage.info.module = VK_NULL_HANDLE;
-            } catch (const std::exception& e) {
-                std::cerr << "[OctreeRaymarchRenderer] profile variant unavailable ("
-                          << e.what() << "); counters stay disabled." << std::endl;
-                pipelineProfile_ = VK_NULL_HANDLE;
-            }
-            if (pipelineRt_ != VK_NULL_HANDLE) {
-                try {
-                    ShaderStage fragProfileRtStage(
-                        app->getOrCreateShaderModule(
-                            "shaders/renderer/octree/OctreeRaymarchProfileRT.frag.spv"),
-                        VK_SHADER_STAGE_FRAGMENT_BIT);
-                    pipelineProfileRt_ = app->createGraphicsPipelineWithLayout(
-                        { vertStage.info, fragProfileRtStage.info },
-                        std::vector<VkVertexInputBindingDescription>{},
-                        std::vector<VkVertexInputAttributeDescription>{},
-                        setLayouts, &pushRange, cfg, pipelineLayout_);
-                    fragProfileRtStage.info.module = VK_NULL_HANDLE;
-                } catch (const std::exception& e) {
-                    std::cerr << "[OctreeRaymarchRenderer] RT profile variant unavailable ("
-                              << e.what() << "); RT counters stay disabled." << std::endl;
-                    pipelineProfileRt_ = VK_NULL_HANDLE;
-                }
             }
         }
 
@@ -252,76 +204,6 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
         }
     }
 
-    // Phase 2: the no-fallback twins depend on a working derive pass. If it is
-    // unavailable they are simply not created and the normal fallback path is
-    // the only option (the correct behavior for unsupported/partial devices).
-    if (derivePipeline_ != VK_NULL_HANDLE && deriveLayout_ != VK_NULL_HANDLE)
-        createNoFallbackPipelines(app);
-}
-
-bool OctreeRaymarchRenderer::createNoFallbackPipelines(VulkanApp* app) {
-    if (!app || pipelineLayout_ == VK_NULL_HANDLE || setLayout_ == VK_NULL_HANDLE ||
-        derivePipeline_ == VK_NULL_HANDLE || deriveLayout_ == VK_NULL_HANDLE)
-        return false;
-    if (app->getDescriptorSetLayout() == VK_NULL_HANDLE ||
-        app->getBrushParamsDescriptorSetLayout() == VK_NULL_HANDLE)
-        return false;
-
-    try {
-        std::vector<VkDescriptorSetLayout> setLayouts = {
-            app->getDescriptorSetLayout(),
-            app->getBrushParamsDescriptorSetLayout(),
-            setLayout_
-        };
-        VkPushConstantRange pushRange{};
-        pushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        pushRange.offset = 0;
-        pushRange.size = sizeof(PushConstants);
-
-        GraphicsPipelineConfig cfg{};
-        cfg.cullMode = VK_CULL_MODE_NONE;
-        cfg.depthTestEnable = true;
-        cfg.depthWriteEnable = true;
-        cfg.depthCompareOp = VK_COMPARE_OP_LESS;
-        cfg.colorFormats = { app->getSwapchainImageFormat() };
-        cfg.depthFormat = VK_FORMAT_D32_SFLOAT;
-
-        ShaderStage vertStage(
-            app->getOrCreateShaderModule("shaders/renderer/Fullscreen.vert.spv"),
-            VK_SHADER_STAGE_VERTEX_BIT);
-
-        ShaderStage fragStage(
-            app->getOrCreateShaderModule(
-                "shaders/renderer/octree/OctreeRaymarchNoFallback.frag.spv"),
-            VK_SHADER_STAGE_FRAGMENT_BIT);
-        pipelineNoFallback_ = app->createGraphicsPipelineWithLayout(
-            { vertStage.info, fragStage.info },
-            std::vector<VkVertexInputBindingDescription>{},
-            std::vector<VkVertexInputAttributeDescription>{},
-            setLayouts, &pushRange, cfg, pipelineLayout_);
-
-        if (pipelineRt_ != VK_NULL_HANDLE) {
-            ShaderStage fragRtStage(
-                app->getOrCreateShaderModule(
-                    "shaders/renderer/octree/OctreeRaymarchNoFallbackRT.frag.spv"),
-                VK_SHADER_STAGE_FRAGMENT_BIT);
-            pipelineNoFallbackRt_ = app->createGraphicsPipelineWithLayout(
-                { vertStage.info, fragRtStage.info },
-                std::vector<VkVertexInputBindingDescription>{},
-                std::vector<VkVertexInputAttributeDescription>{},
-                setLayouts, &pushRange, cfg, pipelineLayout_);
-        }
-        std::cout << "[OctreeRaymarchRenderer] no-fallback variants ready"
-                  << (pipelineNoFallbackRt_ != VK_NULL_HANDLE ? " (RT included)" : "")
-                  << std::endl;
-        return pipelineNoFallback_ != VK_NULL_HANDLE;
-    } catch (const std::exception& e) {
-        std::cerr << "[OctreeRaymarchRenderer] no-fallback variant unavailable ("
-                  << e.what() << "); using the fallback pipelines." << std::endl;
-        pipelineNoFallback_ = VK_NULL_HANDLE;
-        pipelineNoFallbackRt_ = VK_NULL_HANDLE;
-        return false;
-    }
 }
 
 void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
@@ -329,8 +211,6 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
         for (auto& revision : revisions_)
             destroyRevisionBuffers(revision);
         revisions_.clear();
-        for (auto& buf : counterBuffers_)
-            if (buf.buffer != VK_NULL_HANDLE) app->destroyBuffer(buf);
         // The derive pipeline/layout are registered with VulkanResourceManager
         // at creation; remove before destroying so shutdown does not free them
         // twice (same contract as RayTracingResources).
@@ -345,7 +225,6 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     }
     derivePipeline_ = VK_NULL_HANDLE;
     deriveLayout_ = VK_NULL_HANDLE;
-    counterBuffers_.fill(Buffer{});
     sets_.fill(VK_NULL_HANDLE);
     slotRevision_.fill(-1);
     app_ = nullptr;
@@ -355,46 +234,12 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     setLayout_ = VK_NULL_HANDLE;
     pipeline_ = VK_NULL_HANDLE;
     pipelineRt_ = VK_NULL_HANDLE;
-    pipelineProfile_ = VK_NULL_HANDLE;
-    pipelineProfileRt_ = VK_NULL_HANDLE;
-    pipelineNoFallback_ = VK_NULL_HANDLE;
-    pipelineNoFallbackRt_ = VK_NULL_HANDLE;
     pipelineLayout_ = VK_NULL_HANDLE;
     rtShadingEnabled_ = false;
-    noFallbackEnabled_.store(false, std::memory_order_relaxed);
-    parametricChildEnabled_.store(false, std::memory_order_relaxed);
-    profileCountersSupported_ = false;
-    profileCountersEnabled_.store(false, std::memory_order_relaxed);
-    profileStats_ = OctreeRaymarchCounters{};
     maxNodes_ = 0;
 }
 
-bool OctreeRaymarchRenderer::ensureSlotBuffers(uint32_t fi) {
-    if (!app_ || fi >= RAYMARCH_FRAMES || sets_[fi] == VK_NULL_HANDLE) return false;
-    if (counterBuffers_[fi].buffer != VK_NULL_HANDLE) return true;
-
-    // Phase 0 counters are the only slot-local buffer. reset+gate happens in
-    // recordDerive() (outside dynamic rendering), so the persistent mapping is
-    // written on the frame thread after the slot fence.
-    counterBuffers_[fi] = app_->createBuffer(
-        static_cast<VkDeviceSize>(sizeof(OctreeRaymarchCounters)),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (counterBuffers_[fi].buffer == VK_NULL_HANDLE) {
-        std::cerr << "[OctreeRaymarchRenderer] failed to create the slot counter buffer"
-                  << std::endl;
-        return false;
-    }
-    DescriptorWriter(app_->getDevice())
-        .writeBuffer(sets_[fi], 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                     counterBuffers_[fi].buffer, 0,
-                     app_->getClampedWholeSizeRange(counterBuffers_[fi].buffer))
-        .flush();
-    return true;
-}
-
 bool OctreeRaymarchRenderer::bindSlotRevision(uint32_t fi, int revision) {
-    if (!ensureSlotBuffers(fi)) return false;
     if (revision < 0 || static_cast<size_t>(revision) >= revisions_.size())
         return false;
     if (slotRevision_[fi] == revision) return true;
@@ -547,53 +392,6 @@ void OctreeRaymarchRenderer::upload(uint32_t frameIndex, const OctreeRaymarchTab
     }
 }
 
-bool OctreeRaymarchRenderer::hasTable(uint32_t frameIndex) const {
-    const uint32_t fi = frameIndex % RAYMARCH_FRAMES;
-    // Requires a usable pipeline/pipeline layout too: if shader loading failed
-    // the caller must keep the raster path (and its depth prepass), otherwise
-    // the solid depth target would stay cleared.
-    if (pipeline_ == VK_NULL_HANDLE || pipelineLayout_ == VK_NULL_HANDLE ||
-        sets_[fi] == VK_NULL_HANDLE || slotRevision_[fi] < 0 ||
-        static_cast<size_t>(slotRevision_[fi]) >= revisions_.size())
-        return false;
-    const SharedRevision& rev = revisions_[slotRevision_[fi]];
-    return rev.node.buffer != VK_NULL_HANDLE && rev.root.buffer != VK_NULL_HANDLE &&
-           rev.rootCount > 0;
-}
-
-bool OctreeRaymarchRenderer::profileVariantActive() const {
-    if (!profileCountersSupported_ ||
-        !profileCountersEnabled_.load(std::memory_order_relaxed))
-        return false;
-    return rtPipelineActive() ? pipelineProfileRt_ != VK_NULL_HANDLE
-                              : pipelineProfile_ != VK_NULL_HANDLE;
-}
-
-bool OctreeRaymarchRenderer::noFallbackVariantActive() const {
-    if (derivePipeline_ == VK_NULL_HANDLE || deriveLayout_ == VK_NULL_HANDLE ||
-        !noFallbackEnabled_.load(std::memory_order_relaxed))
-        return false;
-    return rtPipelineActive() ? pipelineNoFallbackRt_ != VK_NULL_HANDLE
-                              : pipelineNoFallback_ != VK_NULL_HANDLE;
-}
-
-void OctreeRaymarchRenderer::readProfile(uint32_t frameIndex) {
-    const uint32_t fi = frameIndex % RAYMARCH_FRAMES;
-    if (counterBuffers_[fi].mappedData == nullptr) {
-        profileStats_.enabled = 0u;
-        return;
-    }
-    const auto* counters =
-        static_cast<const OctreeRaymarchCounters*>(counterBuffers_[fi].mappedData);
-    if (counters->enabled == 0u) {
-        // Counters off/unavailable: invalidate the snapshot so the UI and the
-        // throttled log stop reporting stale values.
-        profileStats_.enabled = 0u;
-        return;
-    }
-    profileStats_ = *counters;
-}
-
 void OctreeRaymarchRenderer::recordHostWriteBarrier(VkCommandBuffer cmd) {
     if (cmd == VK_NULL_HANDLE) return;
     // The node buffers are persistently mapped and rewritten on the host in
@@ -605,10 +403,7 @@ void OctreeRaymarchRenderer::recordHostWriteBarrier(VkCommandBuffer cmd) {
     hostBarrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
     hostBarrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
     hostBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    // The Phase 0 counter buffer is atomically written by the profile variant;
-    // include the write access so the host reset is published before it.
-    hostBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    hostBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
 
     VkDependencyInfo dep{};
     dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -620,17 +415,6 @@ void OctreeRaymarchRenderer::recordHostWriteBarrier(VkCommandBuffer cmd) {
 void OctreeRaymarchRenderer::recordDerive(VkCommandBuffer cmd, uint32_t frameIndex) {
     if (cmd == VK_NULL_HANDLE) return;
     const uint32_t fi = frameIndex % RAYMARCH_FRAMES;
-
-    // Phase 0 counters: reset this slot after its fence wait and before the
-    // host barrier below publishes the reset to the fragment atomics. The
-    // enabled word is also the readback validity tag; the shader gate itself
-    // is the push-constant flag set in draw().
-    if (counterBuffers_[fi].mappedData != nullptr) {
-        auto* counters =
-            static_cast<OctreeRaymarchCounters*>(counterBuffers_[fi].mappedData);
-        *counters = OctreeRaymarchCounters{};
-        counters->enabled = profileVariantActive() ? 1u : 0u;
-    }
 
     if (slotRevision_[fi] < 0 ||
         static_cast<size_t>(slotRevision_[fi]) >= revisions_.size()) {
@@ -648,7 +432,7 @@ void OctreeRaymarchRenderer::recordDerive(VkCommandBuffer cmd, uint32_t frameInd
     // The shared node/root buffers are persistently mapped and rewritten on
     // the host in update(), after the slot fence. Two destination scopes share
     // the host writes: the derive pass (node-table read + payload write) and
-    // the fragment march (node/root/counter reads).
+    // the fragment march (node/root reads).
     VkMemoryBarrier2 hostBarriers[2]{};
     hostBarriers[0].sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     hostBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
@@ -726,17 +510,7 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
     // color pass (host barriers and the derive dispatch are illegal inside a
     // render scope).
 
-    const bool useProfile = profileVariantActive();
-    // The no-fallback module assumes the revision's payload flags are set;
-    // recordDerive() normally guarantees that before draw, but keep the normal
-    // fallback pipeline for a revision that is somehow still underived.
-    const bool useNoFallback = !useProfile && rev.derived && noFallbackVariantActive();
     VkPipeline activePipeline = rtPipelineActive() ? pipelineRt_ : pipeline_;
-    if (useProfile) {
-        activePipeline = rtPipelineActive() ? pipelineProfileRt_ : pipelineProfile_;
-    } else if (useNoFallback) {
-        activePipeline = rtPipelineActive() ? pipelineNoFallbackRt_ : pipelineNoFallback_;
-    }
     if (cmdState) cmdState->bindGraphicsPipeline(cmd, activePipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
 
@@ -770,8 +544,7 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
     pc.rootCount = rev.rootCount;
     pc.tableVersion = static_cast<uint32_t>(rev.version);
     pc.nodeCount = rev.nodeCount;
-    pc.flags = (useProfile ? 1u : 0u) |
-               (parametricChildEnabled_.load(std::memory_order_relaxed) ? 2u : 0u);
+    pc.flags = 0u;
     vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
 

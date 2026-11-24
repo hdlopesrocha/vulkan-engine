@@ -28,10 +28,9 @@ ShadowRenderer::ShadowRenderer(uint32_t maxShadowMapSize)
 
 ShadowRenderer::~ShadowRenderer() {}
 
-void ShadowRenderer::setSceneRenderers(SolidRenderer* solid, WaterRenderer* liquid,
+void ShadowRenderer::setSceneRenderers(SolidRenderer* solid,
                                        VegetationRenderer* vegetation, SdfRenderer* sdf) {
     solidRenderer_ = solid;
-    liquidRenderer_ = liquid;
     vegetationRenderer_ = vegetation;
     sdfRenderer_ = sdf;
 }
@@ -992,8 +991,6 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
     cbState.reset();
     if (solidRenderer_)
         solidRenderer_->getIndirectRenderer().prepareCull(cullCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, cascadeMatrices, /*doCascade=*/true, /*doMain=*/false);
-    if (liquidRenderer_)
-        liquidRenderer_->getIndirectRenderer().prepareCull(cullCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, cascadeMatrices, /*doCascade=*/true, /*doMain=*/false);
     if (vegetationEnabled && vegetationRenderer_) {
         vegetationRenderer_->recordReadBarriers(cullCmd);
         vegetationRenderer_->prepareCullCascades(cullCmd, cascadeMatrices);
@@ -1034,13 +1031,6 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
         blurCascade(app, blurCmd, c);
     if (solidRenderer_)
         solidRenderer_->getIndirectRenderer().prepareCull(blurCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod);
-    // Restore the water main-view cull too: the cascade cull above ran
-    // prepareCull on the liquid IR with doMain=false, which zeroes its
-    // compact/count buffers without re-emitting main-view commands. Without
-    // this re-dispatch the water pass's drawPrepared reads count=0 (no water).
-    if (liquidRenderer_)
-        liquidRenderer_->getIndirectRenderer().prepareCull(blurCmd, uboStatic.viewProjection, cameraPos, lodBias, maxTargetLod, nullptr, /*doCascade=*/false, /*doMain=*/true, false, 0, 1);
-
     // ── 4. Restore the shared main UBO (GPU timeline) ──
     // The main command buffer deliberately does NOT memcpy uboStatic (that
     // would race the GPU reads); instead this final shadow CB — which the

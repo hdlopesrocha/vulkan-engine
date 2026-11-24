@@ -71,25 +71,11 @@ namespace {
 // relevant constant. DEBUG builds log "slot peak N / capacity" as usage climbs.
 // True runtime growth would require reallocating the buffers, which the design
 // deliberately avoids.
-constexpr uint32_t kMaxSolidChunkSlots = 1536;   // main solid (opaque) pool
-// Draw ENTRIES (one per published rung: chunk cells plus their coarser ladder
-// ancestors). The transparent layer publishes ~240 rungs in the reference
-// scene, so the entry pool must be sized from the *rung* count, not from the
-// old per-chunk budget: with 192 entries the last rungs of the ladder could
-// never reserve a span (logged as "no free draw block") and were skipped.
-constexpr uint32_t kMaxWaterChunkSlots = 512;
-// Element-pool byte budgets. The GPU topology pass writes one index per raw
-// vertex key and dedups the vertex side, so the index stream is much larger
-// than the vertex stream for detailed layers: the transparent fire-ring chunks
-// (minSize 4) run ~21 indices per unique vertex. Sizing water at the solid
-// layer's 4:1 vertex-heavy ratio exhausted its 24 MB index pool after 127
-// chunks (usedIdx 5.9M/6.29M) and permanently skipped the remaining 81.
-// Give water equal vertex/index byte budgets instead: the reference scene's
-// water stream (terrain + fire ring + spheres) needs ~13M indices and ~1M
-// vertices, so 192 x 512 KB each (96 MB + 96 MB) leaves ~1.8x headroom.
-constexpr uint32_t kWaterPoolBudgetSlots = 192;
-constexpr uint32_t kWaterVertexBytesPerChunk = 1u << 19;  // 512 KB per chunk
-constexpr uint32_t kWaterIndexBytesPerChunk  = 1u << 19;  // 512 KB per chunk
+// Terrain (Solid + Water) is SDF-raymarched and owns no chunk VBO/IBO. The
+// embedded solid IndirectRenderer survives only as the vegetation/debug cull
+// stream, so its mesh pool is a one-entry sentinel rather than a terrain
+// geometry budget. Video layers keep their own small pool.
+constexpr uint32_t kMaxSolidChunkSlots = 1;
 
 // Per-chunk (per-slot) geometry ceilings used to size the TOTAL packed pools
 // (total = chunkCount * perChunk). Allocation is packed/variable-size, so a chunk
@@ -128,10 +114,6 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (waterRenderer && app) {
         waterRenderer->cleanup(app);
     }
-    // Cleanup scene-owned water sub-renderers
-    if (backFaceRenderer && app) {
-        backFaceRenderer->cleanup(app);
-    }
     if (brushRenderer && app) {
         brushRenderer->cleanup(app);
     }
@@ -165,9 +147,6 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (sdfRenderer) {
         sdfRenderer->cleanup(app);
     }
-    if (waterWireframe) {
-        waterWireframe->cleanup(app);
-    }
     // Wind trails own persistent state/trail buffers (released here, while the
     // device is alive); the wind-field UBO itself belongs to VegetationRenderer.
     if (windRenderer) {
@@ -186,10 +165,7 @@ void SceneRenderer::cleanup(VulkanApp* app) {
 }
 
 // Propagate the shared per-frame command state tracker to every renderer that
-// only records on the main thread (mirrors the pre-interface wiring in
-// MyApp.cpp). backFaceRenderer and the water IndirectRenderer stay unwired:
-// the async back-face task records them on a separate thread and keeping
-// cmdState=nullptr avoids a data race on frameCmdState.
+// records on the main thread.
 void SceneRenderer::setCmdState(CommandBufferState* state) {
     if (shadowMapper) shadowMapper->setCmdState(state);
     if (solidRenderer) solidRenderer->setCmdState(state);
@@ -200,7 +176,6 @@ void SceneRenderer::setCmdState(CommandBufferState* state) {
     if (boundingBoxRenderer) boundingBoxRenderer->setCmdState(state);
     if (debugSDFRenderer) debugSDFRenderer->setCmdState(state);
     if (sdfRenderer) sdfRenderer->setCmdState(state);
-    if (waterWireframe) waterWireframe->setCmdState(state);
     if (waterRenderer) waterRenderer->setCmdState(state);
     if (videoRenderer) videoRenderer->setCmdState(state);
     if (brushRenderer) brushRenderer->setCmdState(state);
@@ -265,7 +240,8 @@ LayerRendererType SceneRenderer::layerRendererType(Layer::Id layer) const {
 IndirectRenderer* SceneRenderer::indirectForLayer(Layer::Id layer) {
     const LayerRendererType type = layerRendererType(layer);
     if (type == LayerRendererType::Video) return videoRenderer ? &videoRenderer->getIndirectRenderer() : nullptr;
-    if (type == LayerRendererType::Water) return waterRenderer ? &waterRenderer->getIndirectRenderer() : nullptr;
+    // Solid and Water are SDF-raymarched: neither owns a mesh indirect stream.
+    if (type == LayerRendererType::Water) return nullptr;
     return solidRenderer ? &solidRenderer->getIndirectRenderer() : nullptr;
 }
 
@@ -295,7 +271,6 @@ size_t SceneRenderer::getRegisteredModelCount() const {
 size_t SceneRenderer::getStreamedMeshCount() {
     size_t total = 0;
     if (solidRenderer) total += solidRenderer->getIndirectRenderer().getMeshCount();
-    if (waterRenderer) total += waterRenderer->getIndirectRenderer().getMeshCount();
     if (videoRenderer) total += videoRenderer->getIndirectRenderer().getMeshCount();
     return total;
 }
@@ -343,7 +318,6 @@ void SceneRenderer::removeAllLayerMeshes(Layer::Id layer) {
 
 void SceneRenderer::removeAllMeshes() {
     if (solidRenderer) solidRenderer->getIndirectRenderer().removeAllMeshes();
-    if (waterRenderer) waterRenderer->getIndirectRenderer().removeAllMeshes();
     if (videoRenderer) videoRenderer->getIndirectRenderer().removeAllMeshes();
     chunkMeshProfiles_.clear();
     std::lock_guard<std::mutex> lock(layerStatesMutex_);
@@ -358,24 +332,6 @@ void SceneRenderer::removeAllMeshes() {
         solidProxyData.clear();
         waterProxyData.clear();
     }
-}
-
-void SceneRenderer::recreateWaterTargets(VulkanApp* app, uint32_t width, uint32_t height) {
-    if (!app || !waterRenderer) return;
-    // Settings::waterRenderScale: the water offscreen pair (color + body +
-    // column, the geometry depth) and the back-face depth render at a fraction
-    // of the swapchain size. The pass viewport/scissor derive from the renderer's
-    // own renderWidth/renderHeight, so they follow automatically, and the
-    // fragment stage's screenUV/gl_FragCoord are resolution-independent.
-    const float scale = std::min(std::max(waterRenderScale_, 0.25f), 1.0f);
-    const uint32_t w = std::max(1u, static_cast<uint32_t>(width * scale + 0.5f));
-    const uint32_t h = std::max(1u, static_cast<uint32_t>(height * scale + 0.5f));
-    waterRenderer->createRenderTargets(app, w, h);
-    // Back-face targets owned by SceneRenderer (the 360 cubemap path is removed
-    // — reflections are hardware ray tracing now). Scaled too: the water
-    // fragment stage samples them at screen UV, so only their filtering
-    // footprint changes.
-    if (backFaceRenderer) backFaceRenderer->createRenderTargets(app, w, h);
 }
 
 void SceneRenderer::recreateVegetationTargets(VulkanApp* app, uint32_t width, uint32_t height) {
@@ -406,9 +362,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     if (brushRenderer) {
         brushRenderer->onSwapchainResized(app, width, height);
     }
-    if (waterRenderer) {
-        // Water + back-face targets render at Settings::waterRenderScale.
-        recreateWaterTargets(app, width, height);
+    {
         if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, width, height);
         if (sdfRenderer) sdfRenderer->createRenderTargets(app, width, height);
         if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, width, height);
@@ -468,7 +422,6 @@ SceneRenderer::SceneRenderer() :
     debugCubeRenderer(std::make_unique<DebugCubeRenderer>()),
     boundingBoxRenderer(std::make_unique<DebugCubeRenderer>()),
     debugSDFRenderer(std::make_unique<DebugSDFRenderer>()),
-    waterWireframe(std::make_unique<WireframeRenderer>()),
     windRenderer(std::make_unique<WindRenderer>()),
     windRaymarchRenderer(std::make_unique<WindRaymarchRenderer>()),
     skySettings(std::make_unique<SkySettings>()),
@@ -530,8 +483,6 @@ void SceneRenderer::beginInit(VulkanApp* app, TextureArrayManager* textureArrayM
     // Route solid/water IndirectRenderer incremental copies through the manager.
     solidRenderer->getIndirectRenderer().setUploadManager(
         &streamer.uploadManager(), streaming::StreamCategory::Solid);
-    waterRenderer->getIndirectRenderer().setUploadManager(
-        &streamer.uploadManager(), streaming::StreamCategory::Water);
 
     // skySettingsRef was initialized at construction and must be valid
     
@@ -560,7 +511,6 @@ void SceneRenderer::beginInit(VulkanApp* app, TextureArrayManager* textureArrayM
         solidRenderer->init();
         solidRenderer->destroyRenderTargets(app);
         solidRenderer->createRenderTargets(app, initW, initH);
-        solidRenderer->createPipelines(app);
     });
     initFutureVideo_ = std::async(std::launch::async, [this, app, initW, initH]() {
         if (!videoRenderer) return;
@@ -773,18 +723,10 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     waterParamsBuffer_ = app->createBuffer(paramsBufferSize, waterParamsUsage,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     waterParamsBufferSize_ = static_cast<VkDeviceSize>(paramsBufferSize);
-    // Create scene-owned water sub-renderers. Back-face renderpass must exist
-    // before water pipelines are created, so create it first.
-    backFaceRenderer = std::make_unique<WaterBackFaceRenderer>();
-
-    // Initialize WaterRenderer (creates its pipeline layout and initializes the param SSBO)
+    // WaterRenderer keeps the per-layer parameter SSBO and the aux targets the
+    // composite reads. It no longer owns a geometry pass (raymarch handles
+    // both solid and water).
     waterRenderer->init(app, waterParamsBuffer_, waterParams, layerCount);
-
-    // Now that WaterRenderer has created its pipeline layout, allow the
-    // back-face renderer to create pipelines that depend on it.
-    if (backFaceRenderer) backFaceRenderer->createPipelines(app, waterRenderer->getWaterGeometryPipelineLayout());
-    // (Water + back-face render targets are created later, by
-    // recreateWaterTargets(), once the water pipelines exist.)
 
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (sdfRenderer) sdfRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
@@ -1057,16 +999,11 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     }
 
     // ── Wire scene sub-renderers into the pass orchestrators ──
-    // The shadow pass draws solid/water/vegetation geometry and the water pass
-    // samples the solid offscreen targets; the brush preview is an independent
-    // offscreen pass and is wired directly from MyApp.
+    // The shadow pass draws solid/vegetation geometry; the brush preview is an
+    // independent offscreen pass and is wired directly from MyApp.
     if (shadowMapper) {
-        shadowMapper->setSceneRenderers(solidRenderer.get(), waterRenderer.get(),
+        shadowMapper->setSceneRenderers(solidRenderer.get(),
                                         vegetationRenderer.get(), sdfRenderer.get());
-    }
-    if (waterRenderer) {
-        waterRenderer->setSceneRenderers(solidRenderer.get(),
-                                              backFaceRenderer.get(), waterWireframe.get());
     }
 
     // ── Allocate (once) and write shadow-specific descriptor sets per-frame ──
@@ -1161,32 +1098,9 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
             this->proxyAlbedoRefresh_.store(true, std::memory_order_relaxed);
         });
     }
-    // Water + back-face targets (recreateWaterTargets creates both) so
-    // `backFaceDepthView` and the water targets are valid before the first
-    // frame's water pass.
-    recreateWaterTargets(app, app->getWidth(), app->getHeight());
     if (debugSDFRenderer) debugSDFRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (sdfRenderer) sdfRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
     if (boundingBoxRenderer) boundingBoxRenderer->createRenderTargets(app, app->getWidth(), app->getHeight());
-
-    // Create the solid wireframe pipeline (owned by SolidRenderer) and the
-    // water wireframe pipeline
-    solidRenderer->createWireframe(app);
-    if (waterWireframe) {
-        std::vector<VkDescriptorSetLayout> waterSetLayouts = {
-            app->getDescriptorSetLayout(),
-            app->getMaterialDescriptorSetLayout(),
-            waterRenderer->getWaterDepthDescriptorSetLayout()
-        };
-        // Single colour attachment: the overlay is drawn in its own
-        // single-attachment rendering scope (see WaterRenderer::renderPass),
-        // never inside the blur-capable 3-attachment water pass.
-        waterWireframe->createPipeline(app, {VK_FORMAT_R32G32B32A32_SFLOAT},
-            waterSetLayouts,
-            "shaders/renderer/water/WaterRenderer.vert.spv", "shaders/renderer/water/WaterRendererWireframe.frag.spv",
-            "shaders/renderer/water/WaterRenderer.tesc.spv", "shaders/renderer/water/WaterRenderer.tese.spv",
-            "water wireframe");
-    }
 
     // Initialize post-process renderer (composites scene + water into swapchain).
     // Sky offscreen targets are created above (before this point) and always
@@ -1204,15 +1118,11 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     // Must be called after all sub-renderers are initialized, before scene loading.
     initSlottedMode(app,
         kMaxSolidChunkSlots,
-        kMaxWaterChunkSlots,
         kVertexBytesPerChunk,  // per-chunk vertex ceiling (total = chunks x this)
         kIndexBytesPerChunk    // per-chunk index ceiling (total = chunks x this)
     );
 
-    // Hybrid RT final wiring: water's non-async prepare path needs the RT
-    // outputs, and the RT pipeline's per-slot sets need the water-depth + sky
-    // views created above (water render targets + sky offscreen targets).
-    if (waterRenderer) waterRenderer->setRTResources(rayTracing.get());
+    // RT pipeline's per-slot sets need the surface-depth + sky views.
     refreshRTSceneViews(app);
 
 }
@@ -1896,15 +1806,10 @@ void SceneRenderer::drainPendingMeshes(std::deque<PendingMeshData>& out, size_t 
 }
 
 void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, std::deque<PendingMeshData>& batch) {
-    if (!waterRenderer) {
-        std::cerr << "[processPendingMeshes] FATAL: waterRenderer is null!" << std::endl;
-        return;
-    }
     // Cache the camera position for the shadow pass (which culls with the
     // same camPos/lodBias so shadow draws match the main pass LoD selection).
     lastCameraPos_ = cameraPos;
     solidRenderer->getIndirectRenderer().pollPendingTransfers(app);
-    waterRenderer->getIndirectRenderer().pollPendingTransfers(app);
 
     // Keep the GPU LoD gate meta in sync with the tree (self-correcting once
     // the scene is loaded). maxLodLevel is the tree's real ladder depth and
@@ -1917,21 +1822,17 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         const float ms = 30.0f;
         Scene& renderScene = world_->activeScene();
         ensureLayerStates(renderScene.layerCount());
-        int solidMax = 0, waterMax = 0;
-        glm::vec3 solidRoot(0.0f), waterRoot(0.0f);
-        bool haveSolid = false, haveWater = false;
+        int solidMax = 0;
+        glm::vec3 solidRoot(0.0f);
+        bool haveSolid = false;
         for (size_t i = 0; i < renderScene.layerCount(); ++i) {
             Layer* l = renderScene.layerAt(i);
             if (!l || !l->enabled()) continue;
-            if (l->renderer() == LayerRendererType::Water) {
-                waterMax = std::max(waterMax, renderScene.maxChunkLod(*l, ms));
-                if (!haveWater) { waterRoot = renderScene.lodRootMin(*l); haveWater = true; }
-            } else {
-                solidMax = std::max(solidMax, renderScene.maxChunkLod(*l, ms));
-                if (!haveSolid) { solidRoot = renderScene.lodRootMin(*l); haveSolid = true; }
-            }
+            if (l->renderer() == LayerRendererType::Video) continue;
+            solidMax = std::max(solidMax, renderScene.maxChunkLod(*l, ms));
+            if (!haveSolid) { solidRoot = renderScene.lodRootMin(*l); haveSolid = true; }
         }
-        // Fall back to the historic layers so an empty/disabled scene never
+        // Fall back to the historic layer so an empty/disabled scene never
         // leaves the gate uninitialized.
         if (!haveSolid) {
             if (Layer* l = renderScene.findLayer(LAYER_OPAQUE)) {
@@ -1939,16 +1840,8 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
                 solidRoot = renderScene.lodRootMin(*l);
             }
         }
-        if (!haveWater) {
-            if (Layer* l = renderScene.findLayer(LAYER_TRANSPARENT)) {
-                waterMax = renderScene.maxChunkLod(*l, ms);
-                waterRoot = renderScene.lodRootMin(*l);
-            }
-        }
         solidRenderer->getIndirectRenderer().setMaxLodLevel(solidMax);
         solidRenderer->getIndirectRenderer().setLodRootMin(solidRoot);
-        waterRenderer->getIndirectRenderer().setMaxLodLevel(waterMax);
-        waterRenderer->getIndirectRenderer().setLodRootMin(waterRoot);
     }
 
     // ── Async visible-count snapshot (stats only) ─────────────────────────
@@ -1957,7 +1850,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     // once per frame (1-frame latency) so the stats overlay never touches GPU
     // memory on the ImGui path.
     lastOpaqueVisible_ = solidRenderer->getIndirectRenderer().readVisibleCount(app);
-    lastTransparentVisible_ = waterRenderer->getIndirectRenderer().readVisibleCount(app);
+    lastTransparentVisible_ = 0;
 
     // Coalesced SDF scene rebuilds: chunk ingests above only flag dirty; the
     // scene rebuild (bounds + grids) runs at most once per frame here.
@@ -2058,7 +1951,6 @@ void SceneRenderer::ageOutPendingDeletes(uint32_t curFrame) {
 void SceneRenderer::logMemoryUtilization() {
     std::printf("[memutil] ---- pool utilization (report 22 C1) ----\n");
     if (solidRenderer) solidRenderer->getIndirectRenderer().logUtilization("solid");
-    if (waterRenderer) waterRenderer->getIndirectRenderer().logUtilization("water");
     if (vegetationRenderer) vegetationRenderer->logUtilization();
     // Report 23 C1: the texture side of the budget, previously uncounted.
     if (textureArrays_) textureArrays_->logMemoryUtilization("main");
@@ -2108,7 +2000,6 @@ void SceneRenderer::logChunkMeshProfiles() const {
 }
 
 void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
-                                    uint32_t maxWaterChunks,
                                     uint32_t vertexBytesPerChunk,
                                     uint32_t indexBytesPerChunk)
 {
@@ -2147,17 +2038,14 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
               << ", BDA " << (app->supportsBufferDeviceAddress() ? "supported" : "unsupported")
               << std::endl;
 
-    const uint64_t solidVertBytes = static_cast<uint64_t>(maxSolidChunks) * vertexBytesPerChunk;
-    const uint64_t solidIdxBytes  = static_cast<uint64_t>(maxSolidChunks) * indexBytesPerChunk;
-    const uint64_t waterVertBytes = static_cast<uint64_t>(kWaterPoolBudgetSlots) * kWaterVertexBytesPerChunk;
-    const uint64_t waterIdxBytes  = static_cast<uint64_t>(kWaterPoolBudgetSlots) * kWaterIndexBytesPerChunk;
+    // The solid IR is cull-only: its element pool is a one-element sentinel,
+    // not a terrain geometry budget. Video keeps the real per-chunk budgets.
+    const uint64_t solidVertBytes = static_cast<uint64_t>(maxSolidChunks) * sizeof(Vertex);
+    const uint64_t solidIdxBytes  = static_cast<uint64_t>(maxSolidChunks) * sizeof(uint32_t);
 
     solidRenderer->getIndirectRenderer().initSlots(app, maxSolidChunks,
                                                        static_cast<uint32_t>(solidVertBytes),
                                                        static_cast<uint32_t>(solidIdxBytes));
-    waterRenderer->getIndirectRenderer().initSlots(app, maxWaterChunks,
-                                                        static_cast<uint32_t>(waterVertBytes),
-                                                        static_cast<uint32_t>(waterIdxBytes));
     // Video layer pool: small (a handful of SDF objects painted with video
     // materials), rendered by its own indirect draw after water.
     constexpr uint32_t kVideoPoolSlots = 128;
@@ -2179,11 +2067,7 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
         const size_t solidIdx = solidIdxBytes / sizeof(uint32_t);
         const bool okSolid = solidRenderer->getIndirectRenderer().ensureCapacity(
             solidVerts, solidIdx, maxSolidChunks);
-        const size_t waterVerts = waterVertBytes / sizeof(Vertex);
-        const size_t waterIdx = waterIdxBytes / sizeof(uint32_t);
-        const bool okWater = waterRenderer->getIndirectRenderer().ensureCapacity(
-            waterVerts, waterIdx, maxWaterChunks);
-        if (!okSolid || !okWater) {
+        if (!okSolid) {
             std::cerr << "[SceneRenderer] initSlottedMode: worst-case ensureCapacity FAILED\n";
             assert(false && "initSlottedMode worst-case capacity check failed");
         }
@@ -2197,12 +2081,9 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
                                         VegetationRenderer::kMaxVegInstancesPerChunk);
     }
 
-    std::cout << "[SceneRenderer] packed pools: solid=" << maxSolidChunks
-              << " blocks / water=" << maxWaterChunks
+    std::cout << "[SceneRenderer] cull-only solid pool: " << maxSolidChunks
               << " blocks (total " << (solidVertBytes >> 20) << " MB + "
-              << (solidIdxBytes >> 20) << " MB index solid, "
-              << (waterVertBytes >> 20) << " MB + " << (waterIdxBytes >> 20)
-              << " MB index water, device-local)" << std::endl;
+              << (solidIdxBytes >> 20) << " MB index, device-local)" << std::endl;
 
 }
 
@@ -2436,6 +2317,25 @@ bool SceneRenderer::buildChunkResident(Scene& scene, Layer::Id layer, NodeID nid
 
 void SceneRenderer::processNodeLayer(Scene& scene, Layer::Id layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, float minSize, ThreadPool* poolOverride) {
 
+    // Local Solid/Water terrain is SDF-raymarched from the octree directly.
+    // It must not enter the GPU topology/mesh path: doing so would flatten
+    // neighbourhoods, reserve packed vertex/index spans and write VBO/IBO data
+    // that no terrain draw consumes. Keep only the (gated) debug-overlay
+    // collection, which the raymarch debug views still use. RemoteScene and
+    // Video layers keep their raster chunk path.
+    Layer* earlyLayer = scene.findLayer(layer);
+    if (earlyLayer && earlyLayer->renderer() != LayerRendererType::Video) {
+        static std::atomic<bool> loggedRaymarchOnly{false};
+        bool expected = false;
+        if (loggedRaymarchOnly.compare_exchange_strong(expected, true)) {
+            std::cerr << "[SceneRenderer] SDF raymarch owns Solid/Water terrain: "
+                         "chunk topology and VBO/IBO generation are disabled for "
+                         "local terrain layers\n";
+        }
+        collectDebugForChunk(scene, layer, nid, nodeData, poolOverride);
+        return;
+    }
+
     // Every cell with a chunkLod (stored 1..5, the +1-shifted uint8_t space)
     // publishes its mesh — each chunk carries its own level and the GPU cull
     // keeps only the chunk level matching the camera distance band. Coarse
@@ -2662,14 +2562,15 @@ void SceneRenderer::writeTlasBinding(VulkanApp* app, VkDescriptorSet dstSet) {
 
 void SceneRenderer::refreshRTSceneViews(VulkanApp* app) {
     if (!app || !rayTracing || !rayTracing->isSupported()) return;
-    if (!waterRenderer || !skyRenderer) return;
-    VkImageView waterDepths[3] = {};
+    if (!solidRenderer || !skyRenderer) return;
+    VkImageView surfaceDepths[3] = {};
     VkImageView skyViews[3] = {};
     for (int i = 0; i < 3; ++i) {
-        waterDepths[i] = waterRenderer->getWaterGeomDepthView(static_cast<uint32_t>(i));
+        // The solid depth now carries the raymarched water surface as well.
+        surfaceDepths[i] = solidRenderer->getDepthView(static_cast<uint32_t>(i));
         skyViews[i] = skyRenderer->getSkyView(static_cast<uint32_t>(i));
     }
-    rayTracing->setSceneViews(app, waterDepths, skyViews);
+    rayTracing->setSceneViews(app, surfaceDepths, skyViews);
 }
 
 void SceneRenderer::initSSRSamplers(VulkanApp* app) {
@@ -2861,31 +2762,15 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
             // moves). The O(n^2) overlap filter below runs only when this
             // raw set actually differs.
             solidRenderer->getIndirectRenderer().copyAllRTGeometrySpans(spans);
-            // Water snapshot up front so either layer can trigger the joint
-            // refresh below (the scene BLAS holds both in one geometry list).
-            VkBuffer wvb = VK_NULL_HANDLE, wib = VK_NULL_HANDLE;
-            std::vector<RTGeometrySpan> wspan;
-            if (waterRenderer) {
-                wvb = waterRenderer->getIndirectRenderer().getVertexBufferHandle();
-                wib = waterRenderer->getIndirectRenderer().getIndexBufferHandle();
-                waterRenderer->getIndirectRenderer().copyAllRTGeometrySpans(wspan);
-            }
             const bool solidok = vb != VK_NULL_HANDLE && ib != VK_NULL_HANDLE;
-            const bool waterok = wvb != VK_NULL_HANDLE && wib != VK_NULL_HANDLE;
             const bool solidChanged = solidok && spans != lastSceneSpans_;
-            // Change-detected like the solid path: without it the scene BLAS
-            // would be flagged dirty on every frame and rebuilt every 30
-            // frames even when the scene is idle.
-            const bool waterChanged = waterok && wspan != lastWaterSpans_;
-            if (solidChanged || waterChanged) {
-                if (solidChanged) lastSceneSpans_ = spans;
-                if (waterChanged) lastWaterSpans_ = wspan;
+            if (solidChanged) {
+                lastSceneSpans_ = spans;
                 // Non-overlapping: only the finest resident rung per nested
                 // region survives, so LOD0 is never overlaid with LODN in
                 // the reflection.
-                std::vector<RTGeometrySpan> filtered, wfiltered;
+                std::vector<RTGeometrySpan> filtered;
                 if (solidok) IndirectRenderer::filterNonOverlappingSpans(lastSceneSpans_, filtered);
-                if (waterok) IndirectRenderer::filterNonOverlappingSpans(lastWaterSpans_, wfiltered);
                 // Surviving mesh ids per layer: the proxy packer below drops
                 // entries outside these sets (coarse ancestors), so proxy
                 // boxes never overlay the fine surface for refraction/shadow
@@ -2893,28 +2778,19 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                 // always consistent with them.
                 keptSolidProxyIds_.clear();
                 for (const auto& s : filtered) keptSolidProxyIds_.insert(s.chunkId);
-                keptWaterProxyIds_.clear();
-                for (const auto& s : wfiltered) keptWaterProxyIds_.insert(s.chunkId);
                 std::lock_guard<std::recursive_mutex> lock(proxyMutex_);
                 VkBufferDeviceAddressInfo q{};
                 q.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-                VkDeviceAddress vaddr = 0, iaddr = 0, wvaddr = 0, wiaddr = 0;
+                VkDeviceAddress vaddr = 0, iaddr = 0;
                 if (solidok) {
                     q.buffer = vb;
                     vaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
                     q.buffer = ib;
                     iaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
                 }
-                if (waterok) {
-                    q.buffer = wvb;
-                    wvaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
-                    q.buffer = wib;
-                    wiaddr = vkGetBufferDeviceAddress(app->getDevice(), &q);
-                }
                 std::vector<SceneTriGeometry> solidGeoms;
-                std::vector<SceneTriGeometry> waterGeoms;
+                std::vector<SceneTriGeometry> waterGeoms; // raymarched: no raster triangles
                 solidGeoms.reserve(filtered.size());
-                waterGeoms.reserve(wfiltered.size());
                 for (const auto& s : filtered) {
                     SceneTriGeometry g;
                     g.vertexAddress = vaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
@@ -2936,34 +2812,9 @@ void SceneRenderer::rebuildProxySet(VulkanApp* app, bool sceneChanged) {
                     g.albedo = glm::vec4(avg[0], avg[1], avg[2], matRefl);
                     solidGeoms.push_back(g);
                 }
-                // Water chunks: a SECOND scene BLAS (TLAS instance 3, mask 0x08)
-                // holding the real water MESH so reflections hit the actual
-                // water surface triangles while refraction can trace solids and
-                // water as separate opaque passes (nearest of each kind, no
-                // candidate enumeration). Runs on every joint refresh (not only
-                // when water changed) so a solid-only refresh never drops the
-                // water geometries.
-                for (const auto& s : wfiltered) {
-                    SceneTriGeometry g;
-                    g.vertexAddress = wvaddr + VkDeviceAddress(s.baseVertex) * sizeof(Vertex);
-                    g.indexAddress = wiaddr + VkDeviceAddress(s.firstIndex) * sizeof(uint32_t);
-                    g.vertexBuffer = wvb;
-                    g.indexBuffer = wib;
-                    g.vertexCount = s.vertexCount;
-                    g.indexCount = s.indexCount;
-                    g.baseVertex = s.baseVertex;
-                    g.firstIndex = s.firstIndex;
-                    // albedo.w = the water LAYER index (chunk
-                    // dominant, stable per chunk) so hit shading reads
-                    // a consistent layer — per-vertex brushIndex can
-                    // vary within a triangle and would flicker the
-                    // water color.
-                    auto wit = waterProxyData.find(s.chunkId);
-                    const float wLayer = (wit != waterProxyData.end())
-                        ? static_cast<float>(wit->second.materialId) : 0.0f;
-                    g.albedo = glm::vec4(waterReflectionTint_, wLayer);
-                    waterGeoms.push_back(g);
-                }
+                // Water contributes no raster triangles to the scene BLAS;
+                // water reflections/refraction trace the SDF via the octree
+                // raymarch branch.
                 rayTracing->setSceneGeometry(std::move(solidGeoms), std::move(waterGeoms));
             }
         }
@@ -3133,11 +2984,6 @@ void SceneRenderer::updateRTParams(VulkanApp* app, const Settings& settings,
                                   || settings.rtRefractions || settings.rtLocalShadows
                                   || settings.rtWaterDepth;
     rayTracing->setRuntimeEnabled(rtRuntimeEnabled);
-    // Solid color pass: bind the non-RT fragment variant while neither solid
-    // RT path (reflections / local shadows) is enabled. Runs every frame,
-    // including the disabled early-out below (pipeline variant selection).
-    if (solidRenderer)
-        solidRenderer->setRtShadingEnabled(settings.rtReflections || settings.rtLocalShadows);
     // Octree raymarch solid path: same selector so both solid paths shade with
     // the same RT variant (and fall back to the procedural sky with RT off).
     if (octreeRaymarchRenderer)

@@ -64,32 +64,23 @@ void RaymarchWidget::render() {
             ImGui::TextWrapped("No Settings bound to this widget.");
             return;
         }
-        ImGui::TextWrapped("The octree SDF raymarch is the ray marched "
-                           "equivalent of the tessellated chunks and applies to "
-                           "EVERY terrain layer (solid and water) in one pass. "
-                           "Solid hits shade through shadeSolidSurface(); water "
-                           "hits take the water surface branch. The raymarch "
-                           "reconstructs the local surface triangle for the same "
-                           "up-to-three-brush barycentric blend and folds the "
-                           "per-material tessellation height offset into the "
-                           "SDF, so the displaced surface matches the raster one.");
+        ImGui::TextWrapped("Terrain is rendered exclusively by the full-screen "
+                           "octree SDF raymarch: every Solid and Water layer is "
+                           "marched in one pass. Solid hits shade through "
+                           "shadeSolidSurface(); water hits take the water surface "
+                           "branch. Chunk VBOs/IBOs are no longer generated for "
+                           "terrain, so there is no raster fallback for local "
+                           "scenes. The raymarch reconstructs the local surface "
+                           "triangle for the same up-to-three-brush barycentric "
+                           "blend and folds the per-material tessellation height "
+                           "offset into the SDF.");
         {
             ImGuiComponents::FieldLabel("Terrain path",
-                "Rasterizer = GPU-tessellated chunk meshes. Ray marched = "
-                "full-screen octree SDF march of every terrain layer (falls "
-                "back to raster when no node table is available).");
-            int path = settings->octreeRaymarchEnabled ? 1 : 0;
-            const char* paths[] = {"Rasterizer (tessellated)", "Ray marched octree"};
-            ImGui::SetNextItemWidth(kRaymarchColWidth);
-            ImGui::PushID("SolidPath##octree");
-            if (ImGui::Combo("##v", &path, paths, 2)) {
-                settings->octreeRaymarchEnabled = (path == 1);
-            }
-            ImGui::PopID();
+                "Ray marched octree is the only terrain path for local scenes.");
+            ImGui::TextUnformatted("Ray marched octree");
             ImGuiComponents::TooltipOnHover(
-                "Rasterizer = GPU-tessellated chunk meshes. Ray marched = "
-                "full-screen octree SDF march over solid AND water layers. The "
-                "node table rebuilds on the next debounce after switching on.");
+                "Full-screen octree SDF march over solid AND water layers. "
+                "Terrain chunk meshes are no longer built or uploaded.");
         }
         {
             bool tess = settings->tessellationEnabled;
@@ -99,10 +90,9 @@ void RaymarchWidget::render() {
             }
             ImGui::PopID();
             ImGuiComponents::TooltipOnHover(
-                "Same gate the raster TES uses. On: the raymarch subtracts the "
-                "per-material height offset from the cell SDF (bumps the SDF), "
-                "so the marched surface matches the displaced raster surface. "
-                "Off: both paths stay undisplaced.");
+                "On: the raymarch subtracts the per-material height offset from "
+                "the cell SDF (bumps the SDF), so the marched surface matches the "
+                "displaced surface. Off: the surface stays undisplaced.");
         }
         {
             ImGuiComponents::FieldLabel("SS hit epsilon",
@@ -120,44 +110,6 @@ void RaymarchWidget::render() {
                 "Screen-space hit tolerance in pixels (0 = off). 0.25 removes "
                 "over-resolution at distance and on grazing rays; hit positions "
                 "move by at most this many pixels.");
-        }
-        {
-            bool profile = settings->octreeRaymarchProfile;
-            ImGui::PushID("ProfileCounters##octree");
-            if (ImGui::Checkbox("Profile counters", &profile)) {
-                settings->octreeRaymarchProfile = profile;
-            }
-            ImGui::PopID();
-            ImGuiComponents::TooltipOnHover(
-                "Phase 0 instrumentation: count march nodes, field/gradient "
-                "evaluations, QEF fallbacks, payload loads and hit-path "
-                "descents. Profiling-only (fragment atomics); the counters are "
-                "logged every 64 frames.");
-        }
-        {
-            bool noFallback = settings->octreeRaymarchNoFallback;
-            ImGui::PushID("NoFallback##octree");
-            if (ImGui::Checkbox("No-fallback shader", &noFallback)) {
-                settings->octreeRaymarchNoFallback = noFallback;
-            }
-            ImGui::PopID();
-            ImGuiComponents::TooltipOnHover(
-                "Phase 2: bind the fragment twin with the QEF solver and "
-                "LandBrush classifier compiled out. Only active when the "
-                "once-per-revision derive pass is available; otherwise the "
-                "normal fallback shader stays bound.");
-        }
-        {
-            bool parametric = settings->octreeRaymarchParametricChild;
-            ImGui::PushID("ParametricChild##octree");
-            if (ImGui::Checkbox("Parametric child exit", &parametric)) {
-                settings->octreeRaymarchParametricChild = parametric;
-            }
-            ImGui::PopID();
-            ImGuiComponents::TooltipOnHover(
-                "Phase 4 research: compute only the selected child's far-plane "
-                "exit instead of the full child slab test. Bit-exact; off by "
-                "default for A/B.");
         }
     });
 

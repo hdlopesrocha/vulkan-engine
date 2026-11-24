@@ -96,19 +96,20 @@ layout(push_constant) uniform OctreeRaymarchPush {
     uint rootCount;    // number of layer roots in the set-2 root buffer
     uint tableVersion; // low 32 bits of the table revision (future caches)
     uint nodeCount;    // records uploaded for this frame slot
-    uint flags;        // bit0: profile counters enabled
+    uint flags;        // reserved
 } pc;
 
-#ifdef OCTREE_PROFILE
-void rmCount(int idx) {
-    if ((pc.flags & 1u) != 0u) atomicAdd(rmCounters[idx], 1u);
-}
-#else
-// Production/no-fallback variants compile the counter calls out entirely.
+// Instrumentation was removed with the profile shader variants; the march
+// keeps the call sites as no-ops so the traversal code stays readable.
 #define rmCount(idx)
-#endif
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
+
+// Terrain shadows are ray marched from the same node table (the raster CSM
+// has no terrain casters once chunk meshing is gone). Declared before the
+// shared shading body, defined below once the march helpers exist.
+#define SOLID_SHADOW_TRACE 1
+float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int cascadeHint);
 
 // ── Fragment globals consumed by shadeSolidSurface() ───────────────────────
 // The raster path fills these from tessellation varyings; a raymarched hit has
@@ -1423,6 +1424,71 @@ bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
         }
     }
     return found;
+}
+
+// Primary-hit sun shadow: march the SOLID layer roots from the shaded point
+// toward the light. Returns 1.0 when anything occludes the ray (the CSM
+// convention used by shadeSolidSurface), 0.0 when the light is visible. The
+// start point is lifted along the surface normal so the self-cell cannot
+// intersect at t=0; the same adaptive octree march as the primary ray keeps
+// the shadow edge aligned with the rendered isosurface.
+float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int cascadeHint) {
+    cascadeHint = 0;
+    if (ubo.shadowsEnabled == 0u) return 0.0;
+
+    vec3 rd = normalize(l);
+    vec3 ro = p + n * 0.1;
+    vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
+    // Terrain self-shadowing is a macro effect; cap the ray to keep grazing
+    // sun rays from marching the entire domain per pixel.
+    const float maxT = min(max(ubo.farPlane, 1.0), 4096.0);
+
+    // Front-to-back root intervals among SOLID roots only: water is
+    // transparent and must not cast an opaque shadow on the terrain.
+    RmRootInterval iv[RM_MAX_ROOTS];
+    int ivCount = 0;
+    const uint sortedRoots = min(pc.rootCount, uint(RM_MAX_ROOTS));
+    for (uint i = 0u; i < sortedRoots; ++i) {
+        if (rmRoots[i].kind != 0u) continue;
+        vec3 testMin, testMax;
+        rmRootTestBox(i, testMin, testMax);
+        float t0, t1;
+        if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) continue;
+        if (t1 <= 0.0 || t0 >= maxT) continue;
+        rmInsertRootInterval(iv, ivCount, i, t0, t1);
+    }
+
+    for (int k = 0; k < ivCount; ++k) {
+        if (iv[k].t0 >= maxT) break;
+        uint node;
+        float t;
+        int brush;
+        vec3 normal;
+        if (rmMarchRoot(rmRoots[iv[k].root].node, ro, rd, invRd, maxT,
+                        true, max(iv[k].t0, 0.0), min(iv[k].t1, maxT),
+                        node, t, brush, normal, false) && t > 0.0) {
+            return 1.0;
+        }
+    }
+    // Roots beyond the sorting budget: unsorted fallback, same clamp.
+    for (uint i = sortedRoots; i < pc.rootCount; ++i) {
+        if (rmRoots[i].kind != 0u) continue;
+        vec3 testMin, testMax;
+        rmRootTestBox(i, testMin, testMax);
+        float t0, t1;
+        if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) continue;
+        if (t1 <= 0.0 || t0 >= maxT) continue;
+        uint node;
+        float t;
+        int brush;
+        vec3 normal;
+        if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, maxT,
+                        true, max(t0, 0.0), min(t1, maxT),
+                        node, t, brush, normal, false) && t > 0.0) {
+            return 1.0;
+        }
+    }
+    return 0.0;
 }
 
 // ── Ray-marched water surface waves ───────────────────────────────────────
