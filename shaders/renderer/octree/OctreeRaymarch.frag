@@ -306,10 +306,19 @@ float rmDisplacement(uint id, int material, vec3 p, vec3 n) {
 // Bumped trilinear field. `base` receives the unbumped value (used for the
 // conservative advance outside the displacement bound); `maxDisp` is the
 // maximum |offset| this material can produce (0 = no bump).
-float rmField(uint id, vec3 p, int material, out float base, out float maxDisp) {
+//
+// `waterRoot` disables the bump entirely: the water layer is a NormalBrush
+// volume whose upward faces resolve to material 0, but the raster water surface
+// only receives the Gerstner swell, never the solid material height-map
+// displacement. Applying it here shifted the flat lake surface by metres (and
+// stretched the thin shore cells into vertical water curtains) whenever
+// tessellation was enabled.
+float rmField(uint id, vec3 p, int material, bool waterRoot,
+              out float base, out float maxDisp) {
     base = rmTrilinear(id, p);
     maxDisp = 0.0;
-    if (ubo.tessellationEnabled == 0u || material < 0 || !rmIsFinite(base)) return base;
+    if (waterRoot || ubo.tessellationEnabled == 0u || material < 0 ||
+        !rmIsFinite(base)) return base;
     MaterialNamed m = materialNamed(materials[material]);
     if (!m.mappingEnabled) return base;
     maxDisp = 0.5 * abs(m.tessHeightScale);
@@ -323,7 +332,7 @@ float rmField(uint id, vec3 p, int material, out float base, out float maxDisp) 
 // crossing, clamped to the band so the hit can never leave it. Only called
 // when the screen-space tolerance is active; the plain node epsilon keeps the
 // historical acceptance at the sampled t.
-float rmRefineHit(uint node, vec3 ro, vec3 rd, int material,
+float rmRefineHit(uint node, vec3 ro, vec3 rd, int material, bool waterRoot,
                   float tPrev, float dPrev, float t, float d, float eps) {
     if (!(tPrev < t) || !(abs(t - tPrev) > 1e-8) || abs(dPrev) <= eps) return t;
     float t0 = tPrev, f0 = dPrev;
@@ -335,7 +344,7 @@ float rmRefineHit(uint node, vec3 ro, vec3 rd, int material,
         tn = clamp(tn, t - eps, t + eps);   // never move off the hit band
         rmCount(RM_COUNTER_BISECT_EVALS);
         float bBase, bMax;
-        float fn = rmField(node, ro + rd * tn, material, bBase, bMax);
+        float fn = rmField(node, ro + rd * tn, material, waterRoot, bBase, bMax);
         if (isnan(fn)) break;
         t0 = t1; f0 = f1; t1 = tn; f1 = fn;
         if (abs(f1) < 1e-6) break;
@@ -545,7 +554,12 @@ RmSurfaceBlend rmDefaultBlend(uint id) {
     return b;
 }
 
-RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedHit) {
+// `applyDisplacement` mirrors rmField's gate: the water layer's NormalBrush
+// cells resolve to material 0, but the raster water surface never receives the
+// solid material height-map displacement, so its ring corners must stay on the
+// flat interface.
+RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedHit,
+                            bool applyDisplacement) {
     RmSurfaceBlend outBlend = rmDefaultBlend(hitId);
 
     float sz = rmNodeSize(hitId);
@@ -645,7 +659,7 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
         if (!duplicate && ringCount < 4) {
             int m = rmRingMaterial(id, qp);
             vec3 n = rmNodeNormalAtQef(id, qp);
-            float disp = rmDisplacementN(id, m, qp, n);
+            float disp = applyDisplacement ? rmDisplacementN(id, m, qp, n) : 0.0;
             ringId[ringCount] = id;
             ringBase[ringCount] = qp;
             ringPos[ringCount] = qp + n * disp;
@@ -1047,8 +1061,12 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
                 // while this node's material is displaced, keep sampling the
                 // parent field instead of skipping. Without an active bump the
                 // skip is exact and stays enabled.
+                // Water roots never carry the solid material bump (see
+                // rmField), so their Empty/Solid children keep the exact skip
+                // and must not fall back to the parent field.
                 int bumpBrush = rmCachedBrush(node);
-                bool bumpActive = ubo.tessellationEnabled != 0u
+                bool bumpActive = !waterRoot
+                    && ubo.tessellationEnabled != 0u
                     && bumpBrush >= 0
                     && materialNamed(materials[bumpBrush]).mappingEnabled
                     && materialNamed(materials[bumpBrush]).tessHeightScale != 0.0;
@@ -1073,7 +1091,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
             maxDisp = cachedMaxDisp;
         } else {
             rmCount(RM_COUNTER_FIELD_EVALS);
-            d = rmField(node, p, material, baseD, maxDisp);
+            d = rmField(node, p, material, waterRoot, baseD, maxDisp);
         }
         if (isnan(d)) d = 1.0; // defensive: never let a bad sample freeze the march
         float eps = rmHitEpsilon(nodeSize, t);
@@ -1085,7 +1103,8 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
             // to the band.
             float tHit = t;
             if (ubo.raymarchScreenEps > 0.0 && prevNode == node)
-                tHit = rmRefineHit(node, ro, rd, material, prevT, prevD, t, d, eps);
+                tHit = rmRefineHit(node, ro, rd, material, waterRoot,
+                                   prevT, prevD, t, d, eps);
             // Raster-parity visibility: solid back faces and DISCARD_BRUSH_INDEX
             // cells are not shaded; water accepts only the +Y surface (top
             // plane, from either side), not the volume sides/bottom.
@@ -1141,7 +1160,8 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
         float dNextBase;
         float dNextMax;
         rmCount(RM_COUNTER_FIELD_EVALS);
-        float dNext = rmField(node, ro + rd * tNext, material, dNextBase, dNextMax);
+        float dNext = rmField(node, ro + rd * tNext, material, waterRoot,
+                              dNextBase, dNextMax);
         if (isnan(dNext)) {
             // Cache only finite values: the displacement branch consumes
             // baseD/maxDisp too, and a NaN there would poison the next reuse.
@@ -1159,7 +1179,8 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
                 rmCount(RM_COUNTER_BISECT_EVALS);
                 float bBase;
                 float bMax;
-                float dm = rmField(node, ro + rd * mid, material, bBase, bMax);
+                float dm = rmField(node, ro + rd * mid, material, waterRoot,
+                                   bBase, bMax);
                 if (isnan(dm)) break;
                 if (dm > 0.0) lo = mid; else hi = mid;
             }
@@ -1242,7 +1263,7 @@ RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
     bool baseCellNonSurface;
     uint blendCell = rmFindNodeFromStack(rootNode, node, h.basePos, baseCellNonSurface);
     if (blendCell == RM_INVALID_NODE || baseCellNonSurface) blendCell = node;
-    h.blend = rmBlendAtHit(rootNode, blendCell, h.basePos, hitPos);
+    h.blend = rmBlendAtHit(rootNode, blendCell, h.basePos, hitPos, true);
 
     // Raster fragNormal is the barycentric interpolation of the per-vertex
     // cell normals; use the blend's normal when the ring reconstructed it and
@@ -1311,12 +1332,16 @@ void rmInsertRootInterval(inout RmRootInterval iv[RM_MAX_ROOTS],
 }
 
 // Root rejection box. The stored-cell surface AABB bounds the unbumped
-// isosurface exactly, but tessellation displacement folds an offset into the
-// field and can move the surface outside those cells. While displacement is
-// enabled the only safe rejection box is the root cube itself, which is the
-// interval the march actually samples anyway.
+// isosurface exactly, but solid tessellation displacement folds an offset into
+// the field and can move the surface outside those cells. While displacement is
+// active the only safe rejection box for a SOLID root is the root cube itself,
+// which is the interval the march actually samples anyway. Water roots never
+// take the material bump (rmField), so their surface AABB stays exact and also
+// keeps the march out of the empty water-volume cells.
 void rmRootTestBox(uint root, out vec3 mn, out vec3 mx) {
-    if (ubo.tessellationEnabled == 0u) {
+    const bool displacedSolid = ubo.tessellationEnabled != 0u
+        && rmRoots[root].kind != 1u;
+    if (!displacedSolid) {
         mn = rmRoots[root].surfaceMin.xyz;
         mx = rmRoots[root].surfaceMax.xyz;
     } else {
@@ -1813,7 +1838,8 @@ void main() {
             if (blendCell == RM_INVALID_NODE || nonSurfaceStop) blendCell = nearestNode;
             // Displacement/material payload is irrelevant here; only the
             // interpolated normal is consumed.
-            RmSurfaceBlend waterBlend = rmBlendAtHit(rootNode, blendCell, hitPos, hitPos);
+            RmSurfaceBlend waterBlend = rmBlendAtHit(rootNode, blendCell, hitPos,
+                                                     hitPos, false);
             if (dot(waterBlend.normal, waterBlend.normal) > 1e-12) {
                 normal = normalize(waterBlend.normal);
                 if (dot(normal, rd) > 0.0) normal = -normal;
