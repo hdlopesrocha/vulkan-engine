@@ -125,6 +125,16 @@ public:
     // With no grass triangles the
     // chunk's previous instance data is cleared instead.
     void generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom);
+    // Place one instance per sample (position + surface normal + material).
+    // Used by the raymarch-table vegetation path: terrain has no Cartesian
+    // mesh, so the host samples surface points directly from the SDF nodes.
+    // Each sample becomes a degenerate triangle slot (i,i,i), letting the
+    // shared GrassPlacement logic apply the same variant/rotation/biome rules
+    // without inventing geometry.
+    void generateForSamples(VulkanApp* app, NodeID nid,
+                            const std::vector<glm::vec3>& positions,
+                            const std::vector<glm::vec3>& normals,
+                            const std::vector<int>& brushes);
     // GPU-resident chunk publish: the chunk's Cartesian mesh already lives in
     // the solid renderer's packed pools, written by OctreeTriangles.comp. The
     // placement dispatch reads that span directly and writes the instance

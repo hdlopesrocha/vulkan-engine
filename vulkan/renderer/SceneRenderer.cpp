@@ -1599,20 +1599,6 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
 
     }
 
-    // Terrain has no GPU mesh, so vegetation placement is fed from the
-    // disposable CPU surfaces queued by processNodeLayer(). This must run
-    // before the empty-mesh-batch early-out: terrain never publishes a mesh,
-    // so `batch` is empty on exactly the frames vegetation arrives.
-    if (vegetationRenderer && app) {
-        std::deque<PendingVegetationGeometry> vegQueue;
-        {
-            std::lock_guard<std::mutex> lock(pendingVegMutex);
-            vegQueue.swap(pendingVegQueue);
-        }
-        for (auto& pending : vegQueue)
-            vegetationRenderer->generateForChunk(app, pending.nid, pending.geometry);
-    }
-
     if (batch.empty()) {
         // No new geometry yet (tessellation may still be running). Keep old
         // geometry visible — don't free anything. Still age out the main
@@ -2075,33 +2061,6 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer::Id layer, NodeID nid, 
         }
         collectDebugForChunk(scene, layer, nid, nodeData, poolOverride);
 
-        // Vegetation placement still needs a surface. Extract it on the
-        // worker into a disposable CPU geometry and queue it for the main
-        // thread; the terrain never gets a VBO/IBO and the geometry is thrown
-        // away after placement. Only frontier chunks seed grass (ancestor
-        // rungs would duplicate the same blades).
-        if (earlyLayer->renderer() == LayerRendererType::Solid &&
-            vegetationRenderer && nodeData.node &&
-            nodeData.node->getChunkLod() == 1) {
-            if (auto tree = earlyLayer->octreeRef()) {
-                long emitted = 0;
-                Tesselator tess(&emitted);
-                auto vertexFn = [](OctreeNode* node, const BoundingCube& cube) {
-                    CellVertex v;
-                    float sdf[8];
-                    std::memcpy(sdf, node->sdf, sizeof(sdf));
-                    v.position = SDF::getPosition(sdf, cube);
-                    v.normal = SDF::getNormalFromPosition(sdf, cube, v.position);
-                    return v;
-                };
-                OctreeTriangleTessellator(*tree).iterateTriangles(
-                    nodeData.node, nodeData.cube, tess, 1, vertexFn);
-                if (!tess.geometry.indices.empty()) {
-                    std::lock_guard<std::mutex> lock(pendingVegMutex);
-                    pendingVegQueue.push_back({nid, std::move(tess.geometry)});
-                }
-            }
-        }
         return;
     }
 

@@ -1,5 +1,6 @@
 #include "Tesselator.hpp"
 #include "Octree.hpp"
+#include "../utils/LandBrush.hpp"
 #include <cmath>
 
 
@@ -26,15 +27,22 @@ void Tesselator::handle(OctreeNode &o0, OctreeNode &o1, OctreeNode &o2,
 
         // The nodes are shared by adjacent cells and by other chunk builds
         // running on the worker pools, so only copies are assembled below.
-        Vertex a(v0.position, v0.normal, o0.data, o0.brushIndex);
+        // Land/Normal sentinels are classified from the solved point/normal,
+        // exactly like OctreeTriangles.comp's nodeResolvedBrush(), so the
+        // material space matches the GPU vertex payload.
+        const int brush0 = landbrush::resolveVertexMaterial(o0.brushIndex, v0.position, v0.normal);
+        const int brush1 = landbrush::resolveVertexMaterial(o1.brushIndex, v1.position, v1.normal);
+        const int brush2 = landbrush::resolveVertexMaterial(o2.brushIndex, v2.position, v2.normal);
+
+        Vertex a(v0.position, v0.normal, o0.data, brush0);
         a.textureType = o0.textureType;
         a.hsv = o0.hsv;
 
-        Vertex b(v1.position, v1.normal, o1.data, o1.brushIndex);
+        Vertex b(v1.position, v1.normal, o1.data, brush1);
         b.textureType = o1.textureType;
         b.hsv = o1.hsv;
 
-        Vertex c(v2.position, v2.normal, o2.data, o2.brushIndex);
+        Vertex c(v2.position, v2.normal, o2.data, brush2);
         c.textureType = o2.textureType;
         c.hsv = o2.hsv;
 

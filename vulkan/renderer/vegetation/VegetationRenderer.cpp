@@ -3042,6 +3042,31 @@ void VegetationRenderer::generateForChunk(VulkanApp* app, NodeID nid, const Geom
 // packed pools (written by OctreeTriangles.comp); processPendingChunksGPU
 // dispatches the placement directly over that span. No CPU copy of the chunk
 // is retained here.
+void VegetationRenderer::generateForSamples(VulkanApp* app, NodeID nid,
+                                            const std::vector<glm::vec3>& positions,
+                                            const std::vector<glm::vec3>& normals,
+                                            const std::vector<int>& brushes) {
+    if (positions.empty()) return;
+    if (normals.size() != positions.size() || brushes.size() != positions.size()) {
+        std::cerr << "[VegetationRenderer] generateForSamples: mismatched arrays ("
+                  << positions.size() << "/" << normals.size() << "/" << brushes.size() << ")\n";
+        return;
+    }
+    // Degenerate slots: every instance resolves to exactly its sample point.
+    std::vector<uint32_t> slots;
+    slots.reserve(positions.size() * 3);
+    glm::vec3 center(0.0f);
+    for (size_t i = 0; i < positions.size(); ++i) {
+        slots.push_back(static_cast<uint32_t>(i));
+        slots.push_back(static_cast<uint32_t>(i));
+        slots.push_back(static_cast<uint32_t>(i));
+        center += positions[i];
+    }
+    center /= static_cast<float>(positions.size());
+    generateChunkInstancesCPU(nid, positions, normals, brushes, slots, center,
+                              1u, app, static_cast<uint32_t>(nid & 0xffffffffull));
+}
+
 void VegetationRenderer::generateForGpuChunk(VulkanApp* app, NodeID nid,
                                              uint32_t baseVertex, uint32_t vertexCount,
                                              uint32_t firstIndex, uint32_t indexCount,

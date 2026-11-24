@@ -41,6 +41,10 @@
 #include "vulkan/renderer/RendererUtils.hpp"
 #include "utils/LocalScene.hpp"
 #include "utils/OctreeRaymarchTable.hpp"
+#include "utils/GrassPlacement.hpp"
+#include "utils/LandBrush.hpp"
+#include "sdf/core/SDF.hpp"
+#include "math/geometry/BoundingCube.hpp"
 #include "brushPainters/SvgBrush.hpp"
 #include "sdf/primitives/SvgPolygonDistanceFunction.hpp"
 #include "sdf/primitives/SvgShape.hpp"
@@ -1808,6 +1812,10 @@ public:
     // raymarchDirty_ where they happen (brush apply, scene load), never from
     // chunk-upload traffic: tessellation does not change octree SDF data.
     void refreshRaymarchTable(float deltaTime);
+    // Places grass tufts directly from the raymarch table surface nodes (the
+    // terrain has no Cartesian mesh). Runs on the main thread after a table
+    // rebuild and replaces the previous vegetation set.
+    void generateVegetationFromRaymarchTable();
 
     // Start the background tessellation thread for the current scene. Every
     // layer dispatches on its own thread so all layers tessellate truly in
@@ -4576,6 +4584,145 @@ void MyApp::refreshRaymarchTable(float deltaTime) {
     // Publish into this frame's slot now; the other slots version-check on
     // their next use (upload() is a no-op when the revision matches).
     renderer.upload(getCurrentFrame(), raymarchTable_);
+
+    // Terrain has no GPU mesh, so vegetation is placed straight from the
+    // surface nodes of the table that was just rebuilt.
+    generateVegetationFromRaymarchTable();
+}
+
+void MyApp::generateVegetationFromRaymarchTable() {
+    if (!sceneRenderer || !sceneRenderer->vegetationRenderer) return;
+    VegetationRenderer* veg = sceneRenderer->vegetationRenderer.get();
+    if (!veg) return;
+
+    const OctreeRaymarchTable& table = raymarchTable_;
+    if (table.nodes.empty() || table.layerRoots.empty()) {
+        veg->clearAllInstances();
+        return;
+    }
+
+    constexpr float kBucketSize = 512.0f;
+    constexpr size_t kMaxSamples = 4'000'000;
+    constexpr float kDensity = 0.01f; // grass::kDensity
+    constexpr uint32_t kMaxPerPatch = 512;
+
+    struct Bucket {
+        std::vector<glm::vec3> positions;
+        std::vector<glm::vec3> normals;
+        std::vector<int> brushes;
+    };
+    std::unordered_map<uint64_t, Bucket> buckets;
+    buckets.reserve(1024);
+
+    size_t totalSamples = 0;
+    size_t grassPatches = 0;
+    size_t sampledPatches = 0;
+
+    // The table stores each layer's nodes as one contiguous BFS slice, so a
+    // layer's root index bounds its slice (the next root starts the next
+    // layer). Water roots are skipped: only solid surfaces seed blades.
+    for (size_t r = 0; r < table.layerRoots.size(); ++r) {
+        const OctreeRaymarchRoot& root = table.layerRoots[r];
+        if (root.kind != 0) continue; // 0 = Solid
+        const uint32_t begin = root.nodeIndex;
+        const uint32_t end = (r + 1 < table.layerRoots.size())
+            ? table.layerRoots[r + 1].nodeIndex
+            : static_cast<uint32_t>(table.nodes.size());
+
+        for (uint32_t i = begin; i < end && totalSamples < kMaxSamples; ++i) {
+            if (i == root.nodeIndex) continue; // whole-domain root cube
+            const OctreeRaymarchNode& rec = table.nodes[i];
+            const uint32_t childMask = static_cast<uint32_t>(rec.hsv1.w + 0.5f);
+            const bool leaf = (rec.meta.w & OctreeRaymarchTable::FLAG_LEAF) != 0;
+            // Interior nodes are covered by their stored surface children.
+            if (!leaf && childMask != 0) continue;
+
+            const float size = rec.cubeMinSize.w;
+            if (!(size > 0.0f)) continue;
+            const BoundingCube cube(glm::vec3(rec.cubeMinSize), size);
+
+            float sdf[8];
+            for (int c = 0; c < 4; ++c) { sdf[c] = rec.sdf0[c]; sdf[c + 4] = rec.sdf1[c]; }
+            if (SDF::eval(sdf) != SpaceType::Surface) continue;
+
+            const glm::vec3 p = SDF::getPosition(sdf, cube);
+            glm::vec3 n = SDF::getNormalFromPosition(sdf, cube, p);
+            const float n2 = glm::dot(n, n);
+            if (!(n2 > 1e-8f)) continue;
+            n *= 1.0f / std::sqrt(n2);
+
+            const int material = landbrush::resolveVertexMaterial(rec.meta.z, p, n);
+            if (material < 0) continue;
+            if (n.y < 0.50f) continue; // cliffs stay bare
+            ++grassPatches;
+
+            // One sample per ~kDensity of the patch footprint, capped so a
+            // coarse flat leaf cannot monopolise the instance budget.
+            const float area = size * size * glm::clamp(n.y, 0.0f, 1.0f);
+            uint32_t count = static_cast<uint32_t>(
+                std::lround(static_cast<double>(area) * kDensity));
+            count = std::clamp(count, 1u, kMaxPerPatch);
+            ++sampledPatches;
+
+            const glm::vec3 cellMin(cube.getMin());
+            const float cellMaxY = cube.getMax().y;
+            const auto sdfAt = [&](float x, float y, float z) {
+                return SDF::interpolate(sdf, glm::vec3(x, y, z), cube);
+            };
+
+            uint32_t rng = static_cast<uint32_t>(i * 2654435761u) ^ 0x9e3779b9u;
+            for (uint32_t k = 0; k < count && totalSamples < kMaxSamples; ++k) {
+                const float fx = grass::randFloat(rng);
+                const float fz = grass::randFloat(rng);
+                const float x = cellMin.x + fx * size;
+                const float z = cellMin.z + fz * size;
+
+                // Vertical crossing inside this surface cell: bisect the
+                // trilinear field so blades sit on the real SDF surface
+                // instead of the patch-centre plane.
+                float lo = cellMin.y, hi = cellMaxY;
+                float flo = sdfAt(x, lo, z);
+                float fhi = sdfAt(x, hi, z);
+                if (flo * fhi > 0.0f) continue; // no surface in this column
+                for (int it = 0; it < 12; ++it) {
+                    const float mid = 0.5f * (lo + hi);
+                    const float fm = sdfAt(x, mid, z);
+                    if (flo * fm <= 0.0f) { hi = mid; fhi = fm; }
+                    else { lo = mid; flo = fm; }
+                }
+                const float y = 0.5f * (lo + hi);
+
+                const uint64_t key =
+                    (static_cast<uint64_t>(static_cast<uint32_t>(std::floor(x / kBucketSize))) * 73856093ull) ^
+                    (static_cast<uint64_t>(static_cast<uint32_t>(std::floor(y / kBucketSize))) * 19349663ull) ^
+                    (static_cast<uint64_t>(static_cast<uint32_t>(std::floor(z / kBucketSize))) * 83492791ull);
+                const uint64_t nid = key != 0 ? key : 1ull;
+                Bucket& bucket = buckets[nid];
+                bucket.positions.emplace_back(x, y, z);
+                bucket.normals.push_back(n);
+                // Grass placement rejects samples whose dominant vertex is not
+                // a blade-bearing material. The surface itself can be any
+                // terrain material here, so tag the sample with the primary
+                // grass layer; the biome noise (not the terrain texture)
+                // selects the tuft variant.
+                bucket.brushes.push_back(3);
+                ++totalSamples;
+            }
+        }
+    }
+
+    // Replace the previous set (layer edits rebuild the table).
+    veg->clearAllInstances();
+    for (auto& kv : buckets) {
+        if (kv.second.positions.empty()) continue;
+        veg->generateForSamples(this, kv.first, kv.second.positions,
+                                kv.second.normals, kv.second.brushes);
+    }
+
+    std::cout << "[veg] raymarch placement: samples=" << totalSamples
+              << " chunks=" << buckets.size()
+              << " grassPatches=" << grassPatches
+              << " sampledPatches=" << sampledPatches << std::endl;
 }
 
 // Perf report 23 C1: rebuild the five material arrays at a new resolution.

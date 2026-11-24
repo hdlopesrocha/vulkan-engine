@@ -437,17 +437,6 @@ public:
     mutable std::mutex                          pendingMeshMutex;
     std::unordered_map<NodeID, PendingMeshData> pendingMeshQueue;
 
-    // Vegetation placement only: the octree shape no longer produces terrain
-    // VBOs/IBOs, so the worker extracts a temporary CPU surface for the chunk
-    // and queues it here. The main thread feeds it to VegetationRenderer (the
-    // geometry is discarded after placement; it is never uploaded or drawn).
-    struct PendingVegetationGeometry {
-        NodeID nid = 0;
-        Geometry geometry;
-    };
-    mutable std::mutex pendingVegMutex;
-    std::deque<PendingVegetationGeometry> pendingVegQueue;
-
     CommandBufferState frameCmdState;
 
 private:
