@@ -2028,7 +2028,7 @@ public:
         // because barriers cannot be emitted inside dynamic rendering, and
         // draw() runs inside beginPass/endPass.
         if (sceneRenderer && sceneRenderer->vegetationRenderer) {
-            sceneRenderer->vegetationRenderer->processPendingChunks(10);
+            sceneRenderer->vegetationRenderer->processPendingChunks(64);
         }
 
         mainTime += deltaTime;
@@ -4683,7 +4683,9 @@ void MyApp::generateVegetationFromRaymarchTable() {
                 float lo = cellMin.y, hi = cellMaxY;
                 float flo = sdfAt(x, lo, z);
                 float fhi = sdfAt(x, hi, z);
+
                 if (flo * fhi > 0.0f) continue; // no surface in this column
+
                 for (int it = 0; it < 12; ++it) {
                     const float mid = 0.5f * (lo + hi);
                     const float fm = sdfAt(x, mid, z);

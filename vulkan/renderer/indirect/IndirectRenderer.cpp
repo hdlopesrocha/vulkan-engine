@@ -40,8 +40,9 @@ struct CullPushConstants {
     uint32_t cascadeEntryCount; // offset 124 (number of entries to cascade-cull)
     uint32_t doMain;           // offset 128 (emit main-view streams when 1)
     uint32_t doVegCascade;      // offset 132 (emit vegetation cascade/shadow streams when 1)
-    uint32_t vegChunkCount;     // offset 136 (number of veg chunks to cascade-cull)
-    float    lodRootMinPad;     // offset 140 (padding to align lodRootMin to 144)
+    uint32_t vegChunkCount;     // offset 136 (number of veg chunks to cull)
+    uint32_t doVegMain;         // offset 140 (1 = emit main-view veg from the flat table)
+
     glm::vec3 lodRootMin;      // offset 144 (tree root min corner: parent-cell lattice origin)
     float    lodRootMinTailPad; // offset 156 (brings the block to the shader's 160-byte size)
 }; // 160 bytes
@@ -1403,7 +1404,9 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // Fast return if nothing to cull — avoids touching the pipeline at all.
     // For a vegetation cascade-only dispatch there are no solid/SDF/bbox entries
     // but the veg chunks still need culling, so keep going when doVegCascade.
-    bool hasWork = (numCmds + sdfCount + bboxCount) > 0 || (doVegCascade && vegCascadeInited && vegChunkCount > 0);
+    bool hasWork = (numCmds + sdfCount + bboxCount) > 0
+        || (doMain && vegCascadeInited && lastVegChunkCount_ > 0)
+        || (doVegCascade && vegCascadeInited && vegChunkCount > 0);
     if (!hasWork) {
         // Count active meshes only on this rare path (used by the warn-once
         // printf below); avoids a full-map scan on every frame in the common
@@ -1433,7 +1436,14 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     pc.cascadeEntryCount = numCmds; // cascade-cull the solid/veg/water draw entries
     pc.doMain            = doMain ? 1u : 0u;
     pc.doVegCascade      = (doVegCascade && vegCascadeInited) ? 1u : 0u;
-    pc.vegChunkCount     = vegChunkCount;
+    // Main-view vegetation is culled from the flat chunk table: the scene's
+    // terrain has no raster mesh entries, so the per-solid-entry veg path
+    // (binding 9) can never emit anything. The cascade path passes the chunk
+    // count every frame; remember it for the main dispatch.
+    if (vegChunkCount > 0) lastVegChunkCount_ = vegChunkCount;
+    const uint32_t mainVegCount = (doMain && vegCascadeInited) ? lastVegChunkCount_ : 0u;
+    pc.vegChunkCount     = (vegChunkCount > 0) ? vegChunkCount : mainVegCount;
+    pc.doVegMain         = (doMain && mainVegCount > 0) ? 1u : 0u;
     pc.lodRootMin        = lodRootMin_;
     vkCmdPushConstants(cmd, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CullPushConstants), &pc);
 
@@ -1441,7 +1451,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // entries (when cascade-only), or the vegetation cascade chunks (when veg
     // cascade-only). cascadeEntryCount == terrainCount (== numCmds for solid/veg/water).
     uint32_t dispatchCount;
-    if (doMain) dispatchCount = numCmds + sdfCount + bboxCount;
+    if (doMain) dispatchCount = numCmds + sdfCount + bboxCount + mainVegCount;
     else if (doVegCascade && vegCascadeInited) dispatchCount = vegChunkCount;
     else if (doCascadeThisFrame) dispatchCount = numCmds;
     else dispatchCount = numCmds + sdfCount + bboxCount;

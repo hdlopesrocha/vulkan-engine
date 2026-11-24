@@ -718,12 +718,27 @@ void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewP
     // vegChunkInfoMap (keyed by the solid mesh id) for the merged cull.
     writeVegChunkInfo();
 
-    // The vegetation cull is now MERGED into the SOLID IndirectRenderer's single
-    // IndirectRenderer.comp dispatch. We only hand it our per-frame output buffers (so its
-    // merged dispatch writes billboard/impostor commands in place) plus the
-    // per-chunk veg metadata (so it can build the binding-9 table keyed by solid
-    // draw entry). The actual GPU dispatch happens inside solidIR->prepareCull,
-    // which runs AFTER this call in the frame (see MyApp.cpp ordering).
+    // The vegetation cull is MERGED into the SOLID IndirectRenderer's single
+    // IndirectRenderer.comp dispatch. Bind the flat chunk table (binding 24) and
+    // the per-frame cascade output buffers here, and hand over the chunk count:
+    // the main cull iterates the flat table because terrain is raymarched and
+    // publishes no solid mesh entries for the old per-draw veg path to key on.
+    // The actual GPU dispatch happens inside solidIR->prepareCull, which runs
+    // AFTER this call in the frame (see MyApp.cpp ordering).
+    if (!vegCascadeCullInited) initCascadeCull(appPtr);
+    if (vegCascadeCullInited) {
+        std::array<std::array<VkBuffer, 3>, VEG_CULL_FRAMES> bbCompact{}, bbCount{}, impCompact{}, impCount{};
+        for (uint32_t ff = 0; ff < VEG_CULL_FRAMES; ff++) {
+            for (uint32_t c = 0; c < 3; c++) {
+                bbCompact[ff][c] = vegCascadeCullFrames[ff].compactBuffers[c].buffer;
+                bbCount[ff][c]   = vegCascadeCullFrames[ff].countBuffers[c].buffer;
+                impCompact[ff][c]= vegCascadeCullFrames[ff].impostorCompactBuffers[c].buffer;
+                impCount[ff][c]  = vegCascadeCullFrames[ff].impostorCountBuffers[c].buffer;
+            }
+        }
+        solidIR->setVegCascadeData(vegChunkInfoBuffer.buffer, bbCompact, bbCount, impCompact, impCount);
+        solidIR->setMainVegChunkCount(vegNumChunks);
+    }
     if (solidIR) {
         solidIR->setVegetationCullData(compactedCmdBuffers, visibleCountBuffers,
                                        impostorCompactBuffers, impostorCountBuffers);

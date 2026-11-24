@@ -340,6 +340,12 @@ void VulkanApp::initWindow() {
     // explicit allow window resizing
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan Engine", nullptr, nullptr);
+    // Headless verification: keep the real GPU surface (unlike a virtual X
+    // server, which forces software Vulkan) but never map the window on the
+    // user's desktop. Rendering/presentation still target the hidden window.
+    if (const char* hide = std::getenv("VULKAN_HIDE_WINDOW")) {
+        if (hide[0] != '0') glfwHideWindow(window);
+    }
     // register resize callback so we can recreate the swapchain when user resizes window
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);

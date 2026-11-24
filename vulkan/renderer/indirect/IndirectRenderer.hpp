@@ -263,6 +263,10 @@ public:
     // 24..36). Called by VegetationRenderer each frame so re-grows are reflected and
     // the veg cascade dispatch (doVegCascade=true) writes into VegetationRenderer's
     // own output buffers. VEG_CULL_FRAMES == MAX_CULL_FRAMES == 3.
+    // Chunk count for the main-view vegetation cull (set every frame by
+    // VegetationRenderer::prepareCull; independent of shadow cascades).
+    void setMainVegChunkCount(uint32_t count) { lastVegChunkCount_ = count; }
+
     void setVegCascadeData(VkBuffer chunkInfo,
                            const std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES>& bbCompact,
                            const std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES>& bbCount,
@@ -535,6 +539,10 @@ private:
     std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES> vegCascadeImpCompact{};
     std::array<std::array<VkBuffer, 3>, MAX_CULL_FRAMES> vegCascadeImpCount{};
     bool vegCascadeInited = false;
+    // Vegetation chunk count remembered from the cascade-cull call so the
+    // main-view cull can iterate the flat vegetation table independently of
+    // solid draw entries (terrain is raymarched and publishes no meshes).
+    uint32_t lastVegChunkCount_ = 0;
 
     // vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 and is called
     // directly (device creation requires drawIndirectCount).

@@ -173,7 +173,8 @@ layout(push_constant) uniform PC {
     layout(offset = 124) uint cascadeEntryCount; // number of entries to cascade-cull
     layout(offset = 128) uint doMain;           // emit main-view streams when 1
     layout(offset = 132) uint doVegCascade;      // emit vegetation cascade (shadow) streams when 1
-    layout(offset = 136) uint vegChunkCount;     // number of veg chunks to cascade-cull
+    layout(offset = 136) uint vegChunkCount;     // number of veg chunks to cull (main or cascade)
+    layout(offset = 140) uint doVegMain;         // emit main-view veg streams from the flat chunk table
     layout(offset = 144) vec3 lodRootMin;        // tree root min corner: the dyadic lattice origin for parent-cell derivation
 } pc;
 
@@ -480,7 +481,10 @@ void processChunk(uint s) {
     }
 
     // Chunk is visible — also emit its vegetation (same AABB, step 4).
-    processVegetation(s);
+    // Skipped when the dedicated main-view veg pass runs: that pass reads the
+    // flat vegetation chunk table, because terrain has no raster mesh entries
+    // for the solid path to key on (the no-vegetation bug).
+    if (pc.doVegMain == 0u) processVegetation(s);
 }
 
 // ── Cascade (shadow) culling ───────────────────────────────────────────────────
@@ -609,6 +613,36 @@ void processVegCascade(uint idx) {
     }
 }
 
+// Main-view vegetation cull: one invocation per vegetation chunk, reading the
+// flat {AABB min, AABB max, {instanceCount, firstInstance}} table. This is the
+// ONLY path that emits terrain vegetation now that terrain is raymarched and
+// has no solid draw entries to piggyback on.
+void processVegMain(uint idx) {
+    if (idx >= pc.vegChunkCount) return;
+    uint bIndex = idx * 3u;
+    if ((bIndex + 2u) >= vegCascadeInfo.data.length()) return;
+    vec3 minp = vegCascadeInfo.data[bIndex].xyz;
+    vec3 maxp = vegCascadeInfo.data[bIndex + 1u].xyz;
+    vec4 meta = vegCascadeInfo.data[bIndex + 2u];
+    if (meta.x < 1.0) return; // empty chunk never draws
+    if (!aabbVisible(gPlanes, minp, maxp)) return;
+
+    DrawCmd bbCmd;
+    bbCmd.indexCount    = VEG_BLADE_INDEX_COUNT;
+    bbCmd.instanceCount = uint(meta.x);
+    bbCmd.firstIndex    = 0u;
+    bbCmd.vertexOffset  = 0;
+    bbCmd.firstInstance = uint(meta.y);
+
+    uint dstB = atomicAdd(vegBbCount.count, 1u);
+    if (dstB < outVegBb.cmds.length()) outVegBb.cmds[dstB] = bbCmd;
+
+    DrawCmd impCmd = bbCmd;
+    impCmd.indexCount = 6u;
+    uint dstI = atomicAdd(vegImpCount.count, 1u);
+    if (dstI < outVegImp.cmds.length()) outVegImp.cmds[dstI] = impCmd;
+}
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
 
@@ -641,10 +675,16 @@ void main() {
     }
     barrier();
 
-    // One invocation per draw entry.
+    // One invocation per draw entry, then one per vegetation chunk.
     uint s = idx;
     if (pc.doMain == 1u && s < pc.numCmds) {
         processChunk(s);
+    }
+    if (pc.doMain == 1u && pc.doVegMain == 1u) {
+        uint vegBase = pc.numCmds + pc.sdfCount + pc.bboxCount;
+        if (s >= vegBase && s < vegBase + pc.vegChunkCount) {
+            processVegMain(s - vegBase);
+        }
     }
     if (pc.doCascade == 1u && s < pc.cascadeEntryCount) {
         processChunkCascade(s);
