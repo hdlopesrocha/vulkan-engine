@@ -15,7 +15,6 @@ const uint UINT_MAX_ARRAY [8] = {UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UINT_MAX,UI
 
 struct ChildBlock {
     uint children[8];
-    ChildBlock();
     ChildBlock * init();
     void clear(OctreeAllocator &allocator);
     bool isEmpty();

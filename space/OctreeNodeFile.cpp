@@ -29,7 +29,7 @@ OctreeNodeSerialized packNode(OctreeNode * node) {
     return n;
 }
 
-OctreeNode * allocateNode(Octree * tree, OctreeNodeSerialized &serialized, const BoundingCube &cube) {
+OctreeNode * allocateNode(Octree * tree, OctreeNodeSerialized &serialized) {
     Vertex vertex(glm::vec3(0), glm::vec3(0), serialized.data, serialized.brushIndex);
     vertex.hsv = serialized.hsv;
     vertex.textureType = serialized.textureType;
@@ -58,7 +58,7 @@ OctreeNode * OctreeNodeFile::loadSubtree(Octree * tree, OctreeNode * workingNode
                                          const std::string &baseFolder) {
 	OctreeNodeSerialized serialized = nodes->at(i);
 	if(workingNode == NULL) {
-		workingNode = allocateNode(tree, serialized, cube);
+		workingNode = allocateNode(tree, serialized);
 	}
 
 	bool isLeaf = true;

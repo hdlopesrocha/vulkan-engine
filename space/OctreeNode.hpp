@@ -33,7 +33,6 @@ public:
     uint version;
 
     OctreeNode();
-    OctreeNode(Vertex vertex);
     ~OctreeNode();
     OctreeNode * init(Vertex vert);
     ChildBlock * clear(OctreeAllocator &allocator, ChildBlock * block);
@@ -60,13 +59,10 @@ public:
     int getBrush() const;
 
     void setHSV(glm::vec3 value);
-    glm::vec3 getHSV() const ;
 
     void setTextureType(int value);
-    int getTextureType() const;
 
     void setData(glm::vec2 value);
-    glm::vec2 getData() const;
 
     SpaceType getType() const ;
 

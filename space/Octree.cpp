@@ -30,33 +30,14 @@
 //    |/    |/
 //    0-----1x
 
-static std::vector<glm::ivec4> TESSELATION_ORDERS;
-static std::vector<glm::ivec2> TESSELATION_EDGES;
-static bool initialized = false;
-
-static void initialize() {
-    if(!initialized) {
-        TESSELATION_ORDERS.push_back(glm::ivec4(0,1,3,2));
-        TESSELATION_EDGES.push_back(SDF_EDGES[11]);
-        
-        TESSELATION_ORDERS.push_back(glm::ivec4(0,2,6,4));
-        TESSELATION_EDGES.push_back(SDF_EDGES[6]);
-        
-        TESSELATION_ORDERS.push_back(glm::ivec4(0,4,5,1));
-        TESSELATION_EDGES.push_back(SDF_EDGES[5]);
-        initialized = true;
-    }
-}
 Octree::Octree(const BoundingCube &minCube, float chunkSize_) : BoundingCube(minCube), allocator(new OctreeAllocator()) {
     this->chunkSize = chunkSize_;
 	this->root = allocator->allocate()->init(glm::vec3(minCube.getCenter()));
-	initialize();
 }
 
 Octree::Octree() : Octree(glm::vec3(0.0f), 1.0f) {
     this->chunkSize = 1.0f;
     this->root = NULL;
-    initialize();
 }
 
 int getNodeIndex(const glm::vec3 &vec, const BoundingCube &cube) {
@@ -248,10 +229,8 @@ float Octree::evaluateSDF(const ShapeArgs &args, OctreeThreadContext * threadCon
                 const uint64_t key = ShapeSdfCache::pack(nx, ny, nz);
                 float cached = 0.0f;
                 if (cache.find(key, cached)) {
-                    if (args.cacheStats) args.cacheStats->hits.fetch_add(1, std::memory_order_relaxed);
                     return cached;
                 }
-                if (args.cacheStats) args.cacheStats->misses.fetch_add(1, std::memory_order_relaxed);
                 const float d = args.function.distance(p);
                 cache.insert(key, d);
                 return d;
@@ -262,11 +241,9 @@ float Octree::evaluateSDF(const ShapeArgs &args, OctreeThreadContext * threadCon
     tsl::robin_map<glm::vec3, float> &fallback = cache.fallback();
     auto it = fallback.find(p);
     if (it != fallback.end()) {
-        if (args.cacheStats) args.cacheStats->hits.fetch_add(1, std::memory_order_relaxed);
         return it->second;
     }
 
-    if (args.cacheStats) args.cacheStats->misses.fetch_add(1, std::memory_order_relaxed);
     float d = args.function.distance(p);
     fallback.try_emplace(p, d);
     return d;

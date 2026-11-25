@@ -4,10 +4,6 @@
 #include <cstring>
 
 
-ChildBlock::ChildBlock() {
-
-}
-
 ChildBlock * ChildBlock::init() {
     memcpy(children, UINT_MAX_ARRAY, sizeof(uint)*8);
     return this;

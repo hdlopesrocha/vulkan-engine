@@ -8,20 +8,10 @@
 #include "../sdf/operations/SignedDistanceOperation.hpp"
 #include "Simplifier.hpp"
 #include "OctreeNodeData.hpp"
-#include <atomic>
 #include <cstdint>
 #include <vector>
 #include <mutex>
 #include <memory>
-
-
-// Per-apply shape-cache counters. Filled only when the setup diagnostics are
-// enabled (VULKAN_SETUP_DIAG); nullptr means "do not count", so the normal
-// path pays a single predictable branch.
-struct ShapeCacheStats {
-    std::atomic<uint64_t> hits{0};
-    std::atomic<uint64_t> misses{0};
-};
 
 
 struct ShapeArgs {
@@ -42,7 +32,6 @@ struct ShapeArgs {
     glm::vec3 cacheOrigin{0.0f};
     float cacheSpacing{0.0f};
     uint32_t cacheGeneration{0};
-    ShapeCacheStats *cacheStats{nullptr};
 
     ShapeArgs(
         const SignedDistanceOperation &operation,

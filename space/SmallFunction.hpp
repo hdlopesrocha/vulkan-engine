@@ -99,9 +99,4 @@ public:
     {
         if (vtable_) vtable_->invoke(storage_);
     }
-
-    explicit operator bool() const noexcept
-    {
-        return vtable_ != nullptr;
-    }
 };

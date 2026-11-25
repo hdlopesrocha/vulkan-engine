@@ -2,7 +2,6 @@
 
 #include "../space/SpaceType.hpp"
 #include "../math/BrushMode.hpp"
-#include "../math/geometry/ContainmentType.hpp"
 #include "../math/Math.hpp"
 #include "../sdf/core/SDF.hpp"
 #include <glm/glm.hpp>
@@ -23,15 +22,5 @@ struct NodeOperationResult {
 
     uint8_t selectedLod;
     uint8_t selectedChunkLod;
-    ContainmentType check;
     NodeOperationResult();
-    NodeOperationResult(
-        OctreeNode * node, 
-        SpaceType shapeType, 
-        const float * shapeSDF, 
-        SpaceType resultType, 
-        const float * resultSDF, 
-        int brushIndex,
-        uint8_t selectedLod,
-        uint8_t selectedChunkLod);
 };

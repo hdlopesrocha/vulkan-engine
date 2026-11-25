@@ -14,6 +14,5 @@ public:
     Geometry geometry;
     Tesselator(long * count);
     void handle(OctreeNode &o0, OctreeNode &o1, OctreeNode &o2,
-                const CellVertex &v0, const CellVertex &v1, const CellVertex &v2,
-                float eps) override;
+                const CellVertex &v0, const CellVertex &v1, const CellVertex &v2) override;
 };

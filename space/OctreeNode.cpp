@@ -15,11 +15,6 @@ OctreeNode::OctreeNode() {
 	init(Vertex());
 }
 
-OctreeNode::OctreeNode(Vertex vertex_) {
-	version = 0u;
-	init(vertex_);
-}
-
 OctreeNode * OctreeNode::init(Vertex vert) {
 	memcpy(this->sdf, FAR_ARRAY, sizeof(float)*8);
 	this->bits = 0x0;
@@ -154,21 +149,12 @@ int OctreeNode::getBrush() const {
 void OctreeNode::setHSV(glm::vec3 value) {
 	this->hsv = value;
 }
-glm::vec3 OctreeNode::getHSV() const {
-	return this->hsv;
-}
 
 void OctreeNode::setTextureType(int value) {
 	this->textureType = value;
 }
-int OctreeNode::getTextureType() const {
-	return this->textureType;
-}
 
 void OctreeNode::setData(glm::vec2 value) {
 	this->data = value;
-}
-glm::vec2 OctreeNode::getData() const {
-	return this->data;
 }
 

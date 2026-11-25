@@ -9,8 +9,7 @@ Tesselator::Tesselator(long * count_): OctreeNodeTriangleHandler(count_), geomet
 }
 
 void Tesselator::handle(OctreeNode &o0, OctreeNode &o1, OctreeNode &o2,
-                        const CellVertex &v0, const CellVertex &v1, const CellVertex &v2,
-                        float eps) {
+                        const CellVertex &v0, const CellVertex &v1, const CellVertex &v2) {
     if(o0.brushIndex>DISCARD_BRUSH_INDEX &&
         o1.brushIndex>DISCARD_BRUSH_INDEX &&
         o2.brushIndex>DISCARD_BRUSH_INDEX) {
@@ -23,7 +22,6 @@ void Tesselator::handle(OctreeNode &o0, OctreeNode &o1, OctreeNode &o2,
         // projection scale for Triplanar/ProjectionX/Y/Z, the authored UV for
         // Custom); the shader applies it.
         // Winding is pre-determined by emitSegment via the SDF sign change direction.
-        (void)eps;
 
         // The nodes are shared by adjacent cells and by other chunk builds
         // running on the worker pools, so only copies are assembled below.

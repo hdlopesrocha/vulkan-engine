@@ -208,7 +208,7 @@ struct OctreeTriangleTessellator::Walk {
         if(a.brushIndex <= DISCARD_BRUSH_INDEX || b.brushIndex <= DISCARD_BRUSH_INDEX
             || c.brushIndex <= DISCARD_BRUSH_INDEX) return;
 
-        func.handle(a, b, c, va, vb, vc, eps);
+        func.handle(a, b, c, va, vb, vc);
     }
 
     void emitSegment(const EdgeSpan &edge, float start, float end, bool sign0, bool sign1) {

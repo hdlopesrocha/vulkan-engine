@@ -49,7 +49,6 @@ SimplificationResult Simplifier::simplify(
     int brushIndex = DISCARD_BRUSH_INDEX;
     
     //TODO: fix simplification logic.
-    //return res;
 
     // --- 1. Brush consistency ---
     // Every surface child must share the same brush index: a collapse that

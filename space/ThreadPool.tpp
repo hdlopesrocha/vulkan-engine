@@ -25,23 +25,6 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
     return res;
 }
 
-template<class F, class... Args>
-void ThreadPool::enqueueDetachedNoNotify(F&& f, Args&&... args)
-{
-    SmallFunction sf(
-        [func = std::forward<F>(f), ... capturedArgs = std::forward<Args>(args)]() mutable {
-            func(capturedArgs...);
-        }
-    );
-    {
-        std::unique_lock<std::mutex> lock(queue_mutex);
-        if(stopping) throw std::runtime_error("enqueueDetachedNoNotify on stopped ThreadPool");
-        tasks.emplace(std::move(sf));
-    }
-    // Deliberately no notify: the caller batches the enqueues and wakes the
-    // pool once with notifyAll().
-}
-
 // Wait for a pool future, running queued tasks in the meantime so nested
 // fork-join waits can never starve the pool (see the header comment). While
 // the queue has work the waiter drains it back-to-back. Once the queue is
