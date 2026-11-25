@@ -1,12 +1,9 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
-#include <atomic>
-#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <vector>
-#include "DescriptorUpdateStats.hpp"
 #include "DescriptorBufferHelper.hpp"
 #include "DescriptorBuffer.hpp"
 
@@ -70,16 +67,11 @@ public:
     void flush()
     {
         if (writes_.empty()) return;
-        DescriptorUpdateStats::noteUpdate(writes_.size());
         vkUpdateDescriptorSets(device_,
                                static_cast<uint32_t>(writes_.size()),
                                writes_.data(), 0, nullptr);
         clear();
     }
-
-    // Access accumulated writes for custom processing before flush.
-    const std::vector<VkWriteDescriptorSet>& writes() const { return writes_; }
-    std::vector<VkWriteDescriptorSet>& writes() { return writes_; }
 
     void clear()
     {

@@ -761,7 +761,6 @@ void ShadowRenderer::ensureShadowParallelResources(VulkanApp* app) {
             }
         }
         if (!copies.empty()) {
-            DescriptorUpdateStats::noteUpdate(copies.size());
             vkUpdateDescriptorSets(device, 0, nullptr,
                                    static_cast<uint32_t>(copies.size()), copies.data());
         }
@@ -826,7 +825,6 @@ void ShadowRenderer::refreshCascadeTextureBindings(VulkanApp* app) {
         }
     }
     if (copies.empty()) return;
-    DescriptorUpdateStats::noteUpdate(copies.size());
     vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
                            static_cast<uint32_t>(copies.size()), copies.data());
 }

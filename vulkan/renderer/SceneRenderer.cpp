@@ -769,7 +769,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
             addCopy(6); // Sky UBO — written to staticSet by skyRenderer->init
         }
         if (!copies.empty()) {
-            DescriptorUpdateStats::noteUpdate(copies.size());
             vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
                                    static_cast<uint32_t>(copies.size()), copies.data());
         }
@@ -1347,7 +1346,6 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         }
 
         if (!copies.empty()) {
-            DescriptorUpdateStats::noteUpdate(copies.size());
             vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
                                    static_cast<uint32_t>(copies.size()), copies.data());
         }
