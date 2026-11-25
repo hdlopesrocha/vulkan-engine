@@ -20,8 +20,6 @@
 //    playback cursor); hop/throttling policy lives in the caller.
 class AudioAnalyzer {
 public:
-    static constexpr int kMinFftSize = 512;
-    static constexpr int kMaxFftSize = 4096;
     static constexpr int kDefaultFftSize = 2048;
     static constexpr int kWaveformCapacity = 4096;
 

@@ -1313,7 +1313,6 @@ struct VideoTextureService::Impl : public std::enable_shared_from_this<VideoText
             std::lock_guard<std::mutex> lk(v.mutex);
             v.materializedPts = pts;
             v.st.frameTime = ptsToSeconds(v, pts);
-            v.st.frameReady = true;
             v.st.lastUploadMs = nowMs() - t0;
             ++v.st.framesUploaded;
         }

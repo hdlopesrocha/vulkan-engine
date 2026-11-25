@@ -83,7 +83,6 @@ public:
         float rate = 1.0f;
         double clock = 0.0;         // playback position, seconds
         double frameTime = 0.0;     // timestamp of the frame the material sees
-        bool frameReady = false;
         bool decodePending = false;
 
         // Instrumentation

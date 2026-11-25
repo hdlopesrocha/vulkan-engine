@@ -66,11 +66,9 @@ public:
         const OctreeTopologyReleaseCallback& release = {}) __attribute__((weak));
 
     // Runtime switch for the GPU virtual-refinement pass.  The constructor
-    // seeds it from VULKAN_VIRTUAL_REFINE (default on); setting it to false
-    // restores the exact pre-refinement Dual-Contouring path on the next chunk
-    // (no reallocation, the geometry pass simply ignores refinedPos[]).
-    void setVirtualRefinementEnabled(bool enabled) { refineEnabled.store(enabled); }
-    bool virtualRefinementEnabled() const { return refineEnabled.load(); }
+    // seeds it from VULKAN_VIRTUAL_REFINE (default on); setting the variable to
+    // 0 restores the exact pre-refinement Dual-Contouring path on the next
+    // chunk (no reallocation, the geometry pass simply ignores refinedPos[]).
 
     VulkanApp* app = nullptr;
     std::mutex mutex;
@@ -161,8 +159,8 @@ private:
     VkDescriptorSet descSet = VK_NULL_HANDLE;
 
     // Settings (VULKAN_VIRTUAL_REFINE / VULKAN_REFINE_*).  All read under
-    // `mutex` in computeResident; the enabled flag is atomic so a widget can
-    // toggle it without waiting for a chunk build.
+    // `mutex` in computeResident; the enabled flag is atomic so worker lanes
+    // can read it without waiting for a chunk build.
     std::atomic<bool> refineEnabled{true};
     uint32_t refineMaxDepth = 2;
     uint32_t refineBudget = 8;

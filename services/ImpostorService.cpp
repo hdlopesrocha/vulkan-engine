@@ -15,10 +15,6 @@ void ImpostorService::init(VulkanApp* app) {
 
 void ImpostorService::cleanup() {
     capture.cleanup(vulkanApp);
-    srcAlbedo  = VK_NULL_HANDLE;
-    srcNormal  = VK_NULL_HANDLE;
-    srcOpacity = VK_NULL_HANDLE;
-    srcSampler = VK_NULL_HANDLE;
 }
 
 void ImpostorService::setSource(VkImageView albedo, VkImageView normal,
@@ -26,10 +22,6 @@ void ImpostorService::setSource(VkImageView albedo, VkImageView normal,
     // Bladed grass capture is procedural: source views are ignored (kept for
     // caller compatibility). Capture immediately.
     (void)albedo; (void)normal; (void)opacity; (void)sampler;
-    srcAlbedo = VK_NULL_HANDLE;
-    srcNormal = VK_NULL_HANDLE;
-    srcOpacity = VK_NULL_HANDLE;
-    srcSampler = VK_NULL_HANDLE;
 
     if (vulkanApp) {
         captureAll(10.0f);

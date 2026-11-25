@@ -34,8 +34,4 @@ private:
     ImpostorCapture capture;
     VulkanApp* vulkanApp = nullptr;
     VegetationRenderer* vegRenderer = nullptr;
-    VkImageView srcAlbedo = VK_NULL_HANDLE;
-    VkImageView srcNormal = VK_NULL_HANDLE;
-    VkImageView srcOpacity = VK_NULL_HANDLE;
-    VkSampler srcSampler = VK_NULL_HANDLE;
 };
