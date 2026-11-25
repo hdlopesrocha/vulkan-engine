@@ -282,8 +282,8 @@ static void playSetupAlert(const char* name) {
     std::string cmd = "sh '" + script.string() + "' --enqueue '" + sound.string() + "'";
     cmd += " </dev/null >/dev/null 2>&1; nohup sh '" + script.string()
          + "' --drain </dev/null >/dev/null 2>&1 &";
-    const int status = std::system(cmd.c_str());
-    (void)status; // Alerts are best-effort; a failed spawn must not affect startup.
+    // Best-effort: a failed spawn must not affect startup.
+    (void)std::system(cmd.c_str());
 }
 
 class MyApp : public VulkanApp, public IEventHandler {
@@ -440,7 +440,6 @@ public:
     // SdfRenderer::setProfileCounters; read back with a 3-frame slot latency.
     bool sdfProfilingEnabled_ = false;
     float profileSdfCpu = 0.0f; // CPU record time of the async SDF task
-    float profileBackface = 0.0f;
     float profileCpuUpdate = 0.0f;
     float profileCpuRecord = 0.0f;
     float profileFps = 0.0f;
@@ -603,10 +602,6 @@ public:
     // dispatch them after setup() returns.
     std::thread sceneProcessThread; // tessellates chunks after octree is built
 
-    // Pre-allocated descriptor pool+set rings to avoid per-frame create/destroy
-    static constexpr uint32_t ASYNC_RING_SIZE = 3;
-
-
     // Dynamic per-scene-layer dispatch: index = Layer. collectors[i] is the
     // dedup stage for layer i; layerAdd/RemoveHandlers[i] are the renderer
     // lambdas built by build(). Rebuilt by ensureLayerHandlers() whenever the
@@ -621,24 +616,6 @@ public:
     // reused, so a remove+add with the same count must still rebuild.
     std::vector<Layer::Id> knownLayerIds_;
     mutable std::mutex layersSyncMutex_;
-    // Per-slot resources for the async back-face task, reused in a ring of
-    // ASYNC_RING_SIZE slots so the per-frame task allocates nothing.
-    // Slot-safety: slot N%ASYNC_RING_SIZE is reused by task N+ASYNC_RING_SIZE.
-    // drawFrame waits on the frame fence of frame N before recording frame
-    // N+ASYNC_RING_SIZE (ASYNC_RING_SIZE == VulkanApp::MAX_FRAMES_IN_FLIGHT),
-    // and frame N's main submission waits on semBackFace (task N), so task N's
-    // GPU work -- the only consumer of this slot -- has completed before the
-    // slot is touched again. CPU-side tasks also cannot overlap: the main
-    // thread blocks on future.get() before enqueueing the next task and the
-    // pool has a single worker.
-    struct BackfaceSlot {
-        VkDescriptorPool pool = VK_NULL_HANDLE;    // per-slot pool (maxSets=1) for back-face set 2
-        VkDescriptorSet waterDs = VK_NULL_HANDLE;  // back-face water-depth set (binding 0 = back-face dummy depth)
-        VkDescriptorPool poolW = VK_NULL_HANDLE;   // per-slot pool for the parallel water geometry set 2
-        VkDescriptorSet waterDs2 = VK_NULL_HANDLE; // water geometry pass set 2 (binding 0 = real backface depth)
-    };
-    BackfaceSlot cachedBackfaceRing[ASYNC_RING_SIZE]{};
-    uint32_t ringBackface = 0;
     ThreadPool asyncThreadPool{1}; // single worker for per-frame back-face pass
 
     ~MyApp() {
@@ -911,14 +888,6 @@ public:
         // scene renderer logs it again after every scene load/generation.
         textureArrayManager.logMemoryUtilization("main");
     }
-
-    // Compatibility wrapper for direct (non-staged) bring-up.
-    void setupTextures() {
-        setupTexturesBegin();
-        while (!setupTexturesPoll()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        setupTexturesFinish();
-    }
-
 
     // Compatibility entry point: run the whole staged bring-up synchronously.
     // VulkanApp::run() does not call this; it pumps setupStep() between frames.
@@ -1551,7 +1520,7 @@ public:
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
             this,
             sceneRenderer, sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get(),
-            sceneRenderer->shadowMapper.get(), &shadowParams);
+            sceneRenderer->shadowMapper.get());
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
@@ -1753,8 +1722,6 @@ public:
     void undoBrushLayer(Layer::Id layer, bool group);
     void clearBrushHistory();
     void pollBrushUndo();
-    // Clear GPU meshes, reset octrees and regenerate via MainSceneLoader
-    void generateMap();
     // S2: CPU-only background build. startLocalContentLoad() resets the scene,
     // snapshots the collectors and launches the build thread; the render loop
     // polls contentBuildDone_ and calls finalizeContentLoad() after present.
@@ -1767,8 +1734,6 @@ public:
     // Builds the GPU droplet sim + renderer for the active scene (once).
     void ensureDroplets();
     void action();
-    // Clear GPU meshes, reset octrees, load from file and tessellate
-    void loadSceneFromFile(const std::string& path);
     // Shared scene state reset (join thread, wait GPU, clear meshes/octrees/handlers)
     void resetSceneState();
     // Replay the deduplicated scene change events into the renderer handlers
@@ -3813,7 +3778,6 @@ public:
                     }
                     ImGui::Separator();
                     ImGui::Text("--- CPU Timing (ms) ---");
-                    ImGui::Text("Backface*:     %.2f", profileBackface);
                     ImGui::Text("* = CPU-timed (async)");
                     ImGui::Separator();
                     ImGui::Text("FPS:           %.1f", profileFps);
@@ -4262,10 +4226,6 @@ public:
                 queryPools[f] = VK_NULL_HANDLE;
             }
         }
-        // Pre-allocated ring pools are tracked by VulkanResourceManager, so
-        // resources.cleanup() will destroy them. Just zero our arrays.
-        for (auto& slot : cachedBackfaceRing) slot = {};
-
         // NOTE: Vulkan-owned objects for global managers are now cleaned up by
         // `VulkanResourceManager::cleanup(device)`. Avoid calling manager-level
         // destroy/cleanup routines here that perform Vulkan destroys to prevent
@@ -6046,19 +6006,6 @@ void MyApp::finalizeContentLoad() {
               << (contentIsFile_ ? " (file)" : " (generated)") << "\n";
 }
 
-// Compatibility entry point: run the whole build synchronously. The render
-// loop uses startLocalContentLoad()/finalizeContentLoad() instead.
-void MyApp::generateMap() {
-    if (useRemote) {
-        std::cout << "[MyApp::generateMap] ignored in remote mode (rendering server scene)\n";
-        return;
-    }
-    startLocalContentLoad(false, std::string());
-    while (contentLoading_.load() && !contentBuildDone_.load(std::memory_order_acquire))
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    if (contentBuildDone_.load(std::memory_order_acquire)) finalizeContentLoad();
-}
-
 void MyApp::loadRemoteScene() {
     if (!useRemote || !remoteScene) return;
     ensureLayerHandlers();
@@ -6095,16 +6042,6 @@ void MyApp::loadRemoteScene() {
     startRemoteDispatchLoop();
 }
 
-void MyApp::loadSceneFromFile(const std::string& path) {
-    if (useRemote) {
-        std::cout << "[MyApp::loadSceneFromFile] ignored in remote mode (rendering server scene)\n";
-        return;
-    }
-    startLocalContentLoad(true, path);
-    while (contentLoading_.load() && !contentBuildDone_.load(std::memory_order_acquire))
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    if (contentBuildDone_.load(std::memory_order_acquire)) finalizeContentLoad();
-}
 void MyApp::postSubmit() {
     // ── S2: content build first ─────────────────────────────────────────
     // The octree build/load runs on contentThread. A completed build is

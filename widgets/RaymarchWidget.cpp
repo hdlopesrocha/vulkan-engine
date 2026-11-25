@@ -183,8 +183,6 @@ void RaymarchWidget::render() {
         ImGuiComponents::ColSeparator();
         ImGui::TextWrapped("Generic GPU SDF raymarcher (surface/volume/emissive/transparent). "
                            "Traversal, grid and shading are shared by every SDF shape.");
-        SdfEffectConfig& cfg = sdfRenderer->config();
-        (void)cfg;
         if (ImGuiComponents::SliderFloatField("Time scale", &timeScale, 0.0f, 4.0f, "%.2f",
                 "Global SDF time multiplier.")) {
             // live: read every frame by the SDF task

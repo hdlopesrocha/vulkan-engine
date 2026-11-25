@@ -5,7 +5,6 @@
 #include "../vulkan/renderer/solid/SolidRenderer.hpp"
 #include "../vulkan/renderer/sky/SkyRenderer.hpp"
 #include "../vulkan/renderer/shadow/ShadowRenderer.hpp"
-#include "../utils/ShadowParams.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
 #include <string>
@@ -18,9 +17,9 @@
 
 
 RenderTargetsWidget::RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
-                                                                                 ShadowRenderer* shadow, ShadowParams* shadowParams_)
+                                                                                 ShadowRenderer* shadow)
         : Widget("Render Targets", u8"\uf5b0"), app(app_), sceneRenderer(scene), solidRenderer(solid), skyRenderer(sky),
-            shadowMapper(shadow), shadowParams(shadowParams_) {
+            shadowMapper(shadow) {
     // Initialize static GPU resources used by this widget (run once)
     init(app_, 512, 512);
 }
@@ -652,10 +651,6 @@ void RenderTargetsWidget::invalidateImGuiDescriptors() {
 
 void RenderTargetsWidget::updateDescriptors(uint32_t frameIndex) {
     if (!sceneRenderer || !sceneRenderer->waterRenderer) return;
-
-    // Debug: print resource counts before cleanup (helps track leaks)
-    if (app) {
-    }
 
     // Keep existing descriptor sets alive across frames. Create ImGui texture
     // descriptors only when the corresponding descriptor is null to avoid

@@ -1,11 +1,5 @@
 #include "NormalBrush.hpp"
 
-NormalBrush::NormalBrush(int brush_) {
-    this->brush = brush_;
-    this->hsv = glm::vec3(0.0f, 0.5f, 0.5f);
-    this->normal = glm::vec3(0.0f, 1.0f, 0.0f);
-}
-
 NormalBrush::NormalBrush(int brush_, glm::vec3 hsv_, glm::vec3 normal_) {
     this->brush = brush_;
     this->hsv = hsv_;

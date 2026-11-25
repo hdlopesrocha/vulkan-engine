@@ -4,7 +4,6 @@
 #include "../services/ImpostorService.hpp"
 #include <memory>
 
-class VulkanApp;
 class VegetationRenderer;
 
 // Dedicated widget for capturing and inspecting Fibonacci-sphere impostor views

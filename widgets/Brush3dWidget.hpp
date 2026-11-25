@@ -13,9 +13,6 @@
 #include "../utils/Brush3dManager.hpp"
 
 class TextureArrayManager;
-class SceneRenderer;
-class VulkanApp;
-class LocalScene;
 class EventManager;
 
 

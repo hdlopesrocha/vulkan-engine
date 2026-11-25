@@ -13,14 +13,13 @@ namespace ImGuiHelpers {
 class WindowGuard {
 public:
     WindowGuard(const char* title, bool* p_open = nullptr, ImGuiWindowFlags flags = 0)
-        : m_popen(p_open), m_visible(ImGui::Begin(title, p_open, flags)) {}
+        : m_visible(ImGui::Begin(title, p_open, flags)) {}
 
     ~WindowGuard() { ImGui::End(); }
 
     bool visible() const { return m_visible; }
 
 private:
-    bool* m_popen;
     bool m_visible;
 };
 

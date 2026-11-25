@@ -36,9 +36,7 @@ void SettingsWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Rendering");
         ImGuiComponents::ColSeparator();
-        if (ImGui::Checkbox("Render Solid", &settings.renderSolid)) {
-            // toggled
-        }
+        ImGui::Checkbox("Render Solid", &settings.renderSolid);
         ImGuiComponents::TooltipOnHover("Toggle rendering of the main solid scene (terrain/meshes)");
         // Grass representation selector: bladed tufts + impostors, or none.
         {
@@ -53,12 +51,10 @@ void SettingsWidget::render() {
                            "  Bladed = triangle blade tufts + captured impostors\n"
                            "  None   = no grass");
         }
-        if (ImGuiComponents::SliderIntField("Raycast Pixel Size", &settings.raycastPixelSize, 1, 8, "%d px",
+        ImGuiComponents::SliderIntField("Raycast Pixel Size", &settings.raycastPixelSize, 1, 8, "%d px",
                 "SDF and sky-cloud raymarchers cast one ray per NxN screen-pixel\n"
                 "block (block center): 1 = one ray per pixel, 2 = 2x2 pixelation\n"
-                "(default), up to 8x8. Higher = more pixelated and cheaper.")) {
-            // SliderInt clamps to [1, 8]; nothing else to do.
-        }
+                "(default), up to 8x8. Higher = more pixelated and cheaper.");
         // SDF march tiers (perf report 25 M12): step budget + smoke resolve
         // samples. Maximum keeps 64/12; Minimal sets 32/6 via the preset.
         // Streams through SdfParamsUBO (no idle, no rebuild), unlike the
@@ -76,36 +72,30 @@ void SettingsWidget::render() {
             if (settings.sdfSmokeSamples < 4) settings.sdfSmokeSamples = 4;
             if (settings.sdfSmokeSamples > 12) settings.sdfSmokeSamples = 12;
         }
-        if (ImGui::Checkbox("Ray Marching", &settings.rayMarchingEnabled)) {
-            // toggled
-        }
+        ImGui::Checkbox("Ray Marching", &settings.rayMarchingEnabled);
         ImGuiComponents::TooltipOnHover("Master gate for the generic SDF raymarcher\n"
                        "(fire, smoke) and its grass shadows.\n"
                        "Off = cleared SDF targets (Minimal preset disables it).\n"
                        "The sky cloud raymarch has its own Volumetric Clouds toggle.");
-        if (ImGui::Checkbox("Volumetric Clouds", &settings.cloudsEnabled)) {
-            // toggled
-        }
+        ImGui::Checkbox("Volumetric Clouds", &settings.cloudsEnabled);
         ImGuiComponents::TooltipOnHover("Master toggle for volumetric clouds (sky raymarch + ground shadows + reflections).\nMinimal preset disables; per-tier controls live in the Clouds widget.");
         // Wind-trail particles (WindRenderer): GPU particles advected by the
         // shared wind field, drawing fading 2 s trails. Trail duration/color/
         // width and the wind parameters live in the Wind Trails widget.
-        if (ImGuiComponents::CheckboxField("Wind Trails",
+        // toggled; the simulation stops/resumes on the next frame
+        ImGuiComponents::CheckboxField("Wind Trails",
                 &settings.windParticlesEnabled,
                 "GPU particles advected by the shared wind field, each leaving a\n"
                 "fading world-space trail. A particle that leaves the view frustum\n"
                 "respawns at a random point inside it. Configure count/duration/\n"
-                "color/width and the wind parameters in the Wind Trails widget.")) {
-            // toggled; the simulation stops/resumes on the next frame
-        }
+                "color/width and the wind parameters in the Wind Trails widget.");
         // Raymarched wind-velocity isosurface (WindRaymarchRenderer).
-        if (ImGuiComponents::CheckboxField("Wind Raymarch",
+        // toggled; the overlay appears on the next frame
+        ImGuiComponents::CheckboxField("Wind Raymarch",
                 &settings.windRaymarchEnabled,
                 "Raymarches the shared wind field and renders the shape where the\n"
                 "wind speed equals a target velocity. The target and march quality\n"
-                "live in the Wind widget (Raymarch Surface).")) {
-            // toggled; the overlay appears on the next frame
-        }
+                "live in the Wind widget (Raymarch Surface).");
         ImGuiComponents::FieldLabel("Vegetation render scale", "Offscreen vegetation resolution");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Vegetation render scale", &settings.vegetationRenderScale, 0.25f, 1.0f, "%.2f");
@@ -129,17 +119,11 @@ void SettingsWidget::render() {
                        "layer count; 512 quarters it (sources are box-filtered down).\n"
                        "Changing it rebuilds the arrays: one device idle, then a full re-upload\n"
                        "and mixer refresh, so expect a brief hitch on that frame.");
-        if (ImGui::Checkbox("Enable Normal Mapping", &settings.normalMappingEnabled)) {
-            // toggled
-        }
+        ImGui::Checkbox("Enable Normal Mapping", &settings.normalMappingEnabled);
         ImGuiComponents::TooltipOnHover("Globally enable/disable normal mapping (normal maps still needed in textures)");
-        if (ImGui::Checkbox("Enable Roughness", &settings.roughnessEnabled)) {
-            // toggled
-        }
+        ImGui::Checkbox("Enable Roughness", &settings.roughnessEnabled);
         ImGuiComponents::TooltipOnHover("Globally enable/disable roughness map influence on specular");
-        if (ImGui::Checkbox("Enable Ambient Occlusion", &settings.aoEnabled)) {
-            // toggled
-        }
+        ImGui::Checkbox("Enable Ambient Occlusion", &settings.aoEnabled);
         ImGuiComponents::TooltipOnHover("Globally enable/disable ambient occlusion mapping");
     });
 
@@ -156,21 +140,18 @@ void SettingsWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Shadow Effects");
         ImGuiComponents::ColSeparator();
-        if (ImGuiComponents::CheckboxField("Serve This Scene", &settings.serveScene,
-                "Start a SceneServer bound to this application's live scene: the bundled web\n"
-                "viewer and engine clients in --remote mode receive the chunk ladder plus every\n"
-                "live octree edit (same protocol as bin/server).")) {
-            // Applied by MyApp on the next frame (start/stop the server there).
-        }
+        // Applied by MyApp on the next frame (start/stop the server there).
+        ImGuiComponents::CheckboxField("Serve This Scene", &settings.serveScene,
+            "Start a SceneServer bound to this application's live scene: the bundled web\n"
+            "viewer and engine clients in --remote mode receive the chunk ladder plus every\n"
+            "live octree edit (same protocol as bin/server).");
         if (settings.serveScene) {
             ImGui::SetNextItemWidth(120.0f);
             ImGui::InputInt("Server Port", &settings.serveScenePort);
             settings.serveScenePort = std::clamp(settings.serveScenePort, 1024, 65535);
         }
 
-        if (ImGui::Checkbox("Enable Shadows", &settings.enableShadows)) {
-
-        }
+        ImGui::Checkbox("Enable Shadows", &settings.enableShadows);
         ImGuiComponents::TooltipOnHover("Globally enable or disable all shadowing");
         if (shadowParams) {
             ImGuiComponents::FieldLabel("Base Ortho Size", "Shadow camera orthographic size for the base cascade");
@@ -219,9 +200,8 @@ void SettingsWidget::render() {
             "closer (fewer triangles). 0 = always coarsest, 64+ = full detail "
             "everywhere.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
-        if (ImGui::SliderFloat("##LoD Distance Bias", &settings.lodBias, 0.0f, 64.0f, "%.1f")) {
-            // live: the per-frame GPU band test reads settings.lodBias directly
-        }
+        // live: the per-frame GPU band test reads settings.lodBias directly
+        ImGui::SliderFloat("##LoD Distance Bias", &settings.lodBias, 0.0f, 64.0f, "%.1f");
         ImGuiComponents::TooltipOnHover(
             "Scales the distance at which each coarser LoD level takes over "
             "(transition at distance = level * chunkSize * bias). Larger = full "
@@ -234,9 +214,8 @@ void SettingsWidget::render() {
             "Lower = only finer (more detailed) chunk levels are drawn; 16+ = "
             "unlimited (chunk ladders rarely exceed ~5 levels).");
         ImGui::SetNextItemWidth(kSettingsColWidth);
-        if (ImGui::SliderInt("##Max Target LoD", &settings.maxTargetLod, 0, 24, "%d")) {
-            // live: the per-frame GPU band test reads settings.maxTargetLod directly
-        }
+        // live: the per-frame GPU band test reads settings.maxTargetLod directly
+        ImGui::SliderInt("##Max Target LoD", &settings.maxTargetLod, 0, 24, "%d");
         ImGuiComponents::TooltipOnHover(
             "Caps the coarsest LoD level the renderer may select for a chunk. "
             "Lower = only finer (more detailed) chunk levels are drawn; 16+ = "
@@ -247,13 +226,9 @@ void SettingsWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Tessellation");
         ImGuiComponents::ColSeparator();
-        if (ImGui::Checkbox("Enable Tessellation", &settings.tessellationEnabled)) {
-            // toggled globally
-        }
+        ImGui::Checkbox("Enable Tessellation", &settings.tessellationEnabled);
         ImGuiComponents::TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
-        if (ImGui::Checkbox("Enable Shadow Tessellation", &settings.shadowTessellationEnabled)) {
-            // toggled globally
-        }
+        ImGui::Checkbox("Enable Shadow Tessellation", &settings.shadowTessellationEnabled);
         ImGuiComponents::TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
         ImGuiComponents::FieldLabel("Tessellation Factor", "Multiplies per-material min/max tess levels globally");
         ImGui::SetNextItemWidth(kSettingsColWidth);
@@ -309,14 +284,12 @@ void SettingsWidget::render() {
             ImGui::TextDisabled("Uses the octree SDF raymarch pass (auto-enabled).");
         }
 
-        if (ImGui::Checkbox("Show Mesh Bounding Boxes", &settings.showBoundingBoxes)) {
-            // toggled overlay of per-mesh bounding boxes
-        }
+        // toggled overlay of per-mesh bounding boxes
+        ImGui::Checkbox("Show Mesh Bounding Boxes", &settings.showBoundingBoxes);
         ImGuiComponents::TooltipOnHover("Render bounding boxes for meshes currently uploaded to the GPU");
 
-        if (ImGui::Checkbox("Show SDF Cubes (indirect cull)", &settings.showSDFDebug)) {
-            // toggled SDF leaf cube overlay
-        }
+        // toggled SDF leaf cube overlay
+        ImGui::Checkbox("Show SDF Cubes (indirect cull)", &settings.showSDFDebug);
         ImGuiComponents::TooltipOnHover("Render leaf-node cube faces colored by SDF sign; frustum-culled on the GPU via IndirectRenderer.comp (only visible cubes are drawn)");
     });
 

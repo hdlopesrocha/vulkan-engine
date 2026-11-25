@@ -15,7 +15,6 @@ public:
 
 private:
     int selectedJoystick = GLFW_JOYSTICK_1;
-    const float deadzone = 0.05f;
     ControllerManager* ctrlManager = nullptr;
     NunchukPublisher* nunchukPublisher = nullptr;
 };

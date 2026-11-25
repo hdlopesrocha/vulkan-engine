@@ -36,13 +36,6 @@ void OctreeExplorerWidget::render() {
     }
     if (!scene->findLayer(selectedLayer))
         selectedLayer = scene->layerAt(0) ? scene->layerAt(0)->id() : 0;
-    if (exportBlenderCallback_) {
-        if (ImGui::Button("Export to Blender (.blend)")) exportBlenderCallback_();
-        ImGuiHelpers::SetTooltipIfHovered(
-            "Tessellate the current octree and write a ready-to-render Blender scene\n"
-            "(materials, engine camera, sun, packed textures) plus the .glb source data");
-        ImGui::Separator();
-    }
     const Layer* selected = scene->findLayer(selectedLayer);
     const std::string curName = selected ? selected->name() : std::string();
     ImGui::Text("Layer: %s", curName.c_str());
@@ -70,9 +63,7 @@ void OctreeExplorerWidget::render() {
         expandAll = true;
     }
     ImGui::SameLine();
-    if (ImGui::Checkbox("Persist Expand", &expandAllPersistent)) {
-        // toggled persistent expand
-    }
+    ImGui::Checkbox("Persist Expand", &expandAllPersistent);
     ImGui::SameLine();
     if (ImGui::Button("Collapse All")) {
         expandAllPersistent = false;

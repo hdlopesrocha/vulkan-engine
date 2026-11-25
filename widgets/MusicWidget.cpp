@@ -412,11 +412,9 @@ void MusicWidget::updateAnalysis(double dtDouble) {
 
     // The engine may resample: map the sound cursor into decoded-PCM frames.
     uint32_t trackRate = 0;
-    size_t pcmSize = 0;
     {
         std::lock_guard<std::mutex> lock(trackMutex_);
         trackRate = track_.sampleRate;
-        pcmSize = track_.mono.size();
     }
     const double rateScale = (soundRate > 0 && trackRate > 0)
                                  ? static_cast<double>(trackRate) / static_cast<double>(soundRate)
@@ -450,7 +448,6 @@ void MusicWidget::updateAnalysis(double dtDouble) {
             }
             analyzer_.analyzeWindow(windowScratch_.data(), track_.sampleRate);
             lastAnalysisCursor_ = static_cast<ma_uint64>(pcmPos > 0 ? pcmPos : 0);
-            (void)pcmSize;
             return;
         }
     }
@@ -703,16 +700,13 @@ void MusicWidget::renderFftSpectrum() {
 void MusicWidget::renderAnalysisControls() {
     ImGui::Spacing();
     if (ImGui::CollapsingHeader("Analysis Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
-        bool fftChanged = false;
         if (fftSizeIdx_ < 0 || fftSizeIdx_ > 3) fftSizeIdx_ = 2;
         if (ImGui::Combo("FFT Size", &fftSizeIdx_, kFftLabels)) {
             analyzer_.setFftSize(kFftSizes[fftSizeIdx_]);
             windowScratch_.clear(); // force gather-buffer resize
             analysisInit_ = false;  // re-seed at the cursor
-            fftChanged = true;
         }
         ImGuiHelpers::SetTooltipIfHovered("FFT window length. Larger = finer frequency detail, slower response.");
-        (void)fftChanged;
 
         if (windowIdx_ < 0 || windowIdx_ > 3) windowIdx_ = 0;
         if (ImGui::Combo("Window", &windowIdx_, kWindowLabels)) {

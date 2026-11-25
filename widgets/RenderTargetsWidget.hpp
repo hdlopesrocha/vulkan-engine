@@ -3,15 +3,12 @@
 #include "../vulkan/ubo/UniformObject.hpp"
 #include <vulkan/vulkan.h>
 #include "../vulkan/resources/Buffer.hpp"
-#include <unordered_map>
 
 class VulkanApp;
-class WaterRenderer;
 class SceneRenderer;
 class SolidRenderer;
 class SkyRenderer;
 class ShadowRenderer;
-struct ShadowParams;
 
 // Widget that displays render targets (Sky, Solid color/depth, Water depth,
 // Shadow cascades) as ImGui image thumbnails.
@@ -95,8 +92,6 @@ private:
     VkDescriptorSet linearShadowDepthDescriptor[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
     bool linearShadowDepthDescriptorOwned[SHADOW_CASCADE_COUNT] = { false };
 
-    ShadowParams* shadowParams = nullptr;
-
     // Fixed preview width in pixels (all previews will be displayed at this width)
     // Preview scale removed — previews are fixed-size thumbnails now.
     int currentFrame = 0;
@@ -137,7 +132,7 @@ private:
 
 public:
     RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
-                        ShadowRenderer* shadow = nullptr, ShadowParams* shadowParams_ = nullptr);
+                        ShadowRenderer* shadow = nullptr);
     ~RenderTargetsWidget();
 
     // Initialize static GPU resources used by the widget (run once).

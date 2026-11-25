@@ -25,8 +25,7 @@ void CloudWidget::render() {
     sections.emplace_back([this]() {
         ImGui::Text("Master");
         ImGuiComponents::ColSeparator();
-        if (ImGui::Checkbox("Clouds Enabled", &settings.enabled)) {
-        }
+        ImGui::Checkbox("Clouds Enabled", &settings.enabled);
         ImGuiComponents::TooltipOnHover("Master toggle for volumetric clouds (sky + shadows + reflections).\nAlso gated by Settings 'Clouds' toggle; Minimal preset disables.");
         ImGuiComponents::FieldLabel("Density Scale", "Global extinction multiplier for all tiers.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
@@ -53,8 +52,7 @@ void CloudWidget::render() {
         ImGui::Text("Low Clouds (~2 km)");
         ImGuiComponents::ColSeparator();
         ImGui::TextWrapped("Stratus, stratocumulus, cumulus. Fog = low cloud at ground.");
-        if (ImGui::Checkbox("Low Enabled", &settings.lowEnabled)) {
-        }
+        ImGui::Checkbox("Low Enabled", &settings.lowEnabled);
         ImGuiComponents::FieldLabel("Low Coverage", "0 = clear, 1 = overcast.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Low Coverage", &settings.lowCoverage, 0.0f, 1.0f, "%.2f");
@@ -81,8 +79,7 @@ void CloudWidget::render() {
         ImGui::Text("Mid Clouds (2-7 km)");
         ImGuiComponents::ColSeparator();
         ImGui::TextWrapped("Altocumulus, altostratus (water/ice mix).");
-        if (ImGui::Checkbox("Mid Enabled", &settings.midEnabled)) {
-        }
+        ImGui::Checkbox("Mid Enabled", &settings.midEnabled);
         ImGuiComponents::FieldLabel("Mid Coverage", "0 = clear, 1 = overcast.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##Mid Coverage", &settings.midCoverage, 0.0f, 1.0f, "%.2f");
@@ -108,8 +105,7 @@ void CloudWidget::render() {
         ImGui::Text("High Clouds (5-13 km)");
         ImGuiComponents::ColSeparator();
         ImGui::TextWrapped("Cirrus, cirrocumulus, cirrostratus (ice crystals, streaky).");
-        if (ImGui::Checkbox("High Enabled", &settings.highEnabled)) {
-        }
+        ImGui::Checkbox("High Enabled", &settings.highEnabled);
         ImGuiComponents::FieldLabel("High Coverage", "0 = clear, 1 = overcast.");
         ImGui::SetNextItemWidth(kSettingsColWidth);
         ImGui::SliderFloat("##High Coverage", &settings.highCoverage, 0.0f, 1.0f, "%.2f");

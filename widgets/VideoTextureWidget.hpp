@@ -8,8 +8,6 @@
 #include <memory>
 #include <vector>
 
-class TextureArrayManager;
-
 // Video textures: one panel per loaded clip (live video preview, playback
 // control, per-clip instrumentation, load/unload) plus global transport
 // controls that keep the clips synchronised to a shared clock. Clips live in

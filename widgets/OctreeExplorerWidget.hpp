@@ -3,7 +3,6 @@
 #include "Widget.hpp"
 #include "../utils/LocalScene.hpp"
 #include <imgui.h>
-#include <functional>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -43,7 +42,6 @@ private:
     bool showSdf = true;         // Show per-node SDF corner summary (min/max, sentinels, tooltip with all 8 corners)
     bool applyRayOpenState = false; // Apply ray-based open/closed state in next render pass
     bool rootRayOpen = false;
-    std::function<void()> exportBlenderCallback_;
     std::unordered_map<const OctreeNode*, bool> rayOpenState;
     
     // Color priority (higher = more important): dirty > chunk > simplified > leaf
