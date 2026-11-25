@@ -297,7 +297,7 @@ void TextureViewer::render() {
     }});
 
     sections.push_back({[&]() {
-        ImGui::Text("Mapping (Tessellation + Bump)");
+        ImGui::Text("Mapping / Displacement");
         ColSeparator();
         MaterialProperties& mat = (*materials)[currentIndex];
         if (CheckboxField("Enable Tessellation & Bump Mapping", &mat.mappingMode)) materialDirty = true;
@@ -310,6 +310,45 @@ void TextureViewer::render() {
                 materialDirty = true;
             }
             if (SliderFloatField("Tess Height Scale", &mat.tessHeightScale, 0.0f, 64.0f, "%.3f")) materialDirty = true;
+            ImGui::Spacing();
+            ImGui::TextUnformatted("True raymarched displacement");
+            bool dispEnabled = mat.displacementStrength > 0.0f;
+            if (CheckboxField("Enable Raymarched Displacement", &dispEnabled,
+                    "Folds a real height offset into the octree SDF. The raymarcher intersects "
+                    "and refines the displaced zero set, so silhouettes, depth and shadows change.\n"
+                    "Independent of tessellation; the legacy tessellation height bump above is "
+                    "unchanged when this is off.")) {
+                mat.displacementStrength = dispEnabled ? 1.0f : 0.0f;
+                if (dispEnabled && mat.displacementAmplitude == 0.0f)
+                    mat.displacementAmplitude = 1.0f;
+                materialDirty = true;
+            }
+            if (mat.displacementStrength > 0.0f) {
+                if (SliderFloatField("Displacement Amplitude", &mat.displacementAmplitude,
+                        -64.0f, 64.0f, "%.3f",
+                        "Signed world-unit offset at the height extremes. Negative inverts the "
+                        "height field (peaks become pits).")) materialDirty = true;
+                if (SliderFloatField("Displacement Frequency", &mat.displacementFrequency,
+                        0.001f, 64.0f, "%.3f",
+                        "UV multiplier on top of the painted per-vertex texture scale. Also "
+                        "sets the feature wavelength used by the conservative march.",
+                        ImGuiSliderFlags_Logarithmic)) materialDirty = true;
+                if (SliderFloatField("Displacement Strength", &mat.displacementStrength,
+                        0.0f, 1.0f, "%.2f",
+                        "Blend between the undisplaced surface (0) and the full amplitude (1).")) materialDirty = true;
+                if (SliderFloatField("Displacement Offset", &mat.displacementOffset,
+                        -1.0f, 1.0f, "%.3f",
+                        "Normalized height bias added before the amplitude (+0.5 raises the "
+                        "neutral surface by half the amplitude).")) materialDirty = true;
+                if (SliderFloatField("Displacement Bounds", &mat.displacementBounds,
+                        0.0f, 64.0f, "%.3f",
+                        "Optional clamp on |displacement| in world units. 0 = |amplitude| * strength.")) materialDirty = true;
+                if (SliderIntField("Displacement Texture", &mat.displacementTexture,
+                        -2, static_cast<int>(materials->size()) - 1,
+                        "Height source: -1 = this material's own height texture, "
+                        "-2 = procedural world-space Perlin displacement, otherwise another "
+                        "material index resolved through the brush map.")) materialDirty = true;
+            }
             ImGui::TextUnformatted("Distance-based range");
             int minLvl = static_cast<int>(mat.tessMinLevel + 0.5f);
             int maxLvl = static_cast<int>(mat.tessMaxLevel + 0.5f);

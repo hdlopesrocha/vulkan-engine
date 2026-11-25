@@ -2,7 +2,9 @@
 
 ![Screenshot](screenshot.png)
 
-A real-time 3D terrain and scene rendering engine built with modern Vulkan (targeting 1.4, compatible with 1.3 through runtime feature detection) and C++23. Procedural geometry is generated from Signed Distance Functions and meshed with Surface Nets. Rendering is a hybrid rasterization + hardware ray tracing pipeline covering terrain, water, vegetation, EVSM shadows, atmospheric sky and GPU impostors.
+A real-time 3D terrain and scene rendering engine built with modern Vulkan (targeting 1.4, compatible with 1.3 through runtime feature detection) and C++23. Procedural geometry is generated from Signed Distance Functions; terrain and water are rendered by a fullscreen octree SDF raymarcher (Surface Nets remains available for offline/export paths). Rendering is a hybrid rasterization + raymarching pipeline covering terrain, water, vegetation, EVSM shadows, atmospheric sky and GPU impostors.
+
+Terrain supports **true raymarched displacement mapping**: a per-material height offset is folded into the SDF (`F(p) = d_original(p) - h(p)`) and the camera/shadow rays intersect the actual displaced zero set, so silhouettes, depth, normals, AO and shadows move with the geometry. It does not require tessellated meshes or permanent octree subdivision. See [docs/raymarch-displacement.md](docs/raymarch-displacement.md) for the math, conservative traversal, triplanar mapping, depth/shadow integration and performance limits.
 
 ---
 

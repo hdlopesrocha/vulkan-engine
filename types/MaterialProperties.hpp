@@ -68,4 +68,30 @@ struct MaterialProperties {
 
     // ── Layer blending ──────────────────────────────────────────────────
     MaterialBlendMode blendMode = MaterialBlendMode::Normal;
+
+    // ── True raymarched displacement ─────────────────────────────────────
+    // Independent of tessellation (which stays as the legacy height-bump path
+    // for compatibility). The octree raymarch folds this offset into the SDF:
+    //   F(p) = d_original(p) - displacement(p)
+    // and intersects/refines the actual displaced zero set. The raster
+    // tessellation path is not involved.
+    // Amplitude is signed world units at the normalized height extremes;
+    // 0 keeps the new path disabled (legacy behaviour unchanged).
+    float displacementAmplitude = 0.0f;
+    // UV multiplier applied on top of the per-vertex texture scale. The
+    // inverse is the world-space feature wavelength used by the conservative
+    // march.
+    float displacementFrequency = 1.0f;
+    // Normalized height offset added before the amplitude: +0.5 raises the
+    // neutral surface by half the amplitude (negative values recess it).
+    float displacementOffset = 0.0f;
+    // 0 disables the new path; 1 applies the full amplitude. Intermediate
+    // values scale the geometric offset.
+    float displacementStrength = 0.0f;
+    // Optional clamp on |displacement| in world units (0 = |amplitude|*strength).
+    float displacementBounds = 0.0f;
+    // Height-map layer used for displacement. -1 = this material's own layer;
+    // >= 0 selects another material index's height texture through the brush
+    // map (letting several materials share one displacement source).
+    int displacementTexture = -1;
 };

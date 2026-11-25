@@ -14,8 +14,13 @@ static Material toGPU(const MaterialProperties &m) {
     // layerParams.z (coordinate technique) is reserved: the technique is a
     // per-vertex value now (Vertex::textureType).
     out.layerParams = glm::vec4(static_cast<float>(m.kind), static_cast<float>(m.textureIndex),
-                                0.0f, static_cast<float>(m.blendMode));
+                                static_cast<float>(m.displacementTexture),
+                                static_cast<float>(m.blendMode));
     out.mappingOrigin = m.mappingOrigin;
+    out.displacementParams = glm::vec4(m.displacementAmplitude, m.displacementFrequency,
+                                       m.displacementOffset, m.displacementStrength);
+    // The reserved tessLevelParams.w carries the displacement clamp bound.
+    out.tessLevelParams.w = m.displacementBounds;
     return out;
 }
 

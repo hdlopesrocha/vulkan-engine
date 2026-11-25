@@ -6,7 +6,7 @@
 
 static constexpr int SHADOW_CASCADE_COUNT = 3;
 
-// Canonical scene UBO (std140, 448 B). Single definition shared with the GLSL
+// Canonical scene UBO (std140, 464 B). Single definition shared with the GLSL
 // twin shaders/ubo/UniformObject.glsl — same names, fields and offsets;
 // uploaded verbatim (memcpy) by MyApp/ShadowRenderer/ImpostorCapture.
 // Matrices and position/light/colour vectors keep their conceptual grouping;
@@ -44,13 +44,21 @@ struct alignas(16) UniformObject {
     uint32_t brushMode = 0u;             // offset 424  0 = overlay, 1 = remove, 2 = PAINT
     float brushPhase = 0.0f;             // offset 428  brush animation phase (s)
     alignas(16) glm::vec3 brushHsv{0.0f, 0.5f, 0.5f}; // offset 432
-    // Screen-space octree raymarch hit tolerance in pixels (0 = off). Lives in
-    // the former std140 tail padding: the block size stays 448 B.
+    // Screen-space octree raymarch hit tolerance in pixels (0 = off).
     float raymarchScreenEps = 0.0f;      // offset 444
-    // The struct ends at 448 with no tail padding; alignas(16) keeps the
-    // std140 block size a multiple of 16.
+    // True raymarched displacement master switches. The material-level
+    // strength/amplitude still gates each material; these only let the
+    // renderer A/B the new path, its SDF ambient occlusion and its CSM
+    // shadow caster without rebuilding materials.
+    uint32_t displacementEnabled = 0u;       // offset 448
+    uint32_t displacementAOEnabled = 0u;     // offset 452
+    uint32_t displacementShadowCaster = 0u;  // offset 456
+    // Largest |displacement| among the uploaded materials (world units). The
+    // raymarch expands each layer's conservative surface AABB by this bound
+    // instead of falling back to the whole root cube.
+    float displacementMaxBound = 0.0f;       // offset 460
 };
-static_assert(sizeof(UniformObject) == 448, "UniformObject must be 448 bytes (std140 padding)");
+static_assert(sizeof(UniformObject) == 464, "UniformObject must be 464 bytes (std140)");
 static_assert(offsetof(UniformObject, viewProjection) == 0, "viewProjection offset");
 static_assert(offsetof(UniformObject, invViewProjection) == 64, "invViewProjection offset");
 static_assert(offsetof(UniformObject, lightSpaceMatrix) == 128, "lightSpaceMatrix offset");
@@ -80,3 +88,7 @@ static_assert(offsetof(UniformObject, brushMode) == 424, "brushMode offset");
 static_assert(offsetof(UniformObject, brushPhase) == 428, "brushPhase offset");
 static_assert(offsetof(UniformObject, brushHsv) == 432, "brushHsv offset");
 static_assert(offsetof(UniformObject, raymarchScreenEps) == 444, "raymarchScreenEps offset");
+static_assert(offsetof(UniformObject, displacementEnabled) == 448, "displacementEnabled offset");
+static_assert(offsetof(UniformObject, displacementAOEnabled) == 452, "displacementAOEnabled offset");
+static_assert(offsetof(UniformObject, displacementShadowCaster) == 456, "displacementShadowCaster offset");
+static_assert(offsetof(UniformObject, displacementMaxBound) == 460, "displacementMaxBound offset");

@@ -84,6 +84,15 @@ enum class DebugMode : int {
     // the cell that produced the hit, so the per-layer octree refinement is
     // visible directly on the raymarched isosurface.
     OctreeSdfRaymarch,    // per-layer color + leaf-cell grid/LOD + fallback flags
+    // True raymarched displacement diagnostics (octree raymarch only).
+    OriginalSdfSurface,      // base isosurface (displacement bypassed)
+    DisplacementMagnitude,   // signed offset / material bound (blue = in, red = out)
+    DisplacementBounds,      // green inside the conservative band, red outside
+    DisplacedNormals,        // normal(grad(base - disp))
+    DisplacementIterations,  // march iteration heat
+    DisplacementStep,        // accepted-hi step length heat
+    DisplacementResidual,    // |F| at the refined hit / hit epsilon
+    DisplacementShadow,      // SDF shadow term + shadow-ray step heat
     Count
 };
 
@@ -139,6 +148,14 @@ inline constexpr const char* kDebugModeNames[] = {
     "Cloud Ray Steps",
     "Cloud Empty-Space Skip",
     "Octree SDF Raymarch (per layer)",
+    "Original SDF Surface (no displacement)",
+    "Displacement Magnitude",
+    "Displacement Bounds",
+    "Displaced Normals",
+    "Displacement March Iterations",
+    "Displacement Conservative Step",
+    "Displacement Intersection Residual",
+    "Displacement Shadow Ray",
 };
 
 static_assert(sizeof(kDebugModeNames) / sizeof(kDebugModeNames[0])

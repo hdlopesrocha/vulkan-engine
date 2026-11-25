@@ -962,6 +962,12 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
              << ",\"shininess\":" << jnum(m.shininess)
              << ",\"reflectionStrength\":" << jnum(m.reflectionStrength)
              << ",\"tessHeightScale\":" << jnum(m.tessHeightScale)
+             << ",\"displacementAmplitude\":" << jnum(m.displacementAmplitude)
+             << ",\"displacementFrequency\":" << jnum(m.displacementFrequency)
+             << ",\"displacementOffset\":" << jnum(m.displacementOffset)
+             << ",\"displacementStrength\":" << jnum(m.displacementStrength)
+             << ",\"displacementBounds\":" << jnum(m.displacementBounds)
+             << ",\"displacementTexture\":" << m.displacementTexture
              << "}";
     }
     json << "]";

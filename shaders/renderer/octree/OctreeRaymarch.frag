@@ -71,6 +71,9 @@
 #include "../../includes/solid/TangentBasis.glsl"
 #include "../../includes/solid/Triplanar.glsl"
 #include "../../includes/solid/Displacement.glsl"
+// Shared true-displacement field definition (same include used by the CSM
+// terrain caster, so camera and shadow rays intersect one surface).
+#include "../../includes/octree/DisplacementField.glsl"
 #include "../../includes/shadow/Shadows.glsl"
 #include "../../includes/Hsv.glsl"
 
@@ -87,6 +90,7 @@ layout(push_constant) uniform OctreeRaymarchPush {
     uint tableVersion; // low 32 bits of the table revision (future caches)
     uint nodeCount;    // records uploaded for this frame slot
     uint flags;        // reserved
+    mat4 shadowInvLightSpace; // shadow caster only (camera march ignores it)
 } pc;
 
 // Instrumentation was removed with the profile shader variants; the march
@@ -116,6 +120,12 @@ vec3 fragTexWeights;
 vec3 fragHSV;
 vec3 fragSharpNormal;
 vec3 fragTessLevel;
+// Displacement SDF ambient occlusion (1 = open). SolidSurface multiplies it
+// with the material AO texture; the raster-only path leaves it at 1.
+float fragSdfAO = 1.0;
+// Conservative |displacement| bound of the shaded hit (world units), used by
+// the shadow-ray bias and debug views.
+float fragDisplacementBound = 0.0;
 
 // Global toggles (same as SolidRenderer.frag).
 bool roughnessEnabled = (ubo.roughnessEnabled != 0u);
@@ -138,6 +148,16 @@ const int RAYMARCH_DISCARD_BRUSH = RM_MATERIAL_DISCARD;
 // 320 left visible holes wherever the budget ran out. The cost is only paid by
 // pixels that actually take that many steps.
 const int RM_MAX_STEPS = 1024;
+// Displaced-band rays are bounded more tightly: the field is no longer a
+// distance field inside the band, and a grazing ray can otherwise spend the
+// whole 1024-step budget per pixel. 512 is enough for the reference scenes at
+// 1–4 px steps; unresolved rays discard instead of tripping the GPU watchdog.
+const int RM_DISPLACEMENT_STEPS = 512;
+// Secondary rays do not need primary-ray precision: the water bed/reflection
+// and sun-shadow traces use a smaller budget so a grazing displaced-band ray
+// cannot burn the same worst case as the camera per pixel.
+const int RM_SECONDARY_STEPS = 512;
+const int RM_SHADOW_STEPS = 256;
 // The flattened table's measured maximum stored depth is 12 (the node cap
 // truncates deeper levels); 16 leaves margin without paying for a 40-entry
 // per-invocation scratch stack.
@@ -148,6 +168,22 @@ const int RM_MAX_STACK = 16;
 // unsorted fallback loop.
 const int RM_MAX_ROOTS = 16;
 const int RM_BISECT_STEPS = 7;
+// Safeguarded secant/bisection refinement budget for a bracketed crossing.
+// The loop exits on the residual/width test, so the count is a hard safety
+// cap rather than a fixed amount of work.
+const int RM_REFINE_STEPS = 16;
+
+// Invocation-local debug telemetry (debug views and tests). The march keeps
+// these for the nearest accepted hit; they cost one register each and no
+// extra work outside the debug views.
+int rmDebugIterations = 0;
+float rmDebugStep = 0.0;
+float rmDebugResidual = 0.0;
+float rmDebugDisplacement = 0.0;
+float rmDebugBound = 0.0;
+int rmDebugRefineIters = 0;
+int rmDebugShadowSteps = 0;
+float rmDebugShadowT = 0.0;
 
 // World size of one pixel at distance t. viewProjection[1][1] holds
 // 1/tan(fovy/2) and pc.viewport is the solid target extent in pixels.
@@ -289,37 +325,35 @@ int rmCachedBrush(uint id) {
     return rmBrushValue;
 }
 
-// ── Tessellation displacement ("bump the SDF") ─────────────────────────────
-// The raster path displaces every tessellated vertex along its smooth cell
-// normal by (height - 0.5) * tessHeightScale. Fold the same signed offset into
-// the marched field: f_bumped(p) = f_base(p) - disp(p). Since the base field is
-// a signed distance, subtracting the offset moves the isosurface along the
-// normal by exactly disp. The gates mirror the raster TES: displacement is only
-// active when tessellation is enabled and the hit material has mapping on, so
-// switching rasterization <-> raymarch (or tessellation on/off) keeps both
-// surfaces aligned.
+// ── True displacement field ("bend the SDF") ───────────────────────────────
+// The displaced surface is the zero set of
+//
+//     F(p) = d_original(p) - disp(p)
+//
+// where `disp` is a signed world-space offset: positive moves the surface
+// along the base outward normal, negative recesses it. The base field is the
+// node's trilinear reconstruction of the stored corner SDFs (a conservative
+// approximation of the original signed distance), and the offset is sampled
+// from the material height map with the same mapping mode / UV scale the
+// surface shader uses. DisplacementField.glsl owns the material resolution and
+// sampling so the CSM caster evaluates the identical expression.
 float rmDisplacementN(uint id, int material, vec3 p, vec3 n) {
-    if (ubo.tessellationEnabled == 0u || material < 0) return 0.0;
-    if (!materialNamed(materials[material]).mappingEnabled) return 0.0;
+    if (material < 0) return 0.0;
+    RmDisplacement d = rmDisplacementParams(material);
+    if (!d.enabled) return 0.0;
+    MaterialNamed m = materialNamed(materials[material]);
     int texType = int(rmNodes[id].hsv0.w + 0.5);
-    vec2 uv = rmNodes[id].hsv1.xy;
-    return materialDisplacementLod(material, texType, uv, p, n);
+    vec2 uvScale = rmNodes[id].hsv1.xy;
+    return rmDisplacementValue(d, m, material, texType, uvScale, p, n, 0.0);
 }
 
-bool rmDisplacementActive(int material) {
-    if (ubo.tessellationEnabled == 0u || material < 0) return false;
-    return materialNamed(materials[material]).mappingEnabled;
-}
-
-// Compute the normal only when a displacement can actually be produced. The
-// old unconditional rmNodeNormal() here was a full gradient per hit (and a
-// second one when the caller also needed the base-point normal).
+// Small wrappers keep the march readable; the actual settings/sampling live in
+// the shared include.
 float rmDisplacement(uint id, int material, vec3 p) {
     if (!rmDisplacementActive(material)) return 0.0;
     return rmDisplacementN(id, material, p, rmNodeNormal(id, p));
 }
 
-// Same, with a normal the caller already computed at p.
 float rmDisplacement(uint id, int material, vec3 p, vec3 n) {
     if (!rmDisplacementActive(material)) return 0.0;
     return rmDisplacementN(id, material, p, n);
@@ -327,24 +361,52 @@ float rmDisplacement(uint id, int material, vec3 p, vec3 n) {
 
 // Bumped trilinear field. `base` receives the unbumped value (used for the
 // conservative advance outside the displacement bound); `maxDisp` is the
-// maximum |offset| this material can produce (0 = no bump).
+// maximum |offset| this material can produce (0 = no displacement).
 //
-// `waterRoot` disables the bump entirely: the water layer is a NormalBrush
-// volume whose upward faces resolve to material 0, but the raster water surface
-// only receives the Gerstner swell, never the solid material height-map
-// displacement. Applying it here shifted the flat lake surface by metres (and
-// stretched the thin shore cells into vertical water curtains) whenever
-// tessellation was enabled.
+// `waterRoot` disables the offset entirely: the water layer is a NormalBrush
+// volume whose upward faces resolve to material 0, but the water surface only
+// receives the Gerstner shading swell, never the solid material height-map
+// displacement. Applying it here shifted the flat lake surface by metres.
+//
+// DEBUG_MODE_ORIGINAL_SDF_SURFACE deliberately bypasses the offset so the
+// debug view shows the base octree isosurface in the same pass.
 float rmField(uint id, vec3 p, int material, bool waterRoot,
               out float base, out float maxDisp) {
     base = rmTrilinear(id, p);
     maxDisp = 0.0;
-    if (waterRoot || ubo.tessellationEnabled == 0u || material < 0 ||
-        !rmIsFinite(base)) return base;
+    if (waterRoot || material < 0 || !rmIsFinite(base)) return base;
+    if (ubo.debugMode == DEBUG_MODE_ORIGINAL_SDF_SURFACE) return base;
+    RmDisplacement d = rmDisplacementParams(material);
+    if (!d.enabled) return base;
+    maxDisp = d.maxAbs;
+    // Outside the band |base| > maxDisp, so F = base - disp has the sign of
+    // base and |F| >= |base| - maxDisp. Returning the base value is enough for
+    // the caller's sign/step logic and skips the height taps entirely on the
+    // long outside-band segments. Inside the band the full field is sampled.
+    if (maxDisp > 0.0 && abs(base) > maxDisp + max(rmNodeSize(id) * 2.0e-3, 1.0e-4))
+        return base;
     MaterialNamed m = materialNamed(materials[material]);
-    if (!m.mappingEnabled) return base;
-    maxDisp = 0.5 * abs(m.tessHeightScale);
-    return base - rmDisplacement(id, material, p);
+    int texType = int(rmNodes[id].hsv0.w + 0.5);
+    vec2 uvScale = rmNodes[id].hsv1.xy;
+    float disp = rmDisplacementValue(d, m, material, texType, uvScale, p,
+                                     rmNodeNormal(id, p), 0.0);
+    return base - disp;
+}
+
+// Forward declaration: the legacy displacement wavelength needs the raster
+// tessellation level, defined below.
+float rmTessLevel(uint id, int material, vec3 p);
+
+// World-space feature wavelength for the conservative in-band step. Uses the
+// same settings object as rmField and the legacy tessellation spacing.
+float rmDisplacementWavelengthForNode(uint id, int material) {
+    RmDisplacement d = rmDisplacementParams(material);
+    if (!d.enabled) return 0.0;
+    float legacyLevels = 1.0;
+    if (d.legacy) {
+        legacyLevels = clamp(rmTessLevel(id, material, rmNodeMin(id)) * 16.0, 1.0, 64.0);
+    }
+    return rmDisplacementWavelength(d, rmNodes[id].hsv1.xy, rmNodeSize(id), legacyLevels);
 }
 
 // Secant refinement of a hit accepted inside the (possibly screen-space
@@ -387,6 +449,68 @@ float rmTessLevel(uint id, int material, vec3 p) {
     float minLevel = m.minLevel * ubo.tessellationFactor;
     float maxLevel = m.maxLevel * ubo.tessellationFactor;
     return clamp((mix(minLevel, maxLevel, t) + m.tessLevel * t) / 16.0, 0.0, 4.0);
+}
+
+// True displaced normal: N = normalize(grad(F)), F = base - disp.
+//
+// The base trilinear gradient is already available (rmNodeNormal). The
+// displacement gradient is estimated with a regular-tetrahedron finite
+// difference of the scalar displacement field:
+//
+//   grad(f) ~= (3 / 4h) * sum_i (f(p + h e_i) - f(p)) e_i
+//
+// where e_i are the four unit tetra directions (sum e_i e_i^T = 4/3 I). Four
+// displacement samples give a stable, orientation-independent gradient without
+// an axis-aligned stencil. `eps` is the world sample offset: large enough to
+// avoid texture quantization noise, small enough to resolve the material's
+// declared feature band (callers pass ~half a pixel at the hit distance).
+vec3 rmDisplacedNormal(uint id, int material, vec3 p, vec3 baseNormal,
+                       float eps, out float dispAtHit) {
+    dispAtHit = 0.0;
+    if (material < 0 || !rmDisplacementActive(material)) return baseNormal;
+
+    RmDisplacement d = rmDisplacementParams(material);
+    if (!d.enabled) return baseNormal;
+    MaterialNamed m = materialNamed(materials[material]);
+    int texType = int(rmNodes[id].hsv0.w + 0.5);
+    vec2 uvScale = rmNodes[id].hsv1.xy;
+
+    const vec3 kTetra[4] = vec3[4](
+        vec3( 0.57735026919,  0.57735026919,  0.57735026919),
+        vec3( 0.57735026919, -0.57735026919, -0.57735026919),
+        vec3(-0.57735026919,  0.57735026919, -0.57735026919),
+        vec3(-0.57735026919, -0.57735026919,  0.57735026919)
+    );
+
+    // Keep the tetra stencil inside the owning cell when the hit is close to a
+    // shared face: the trilinear polynomial is defined outside, but its
+    // gradient is not the neighbour's, and mixing cells would create a normal
+    // seam exactly at the boundary.
+    vec3 mn = rmNodeMin(id);
+    vec3 cellMax = mn + vec3(rmNodeSize(id));
+    vec3 dFace = min(p - mn, cellMax - p);
+    float faceDist = max(min(min(dFace.x, dFace.y), dFace.z), 0.0);
+    float h = max(min(eps, faceDist * 0.5), 1e-6);
+    float f0 = rmDisplacementValue(d, m, material, texType, uvScale, p,
+                                   baseNormal, 0.0);
+    dispAtHit = f0;
+
+    vec3 gradDisp = vec3(0.0);
+    for (int i = 0; i < 4; ++i) {
+        vec3 q = p + kTetra[i] * h;
+        // Recompute the base normal at the sample so the triplanar weights
+        // follow the real surface orientation instead of freezing the hit
+        // basis (the field itself does the same during the march).
+        vec3 nq = rmNodeNormal(id, q);
+        float fi = rmDisplacementValue(d, m, material, texType, uvScale, q, nq, 0.0);
+        gradDisp += (fi - f0) * kTetra[i];
+    }
+    gradDisp *= 3.0 / (4.0 * h);
+
+    vec3 g = baseNormal - gradDisp;
+    float gl = dot(g, g);
+    if (!(gl > 1e-12) || isnan(gl) || isinf(gl)) return baseNormal;
+    return normalize(g);
 }
 
 // ── Hit-time brush blending (raster TCS parity) ────────────────────────────
@@ -875,6 +999,49 @@ float rmCellDepth(uint rootNode, uint node) {
     return clamp(log2(rootSize / max(nodeSize, 1e-8)) / 16.0, 0.0, 1.0);
 }
 
+// Safeguarded root refinement for a sign-change bracket [t0,t1] of the
+// displaced field. The first two iterations bisect (guaranteed bracket
+// reduction); later iterations try a secant step clamped to the bracket and
+// fall back to bisection when the secant leaves it. The loop stops on the
+// residual or interval-width tolerance, so a hard iteration cap never
+// determines ordinary precision.
+float rmRefineCrossing(uint node, vec3 ro, vec3 rd, int material, bool waterRoot,
+                       float t0, float f0, float t1, float f1, float eps,
+                       out float residual, out int iters) {
+    float lo = t0, flo = f0;
+    float hi = t1, fhi = f1;
+    residual = abs(f1);
+    iters = 0;
+    float fieldEps = max(eps * 0.05, 1.0e-6);
+    for (int i = 0; i < RM_REFINE_STEPS; ++i) {
+        if (hi - lo <= fieldEps) break;
+        float t;
+        float den = fhi - flo;
+        if (i >= 2 && abs(den) > 1.0e-12) {
+            t = hi - fhi * (hi - lo) / den;
+            if (!(t > lo && t < hi)) t = 0.5 * (lo + hi);
+        } else {
+            t = 0.5 * (lo + hi);
+        }
+        rmCount(RM_COUNTER_BISECT_EVALS);
+        float bBase, bMax;
+        float fm = rmField(node, ro + rd * t, material, waterRoot, bBase, bMax);
+        ++iters;
+        if (isnan(fm)) break;
+        if (fm > 0.0) { lo = t; flo = fm; }
+        else { hi = t; fhi = fm; }
+        residual = abs(fm);
+        if (residual <= fieldEps) break;
+    }
+    float tHit = 0.5 * (lo + hi);
+    // Final residual at the returned parameter (debug/validation). The
+    // caller's hit position uses this midpoint, not the last secant sample.
+    float bBase, bMax;
+    float fr = rmField(node, ro + rd * tHit, material, waterRoot, bBase, bMax);
+    if (!isnan(fr)) residual = abs(fr);
+    return tHit;
+}
+
 // March one layer root, stopping at tMax. Adaptive descent: the ray is
 // confined to the current cell's [t, nodeExit] interval and follows stored
 // Surface children. Empty and Solid children are skipped (neither can contain
@@ -897,22 +1064,32 @@ float rmCellDepth(uint rootNode, uint node) {
 //          horizontal faces with either sign of n.y; reject the near-vertical
 //          volume sides, which are the NormalBrush discards that used to
 //          appear as water walls.
+// Hit acceptance with the actual displaced normal. `baseNormal` is the
+// trilinear cell gradient (used to recover the undisplaced shading point);
+// `normal` is normal(grad(base - displacement)) and is what visibility,
+// lighting, AO, shadow bias and secondary rays consume.
 bool rmHitAllowed(uint node, vec3 p, vec3 rd, int material, bool waterRoot,
-                  out vec3 normal) {
-    // rmNodeNormal is already normalized; keep that single-normalization value
-    // for the consumers that previously used it directly (displacement base
-    // step and ring fallback). The visibility tests retain the historical
-    // extra normalize so their last-bit behavior is unchanged.
-    normal = rmNodeNormal(node, p);
-    if (waterRoot) return abs(normalize(normal).y) > 1.0e-3;
+                  float normalEps, out vec3 baseNormal, out vec3 normal,
+                  out float displacement) {
+    baseNormal = rmNodeNormal(node, p);
+    normal = baseNormal;
+    displacement = 0.0;
+    if (waterRoot) return abs(normalize(baseNormal).y) > 1.0e-3;
     if (material == RAYMARCH_DISCARD_BRUSH) return false;
+    if (ubo.debugMode == DEBUG_MODE_ORIGINAL_SDF_SURFACE) {
+        // The field bypasses displacement in this view; keep the visibility
+        // test on the base normal so it shows the original isosurface.
+        return dot(normalize(baseNormal), rd) < 0.0;
+    }
+    normal = rmDisplacedNormal(node, material, p, baseNormal, normalEps,
+                               displacement);
     return dot(normalize(normal), rd) < 0.0;
 }
 
 bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
                  float tMax, bool haveRootInterval, float rootT0, float rootT1,
                  out uint hitNode, out float hitT, out int hitBrush,
-                 out vec3 hitNormal, bool waterRoot) {
+                 out vec3 hitNormal, bool waterRoot, int stepBudget) {
     hitNormal = vec3(0.0);
     float t0, t1;
     if (haveRootInterval) {
@@ -958,7 +1135,8 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
     float prevT = -1.0;
     float prevD = 0.0;
 
-    for (int iter = 0; iter < RM_MAX_STEPS; ++iter) {
+    for (int iter = 0; iter < stepBudget; ++iter) {
+        ++rmDebugShadowSteps; // reset by solidShadowTrace; debug telemetry only
         // An earlier root already found a nearer hit: this march cannot
         // improve it and every candidate from here on is behind tMax.
         if (t >= tMax) return false;
@@ -1092,11 +1270,8 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
                 // rmField), so their Empty/Solid children keep the exact skip
                 // and must not fall back to the parent field.
                 int bumpBrush = rmCachedBrush(node);
-                bool bumpActive = !waterRoot
-                    && ubo.tessellationEnabled != 0u
-                    && bumpBrush >= 0
-                    && materialNamed(materials[bumpBrush]).mappingEnabled
-                    && materialNamed(materials[bumpBrush]).tessHeightScale != 0.0;
+                bool bumpActive = !waterRoot && bumpBrush >= 0 &&
+                    rmDisplacementActive(bumpBrush);
                 if (!bumpActive) {
                     t = max(cellExit, t + nudge); // nudge guards a zero-length skip
                     continue;
@@ -1135,13 +1310,23 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
             // Raster-parity visibility: solid back faces and DISCARD_BRUSH_INDEX
             // cells are not shaded; water accepts only the +Y surface (top
             // plane, from either side), not the volume sides/bottom.
-            vec3 candidateNormal;
+            float normalEps = clamp(rmPixelWorldSize(tHit) * 0.5,
+                                    nodeSize * 2.0e-4, nodeSize * 0.05);
+            vec3 candidateBase, candidateNormal;
+            float candidateDisp;
             if (rmHitAllowed(node, ro + rd * tHit, rd, material, waterRoot,
-                             candidateNormal)) {
+                             normalEps, candidateBase, candidateNormal,
+                             candidateDisp)) {
                 hitNode = node;
                 hitT = tHit;
                 hitBrush = material;
                 hitNormal = candidateNormal;
+                rmDebugIterations = iter;
+                rmDebugStep = (prevNode == node) ? abs(t - prevT) : 0.0;
+                rmDebugResidual = abs(d);
+                rmDebugRefineIters = 0;
+                rmDebugDisplacement = candidateDisp;
+                rmDebugBound = maxDisp;
                 // Preserve this hit's ancestor chain for the hit path; later
                 // root marches only overwrite it when they find a nearer hit.
                 rmHitStackDepth = depth;
@@ -1154,36 +1339,76 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
             continue;
         }
 
-        // Sphere trace. Without displacement the trilinear field is (locally)
-        // a signed distance and abs(d) * 0.5 is safe. With the tessellation
-        // bump the field is base - disp: outside |base| <= maxDisp it cannot
-        // have crossed yet, so advance by the guaranteed-positive remainder;
-        // inside that band use the material's tessellation spacing (the
-        // density the rasterizer actually resolves) so bump features are not
-        // skipped. The child-cell exit still bounds every step.
+        // Conservative sphere trace. Without displacement the trilinear field
+        // is (locally) a signed distance and |d| / L cannot cross the surface.
+        // With displacement F = base - disp:
+        //   * outside the band |base| > maxDisp, |disp| <= maxDisp, so F has
+        //     the sign of base and the guaranteed-positive remainder
+        //     (|base| - maxDisp) can be advanced safely;
+        //   * inside the band the field is not a distance field. We use the
+        //     Lipschitz estimate L <= L_base + L_disp with
+        //     L_disp ~= 2*pi*maxDisp / wavelength, and clamp the step to a
+        //     fraction of the material's declared feature wavelength. The
+        //     clamp is the practical band limit: displacement finer than the
+        //     declared frequency / pixel footprint is not resolvable and is
+        //     documented as filtered detail, not silently missed geometry.
+        // Every step is additionally bounded by the child-cell exit below.
+        float invLip = ((uint(rmNodes[node].meta.w) & RM_FLAG_PAYLOAD) != 0u)
+            ? rmNodes[node].hsv1.z
+            : 0.5;
         float stepLen;
         if (maxDisp > 0.0) {
             float safe = abs(baseD) - maxDisp;
             if (safe > eps) {
-                stepLen = max(safe * 0.5, eps);
+                // Outside the band: base's own bound is exact for F's sign.
+                stepLen = max(safe * invLip, eps);
             } else {
-                // Match the raster's actual subdivision at this distance:
-                // rmTessLevel is the TCS level / 16 it would write, so
-                // level * 16 is the vertex spacing denominator.
-                float levels = clamp(rmTessLevel(node, material, p) * 16.0, 1.0, 64.0);
-                float fineStep = max(nodeSize / levels, 1e-3);
-                stepLen = max(min(abs(d) * 0.5, fineStep), eps);            }
+                // Inside the band. `wavelength` is the world-space feature
+                // size from the material frequency / legacy tess spacing.
+                float wavelength = rmDisplacementWavelengthForNode(node, material);
+                if (!(wavelength > 0.0) || isnan(wavelength) || isinf(wavelength))
+                    wavelength = nodeSize * 0.5;
+                // Do not resolve detail below the node's stored scale or the
+                // current pixel footprint.
+                float feature = clamp(wavelength, nodeSize * 1.0e-4,
+                                      nodeSize * 0.5);
+                // Never resolve displacement below a few pixels. The step is
+                // 1/8..1/2 of `feature`, so flooring at 16 pixels keeps in-band
+                // steps at 2..8 pixels instead of dozens of sub-pixel samples
+                // (the latter can trip the GPU watchdog on large terrain).
+                // Shadow/secondary rays advance t from the hit, so the pixel
+                // footprint at the primary hit distance is the meaningful
+                // floor there; using t alone would collapse it near the hit.
+                float viewDist = length(ro - ubo.viewPosition);
+                float pixelFloor = max(rmPixelWorldSize(t),
+                                       rmPixelWorldSize(viewDist));
+                feature = max(feature, pixelFloor * 16.0);
+                float Lbase = 1.0 / max(invLip, 1.0e-3);
+                float Ldisp = 6.28318530718 * maxDisp / max(feature, 1.0e-4);
+                float L = max(Lbase + Ldisp, 1.0e-4);
+                // At least 4 samples per feature; never smaller than 1/8 of
+                // it (the bracket refinement resolves the exact crossing).
+                float stepBand = clamp(abs(d) / L, feature * 0.125,
+                                       feature * 0.5);
+                stepLen = max(stepBand, eps);
+            }
         } else {
             // Payload cache: 1/L for the node's conservative trilinear
             // Lipschitz bound (OctreeDerive.comp), so smooth cells take steps
             // up to 1.155x longer and rough cells step shorter (safer) than
             // the fixed 0.5 factor. Cells without a payload keep 0.5.
-            float invLip = ((uint(rmNodes[node].meta.w) & RM_FLAG_PAYLOAD) != 0u)
-                ? rmNodes[node].hsv1.z
-                : 0.5;
             stepLen = max(abs(d) * invLip, eps);
         }
         float tNext = min(t + stepLen, cellExit);
+        // Numerical guard: a zero/negative step would spin the bounded loop
+        // for its whole budget on one sample. Advance a hair or leave the cell.
+        if (!(tNext > t)) {
+            float tAdvance = min(t + max(eps, 1.0e-5), nodeExit);
+            if (!(tAdvance > t)) return false;
+            t = tAdvance;
+            prevNode = 0xFFFFFFFFu;
+            continue;
+        }
         float dNextBase;
         float dNextMax;
         rmCount(RM_COUNTER_FIELD_EVALS);
@@ -1197,28 +1422,30 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
             dNextMax = 0.0;
         }
 
-        // Sign change inside this cell: refine with bisection.
+        // Sign change inside this cell: safeguarded secant/bisection refine.
         if (d > 0.0 && dNext <= 0.0) {
-            float lo = t;
-            float hi = tNext;
-            for (int b = 0; b < RM_BISECT_STEPS; ++b) {
-                float mid = 0.5 * (lo + hi);
-                rmCount(RM_COUNTER_BISECT_EVALS);
-                float bBase;
-                float bMax;
-                float dm = rmField(node, ro + rd * mid, material, waterRoot,
-                                   bBase, bMax);
-                if (isnan(dm)) break;
-                if (dm > 0.0) lo = mid; else hi = mid;
-            }
-            float tHit = 0.5 * (lo + hi);
-            vec3 candidateNormal;
+            float refineResidual;
+            int refineIters;
+            float tHit = rmRefineCrossing(node, ro, rd, material, waterRoot,
+                                          t, d, tNext, dNext, eps,
+                                          refineResidual, refineIters);
+            float normalEps = clamp(rmPixelWorldSize(tHit) * 0.5,
+                                    nodeSize * 2.0e-4, nodeSize * 0.05);
+            vec3 candidateBase, candidateNormal;
+            float candidateDisp;
             if (rmHitAllowed(node, ro + rd * tHit, rd, material, waterRoot,
-                             candidateNormal)) {
+                             normalEps, candidateBase, candidateNormal,
+                             candidateDisp)) {
                 hitNode = node;
                 hitT = tHit;
                 hitBrush = material;
                 hitNormal = candidateNormal;
+                rmDebugIterations = iter;
+                rmDebugStep = stepLen;
+                rmDebugResidual = refineResidual;
+                rmDebugRefineIters = refineIters;
+                rmDebugDisplacement = candidateDisp;
+                rmDebugBound = maxDisp;
                 rmHitStackDepth = depth;
                 for (int i = 0; i < depth; ++i) rmHitStackNode[i] = stackNode[i];
                 return true;
@@ -1252,59 +1479,113 @@ struct RmHitShading {
     vec3 normal;
     RmSurfaceBlend blend;
     uint blendCell;
+    float ao;        // SDF occlusion of the displaced surface (1 = open)
+    float dispBound; // |displacement| bound (shadow bias / debug)
 };
+
+// SDF ambient occlusion of the displaced surface. Four hemisphere probes on a
+// rotated tangent basis sample the SAME field the camera march uses; a probe
+// that lands close to or inside the surface contributes occlusion. A plane
+// (field ~= distance) contributes nothing because the probe threshold is
+// below the geometric distance along a tilted ray, so only real displaced
+// overhangs / peaks darken the crevices. This is multiplied with the material
+// AO texture; it is not a replacement for it.
+float rmSdfAO(uint rootNode, uint hitNode, vec3 p, vec3 n, int material,
+              float radius) {
+    if (ubo.ambientOcclusionEnabled == 0u || ubo.displacementAOEnabled == 0u ||
+        !rmDisplacementActive(material) || !(radius > 0.0)) return 1.0;
+
+    vec3 up = abs(n.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t = normalize(cross(up, n));
+    vec3 b = cross(n, t);
+
+    float occ = 0.0;
+    float thresh = radius * 0.35;
+    for (int i = 0; i < 4; ++i) {
+        float ang = (float(i) + 0.5) * 1.57079632679;
+        vec3 dir = normalize(n * 0.8 +
+                             (cos(ang) * t + sin(ang) * b) * 0.6);
+        vec3 q = p + dir * radius;
+        bool nonSurface;
+        uint id = rmFindNodeFromStack(rootNode, hitNode, q, nonSurface);
+        if (id == RM_INVALID_NODE || nonSurface) continue;
+        int probeMat = rmRingMaterial(id, q);
+        float bBase, bMax;
+        float f = rmField(id, q, probeMat, false, bBase, bMax);
+        if (!rmIsFinite(f)) continue;
+        float o = clamp((thresh - f) / thresh, 0.0, 1.0);
+        occ += o * o;
+    }
+    return clamp(1.0 - 0.5 * occ, 0.0, 1.0);
+}
 
 RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
                                  vec3 hitPos, vec3 rd, vec3 acceptedNormal) {
     RmHitShading h;
-    // Tessellation parity: the raster TES samples the height maps at the
-    // UNDISPLACED vertex and moves it along the smooth cell normal. Recover
-    // that base point (and its normal) from the bumped hit so shading and
-    // mapping are evaluated at the same world position the raster path uses.
-    // Two fixed-point steps; the offset is small relative to the height-map
-    // feature scale, so this converges to the raster's undisplaced vertex.
-    // With tessellation off (the default) no displacement exists, so the
-    // hit-point gradient is not solved again: rmHitAllowed already computed
-    // the accepted normal at this exact point. With displacement active, that
-    // same normal feeds the base-point step and the height-map sample instead
-    // of being solved twice. A zero acceptedNormal is only a safety fallback
-    // for callers that predate the return value.
-    vec3 sdfNormal = acceptedNormal;
-    if (dot(sdfNormal, sdfNormal) <= 1e-12) sdfNormal = rmNodeNormal(node, hitPos);
-    float hitDisplacement = 0.0;
-    if (rmDisplacementActive(material)) {
-        hitDisplacement = rmDisplacement(node, material, hitPos, sdfNormal);
+    // Recover the UNDISPLACED base point for material sampling: the height map
+    // is evaluated at the base vertex and the offset is applied along the base
+    // normal. Two fixed-point steps converge for offsets small relative to the
+    // feature scale. `acceptedNormal` is the displaced normal (the true
+    // surface normal); the base normal is recomputed from the trilinear field
+    // and used ONLY for this inverse mapping, never for lighting.
+    vec3 baseNormal = rmNodeNormal(node, hitPos);
+    if (dot(baseNormal, baseNormal) <= 1e-12) {
+        baseNormal = (dot(acceptedNormal, acceptedNormal) > 1e-12)
+            ? normalize(acceptedNormal) : vec3(0.0, 1.0, 0.0);
     }
+    float hitDisplacement = rmDisplacement(node, material, hitPos, baseNormal);
     h.basePos = hitPos;
     if (hitDisplacement != 0.0) {
-        h.basePos = hitPos - sdfNormal * hitDisplacement;
+        h.basePos = hitPos - baseNormal * hitDisplacement;
         for (int i = 0; i < 2 && hitDisplacement != 0.0; ++i) {
-            sdfNormal = rmNodeNormal(node, h.basePos);
-            hitDisplacement = rmDisplacement(node, material, h.basePos, sdfNormal);
-            h.basePos = hitPos - sdfNormal * hitDisplacement;
+            baseNormal = rmNodeNormal(node, h.basePos);
+            hitDisplacement = rmDisplacement(node, material, h.basePos, baseNormal);
+            h.basePos = hitPos - baseNormal * hitDisplacement;
         }
     }
 
     // The raster material blend belongs to the base (undisplaced) cell: use
-    // that cell when it is in the table, otherwise the bumped hit's own cell.
+    // that cell when it is in the table, otherwise the hit's own cell.
     bool baseCellNonSurface;
     uint blendCell = rmFindNodeFromStack(rootNode, node, h.basePos, baseCellNonSurface);
     if (blendCell == RM_INVALID_NODE || baseCellNonSurface) blendCell = node;
     h.blend = rmBlendAtHit(rootNode, blendCell, h.basePos, hitPos, true);
 
-    // Raster fragNormal is the barycentric interpolation of the per-vertex
-    // cell normals; use the blend's normal when the ring reconstructed it and
-    // fall back to the marched cell's analytic normal otherwise. The fallback
-    // is only solved when the ring did not provide one, so the common
-    // tessellation-off hit pays no hit-point gradient at all.
-    vec3 fallbackNormal = sdfNormal;
-    if (dot(fallbackNormal, fallbackNormal) <= 1e-12) {
-        fallbackNormal = rmNodeNormal(node, hitPos);
+    // True displacement: use normal(grad(base - disp)) computed by
+    // rmDisplacedNormal at the accepted hit. The ring's per-vertex base
+    // normals are only a raster-parity fallback for the undisplaced path.
+    if (rmDisplacementActive(material)) {
+        float hitDist = length(hitPos - ubo.viewPosition);
+        float normalEps = clamp(rmPixelWorldSize(hitDist) * 0.5,
+                                rmNodeSize(node) * 2.0e-4,
+                                rmNodeSize(node) * 0.05);
+        float dispAtHit;
+        h.normal = rmDisplacedNormal(node, material, hitPos, baseNormal,
+                                     normalEps, dispAtHit);
+    } else {
+        vec3 fallbackNormal = baseNormal;
+        if (dot(fallbackNormal, fallbackNormal) <= 1e-12) {
+            fallbackNormal = rmNodeNormal(node, hitPos);
+        }
+        h.normal = (dot(h.blend.normal, h.blend.normal) > 1e-12)
+            ? normalize(h.blend.normal) : fallbackNormal;
     }
-    h.normal = (dot(h.blend.normal, h.blend.normal) > 1e-12)
-        ? normalize(h.blend.normal) : fallbackNormal;
     if (dot(h.normal, rd) > 0.0) h.normal = -h.normal; // front surface only
     h.blendCell = blendCell;
+
+    // Displacement-aware SDF AO: probe radius covers the material's offset
+    // amplitude and half a feature wavelength, clamped to the hit cell so the
+    // probes stay in the node table region the march already sampled.
+    RmDisplacement d = rmDisplacementParams(material);
+    h.dispBound = d.maxAbs;
+    h.ao = 1.0;
+    if (d.enabled) {
+        float wavelength = rmDisplacementWavelengthForNode(node, material);
+        float radius = max(d.maxAbs * 2.0, wavelength * 0.5);
+        radius = clamp(radius, rmNodeSize(node) * 5.0e-4,
+                       rmNodeSize(node) * 0.5);
+        h.ao = rmSdfAO(rootNode, node, hitPos, h.normal, material, radius);
+    }
     return h;
 }
 
@@ -1327,6 +1608,8 @@ void rmWriteFragGlobals(vec3 hitPos, RmHitShading h) {
     // Same feed the TES writes (tess levels / 16, clamped to the heat range).
     // The raster's tess levels are per base cell, not per bumped hit.
     fragTessLevel = vec3(rmTessLevel(h.blendCell, rmCachedBrush(h.blendCell), h.basePos));
+    fragSdfAO = h.ao;
+    fragDisplacementBound = h.dispBound;
 }
 
 // Front-to-back root scheduling shared by the primary march and the water
@@ -1365,15 +1648,27 @@ void rmInsertRootInterval(inout RmRootInterval iv[RM_MAX_ROOTS],
 // which is the interval the march actually samples anyway. Water roots never
 // take the material bump (rmField), so their surface AABB stays exact and also
 // keeps the march out of the empty water-volume cells.
+// True when rmRootTestBox returns the root cube interval (so the caller's
+// slab result can be reused by rmMarchRoot).
+bool rmRootBoxIsCube() {
+    return ubo.displacementEnabled != 0u || ubo.tessellationEnabled != 0u;
+}
+
 void rmRootTestBox(uint root, out vec3 mn, out vec3 mx) {
-    const bool displacedSolid = ubo.tessellationEnabled != 0u
-        && rmRoots[root].kind != 1u;
-    if (!displacedSolid) {
-        mn = rmRoots[root].surfaceMin.xyz;
-        mx = rmRoots[root].surfaceMax.xyz;
-    } else {
-        mn = rmNodeMin(rmRoots[root].node);
-        mx = mn + vec3(rmNodeSize(rmRoots[root].node));
+    // The stored surface AABB bounds the undisplaced iso-surface exactly.
+    // Displacement can move it by at most ubo.displacementMaxBound, so expand
+    // the AABB by that bound instead of falling back to the whole root cube.
+    // The expanded box still bounds every reachable displaced point, but keeps
+    // the rejection tight for camera and shadow rays.
+    const bool displacedSolid =
+        (ubo.displacementEnabled != 0u || ubo.tessellationEnabled != 0u) &&
+        rmRoots[root].kind != 1u;
+    mn = rmRoots[root].surfaceMin.xyz;
+    mx = rmRoots[root].surfaceMax.xyz;
+    if (displacedSolid) {
+        vec3 b = vec3(max(ubo.displacementMaxBound, 0.0));
+        mn -= b;
+        mx += b;
     }
 }
 
@@ -1421,8 +1716,8 @@ bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
         int brush;
         vec3 normal;
         if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, hitT,
-                        ubo.tessellationEnabled != 0u, iv[k].t0, iv[k].t1,
-                        node, t, brush, normal, false) && t < hitT) {
+                        rmRootBoxIsCube(), iv[k].t0, iv[k].t1,
+                        node, t, brush, normal, false, RM_SECONDARY_STEPS) && t < hitT) {
             hitT = t;
             hitNode = node;
             hitRoot = i;
@@ -1449,8 +1744,8 @@ bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
         int brush;
         vec3 normal;
         if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, hitT,
-                        ubo.tessellationEnabled != 0u, t0, t1,
-                        node, t, brush, normal, false) && t < hitT) {
+                        rmRootBoxIsCube(), t0, t1,
+                        node, t, brush, normal, false, RM_SECONDARY_STEPS) && t < hitT) {
             hitT = t;
             hitNode = node;
             hitRoot = i;
@@ -1472,12 +1767,37 @@ float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int cascadeHint) {
     cascadeHint = 0;
     if (ubo.shadowsEnabled == 0u) return 0.0;
 
-    vec3 rd = normalize(l);
-    vec3 ro = p + n * 0.1;
+    // Raster CSM first: it carries every non-terrain caster (vegetation, SDF
+    // objects, video layers). The terrain CSM caster writes the same displaced
+    // field, so combining the two terms keeps ordinary geometry shadowing the
+    // displaced surface while the SDF traversal supplies the terrain's own
+    // self-shadowing at camera-march precision.
+    vec3 toSun = normalize(l);
+    float ndl = max(dot(n, toSun), 0.0);
+    float csmShadow = 0.0;
+    // Preserve the historical terrain path exactly when the new displacement
+    // path is globally inactive: the old terrain march never sampled the CSM.
+    // When displacement is active the CSM carries the raster casters (and the
+    // optional raymarched terrain caster), so combine both terms.
+    if (ubo.displacementEnabled != 0u && ndl > 0.01) {
+        float bias = max(0.002 * (1.0 - ndl), 0.0005);
+        csmShadow = ShadowCalculation(fragPosLightSpace, p, bias);
+    }
+
+    rmDebugShadowSteps = 0;
+    vec3 rd = toSun;
+    // Normal-based bias scaled by the hit's displacement bound plus a small
+    // ray-direction term, so a displaced peak cannot shadow its own surface.
+    float bias = max(0.1, fragDisplacementBound * 0.05);
+    vec3 ro = p + n * bias + rd * (bias * 0.05);
     vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
     // Terrain self-shadowing is a macro effect; cap the ray to keep grazing
     // sun rays from marching the entire domain per pixel.
-    const float maxT = min(max(ubo.farPlane, 1.0), 4096.0);
+    // Displaced-band shadow rays are expensive; 1 km is plenty for terrain
+    // self-shadowing at the reference scene scale.
+    const float maxT = ubo.displacementEnabled != 0u
+        ? min(max(ubo.farPlane, 1.0), 1024.0)
+        : min(max(ubo.farPlane, 1.0), 4096.0);
 
     // Front-to-back root intervals among SOLID roots only: water is
     // transparent and must not cast an opaque shadow on the terrain.
@@ -1502,7 +1822,7 @@ float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int cascadeHint) {
         vec3 normal;
         if (rmMarchRoot(rmRoots[iv[k].root].node, ro, rd, invRd, maxT,
                         true, max(iv[k].t0, 0.0), min(iv[k].t1, maxT),
-                        node, t, brush, normal, false) && t > 0.0) {
+                        node, t, brush, normal, false, RM_SHADOW_STEPS) && t > 0.0) {
             return 1.0;
         }
     }
@@ -1520,11 +1840,13 @@ float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int cascadeHint) {
         vec3 normal;
         if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, maxT,
                         true, max(t0, 0.0), min(t1, maxT),
-                        node, t, brush, normal, false) && t > 0.0) {
+                        node, t, brush, normal, false, RM_SHADOW_STEPS) && t > 0.0) {
             return 1.0;
         }
     }
-    return 0.0;
+    // No SDF occluder: the raster CSM term still applies (vegetation / SDF /
+    // video casters), so a lit terrain point is not shadowed by stale maps.
+    return clamp(csmShadow, 0.0, 1.0);
 }
 
 // ── Ray-marched water surface waves ───────────────────────────────────────
@@ -1785,8 +2107,10 @@ void main() {
         int brush;
         vec3 normal;
         if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, nearestT,
-                        ubo.tessellationEnabled != 0u, iv[k].t0, iv[k].t1,
-                        node, t, brush, normal, rmRoots[i].kind == 1u) &&
+                        rmRootBoxIsCube(), iv[k].t0, iv[k].t1,
+                        node, t, brush, normal, rmRoots[i].kind == 1u,
+                        (ubo.displacementEnabled != 0u && rmRoots[i].kind != 1u)
+                            ? RM_DISPLACEMENT_STEPS : RM_MAX_STEPS) &&
             t < nearestT) {
             nearestT = t;
             nearestNode = node;
@@ -1813,8 +2137,10 @@ void main() {
         int brush;
         vec3 normal;
         if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, nearestT,
-                        ubo.tessellationEnabled != 0u, t0, t1,
-                        node, t, brush, normal, rmRoots[i].kind == 1u) &&
+                        rmRootBoxIsCube(), t0, t1,
+                        node, t, brush, normal, rmRoots[i].kind == 1u,
+                        (ubo.displacementEnabled != 0u && rmRoots[i].kind != 1u)
+                            ? RM_DISPLACEMENT_STEPS : RM_MAX_STEPS) &&
             t < nearestT) {
             nearestT = t;
             nearestNode = node;
@@ -1836,11 +2162,12 @@ void main() {
     vec3 hitPos = ro + rd * nearestT;
 
     // Water hits use the analytic SDF normal directly: a water node is not a
-    // terrain material cell, so the tessellation displacement and brush-blend
-    // machinery (which follows a terrain height map) must not perturb its
-    // interface normal. Keeping the water normal clean is what makes the
+    // terrain material cell, so the displacement and brush-blend machinery
+    // (which follows a terrain height map) must not perturb its interface
+    // normal. Keeping the water normal clean is what makes the
     // reflection/refraction directions stable pixel-to-pixel.
     vec3 normal;
+    RmHitShading solidHit;
     if (isWater) {
         // Reuse the normal rmHitAllowed already solved at this exact hit.
         vec3 sdfNormal = (dot(nearestNormal, nearestNormal) > 1e-12)
@@ -1879,14 +2206,76 @@ void main() {
         // undisplaced base point the raster TES samples.
         int material = max(nearestBrush, 0);
         uint rootNode = rmRoots[nearestRoot].node;
-        RmHitShading hit = rmResolveHitShading(rootNode, nearestNode, material,
-                                               hitPos, rd, nearestNormal);
-        normal = hit.normal;
-        rmWriteFragGlobals(hitPos, hit);
+        solidHit = rmResolveHitShading(rootNode, nearestNode, material,
+                                       hitPos, rd, nearestNormal);
+        normal = solidHit.normal;
+        rmWriteFragGlobals(hitPos, solidHit);
     }
 
     vec4 clip = ubo.viewProjection * vec4(hitPos, 1.0);
     gl_FragDepth = (clip.w > 1e-6) ? clamp(clip.z / clip.w, 0.0, 1.0) : 1.0;
+
+    // ── True-displacement diagnostics ─────────────────────────────────────
+    // These views are produced by the same march that shaded the hit, so they
+    // show the actual traversal values (not a parallel approximation).
+    if (!isWater && ubo.debugMode >= DEBUG_MODE_ORIGINAL_SDF_SURFACE &&
+        ubo.debugMode <= DEBUG_MODE_DISPLACEMENT_SHADOW) {
+        float bound = max(solidHit.dispBound, 1.0e-6);
+        int mode = ubo.debugMode;
+        if (mode == DEBUG_MODE_ORIGINAL_SDF_SURFACE) {
+            vec3 baseN = rmNodeNormal(nearestNode, hitPos);
+            outColor = vec4(normalize(baseN) * 0.5 + 0.5, 1.0);
+            return;
+        }
+        if (mode == DEBUG_MODE_DISPLACEMENT_MAGNITUDE) {
+            float s = clamp(rmDebugDisplacement / bound, -1.0, 1.0);
+            vec3 c = (s >= 0.0) ? mix(vec3(0.5), vec3(0.0, 1.0, 0.0), s)
+                                : mix(vec3(0.5), vec3(1.0, 0.0, 0.0), -s);
+            outColor = vec4(c, 1.0);
+            return;
+        }
+        if (mode == DEBUG_MODE_DISPLACEMENT_BOUNDS) {
+            // Green: the hit sits inside the conservative |disp| band.
+            // Red: outside (the base distance property governs the step).
+            float inside = step(abs(rmDebugDisplacement), bound + 1.0e-4);
+            outColor = vec4(1.0 - inside, inside, 0.0, 1.0);
+            return;
+        }
+        if (mode == DEBUG_MODE_DISPLACED_NORMALS) {
+            outColor = vec4(normalize(normal) * 0.5 + 0.5, 1.0);
+            return;
+        }
+        if (mode == DEBUG_MODE_DISPLACEMENT_ITERATIONS) {
+            float t = clamp(float(rmDebugIterations) / 128.0, 0.0, 1.0);
+            vec3 heat = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), clamp(t * 2.0, 0.0, 1.0));
+            heat = mix(heat, vec3(1.0, 0.0, 0.0), clamp(t * 2.0 - 1.0, 0.0, 1.0));
+            outColor = vec4(heat, 1.0);
+            return;
+        }
+        if (mode == DEBUG_MODE_DISPLACEMENT_STEP) {
+            float px = rmDebugStep / max(rmPixelWorldSize(nearestT), 1.0e-6);
+            float t = clamp(px / 16.0, 0.0, 1.0);
+            vec3 heat = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), clamp(t * 2.0, 0.0, 1.0));
+            heat = mix(heat, vec3(1.0, 0.0, 0.0), clamp(t * 2.0 - 1.0, 0.0, 1.0));
+            outColor = vec4(heat, 1.0);
+            return;
+        }
+        if (mode == DEBUG_MODE_DISPLACEMENT_RESIDUAL) {
+            float eps = rmHitEpsilon(rmNodeSize(nearestNode), nearestT);
+            float t = clamp(rmDebugResidual / max(eps, 1.0e-6), 0.0, 1.0);
+            vec3 heat = mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), t);
+            outColor = vec4(heat, 1.0);
+            return;
+        }
+        if (mode == DEBUG_MODE_DISPLACEMENT_SHADOW) {
+            int hint;
+            float shadow = solidShadowTrace(hitPos, normalize(normal),
+                                            normalize(-ubo.lightDirection), hint);
+            float steps = clamp(float(rmDebugShadowSteps) / 128.0, 0.0, 1.0);
+            outColor = vec4(steps, shadow, 0.0, 1.0);
+            return;
+        }
+    }
 
     // Per-layer SDF inspection: tint the raymarched isosurface with the owning
     // layer's hue and overlay the leaf cell that produced the hit. This view

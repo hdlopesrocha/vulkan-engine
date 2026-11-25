@@ -105,6 +105,41 @@ void OctreeRaymarchRenderer::init(VulkanApp* app) {
         pipeline_ = pipe;
         pipelineLayout_ = layout;
 
+        // CSM terrain caster: same fullscreen triangle, set layout, push range
+        // and pipeline layout; only the fragment shader and attachment formats
+        // differ (EVSM RG32F color + D32 depth). The caster writes the actual
+        // displaced hit depth and EVSM moments so rasterized receivers sample
+        // the terrain through their existing CSM path.
+        try {
+            ShaderStage shadowFragStage(
+                app->getOrCreateShaderModule(
+                    "shaders/renderer/octree/OctreeRaymarchShadow.frag.spv"),
+                VK_SHADER_STAGE_FRAGMENT_BIT);
+            GraphicsPipelineConfig shadowCfg{};
+            shadowCfg.cullMode = VK_CULL_MODE_NONE;
+            shadowCfg.depthTestEnable = true;
+            shadowCfg.depthWriteEnable = true;
+            shadowCfg.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+            shadowCfg.colorFormats = { VK_FORMAT_R32G32_SFLOAT };
+            shadowCfg.depthFormat = VK_FORMAT_D32_SFLOAT;
+            shadowCfg.depthBiasEnable = false;
+            shadowPipeline_ = app->createGraphicsPipelineWithLayout(
+                { vertStage.info, shadowFragStage.info },
+                std::vector<VkVertexInputBindingDescription>{},
+                std::vector<VkVertexInputAttributeDescription>{},
+                setLayouts, &pushRange, shadowCfg, pipelineLayout_);
+            shadowFragStage.info.module = VK_NULL_HANDLE;
+        } catch (const std::exception& e) {
+            std::cerr << "[OctreeRaymarchRenderer] CSM caster shader unavailable ("
+                      << e.what() << "); terrain will only self-shadow via the "
+                         "camera march." << std::endl;
+            shadowPipeline_ = VK_NULL_HANDLE;
+        }
+
+        std::cout << "[OctreeRaymarchRenderer] pipeline=" << pipeline_
+                  << " layout=" << pipelineLayout_
+                  << " shadowPipeline=" << shadowPipeline_ << std::endl;
+
         // The app owns the modules; do not destroy them with the stage holder.
         vertStage.info.module = VK_NULL_HANDLE;
         fragStage.info.module = VK_NULL_HANDLE;
@@ -209,6 +244,7 @@ void OctreeRaymarchRenderer::cleanup(VulkanApp* app) {
     // renderers).
     setLayout_ = VK_NULL_HANDLE;
     pipeline_ = VK_NULL_HANDLE;
+    shadowPipeline_ = VK_NULL_HANDLE;
     pipelineLayout_ = VK_NULL_HANDLE;
     maxNodes_ = 0;
 }
@@ -518,6 +554,71 @@ void OctreeRaymarchRenderer::draw(VkCommandBuffer cmd, VulkanApp* app,
     pc.tableVersion = static_cast<uint32_t>(rev.version);
     pc.nodeCount = rev.nodeCount;
     pc.flags = 0u;
+    vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc), &pc);
+
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+}
+
+void OctreeRaymarchRenderer::recordShadowHostBarrier(VkCommandBuffer cmd) {
+    // Same publish as recordHostWriteBarrier(): the node/root buffers were
+    // rewritten on the host after the frame slot's fence, and the shadow
+    // cascade fragment shader reads them.
+    recordHostWriteBarrier(cmd);
+}
+
+void OctreeRaymarchRenderer::recordShadowCascade(
+    VkCommandBuffer cmd, uint32_t frameIndex, VkDescriptorSet mainSet,
+    VkDescriptorSet brushSet, const glm::mat4& invLightSpace,
+    uint32_t shadowMapSize) {
+    const uint32_t fi = frameIndex % RAYMARCH_FRAMES;
+    if (cmd == VK_NULL_HANDLE || shadowPipeline_ == VK_NULL_HANDLE ||
+        pipelineLayout_ == VK_NULL_HANDLE || sets_[fi] == VK_NULL_HANDLE ||
+        mainSet == VK_NULL_HANDLE || brushSet == VK_NULL_HANDLE ||
+        shadowMapSize == 0 ||
+        slotRevision_[fi] < 0 ||
+        static_cast<size_t>(slotRevision_[fi]) >= revisions_.size())
+        return;
+    const SharedRevision& rev = revisions_[slotRevision_[fi]];
+    if (rev.rootCount == 0 || rev.node.buffer == VK_NULL_HANDLE ||
+        rev.root.buffer == VK_NULL_HANDLE)
+        return;
+
+    // Bind unconditionally: the shadow cascade command buffer binds the raster
+    // EVSM pipeline immediately before this pass, and the shared
+    // CommandBufferState may be reused across producers. A missed caster bind
+    // would leave the EVSM pipeline active while the descriptors below are
+    // bound with this pipeline layout (VUID-vkCmdDraw-None-08600).
+    // Do NOT touch cmdState here: it belongs to a different producer (the
+    // octree renderer's own solid task) and the shadow task may run
+    // concurrently. The explicit bind above is self-contained.
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(shadowMapSize);
+    viewport.height = static_cast<float>(shadowMapSize);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {shadowMapSize, shadowMapSize};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    VkDescriptorSet bindSets[3] = { mainSet, brushSet, sets_[fi] };
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipelineLayout_, 0, 3, bindSets, 0, nullptr);
+
+    PushConstants pc{};
+    pc.viewport = glm::vec4(static_cast<float>(shadowMapSize),
+                            static_cast<float>(shadowMapSize), 0.0f, 0.0f);
+    pc.rootCount = rev.rootCount;
+    pc.tableVersion = static_cast<uint32_t>(rev.version);
+    pc.nodeCount = rev.nodeCount;
+    pc.flags = 1u; // shadow caster variant marker
+    pc.shadowInvLightSpace = invLightSpace;
     vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
 

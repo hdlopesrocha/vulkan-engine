@@ -820,6 +820,11 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     // The shadow pass draws solid/vegetation geometry; the brush preview is an
     // independent offscreen pass and is wired directly from MyApp.
     if (shadowMapper) {
+        // The ray-marched terrain caster needs the shared node table (owned by
+        // octreeRaymarchRenderer) and the per-frame brush set for the shared
+        // three-set pipeline layout.
+        shadowMapper->setOctreeRaymarchRenderer(octreeRaymarchRenderer.get(),
+                                                brushRenderer.get());
         shadowMapper->setSceneRenderers(solidRenderer.get(),
                                         vegetationRenderer.get(), sdfRenderer.get());
     }

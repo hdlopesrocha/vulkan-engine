@@ -45,6 +45,15 @@ MaterialNamed materialNamed(Material m) {
     n.textureIndex = int(m.layerParams.y + (m.layerParams.y >= 0.0 ? 0.5 : -0.5));
     n.blendMode = int(m.layerParams.w + 0.5);
     n.mappingOrigin = m.mappingOrigin;
+    n.displacementAmplitude = m.displacementParams.x;
+    n.displacementFrequency = m.displacementParams.y;
+    n.displacementOffset = m.displacementParams.z;
+    n.displacementStrength = m.displacementParams.w;
+    // The two reserved floats keep the packed Material at one extra vec4:
+    // tessLevelParams.w = displacement bounds (0 = auto),
+    // layerParams.z      = displacement texture layer (-1 = material's own).
+    n.displacementBounds = m.tessLevelParams.w;
+    n.displacementTexture = int(m.layerParams.z + (m.layerParams.z >= 0.0 ? 0.5 : -0.5));
     return n;
 }
 

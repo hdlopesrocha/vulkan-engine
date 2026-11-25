@@ -846,6 +846,43 @@ public:
             }
         }
 
+        // Headless true-displacement bring-up: VULKAN_DISPLACEMENT=1 applies
+        // the new material path to every mapping-enabled material with one
+        // amplitude/frequency/strength set. Used by the displacement test /
+        // benchmark script; the interactive path edits the same fields in the
+        // Textures widget.
+        if (const char* env = std::getenv("VULKAN_DISPLACEMENT")) {
+            if (env[0] != '0') {
+                auto envFloat = [](const char* name, float fallback) {
+                    if (const char* v = std::getenv(name)) return static_cast<float>(std::atof(v));
+                    return fallback;
+                };
+                const float amp = envFloat("VULKAN_DISPLACEMENT_AMP", 4.0f);
+                const float freq = envFloat("VULKAN_DISPLACEMENT_FREQ", 1.0f);
+                const float strength = envFloat("VULKAN_DISPLACEMENT_STRENGTH", 1.0f);
+                const float offset = envFloat("VULKAN_DISPLACEMENT_OFFSET", 0.0f);
+                const float bounds = envFloat("VULKAN_DISPLACEMENT_BOUNDS", 0.0f);
+                const char* texEnv = std::getenv("VULKAN_DISPLACEMENT_TEXTURE");
+                const int dispTexture = texEnv ? std::atoi(texEnv) : -1;
+                size_t applied = 0;
+                for (MaterialProperties& m : materials) {
+                    if (!m.mappingMode) continue;
+                    m.displacementAmplitude = amp;
+                    m.displacementFrequency = freq;
+                    m.displacementOffset = offset;
+                    m.displacementStrength = strength;
+                    m.displacementBounds = bounds;
+                    m.displacementTexture = dispTexture;
+                    ++applied;
+                }
+                std::cout << "[MyApp] true displacement: " << applied
+                          << " mapping materials, amp=" << amp
+                          << " freq=" << freq << " strength=" << strength
+                          << " offset=" << offset << " bounds=" << bounds
+                          << " texture=" << dispTexture << std::endl;
+            }
+        }
+
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
         for (size_t i = 0; i < materialCount; ++i) materialManager.update(i, materials[i], this);
@@ -1240,10 +1277,39 @@ public:
             }
         }
 
+        // Displacement test scene: a deterministic close view of the slab and
+        // sphere unless the caller supplied VULKAN_CAMERA.
+        if (std::getenv("VULKAN_DISPLACEMENT_TEST") != nullptr) {
+            // Clean deterministic capture: no particles/droplets/vegetation
+            // layered over the displaced slab and sphere.
+            settings.windParticlesEnabled = false;
+            settings.dropletsEnabled = false;
+            settings.vegetationEnabled = false;
+            settings.cloudsEnabled = false;
+            if (std::getenv("VULKAN_CAMERA") == nullptr) {
+                // Math::eulerToQuat(0,0,0) looks along -Z; -90 deg yaw turns
+                // that toward +X, where the slab/sphere sit from this camera.
+                camera = Camera(glm::vec3(-800.0f, 320.0f, 0.0f),
+                                Math::eulerToQuat(-90.0f, -15.0f, 0.0f));
+                std::cout << "[MyApp] displacement test camera: (-800, 320, 0)" << std::endl;
+            }
+        }
         // Headless A/B switches for layer isolation (diagnostics only): each
         // forces the matching Settings toggle off/on before the first frame.
         if (std::getenv("VULKAN_NO_SOLID") != nullptr) settings.renderSolid = false;
         if (std::getenv("VULKAN_NO_VEG") != nullptr) settings.vegetationEnabled = false;
+        if (std::getenv("VULKAN_NO_SHADOWS") != nullptr) settings.enableShadows = false;
+        // True-displacement A/B switches for headless runs.
+        if (const char* env = std::getenv("VULKAN_DISPLACEMENT")) {
+            if (env[0] == '0') settings.displacementEnabled = false;
+            else settings.displacementEnabled = true;
+        }
+        if (const char* env = std::getenv("VULKAN_DISPLACEMENT_AO"))
+            settings.displacementAOEnabled = env[0] != '0';
+        if (const char* env = std::getenv("VULKAN_DISPLACEMENT_CASTER"))
+            settings.displacementShadowCasterEnabled = env[0] != '0';
+        if (std::getenv("VULKAN_NO_TERRAIN_SHADOWS") != nullptr)
+            settings.displacementShadowCasterEnabled = false;
         // VULKAN_OCTREE_SCREEN_EPS=<px>: A/B capture of the
         // screen-space hit tolerance. 0 keeps the world-space epsilon.
         if (const char* env = std::getenv("VULKAN_OCTREE_SCREEN_EPS")) {
@@ -2260,6 +2326,37 @@ public:
         uboStatic.tessellationEnabled = settings.tessellationEnabled ? 1u : 0u;
         // Screen-space octree raymarch hit tolerance (0 = off, see Settings).
         uboStatic.raymarchScreenEps = settings.octreeRaymarchScreenEps;
+        // The new path is only globally active when at least one uploaded
+        // material actually configures it. This keeps the default renderer
+        // (no material displacement) bit-identical to the old path: the root
+        // rejection box stays the stored surface AABB and no extra AO /
+        // shadow-caster work is scheduled.
+        bool anyMaterialDisplacement = false;
+        float maxMaterialDisplacementBound = 0.0f;
+        for (const MaterialProperties& m : materials) {
+            if (m.displacementStrength > 0.0f && m.displacementAmplitude != 0.0f) {
+                anyMaterialDisplacement = true;
+                float nmax = std::max(std::abs(-0.5f + m.displacementOffset),
+                                      std::abs(0.5f + m.displacementOffset));
+                float configured = m.displacementBounds > 0.0f
+                    ? m.displacementBounds
+                    : std::abs(m.displacementAmplitude) * m.displacementStrength;
+                maxMaterialDisplacementBound = std::max(
+                    maxMaterialDisplacementBound,
+                    std::min(configured,
+                             std::abs(m.displacementAmplitude) * m.displacementStrength * nmax));
+            } else if (settings.tessellationEnabled && m.mappingMode) {
+                maxMaterialDisplacementBound = std::max(
+                    maxMaterialDisplacementBound, 0.5f * std::abs(m.tessHeightScale));
+            }
+        }
+        uboStatic.displacementEnabled =
+            (settings.displacementEnabled && anyMaterialDisplacement) ? 1u : 0u;
+        uboStatic.displacementAOEnabled =
+            (settings.displacementAOEnabled && anyMaterialDisplacement) ? 1u : 0u;
+        uboStatic.displacementShadowCaster =
+            (settings.displacementShadowCasterEnabled && anyMaterialDisplacement) ? 1u : 0u;
+        uboStatic.displacementMaxBound = maxMaterialDisplacementBound;
         uboStatic.nearPlane = settings.nearPlane;
         uboStatic.farPlane = settings.farPlane;
         uboStatic.normalMappingEnabled = settings.normalMappingEnabled ? 1u : 0u;
@@ -3541,7 +3638,9 @@ public:
         const bool contentBusy = contentTreeLocked ||
             contentStreaming_.load(std::memory_order_acquire);
 
-        if (ImGui::BeginMainMenuBar()) {
+        // VULKAN_HIDE_UI also hides the menu bar for clean scene captures.
+        static const bool hideUiMenu = std::getenv("VULKAN_HIDE_UI") != nullptr;
+        if (!hideUiMenu && ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Generate Map", nullptr, false, !contentBusy))
                     generateMapPending = true;
@@ -3932,12 +4031,16 @@ public:
 
         // Render all widgets. S2: the octree explorer walks raw nodes without
         // the tree lock; skip it while the content worker is building.
-        if (contentTreeLocked) {
-            std::vector<Widget*> skip;
-            if (octreeExplorerWidget) skip.push_back(octreeExplorerWidget.get());
-            widgetManager.renderAllExcept(skip);
-        } else {
-            widgetManager.renderAll();
+        // VULKAN_HIDE_UI=1 keeps the 3D scene only (headless capture/A-B).
+        static const bool hideUiForCapture = std::getenv("VULKAN_HIDE_UI") != nullptr;
+        if (!hideUiForCapture) {
+            if (contentTreeLocked) {
+                std::vector<Widget*> skip;
+                if (octreeExplorerWidget) skip.push_back(octreeExplorerWidget.get());
+                widgetManager.renderAllExcept(skip);
+            } else {
+                widgetManager.renderAll();
+            }
         }
 
         // Music analysis runs even when the widget window is hidden, then
@@ -5881,6 +5984,10 @@ void MyApp::startLocalContentLoad(bool fromFile, std::string path) {
                     contentHasSettings_ = true;
                     std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '"
                               << path << "'\n";
+                } else if (std::getenv("VULKAN_DISPLACEMENT_TEST") != nullptr) {
+                    DisplacementTestLoader loader;
+                    world->scene().loadScene(loader, ups, dels);
+                    std::cout << "[MyApp::generateMap] displacement test scene constructed\n";
                 } else {
                     MainSceneLoader loader;
                     loader.setVideoBrushIndex(videoIdx);

@@ -14,6 +14,10 @@ struct Material {
     vec4 roughnessAOParams; // x = roughnessFactor, y = aoFactor, z = useAO (1.0/0.0)
     vec4 layerParams;      // x = MaterialKind, y = textureIndex (-1 = own), z reserved, w = MaterialBlendMode
     vec4 mappingOrigin;    // xyz = Angular sphere center, w = radius
+    // True raymarched displacement (independent of tessellation):
+    // x = signed amplitude (world units), y = frequency / UV multiplier,
+    // z = normalized height offset, w = strength [0..1].
+    vec4 displacementParams;
 };
 
 #endif // MATERIAL_GLSL

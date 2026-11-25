@@ -158,6 +158,11 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
     float ao1 = w.y > 0.0 ? computeTriplanarAODominant(mw1, texIndices.y, uv1X, uv1Y, uv1Z) : 0.0;
     float ao2 = w.z > 0.0 ? computeTriplanarAODominant(mw2, texIndices.z, uv2X, uv2Y, uv2Z) : 0.0;
     float ambientOcclusion = clamp(ao0 * w.x + ao1 * w.y + ao2 * w.z, 0.0, 1.0);
+    // Displacement-aware SDF occlusion supplied by the octree raymarch
+    // (fragSdfAO is declared by OctreeRaymarch.frag; the raster path leaves it
+    // at 1). It only affects the ambient term through the material AO gate
+    // below, exactly like the texture channel.
+    ambientOcclusion *= clamp(fragSdfAO, 0.0, 1.0);
 
     // Lighting calculation
     vec3 toLight = -normalize(ubo.lightDirection);

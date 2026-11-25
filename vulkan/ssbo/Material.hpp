@@ -18,8 +18,15 @@ struct Material {
     glm::vec4 layerParams;
     // Angular coordinate origin: xyz = sphere center, w = radius.
     glm::vec4 mappingOrigin;
+    // True raymarched displacement controls (independent of tessellation).
+    // x = signed amplitude in world units (0 disables the new path),
+    // y = frequency / UV-scale multiplier (>0), z = signed height offset
+    // (normalized, 0.5 = neutral), w = strength [0..1] (0 disables).
+    // Legacy tessellation displacement stays controlled by mappingParams
+    // (mappingEnabled + tessHeightScale) and the global tessellation toggle.
+    glm::vec4 displacementParams;
 };
-static_assert(sizeof(Material) == 128, "Material must be 128 bytes");
+static_assert(sizeof(Material) == 144, "Material must be 144 bytes");
 static_assert(offsetof(Material, materialFlags) == 0, "materialFlags offset");
 static_assert(offsetof(Material, mappingParams) == 16, "mappingParams offset");
 static_assert(offsetof(Material, specularParams) == 32, "specularParams offset");
@@ -28,3 +35,4 @@ static_assert(offsetof(Material, tessLevelParams) == 64, "tessLevelParams offset
 static_assert(offsetof(Material, roughnessAOParams) == 80, "roughnessAOParams offset");
 static_assert(offsetof(Material, layerParams) == 96, "layerParams offset");
 static_assert(offsetof(Material, mappingOrigin) == 112, "mappingOrigin offset");
+static_assert(offsetof(Material, displacementParams) == 128, "displacementParams offset");

@@ -6,6 +6,9 @@
 #include "../water/WaterRenderer.hpp"
 #include "../vegetation/VegetationRenderer.hpp"
 #include "../sdf/SdfRenderer.hpp"
+#include "../brush/BrushSdfRenderer.hpp"
+#include "../octree/OctreeRaymarchRenderer.hpp"
+#include <glm/gtc/matrix_inverse.hpp>
 
 #include "../../core/VulkanApp.hpp"
 #include "../../pipeline/ShaderStage.hpp"
@@ -33,6 +36,12 @@ void ShadowRenderer::setSceneRenderers(SolidRenderer* solid,
     solidRenderer_ = solid;
     vegetationRenderer_ = vegetation;
     sdfRenderer_ = sdf;
+}
+
+void ShadowRenderer::setOctreeRaymarchRenderer(OctreeRaymarchRenderer* terrain,
+                                               BrushSdfRenderer* brush) {
+    terrainRenderer_ = terrain;
+    brushRenderer_ = brush;
 }
 
 void ShadowRenderer::createStagingBuffers(VulkanApp* app, size_t frameCount) {
@@ -168,6 +177,8 @@ void ShadowRenderer::createShadowPipeline(VulkanApp* app) {
     );
     shadowPipeline = pipeline;
     shadowPipelineLayout = layout;
+    std::cout << "[ShadowRenderer] shadowPipeline=" << shadowPipeline.handle
+              << " layout=" << shadowPipelineLayout.handle << std::endl;
     // No-tessellation twin (perf report 21 C1): same EVSM config, SOLID_NO_TESS
     // vertex shader, no TCS/TES. Reuses shadowPipelineLayout (identical
     // setLayouts), so no duplicate layout is created.
@@ -881,6 +892,11 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
         RendererUtils::BarrierStats::noteBarrier(0);
     }
 
+    // Publish this frame's host-written octree node/root buffers before the
+    // terrain caster samples them. Must be recorded outside dynamic rendering.
+    if (terrainRenderer_ && renderSolid && uboStatic.displacementShadowCaster != 0u)
+        terrainRenderer_->recordShadowHostBarrier(cmd);
+
     beginShadowPass(app, cmd, cascadeIndex);
 
     VkPipelineLayout layout = getShadowPipelineLayout();
@@ -916,6 +932,19 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
     if (sdfRenderer_) {
         const float sdfTime = sdfRenderer_->getTime();
         sdfRenderer_->drawShadowCascade(cmd, cascadeIndex, lsMatrix, sdfTime);
+    }
+
+    // Raymarched displaced terrain caster. It writes the actual displaced
+    // surface depth (same field as the camera pass), so vegetation / SDF /
+    // video receivers sample terrain shadows through their unchanged CSM
+    // path. Drawn last so the depth test resolves against every raster caster.
+    if (terrainRenderer_ && brushRenderer_ && renderSolid &&
+        uboStatic.displacementShadowCaster != 0u) {
+        VkDescriptorSet brushSet = brushRenderer_->getParamsDescriptorSet(frameIdx);
+        const glm::mat4 invLightSpace = glm::inverse(lsMatrix);
+        terrainRenderer_->recordShadowCascade(cmd, frameIdx, ds, brushSet,
+                                              invLightSpace,
+                                              shadowMapSizes[cascadeIndex]);
     }
 
     endShadowPass(app, cmd, cascadeIndex);

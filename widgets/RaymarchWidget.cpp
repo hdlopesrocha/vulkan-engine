@@ -95,6 +95,37 @@ void RaymarchWidget::render() {
                 "displaced surface. Off: the surface stays undisplaced.");
         }
         {
+            bool disp = settings->displacementEnabled;
+            ImGui::PushID("TrueDisplacement##octree");
+            if (ImGui::Checkbox("True displacement master", &disp))
+                settings->displacementEnabled = disp;
+            ImGui::PopID();
+            ImGuiComponents::TooltipOnHover(
+                "Master gate for the per-material true displacement path. The material "
+                "must also set a non-zero displacement amplitude/strength (Textures "
+                "widget). Legacy tessellation displacement is separate.");
+            bool ao = settings->displacementAOEnabled;
+            ImGui::PushID("DisplacementAO##octree");
+            if (ImGui::Checkbox("Displacement SDF ambient occlusion", &ao))
+                settings->displacementAOEnabled = ao;
+            ImGui::PopID();
+            ImGuiComponents::TooltipOnHover(
+                "Adds a small hemisphere SDF occlusion term evaluated on the displaced "
+                "surface (multiplied with the material AO texture). Only runs when AO "
+                "is enabled and the hit material uses displacement.");
+            bool caster = settings->displacementShadowCasterEnabled;
+            ImGui::PushID("DisplacementShadowCaster##octree");
+            if (ImGui::Checkbox("Raymarch terrain into CSM", &caster))
+                settings->displacementShadowCasterEnabled = caster;
+            ImGui::PopID();
+            ImGuiComponents::TooltipOnHover(
+                "Opt-in: raymarches the displaced terrain into every CSM cascade so "
+                "rasterized geometry (vegetation, SDF objects, video layers) receives "
+                "terrain shadows. This is a fullscreen 2048^2 + 1024^2 + 512^2 march "
+                "per frame and is expensive on integrated GPUs; terrain self-shadowing "
+                "does not require it. Camera and shadow passes use the same field.");
+        }
+        {
             ImGuiComponents::FieldLabel("SS hit epsilon",
                 "Screen-space hit tolerance in pixels (0 = off). 0.25 removes "
                 "over-resolution at distance and on grazing rays; hit positions "

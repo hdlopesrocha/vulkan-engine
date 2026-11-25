@@ -32,6 +32,14 @@ struct MaterialNamed {
     int textureIndex;
     int blendMode;
     vec4 mappingOrigin;
+    // True displacement (new path). `displacementEnabled` is true when either
+    // this path is configured or the legacy tessellation bump is active.
+    float displacementAmplitude;
+    float displacementFrequency;
+    float displacementOffset;
+    float displacementStrength;
+    float displacementBounds;   // 0 = use |amplitude| * strength
+    int displacementTexture;    // -1 = material's own height layer
 };
 
 #endif // MATERIAL_NAMED_GLSL

@@ -1,7 +1,7 @@
 #ifndef UNIFORM_OBJECT_GLSL
 #define UNIFORM_OBJECT_GLSL
 
-// Canonical scene UBO (std140, 448 B). Single definition shared with the CPU:
+// Canonical scene UBO (std140, 464 B). Single definition shared with the CPU:
 // vulkan/ubo/UniformObject.hpp — same names, fields and offsets.
 // Offset table (verified against the C++ static_asserts):
 //   viewProjection 0, invViewProjection 64, lightSpaceMatrix 128,
@@ -13,8 +13,9 @@
 //   tessFarDist 396, tessellationFactor 400, isShadowPass 404,
 //   tessellationEnabled 408, nearPlane 412, farPlane 416,
 //   brushTextureIndex 420, brushMode 424, brushPhase 428, brushHsv 432,
-//   raymarchScreenEps 444 (occupies the former std140 tail padding).
-// Block size stays 448.
+//   raymarchScreenEps 444, displacementEnabled 448,
+//   displacementAOEnabled 452, displacementShadowCaster 456,
+//   displacementMaxBound 460. Block size 464.
 // Flags are uint (compare with == 0u / != 0u); debugMode is int.
 struct UniformObject {
     mat4 viewProjection;        // offset   0
@@ -46,6 +47,10 @@ struct UniformObject {
     float brushPhase;           // offset 428
     vec3 brushHsv;              // offset 432
     float raymarchScreenEps;    // offset 444  octree raymarch SS hit tolerance (px, 0 = off)
+    uint displacementEnabled;      // offset 448  master gate for the new path
+    uint displacementAOEnabled;    // offset 452  SDF ambient occlusion
+    uint displacementShadowCaster; // offset 456  raymarched CSM terrain caster
+    float displacementMaxBound;    // offset 460  max |h| over uploaded materials
 };
 
 #endif // UNIFORM_OBJECT_GLSL

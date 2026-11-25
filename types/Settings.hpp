@@ -147,6 +147,16 @@ public:
     // start; larger values cut distant/grazing march steps at a sub-pixel
     // accuracy cost.
     float octreeRaymarchScreenEps = 0.0f;
+    // True raymarched displacement master switches (material fields live in
+    // MaterialProperties; these gate the new path globally).
+    bool displacementEnabled = true;
+    bool displacementAOEnabled = true;
+    // Opt-in: raymarches the displaced terrain into every CSM cascade. This
+    // is a fullscreen per-texel march (2048^2 + 1024^2 + 512^2) and is too
+    // expensive for the full procedural map on the reference 680M; enable it
+    // for small scenes or when rasterized receivers need terrain shadows.
+    // Terrain self-shadowing (solidShadowTrace) is independent and always on.
+    bool displacementShadowCasterEnabled = false;
     bool shadowTessellationEnabled = false;
     float tessellationFactor = 1.0f;
     float tessMaxDistance = 512.0f;

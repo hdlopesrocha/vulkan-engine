@@ -12,6 +12,8 @@
 class SolidRenderer;
 class VegetationRenderer;
 class SdfRenderer;
+class BrushSdfRenderer;
+class OctreeRaymarchRenderer;
 class SolidRenderer;
 
 class ShadowRenderer : public Renderer {
@@ -26,6 +28,12 @@ public:
     // `sdf` adds the grass-only SDF caster (may be null: no SDF shadows).
     void setSceneRenderers(SolidRenderer* solid,
                            VegetationRenderer* vegetation, SdfRenderer* sdf = nullptr);
+    // Optional ray-marched terrain caster (the only terrain renderer). When
+    // set and ubo.displacementShadowCaster is enabled, each cascade records a
+    // fullscreen raymarch of the displaced octree surface into the EVSM map,
+    // so rasterized receivers get terrain shadows.
+    void setOctreeRaymarchRenderer(OctreeRaymarchRenderer* terrain,
+                                   BrushSdfRenderer* brush);
 
     // Per-frame staging buffers for shadow UBO uploads via vkCmdCopyBuffer
     // (replaces vkCmdUpdateBuffer to avoid implicit FULL_QUEUE barrier).
@@ -210,4 +218,7 @@ private:
     VegetationRenderer* vegetationRenderer_ = nullptr;
     // Grass-only SDF shadow caster (prepareShadowCascade/drawShadowCascade).
     SdfRenderer* sdfRenderer_ = nullptr;
+    // Raymarched terrain caster (shared octree node table, set=2).
+    OctreeRaymarchRenderer* terrainRenderer_ = nullptr;
+    BrushSdfRenderer* brushRenderer_ = nullptr;
 };

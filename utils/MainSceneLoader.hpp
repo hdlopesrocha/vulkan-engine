@@ -68,6 +68,47 @@
 #include "../brushPainters/NormalBrush.hpp"
 
 
+// Minimal deterministic scene for the true-displacement tests/benchmarks:
+// a flat slab plus a sphere, both on mapping-enabled material 7. It avoids the
+// full procedural catalogue's ~30 s CPU build while still exercising a flat
+// displaced surface, silhouettes, triplanar mapping and shadow casting.
+class DisplacementTestLoader : public SceneLoaderCallback {
+public:
+    void loadScene(std::vector<Octree*>& octrees,
+                   std::vector<Octree::OctreeNodeDataHandler>& updateHandlers,
+                   std::vector<Octree::OctreeNodeDataHandler>& deleteHandlers) override {
+        if (octrees.empty() || !octrees[0]) return;
+        Octree& layer = *octrees[0];
+        Octree::OctreeNodeDataHandler update;
+        Octree::OctreeNodeDataHandler remove;
+        if (!updateHandlers.empty()) update = updateHandlers[0];
+        if (!deleteHandlers.empty()) remove = deleteHandlers[0];
+
+        const int tileSize = 32;
+        Simplifier simplifier(0.05f);
+
+        // Flat slab: 512 x 64 x 512, top face at y = 32.
+        {
+            BoundingBox box(glm::vec3(-256.0f, -32.0f, -256.0f),
+                            glm::vec3( 256.0f,  32.0f,  256.0f));
+            Transformation model(box.getLength() * 0.5f, box.getCenter(), 0, 0, 0);
+            BoxDistanceFunction function(model, tileSize);
+            layer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7),
+                        TriplanarMappingPainter(), tileSize, simplifier, update, remove);
+            std::cout << "\ttest scene: displaced slab" << std::endl;
+        }
+        // Sphere: silhouette / normal / shadow test.
+        {
+            Transformation model(glm::vec3(128.0f), glm::vec3(0.0f, 160.0f, 0.0f),
+                                 0, 0, 0);
+            SphereDistanceFunction function(model, tileSize);
+            layer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7),
+                        TriplanarMappingPainter(), tileSize, simplifier, update, remove);
+            std::cout << "\ttest scene: displaced sphere" << std::endl;
+        }
+    }
+};
+
 class MainSceneLoader : public SceneLoaderCallback {
 public:
 
