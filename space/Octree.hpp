@@ -45,7 +45,6 @@ class Octree: public BoundingCube {
     void apply(
         const SignedDistanceOperation &operation, 
         const SignedDistanceFunction &function, 
-        const Transformation &model, 
         const BrushPainter &painter, 
         const TextureCoordPainter &coordPainter,
         float minSize, 

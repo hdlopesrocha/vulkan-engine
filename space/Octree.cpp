@@ -315,7 +315,6 @@ void Octree::configureShapeCache(ShapeArgs &args) const {
 void Octree::apply(
         const SignedDistanceOperation &operation,
         const SignedDistanceFunction &function,
-        const Transformation &model,
         const BrushPainter &painter,
         const TextureCoordPainter &coordPainter,
         float minSize,
@@ -495,7 +494,7 @@ static void reportDeletedSubtree(OctreeNode* node, const BoundingCube &cube, uin
                                  const Octree::OctreeNodeDataHandler &deleteHandler) {
     if (node == nullptr) return;
     if (node->getChunkLod() > 0) {
-        deleteHandler(OctreeNodeData(level, node, cube, nullptr));
+        deleteHandler(OctreeNodeData(level, node, cube));
     }
     OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
     node->getChildren(allocator, children);
@@ -889,7 +888,7 @@ void Octree::shape(
 
         if(r.node->getChunkLod() > 0 && r.resultType == SpaceType::Surface) {
             ++r.node->version;
-            OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube, nullptr);
+            OctreeNodeData data = OctreeNodeData(frame.level, r.node, frame.cube);
             updateHandler(data);
         }
     }

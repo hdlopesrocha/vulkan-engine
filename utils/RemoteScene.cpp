@@ -347,7 +347,7 @@ void RemoteScene::loadScene(SceneLoaderCallback& /*callback*/,
                     continue;
                 Stub* stub = upsertStub(rec);
                 if (!stub) continue;
-                OctreeNodeData nd(stub->level, &stub->node, stub->cube, nullptr);
+                OctreeNodeData nd(stub->level, &stub->node, stub->cube);
                 Octree::OctreeNodeDataHandler handler;
                 {
                     std::lock_guard<std::mutex> hlock(handlersMutex_);
@@ -369,7 +369,7 @@ void RemoteScene::loadScene(SceneLoaderCallback& /*callback*/,
                 Stub* stub = it->second.get();
                 const uint8_t layer = stub->layer;
                 stub->alive = false;
-                OctreeNodeData nd(stub->level, &stub->node, stub->cube, nullptr);
+                OctreeNodeData nd(stub->level, &stub->node, stub->cube);
                 Octree::OctreeNodeDataHandler handler;
                 {
                     std::lock_guard<std::mutex> hlock(handlersMutex_);
@@ -403,7 +403,7 @@ void RemoteScene::routeFrame(const std::vector<uint8_t>& raw) {
                 continue;
             Stub* stub = upsertStub(rec);
             if (!stub) continue;
-            OctreeNodeData nd(stub->level, &stub->node, stub->cube, nullptr);
+            OctreeNodeData nd(stub->level, &stub->node, stub->cube);
             Octree::OctreeNodeDataHandler handler;
             {
                 std::lock_guard<std::mutex> hlock(handlersMutex_);
@@ -424,7 +424,7 @@ void RemoteScene::routeFrame(const std::vector<uint8_t>& raw) {
             Stub* stub = it->second.get();
             const uint8_t layer = stub->layer;
             stub->alive = false;
-            OctreeNodeData nd(stub->level, &stub->node, stub->cube, nullptr);
+            OctreeNodeData nd(stub->level, &stub->node, stub->cube);
             Octree::OctreeNodeDataHandler handler;
             {
                 std::lock_guard<std::mutex> hlock(handlersMutex_);
@@ -492,7 +492,7 @@ void RemoteScene::reemitLayer(Layer& layer, const Octree::OctreeNodeDataHandler&
         for (const auto& kv : byServer_) {
             const Stub* stub = kv.second.get();
             if (!stub || !stub->alive || stub->layer != layerId) continue;
-            pending.emplace_back(stub->level, const_cast<OctreeNode*>(&stub->node), stub->cube, nullptr);
+            pending.emplace_back(stub->level, const_cast<OctreeNode*>(&stub->node), stub->cube);
         }
     }
     for (const auto& nd : pending) updateHandler(nd);

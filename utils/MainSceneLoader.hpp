@@ -135,43 +135,43 @@ public:
             case TestShape::Tetrahedron: {
                 std::cout << "\topaqueLayer.add(tetrahedron)"<< std::endl;
                 TetrahedronDistanceFunction function = TetrahedronDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Octrahedron: {
                 std::cout << "\topaqueLayer.add(octahedron)"<< std::endl;
                 OctahedronDistanceFunction function = OctahedronDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Pyramid: {
                 std::cout << "\topaqueLayer.add(pyramid)"<< std::endl;
                 PyramidDistanceFunction function = PyramidDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Torus: {
                 std::cout << "\topaqueLayer.add(torus)"<< std::endl;
                 TorusDistanceFunction function = TorusDistanceFunction(glm::vec2(0.5, 0.25), model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(3), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(3), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Cone: {
                 std::cout << "\topaqueLayer.add(cone)"<< std::endl;
                 ConeDistanceFunction function = ConeDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Cylinder: {
                 std::cout << "\topaqueLayer.add(cylinder)"<< std::endl;
                 CylinderDistanceFunction function = CylinderDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(4), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(4), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::TaperedCylinder: {
                 std::cout << "\topaqueLayer.add(taperedCylinder)"<< std::endl;
                 TaperedCylinderDistanceFunction function(0.25f, 0.5f, model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(11), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::TaperedCapsule: {
@@ -179,7 +179,7 @@ public:
                 TaperedCapsuleDistanceFunction function(
                     glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f), 0.5f, 0.25f,
                     model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(11), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(11), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Mirror: {
@@ -188,42 +188,42 @@ public:
                 BoundingBox mirror(center - len * 0.5f, center + len * 0.5f);
                 Transformation customModel = Transformation(mirror, 0.0f, 0.0f, 0.0f);
                 BoxDistanceFunction function = BoxDistanceFunction(customModel, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, customModel, SimpleBrush(6), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(6), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::PerlinDistort: {
                 std::cout << "\topaqueLayer.add(perlinDistort)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
                 PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, noiseAmp, noiseFreq, kEffectOffset, kEffectBrightness, kEffectContrast, model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), distortedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), distortedFunction, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::PerlinCarve: {
                 std::cout << "\topaqueLayer.add(perlinCarve)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
                 PerlinCarveDistanceEffect carvedFunction = PerlinCarveDistanceEffect(function, noiseAmp, noiseFreq, kEffectOffset, kEffectBrightness, kEffectContrast, model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::SineDistort: {
                 std::cout << "\topaqueLayer.add(sineDistort)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
                 SineDistortDistanceEffect carvedFunction = SineDistortDistanceEffect(function, noiseAmp, noiseFreq, kEffectOffset, model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), carvedFunction, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::VoronoiDistort: {
                 std::cout << "\topaqueLayer.add(voronoiDistort)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
                 VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, noiseAmp, noisePeriod, kEffectOffset, kEffectBrightness, kEffectContrast, model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::VoronoiDistortInverse: {
                 std::cout << "\topaqueLayer.add(voronoiDistortInverse)"<< std::endl;
                 SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
                 VoronoiCarveDistanceEffect distortFunction = VoronoiCarveDistanceEffect(function, noiseAmp, noisePeriod, kEffectOffset, kEffectBrightness, -kEffectContrast, model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, model, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), distortFunction, SimpleBrush(15), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::SvgExtrusion: {
@@ -238,7 +238,7 @@ public:
                     SvgPolygonDistanceFunction function(svgShapePtr, model, tileSize);
                     SvgBrush brush(svgShapePtr, model, /*materialIndex=*/15, glm::vec3(0.0f, 0.5f, 0.5f),
                                    /*tintFromFill=*/true);
-                    opaqueLayer.apply(AddSignedDistanceOperation(), function, model, brush, TriplanarMappingPainter(),
+                    opaqueLayer.apply(AddSignedDistanceOperation(), function, brush, TriplanarMappingPainter(),
                                       tileSize * 0.5f, simplifier, opaqueUpdateHandler,
                                       opaqueDeleteHandler);
                 } else {
@@ -250,7 +250,7 @@ public:
             if (sdfGivenBrushIndex >= 0) {
                 std::cout << "\topaqueLayer.add(sdfGiven cube)" << std::endl;
                 BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(sdfGivenBrushIndex), TriplanarMappingPainter(),
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(sdfGivenBrushIndex), TriplanarMappingPainter(),
                                   tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
             }
                 break;
@@ -259,7 +259,7 @@ public:
             case TestShape::VideoCube: {
                 std::cout << "\tvideoLayer.add(cube)" << std::endl;
                 BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-                videoLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(videoBrushIndex), TriplanarMappingPainter(),
+                videoLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(videoBrushIndex), TriplanarMappingPainter(),
                                  tileSize, simplifier, videoUpdateHandler, videoDeleteHandler);
             
                 break;
@@ -272,31 +272,31 @@ public:
                 OctahedronDistanceFunction fn1(model, tileSize);
                 OctahedronDistanceFunction fn2(modelB, tileSize);
                 SweepSignedDistanceFunction<OctahedronDistanceFunction> sweepFn(fn1, fn2, sweepModel, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, sweepModel, SimpleBrush(16), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), sweepFn, SimpleBrush(16), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::CubeProjectionX: {
                 std::cout << "\topaqueLayer.add(cube projection X)"<< std::endl;
                 BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), ProjectionXMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), ProjectionXMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::CubeProjectionY: {
                 std::cout << "\topaqueLayer.add(cube projection Y)"<< std::endl;
                 BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), ProjectionYMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), ProjectionYMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::CubeProjectionZ: {
                 std::cout << "\topaqueLayer.add(cube projection Z)"<< std::endl;
                 BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), ProjectionZMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), ProjectionZMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::CubeAngular: {
                 std::cout << "\topaqueLayer.add(cube angular)"<< std::endl;
                 BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), AngularMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), AngularMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Interpolation: {
@@ -304,7 +304,7 @@ public:
                 OctahedronDistanceFunction source(model, tileSize);
                 BoxDistanceFunction target(model, tileSize);
                 InterpolatedDistanceFunction mixed(source, target, 0.5f, model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), mixed, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), mixed, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::ObjMesh: {
@@ -313,50 +313,50 @@ public:
                 // triplanar mapping like every other catalogue entry.
                 ObjDistanceFunction function("models/bunny.obj", model, tileSize);
                 if (!function.empty()) {
-                    opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                    opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 }
                 break;
             }
             case TestShape::Dodecahedron: {
                 std::cout << "\topaqueLayer.add(dodecahedron)" << std::endl;
                 DodecahedronDistanceFunction function(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::Icosahedron: {
                 std::cout << "\topaqueLayer.add(icosahedron)" << std::endl;
                 IcosahedronDistanceFunction function(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::StarTetrahedron: {
                 std::cout << "\topaqueLayer.add(starTetrahedron)" << std::endl;
                 StarTetrahedronDistanceFunction function(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::StarOctahedron: {
                 std::cout << "\topaqueLayer.add(starOctahedron)" << std::endl;
                 StarOctahedronDistanceFunction function(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::StarDodecahedron: {
                 std::cout << "\topaqueLayer.add(starDodecahedron)" << std::endl;
                 StarDodecahedronDistanceFunction function(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::StarIcosahedron: {
                 std::cout << "\topaqueLayer.add(starIcosahedron)" << std::endl;
                 StarIcosahedronDistanceFunction function(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             case TestShape::StarHexahedron: {
                 std::cout << "\topaqueLayer.add(starHexahedron)" << std::endl;
                 StarHexahedronDistanceFunction function(model, tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 break;
             }
             default:
@@ -418,7 +418,6 @@ public:
         BoundingBox mapBox = BoundingBox(glm::vec3(-tileSize*tiles*0.5,-height*0.5,-tileSize*tiles*0.5), glm::vec3(tileSize*tiles*0.5,height*0.5,tileSize*tiles*0.5));
 
         {
-            Transformation model = Transformation();
             std::cout << "\tGradientPerlinSurface"<< std::endl;
             GradientPerlinSurface heightFunction = GradientPerlinSurface(height, 1.0/(256.0f*tileSize), -64);
             std::cout << "\tCachedHeightMapSurface"<< std::endl;
@@ -429,7 +428,7 @@ public:
             HeightMapDistanceFunction function = HeightMapDistanceFunction(&heightMap, tileSize);
             
             std::cout << "\topaqueLayer.add(heightmap)"<< std::endl;
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, LandBrush(), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, LandBrush(), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         {
             std::cout << "\topaqueLayer.add(box)"<< std::endl;
@@ -438,7 +437,7 @@ public:
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(0), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -448,7 +447,7 @@ public:
             BoundingSphere sphere = BoundingSphere(min+3.0f*len/4.0f, 256);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(5), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(5), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -458,7 +457,7 @@ public:
             BoundingSphere sphere = BoundingSphere(min+len, 128);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, model, SimpleBrush(20), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, SimpleBrush(20), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         {
@@ -468,7 +467,7 @@ public:
             BoundingSphere sphere = BoundingSphere(min+3.0f*len/4.0f, 128);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, model, SimpleBrush(4), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(DeleteSignedDistanceOperation(), function, SimpleBrush(4), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         
         {
@@ -479,7 +478,7 @@ public:
             float r = 256.0f;
             CapsuleDistanceFunction function(a, b, r, model, tileSize);
             PerlinDistortDistanceEffect distortedFunction = PerlinDistortDistanceEffect(function, 64.0f, 0.1f/32.0f, kEffectOffset, kEffectBrightness, kEffectContrast, model, tileSize);
-            opaqueLayer.apply(DeleteSignedDistanceOperation(), distortedFunction, model, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(DeleteSignedDistanceOperation(), distortedFunction, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
         if (hasTransparent) {
@@ -488,7 +487,7 @@ public:
             BoundingSphere sphere = BoundingSphere(center, 64);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(1), TriplanarMappingPainter(), tileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
+            transparentLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(1), TriplanarMappingPainter(), tileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
 
         if (hasTransparent) {
@@ -497,7 +496,7 @@ public:
             BoundingSphere sphere = BoundingSphere(center, 128);
             Transformation model = Transformation(glm::vec3(sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(2), TriplanarMappingPainter(), tileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
+            transparentLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(2), TriplanarMappingPainter(), tileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
 
         {
@@ -507,7 +506,7 @@ public:
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), TriplanarMappingPainter(), tileSize*4, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(0), TriplanarMappingPainter(), tileSize*4, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         
         {
@@ -517,11 +516,10 @@ public:
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(0), TriplanarMappingPainter(), tileSize*0.25, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(0), TriplanarMappingPainter(), tileSize*0.25, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
     
         if (hasTransparent) {
-            Transformation model = Transformation();
             std::cout << "\ttransparentLayer.add(water)"<< std::endl;
             BoundingBox waterBox = mapBox;
             float bias = tileSize*2.0;
@@ -535,7 +533,7 @@ public:
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
             OctreeDifferenceFunction function(&opaqueLayer, waterBox, bias);
-            transparentLayer.apply(AddSignedDistanceOperation(), function, model, waterBrush, TriplanarMappingPainter(), tileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
+            transparentLayer.apply(AddSignedDistanceOperation(), function, waterBrush, TriplanarMappingPainter(), tileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
         }
     
 
@@ -549,7 +547,7 @@ public:
             BoundingSphere sphere = BoundingSphere(fireSpotPosition, fireSpotRadius);
             Transformation model = Transformation(glm::vec3(sphere.radius,fireSpotHeight,sphere.radius), sphere.center, 0, 0, 0);
             SphereDistanceFunction function = SphereDistanceFunction(model, tileSize);
-            opaqueLayer.apply(AddSignedDistanceOperation(), function, model, SimpleBrush(4), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(4), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
 
@@ -568,7 +566,6 @@ public:
             }
 
             RoadSpline roadSpline(ctrlPts);
-            Transformation roadModel = Transformation();
             int numSegs = 24;
             float overlap = 0.05f;
             float halfDiag = glm::length(glm::vec2(fireSpotRadius, fireSpotRadius)) * 0.5f;
@@ -583,7 +580,7 @@ public:
                 RoadDistanceFunction roadFunc(&roadSpline, 32.0f, 96.0f,
                                               tMin, tMax, startCap, endCap,
                                               segSphere.center, segSphere.radius, Transformation(), tileSize);
-                opaqueLayer.apply(AddSignedDistanceOperation(), roadFunc, roadModel,
+                opaqueLayer.apply(AddSignedDistanceOperation(), roadFunc,
                                   SimpleBrush(14), TriplanarMappingPainter(),
                                   tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
             }
@@ -637,7 +634,7 @@ public:
 
                 TriangleStripDistanceFunction tsFunc(v0, v1, v2, v3, unitHalfThick,
                                                         segCenter, segRadius, tsModel, tileSize);
-                transparentLayer.apply(AddSignedDistanceOperation(), tsFunc, tsModel,
+                transparentLayer.apply(AddSignedDistanceOperation(), tsFunc,
                                     SimpleBrush(0), TriplanarMappingPainter(),
                                     fireTileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);
             }
@@ -651,7 +648,7 @@ public:
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(PaintSignedDistanceOperation(), function, SimpleBrush(1), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
         
         {
@@ -661,7 +658,7 @@ public:
             BoundingBox box = BoundingBox(min,min+len);
             Transformation model = Transformation(box.getLength()*0.5f, box.getCenter(), 0, 0, 0);
             BoxDistanceFunction function = BoxDistanceFunction(model, tileSize);
-            opaqueLayer.apply(PaintSignedDistanceOperation(), function, model, SimpleBrush(1), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
+            opaqueLayer.apply(PaintSignedDistanceOperation(), function, SimpleBrush(1), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
         }
 
 

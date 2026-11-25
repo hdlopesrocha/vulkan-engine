@@ -49,7 +49,7 @@ static void walkTree(const Octree& tree, uint8_t layer, ChunkIdRegistry& ids,
         // must replay the same set — otherwise a re-request after Clear only
         // ever rebuilds rung 1 and the coarser rungs are lost.
         if (node->getChunkLod() > 0 && node->getType() == SpaceType::Surface) {
-            OctreeNodeData nd(cur.level, node, cur.cube, nullptr);
+            OctreeNodeData nd(cur.level, node, cur.cube);
             out.push_back(makeRecord(ids, nd, layer));
         }
         // Always descend: finer rungs live in the subtree (an emitted

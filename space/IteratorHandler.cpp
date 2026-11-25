@@ -58,7 +58,7 @@ void IteratorHandler::iterateMultiThreaded(
             if (isThreaded) {
                 const int idx = futureCount;
                 taskData[idx] = ChildTask{
-                    OctreeNodeData(params.level + 1, child, childCube, params.context),
+                    OctreeNodeData(params.level + 1, child, childCube),
                     this, &tree, &pool, &iterateHandler, &getOrderHandler, &iterateThreadedHandler};
                 try {
                     futures[futureCount++] = pool.enqueue([task = &taskData[idx]] {
@@ -70,7 +70,7 @@ void IteratorHandler::iterateMultiThreaded(
                     break;
                 }
             } else {
-                OctreeNodeData data(params.level + 1, child, childCube, params.context);
+                OctreeNodeData data(params.level + 1, child, childCube);
                 this->iterateMultiThreaded(tree, data, pool, iterateHandler, getOrderHandler,
                                            iterateThreadedHandler);
             }

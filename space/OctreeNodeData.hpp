@@ -12,8 +12,7 @@ public:
     uint level;
     OctreeNode * node;
     BoundingCube cube;
-    void * context;
-    OctreeNodeData(uint level, OctreeNode * node, const BoundingCube &cube, void * context);
+    OctreeNodeData(uint level, OctreeNode * node, const BoundingCube &cube);
     OctreeNodeData(const OctreeNodeData &data) = default;
     OctreeNodeData();
 };

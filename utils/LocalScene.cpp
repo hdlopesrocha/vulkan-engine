@@ -987,7 +987,7 @@ static void notifyChunkNodes(OctreeNode* node, const BoundingCube& cube, uint le
                              OctreeAllocator& allocator, Octree::OctreeNodeDataHandler updateHandler, Octree::OctreeNodeDataHandler deleteHandler) {
     if (!node) return;
     if (node->isChunk()) {
-        updateHandler(OctreeNodeData(level, node, cube, nullptr));
+        updateHandler(OctreeNodeData(level, node, cube));
         return;
     }
     OctreeNode* children[8] = {};
