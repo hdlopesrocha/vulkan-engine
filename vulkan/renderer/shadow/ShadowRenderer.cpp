@@ -835,8 +835,7 @@ void ShadowRenderer::recordCascade(VulkanApp* app, VkCommandBuffer cmd, uint32_t
                                    const UniformObject& uboStatic, const glm::mat4& lsMatrix,
                                    uint32_t cascadeIndex, uint32_t frameSlot,
                                    bool renderSolid, bool vegetationEnabled,
-                                   bool shadowTessellationEnabled, float lodBias,
-                                   const glm::vec3& cameraPos) {
+                                   bool shadowTessellationEnabled) {
     // C1 pipeline selection: the shadow UBO carries shadowTessellationEnabled
     // in passParams.y, so with it off the TES would emit level 1.0 without
     // displacement — bind the no-tess twin instead (see beginShadowRendering).
@@ -1007,7 +1006,7 @@ void ShadowRenderer::renderParallel(VulkanApp* app, uint32_t frameIdx,
         beginOne(cascadeCmd[c]);
         cbState.reset();
         recordCascade(app, cascadeCmd[c], frameIdx, uboStatic, cascadeMatrices[c], c, f,
-                      renderSolid, vegetationEnabled, shadowTessellationEnabled, lodBias, cameraPos);
+                      renderSolid, vegetationEnabled, shadowTessellationEnabled);
         VkQueue cascadeQueue = singleQueue ? app->getGraphicsQueue() : app->getCubeQueue(c);
         app->submitCommandBufferAsyncToQueue(cascadeCmd[c], cascadeQueue, nullptr,
             { semCullDone_[f][c] }, false, { semCascadeDone_[f][c] });

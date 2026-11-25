@@ -356,7 +356,7 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
     }
     if (skyRenderer) {
         skyRenderer->destroyOffscreenTargets(app);
-        skyRenderer->createOffscreenTargets(app, width, height);
+        skyRenderer->createOffscreenTargets(app);
     }
     // Solid SSR sources are new handles after the solid render targets above
     // were recreated; re-point bindings 19/20 (resize is idle-safe).
@@ -456,10 +456,10 @@ void SceneRenderer::beginInit(VulkanApp* app, TextureArrayManager* textureArrayM
         videoRenderer->createRenderTargets(app, initW, initH);
         videoRenderer->createPipelines(app);
     });
-    initFutureSky_ = std::async(std::launch::async, [this, app, initW, initH]() {
+    initFutureSky_ = std::async(std::launch::async, [this, app]() {
         skyRenderer->init(app);
         skyRenderer->destroyOffscreenTargets(app);
-        skyRenderer->createOffscreenTargets(app, initW, initH);
+        skyRenderer->createOffscreenTargets(app);
     });
     initFutureDebug_ = std::async(std::launch::async, [this, app, initW, initH]() {
         if (debugCubeRenderer) debugCubeRenderer->init(app);
@@ -1601,7 +1601,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
         // replacement) so a mid-stream erase never leaks a slot.
         uint32_t curFrame = app ? app->getCurrentFrame() : 0;
         ageOutPendingDeletes(curFrame);
-        processChunkSwapQueue(app);
+        processChunkSwapQueue();
         return;
     }
 
@@ -1620,7 +1620,7 @@ void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, st
     
     // Every frame, process the chunk swap queue (slotted mode).
     // This swaps in newly-built RenderProxies and retires old ones.
-    processChunkSwapQueue(app);
+    processChunkSwapQueue();
 
 }
 
@@ -1809,7 +1809,7 @@ void SceneRenderer::initSlottedMode(VulkanApp* app, uint32_t maxSolidChunks,
 
 }
 
-void SceneRenderer::processChunkSwapQueue(VulkanApp* app)
+void SceneRenderer::processChunkSwapQueue()
 {
     // Drain the swap queue: mark each ready chunk's new mesh version as
     // current. The GPU topology pass already wrote the resident span and the
@@ -1892,7 +1892,7 @@ void collectLavaAnchors(const OctreeTopologyInput& input, NodeID nid,
 
 } // anonymous namespace
 
-bool SceneRenderer::buildChunkResident(Scene& scene, Layer::Id layer, NodeID nid,
+bool SceneRenderer::buildChunkResident(Layer::Id layer, NodeID nid,
                                        OctreeNodeData& nodeData, uint8_t chunkLod,
                                        uint32_t version, OctreeTopologyInput& topoInput,
                                        IndirectRenderer& ir, GeometryHandler onGeometry,
@@ -2100,7 +2100,7 @@ void SceneRenderer::processNodeLayer(Scene& scene, Layer::Id layer, NodeID nid, 
         } else if (status == Scene::ChunkTopologyStatus::Ready) {
             streamStats_.topologyReady.fetch_add(1, std::memory_order_relaxed);
             bool published = false;
-            handled = buildChunkResident(scene, layer, nid, nodeData, chunkLod, version,
+            handled = buildChunkResident(layer, nid, nodeData, chunkLod, version,
                                          topoInput, *ir, onGeometry, published);
             // Only settle the revision when geometry was actually installed
             // (or the chunk is legitimately empty). A failed build (pool

@@ -203,8 +203,7 @@ private:
                        const UniformObject& uboStatic, const glm::mat4& lsMatrix,
                        uint32_t cascadeIndex, uint32_t frameSlot,
                        bool renderSolid, bool vegetationEnabled,
-                       bool shadowTessellationEnabled, float lodBias,
-                       const glm::vec3& cameraPos);
+                       bool shadowTessellationEnabled);
 
     // Scene sub-renderers drawn into the shadow map (injected via setSceneRenderers)
     SolidRenderer* solidRenderer_ = nullptr;

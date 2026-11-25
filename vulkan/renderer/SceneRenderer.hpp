@@ -292,7 +292,7 @@ public:
     // `published` is set when the revision is settled (geometry installed, or
     // legitimately empty); it stays false on a failed build so the caller does
     // not mark the version up-to-date and a later re-emit retries.
-    bool buildChunkResident(Scene& scene, Layer::Id layer, NodeID nid, OctreeNodeData& nodeData,
+    bool buildChunkResident(Layer::Id layer, NodeID nid, OctreeNodeData& nodeData,
                             uint8_t chunkLod, uint32_t version, OctreeTopologyInput& topoInput,
                             IndirectRenderer& ir, GeometryHandler onGeometry, bool& published);
 
@@ -308,7 +308,7 @@ public:
     // Drain the swap queue and atomically swap in new RenderProxies.
     // Also retires old proxies via deferred destruction.
     // Call once per frame from processPendingMeshes.
-    void processChunkSwapQueue(VulkanApp* app);
+    void processChunkSwapQueue();
 
     // Runtime introspection helpers for UI/debug
     size_t getTransparentModelCount();

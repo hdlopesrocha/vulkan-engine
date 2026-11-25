@@ -181,7 +181,7 @@ Buffer SkyRenderer::getSkyUniformBuffer() const {
 
 // ---------- Offscreen equirectangular sky rendering ----------
 
-void SkyRenderer::createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_t height) {
+void SkyRenderer::createOffscreenTargets(VulkanApp* app) {
     // Use fixed equirectangular resolution (2:1 aspect for full sphere)
     offscreenWidth = 2048;
     offscreenHeight = 1024;

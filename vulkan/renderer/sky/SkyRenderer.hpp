@@ -43,7 +43,7 @@ public:
 
     // --- Offscreen sky rendering ---
     // Create offscreen render targets (color + depth, 2 frames in flight)
-    void createOffscreenTargets(VulkanApp* app, uint32_t width, uint32_t height);
+    void createOffscreenTargets(VulkanApp* app);
     void destroyOffscreenTargets(VulkanApp* app);
 
     // Render the sky to its own offscreen color attachment

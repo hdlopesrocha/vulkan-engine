@@ -94,9 +94,6 @@ public:
     void cancelRebuild(ChunkId id);
 
 private:
-    // Set chunk state with optional version update.
-    void setState(ChunkId id, ChunkState newState);
-
     mutable std::mutex mapMutex_;
 
     // Per-chunk state (protected by mapMutex_)
