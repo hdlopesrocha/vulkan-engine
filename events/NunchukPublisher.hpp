@@ -74,8 +74,6 @@ private:
     float startPitch = 0.0f;
     float startRoll = 0.0f;
     bool firstControlFrame = true;
-    bool prevC = false;
-    bool prevZ = false;
     bool prevA = false;
 
     // Whether wiiuse_set_motion_plus() has been called for the current connection.

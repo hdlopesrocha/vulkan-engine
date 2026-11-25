@@ -44,9 +44,7 @@ public:
     //   GET /textures           -> JSON listing (relative path, size, mime)
     //   GET /textures/<rel>     -> the file bytes with a type-appropriate
     //                              Content-Type (png/jpg/tif/dds/ktx2/...)
-    // Resolved automatically at start() from the usual texture locations; call
-    // setTextureRoot() before start() to point it somewhere else.
-    void setTextureRoot(const std::string& path) { textureRoot_ = path; }
+    // Resolved automatically at start() from the usual texture locations.
 
     // Snapshot provider for REQUEST_ALL (must be thread-safe).
     void setSnapshotProvider(std::function<std::vector<chunkproto::ChunkRecord>()> fn);

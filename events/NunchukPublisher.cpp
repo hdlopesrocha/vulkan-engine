@@ -306,8 +306,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
         startRoll = s.roll;
         firstControlFrame = false;
         prevButtons = s.buttons;
-        prevC = s.buttonC;
-        prevZ = s.buttonZ;
         prevA = (s.buttons & WIIMOTE_BUTTON_A) != 0;
         return;
     }
@@ -462,7 +460,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 }
             }
         }
-        prevC = s.buttonC;
 
         // Z → DOWN (camera on Camera page, brush on Brush page, skip on Aim)
         if (s.buttonZ) {
@@ -476,7 +473,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 }
             }
         }
-        prevZ = s.buttonZ;
     }
 
     // ========================================================================
