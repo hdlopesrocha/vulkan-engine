@@ -13,9 +13,6 @@
 // The World knows nothing about Vulkan.
 class World {
 public:
-    // Unique identifier for a chunk (typically the octree node ID cast to uint64).
-    using ChunkId = uint64_t;
-
     World();
     ~World();
 
