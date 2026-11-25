@@ -49,7 +49,6 @@ public:
     }
 
     std::vector<BrushEntry>& getEntries() { return entries; }
-    const std::vector<BrushEntry>& getEntries() const { return entries; }
 
     int getSelectedIndex() const { return selectedIndex; }
     void setSelectedIndex(int idx) {

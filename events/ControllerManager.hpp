@@ -29,7 +29,6 @@ public:
     ControllerContext wiimoteContext;
 
     ControllerParameters* getParameters() { return &parameters; }
-    const ControllerParameters* getParameters() const { return &parameters; }
 
     // Switch all four controller contexts to the given page category and control.
     void switchAllContexts(PageCategory cat, PageControl ctrl) {
