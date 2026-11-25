@@ -23,10 +23,10 @@ public:
     ControllerParameters parameters;
 
     // One independent page tree per controller.
-    ControllerContext keyboardContext{ControllerId::KEYBOARD};
-    ControllerContext mouseContext{ControllerId::MOUSE};
-    ControllerContext gamepadContext{ControllerId::GAMEPAD};
-    ControllerContext wiimoteContext{ControllerId::WIIMOTE};
+    ControllerContext keyboardContext;
+    ControllerContext mouseContext;
+    ControllerContext gamepadContext;
+    ControllerContext wiimoteContext;
 
     ControllerParameters* getParameters() { return &parameters; }
     const ControllerParameters* getParameters() const { return &parameters; }

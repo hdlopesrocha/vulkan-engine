@@ -5,8 +5,6 @@
 #include <memory>
 #include <cstdint>
 
-// Identifies which physical controller a context belongs to.
-#include "ControllerId.hpp"
 #include "PageCategory.hpp"
 #include "PageControl.hpp"
 #include "ControllerPage.hpp"
@@ -17,7 +15,7 @@
 // the physical input mapping differs between controllers.
 class ControllerContext {
 public:
-    explicit ControllerContext(ControllerId id) : id_(id) { buildDefaultTree(); }
+    explicit ControllerContext() { buildDefaultTree(); }
 
     // Build the default page tree (Camera + Brush categories with subpages).
     void buildDefaultTree() {
@@ -148,7 +146,6 @@ private:
         if (subpageIndex_ < 0) subpageIndex_ = 0;
     }
 
-    ControllerId id_;
     std::shared_ptr<ControllerPage> root_;
     int pageIndex_ = 0;
     int subpageIndex_ = 0;
