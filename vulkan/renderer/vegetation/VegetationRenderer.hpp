@@ -4,7 +4,6 @@
 #include "../../core/TrackedHandle.hpp"
 #include "../../resources/TextureArrayManager.hpp"
 #include "../../../math/geometry/Vertex.hpp"
-#include "../../../math/geometry/Geometry.hpp"
 #include "../debug/DebugCubeRenderer.hpp"
 #include "../../resources/VertexBufferObject.hpp"
 #include "../../../utils/Scene.hpp" // for NodeID
@@ -113,19 +112,6 @@ public:
                                    const glm::vec3& chunkCenter,
                                    uint32_t instancesPerTriangle, VulkanApp* app,
                                    uint32_t seed = 1337);
-    // CPU-side per-chunk vegetation generation (moved from SceneRenderer).
-    // Samples grass-touching triangles from the chunk's tessellated
-    // geometry. Builds area-weighted virtual triangle
-    // slots with unbiased stochastic rounding (area-proportional density
-    // without bias), shuffles the slots per chunk (so reducing the indirect
-    // instanceCount keeps a random spatial subset), then hands the result to
-    // generateChunkInstancesCPU. Per-instance placement keeps only samples
-    // whose dominant barycentric vertex is grass-brushed, so blades hug
-    // meadows at any triangle size without spilling onto other brushes.
-    // With no grass triangles the
-    // chunk's previous instance data is cleared instead.
-    void generateForChunk(VulkanApp* app, NodeID nid, const Geometry& geom);
-    // Place one instance per sample (position + surface normal + material).
     // Used by the raymarch-table vegetation path: terrain has no Cartesian
     // mesh, so the host samples surface points directly from the SDF nodes.
     // Each sample becomes a degenerate triangle slot (i,i,i), letting the
