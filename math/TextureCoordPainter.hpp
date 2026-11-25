@@ -23,10 +23,6 @@ public:
 
     // The value written to the node's `data` (the vertex's texCoord).
     virtual glm::vec2 paintUV(const OctreeNode &o) const;
-
-    // Reserved: whether paintUV() would need the surface position. Octree::shape
-    // does not compute one.
-    virtual bool needsPosition() const;
 };
 
 // Compatibility umbrella: consumers that include TextureCoordPainter.hpp also
@@ -36,4 +32,3 @@ public:
 #include "../textureCoordPainters/ProjectionYMappingPainter.hpp"
 #include "../textureCoordPainters/ProjectionZMappingPainter.hpp"
 #include "../textureCoordPainters/AngularMappingPainter.hpp"
-#include "../textureCoordPainters/CustomMappingPainter.hpp"

@@ -4,7 +4,6 @@
 #include "TranslateCameraEvent.hpp"
 #include "RotateCameraEvent.hpp"
 #include "ToggleFullscreenEvent.hpp"
-#include "RebuildBrushEvent.hpp"
 
 #include "ControllerManager.hpp"
 #include "ControllerContext.hpp"
@@ -196,6 +195,5 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
         }
     }
 
-    bool brushChanged = applyControllerAction(gctx, em, brushManager, action);
-    if (brushChanged) em->queue(std::make_shared<RebuildBrushEvent>());
+    applyControllerAction(gctx, em, brushManager, action);
 }

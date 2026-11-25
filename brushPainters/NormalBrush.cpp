@@ -1,9 +1,8 @@
 #include "NormalBrush.hpp"
 
-NormalBrush::NormalBrush(int brush_, glm::vec3 hsv_, glm::vec3 normal_) {
+NormalBrush::NormalBrush(int brush_, glm::vec3 hsv_) {
     this->brush = brush_;
     this->hsv = hsv_;
-    this->normal = normal_;
 }
 
 int NormalBrush::paint(const OctreeNode &o) const {

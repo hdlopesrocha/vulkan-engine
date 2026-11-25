@@ -15,8 +15,6 @@ public:
     // Camera-related parameters
     float cameraMoveSpeed = 8.0f;
     float cameraAngularSpeedDeg = 90.0f;
-    float nunchukTransSpeed = 256.0f;
-    float nunchukRotSpeed = 90.0f;
     float wiimoteRotSpeed = 90.0f;
 
     // Per-controller brush apply mode (Click vs Drag). All default to Drag.

@@ -2,13 +2,9 @@
 
 #include <cmath>
 
-SvgBrush::SvgBrush(std::shared_ptr<const SvgShape> shape, const Transformation &model,
-                   int materialIndex, glm::vec3 fallbackHsv, bool tintFromFill)
-    : m_shape(std::move(shape))
-    , m_model(model)
-    , m_material(materialIndex)
-    , m_fallbackHsv(fallbackHsv)
-    , m_tintFromFill(tintFromFill) {}
+SvgBrush::SvgBrush(int materialIndex, glm::vec3 fallbackHsv)
+    : m_material(materialIndex)
+    , m_fallbackHsv(fallbackHsv) {}
 
 int SvgBrush::paint(const OctreeNode &o) const {
     (void)o;

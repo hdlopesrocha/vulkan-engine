@@ -107,7 +107,6 @@
 #include "events/MousePublisher.hpp"
 #include "events/CloseWindowEvent.hpp"
 #include "events/ToggleFullscreenEvent.hpp"
-#include "events/RebuildBrushEvent.hpp"
 #include "events/ApplyBrushToSceneEvent.hpp"
 #include "events/SetBrushTextureEvent.hpp"
 #include "events/SetBrushControlEvent.hpp"
@@ -4337,7 +4336,6 @@ public:
             BrushEntry* be = brushManager.getSelectedEntry();
             if (be && be->sdfType != sdfEvent->sdfType) {
                 be->sdfType = sdfEvent->sdfType;
-                eventManager.queue(std::make_shared<RebuildBrushEvent>());
             }
             return;
         }
@@ -4378,7 +4376,6 @@ public:
                     case BrushPaintMode::PAINT:  be->brushMode = 2; break;
                     default: break;
                 }
-                eventManager.queue(std::make_shared<RebuildBrushEvent>());
             }
 
             controllerManager.switchAllToBrush(PageControl::ATTRIBUTE);
@@ -4400,7 +4397,6 @@ public:
                 } else if (hsvEvent->component == "Value") {
                     be->hsv.z = hsvEvent->value / 100.0f;
                 }
-                eventManager.queue(std::make_shared<RebuildBrushEvent>());
             }
             return;
         }
@@ -5154,8 +5150,7 @@ void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& swe
     std::unique_ptr<SvgBrush> svgBrush;
     if (entry.sdfType == 10) {
         if (std::shared_ptr<const SvgShape> shape = loadSvgShapeCached(entry.svgPath, nullptr)) {
-            svgBrush = std::make_unique<SvgBrush>(shape, model, entry.materialIndex, entry.hsv,
-                                                  entry.svgTintFromFill);
+            svgBrush = std::make_unique<SvgBrush>(entry.materialIndex, entry.hsv);
         }
     }
     const BrushPainter& brush =

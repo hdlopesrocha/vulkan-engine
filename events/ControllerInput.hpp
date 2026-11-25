@@ -28,9 +28,8 @@ namespace {
 }
 
 // Route the action to the camera or to the selected brush entry depending on
-// the context's active page. Returns true if the brush was modified (caller
-// should queue RebuildBrushEvent). Does nothing when the active page is a
-// non-propagating (UI) page.
+// the context's active page. Returns true if the brush was modified. Does
+// nothing when the active page is a non-propagating (UI) page.
 inline bool applyControllerAction(const ControllerContext &ctx, EventManager *em,
                                   Brush3dManager *brush, const ControllerAction &a) {
     if (ctx.isNoPropagate()) return false;

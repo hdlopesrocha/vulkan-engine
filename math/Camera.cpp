@@ -50,11 +50,6 @@ void Camera::rotateEuler(float yawDeg, float pitchDeg, float rollDeg) {
     orientation = glm::normalize(glm::angleAxis(roll, forward) * orientation);
 }
 
-void Camera::rotateAxisAngle(const glm::vec3 &axis, float angleDeg) {
-    float angle = glm::radians(angleDeg);
-    orientation = glm::normalize(glm::angleAxis(angle, glm::normalize(axis)) * orientation);
-}
-
 void Camera::onEvent(const EventPtr &event) {
     if (!event) return;
     // Translate
@@ -64,8 +59,7 @@ void Camera::onEvent(const EventPtr &event) {
     }
     // Rotate
     if (auto r = std::dynamic_pointer_cast<RotateCameraEvent>(event)) {
-        if (r->useAxisAngle) rotateAxisAngle(r->axis, r->angleDegrees);
-        else rotateEuler(r->yaw, r->pitch, r->roll);
+        rotateEuler(r->yaw, r->pitch, r->roll);
         return;
     }
 }

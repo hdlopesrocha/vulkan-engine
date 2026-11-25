@@ -9,7 +9,6 @@
 #include "../space/Octree.hpp"
 #include "../utils/Brush3dManager.hpp"
 #include "types/BrushEntry.hpp"
-#include "RebuildBrushEvent.hpp"
 #include "ApplyBrushToSceneEvent.hpp"
 
 #include <wiiuse.h>
@@ -319,7 +318,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 if (be) {
                     be->sdfType = (be->sdfType + 1) % 12;
                     fprintf(stderr, "[Wiimote] Brush SDF type -> %d\n", be->sdfType);
-                    em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
         }
@@ -329,7 +327,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 if (be) {
                     be->sdfType = (be->sdfType - 1 + 12) % 12;
                     fprintf(stderr, "[Wiimote] Brush SDF type -> %d\n", be->sdfType);
-                    em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
         }
@@ -360,7 +357,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                     fprintf(stderr, "[Wiimote] brush placed at %.1f %.1f %.1f\n",
                             be->translate.x, be->translate.y, be->translate.z);
                 }
-                em->queue(std::make_shared<RebuildBrushEvent>());
             }
         }
     }
@@ -428,7 +424,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                     if (be) {
                         if (jx != 0.0f) be->translate += right * (jx * vel);
                         if (jy != 0.0f) be->translate += forward * (jy * vel);
-                        em->queue(std::make_shared<RebuildBrushEvent>());
                     }
                 }
             }
@@ -456,7 +451,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) {
                     be->translate += upDelta;
-                    em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
         }
@@ -469,7 +463,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 BrushEntry* be = brushManager->getSelectedEntry();
                 if (be) {
                     be->translate += downDelta;
-                    em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
         }
@@ -502,7 +495,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                         if (s.buttonC) ds.z += sv;
                         if (s.buttonZ) ds.z -= sv;
                         be->scale = glm::max(be->scale + ds, glm::vec3(0.001f));
-                        em->queue(std::make_shared<RebuildBrushEvent>());
                     }
                 }
             }
@@ -578,7 +570,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                                        * glm::angleAxis(glm::radians(-dr), glm::vec3(0.0f, 0.0f, -1.0f));
                         glm::quat rWorld = camOrient * rCam * glm::conjugate(camOrient);
                         be->rot = glm::normalize(rWorld * q);
-                        em->queue(std::make_shared<RebuildBrushEvent>());
                     }
                 }
             }
@@ -636,18 +627,15 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                         if (jy != 0.0f) delta += forward * (jy * vel);
                         be->snapTranslation += delta;
                         be->translate += delta;
-                        em->queue(std::make_shared<RebuildBrushEvent>());
                     }
                 }
                 if (s.buttonC) {
                     be->snapTranslation += up * (cam.speed * deltaTime * joystickAccel);
                     be->translate += up * (cam.speed * deltaTime * joystickAccel);
-                    em->queue(std::make_shared<RebuildBrushEvent>());
                 }
                 if (s.buttonZ) {
                     be->snapTranslation -= up * (cam.speed * deltaTime * joystickAccel);
                     be->translate -= up * (cam.speed * deltaTime * joystickAccel);
-                    em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
         }
@@ -698,7 +686,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 glm::vec3 hitPos;
                 if (octree->intersect(ray, hitPos)) {
                     be->translate = hitPos + be->snapTranslation;
-                    em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
         }
@@ -762,7 +749,6 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                     if (be->hsv.x < 0.0f) be->hsv.x += 360.0f;
                     be->hsv.y = glm::clamp(be->hsv.y + satDelta * svScale, 0.0f, 1.0f);
                     be->hsv.z = glm::clamp(be->hsv.z + valDelta * svScale, 0.0f, 1.0f);
-                    em->queue(std::make_shared<RebuildBrushEvent>());
                 }
             }
         }

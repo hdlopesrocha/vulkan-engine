@@ -37,7 +37,7 @@ struct WaterParams {
     vec4 waveWarp;         // xyz reserved, w=shore gradient step(texels)
     vec4 waveMask;         // x=scale, y=threshold, z=softness, w=time speed
     vec4 foamParams;       // x=crest threshold, y=trail phase, z=decay/m, w=color amount
-    vec4 foamNoise;        // x=scale, y=time speed, z=noise amount, w=shore amount
+    vec4 foamNoise;        // x=scale, y=time speed, z=noise amount, w=unused
     vec4 foamExtra;        // x=mask floor, y=diffuse floor, z=ambient, w=unused
     vec4 foamContact;      // x=contact width(world), y=contact amount, z=contact alpha, w=contact pulse floor
     vec4 foamShape;        // x=edge hardness, y=coverage, zw=reserved

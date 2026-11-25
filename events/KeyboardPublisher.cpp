@@ -9,7 +9,6 @@
 #include "RotateCameraEvent.hpp"
 #include "CloseWindowEvent.hpp"
 #include "ToggleFullscreenEvent.hpp"
-#include "RebuildBrushEvent.hpp"
 #include "ApplyBrushToSceneEvent.hpp"
 #include "ControllerManager.hpp"
 #include "ControllerContext.hpp"
@@ -122,7 +121,7 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
         }
     }
 
-    bool brushChanged = applyControllerAction(kctx, em, brushManager, action);
+    applyControllerAction(kctx, em, brushManager, action);
 
     // Toggle fullscreen: F11 on key-down
     if (edgePressed(window, GLFW_KEY_F11, f11Prev)) {
@@ -138,7 +137,4 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
         em->publish(std::make_shared<ApplyBrushToSceneEvent>());
     }
 
-    if (brushChanged) {
-        em->queue(std::make_shared<RebuildBrushEvent>());
-    }
 }

@@ -76,7 +76,6 @@ struct WaterParamsNamed {
     float foamNoisePeriodScale;
     float foamNoiseSpeed;
     float foamNoiseAmount;
-    float foamShoreAmount;
     float foamMaskFloor;
     float foamDiffuseFloor;
     float foamAmbient;

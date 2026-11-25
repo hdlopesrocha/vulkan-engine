@@ -65,7 +65,6 @@
 #include "../brushPainters/LandBrush.hpp"
 #include "../brushPainters/SimpleBrush.hpp"
 #include "../brushPainters/SvgBrush.hpp"
-#include "../brushPainters/WaterBrush.hpp"
 #include "../brushPainters/NormalBrush.hpp"
 
 
@@ -236,8 +235,7 @@ public:
                     std::cout << "\t\tsvg '" << svgResolved << "': " << svgShapePtr->contours.size()
                               << " contours" << std::endl;
                     SvgPolygonDistanceFunction function(svgShapePtr, model, tileSize);
-                    SvgBrush brush(svgShapePtr, model, /*materialIndex=*/15, glm::vec3(0.0f, 0.5f, 0.5f),
-                                   /*tintFromFill=*/true);
+                    SvgBrush brush(/*materialIndex=*/15, glm::vec3(0.0f, 0.5f, 0.5f));
                     opaqueLayer.apply(AddSignedDistanceOperation(), function, brush, TriplanarMappingPainter(),
                                       tileSize * 0.5f, simplifier, opaqueUpdateHandler,
                                       opaqueDeleteHandler);
@@ -529,8 +527,7 @@ public:
             waterBox.setMinY(mapBox.getMinY()*0.5f);
             NormalBrush waterBrush = NormalBrush(
                 0, 
-                glm::vec3(0.5f, 0.5f, 0.5f), 
-                glm::vec3(0.0f, 1.0f, 0.0f)
+                glm::vec3(0.5f, 0.5f, 0.5f)
             );
             OctreeDifferenceFunction function(&opaqueLayer, waterBox, bias);
             transparentLayer.apply(AddSignedDistanceOperation(), function, waterBrush, TriplanarMappingPainter(), tileSize, simplifier, transparentUpdateHandler, transparentDeleteHandler);

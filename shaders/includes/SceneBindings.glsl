@@ -134,7 +134,6 @@ WaterParamsNamed waterParamsNamed(WaterParams p) {
     n.foamNoisePeriodScale = p.foamNoise.x;
     n.foamNoiseSpeed = p.foamNoise.y;
     n.foamNoiseAmount = p.foamNoise.z;
-    n.foamShoreAmount = p.foamNoise.w;
     n.foamMaskFloor = p.foamExtra.x;
     n.foamDiffuseFloor = p.foamExtra.y;
     n.foamAmbient = p.foamExtra.z;

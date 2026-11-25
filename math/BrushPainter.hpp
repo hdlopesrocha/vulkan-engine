@@ -11,7 +11,4 @@ class BrushPainter {
 public:
     virtual int paint(const OctreeNode &o) const = 0;
     virtual glm::vec3 paintHSV(const OctreeNode &o) const;
-    // Reserved: whether paint()/paintHSV() would need the surface position.
-    // Octree::shape does not compute one.
-    virtual bool needsPosition() const;
 };

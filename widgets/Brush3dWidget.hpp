@@ -45,8 +45,6 @@ public:
     static constexpr int kSdfTypeCount = 12;
     static const char* sdfTypeNames[];
 
-    // Note: widget now publishes a `RebuildBrushEvent` via the provided EventManager
-
 private:
     void renderEntry(int index);
     void renderMaterialPicker(BrushEntry& entry);

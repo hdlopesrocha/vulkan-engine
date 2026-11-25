@@ -1,7 +1,6 @@
 #include "Brush3dWidget.hpp"
 #include "../vulkan/resources/TextureArrayManager.hpp"
 #include "../events/EventManager.hpp"
-#include "../events/RebuildBrushEvent.hpp"
 #include "../events/SetBrushControlEvent.hpp"
 #include "../events/SetBrushPaintModeEvent.hpp"
 #include "../events/SetBrushDragModeEvent.hpp"
@@ -124,16 +123,6 @@ void Brush3dWidget::render() {
                 dirty = true;
             }
         }
-    }
-
-    // Auto-rebuild when any brush parameter changes.
-    // Rebuild is triggered once per frame when `dirty` is set by
-    // individual controls (ImGui returns true on user interaction).
-    if (dirty) {
-        if (eventManager) {
-            eventManager->queue(std::make_shared<RebuildBrushEvent>());
-        }
-        dirty = false;
     }
 
     // WindowGuard will call ImGui::End() automatically

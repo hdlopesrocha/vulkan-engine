@@ -65,7 +65,7 @@ WaterParams makeWaterParams(const WaterSettings& p) {
     gpu.waveWarp = glm::vec4(0.0f, 0.0f, 0.0f, p.shoreGradientStep);
     gpu.waveMask = glm::vec4(p.shoreWaveFade, 0.0f, 0.0f, 0.0f);
     gpu.foamParams = glm::vec4(p.foamCrestThreshold, p.foamTrailPhase, p.foamDecay, p.foamColorAmount);
-    gpu.foamNoise = glm::vec4(p.foamNoisePeriod, p.foamNoiseSpeed, p.foamNoiseAmount, p.foamShoreAmount);
+    gpu.foamNoise = glm::vec4(p.foamNoisePeriod, p.foamNoiseSpeed, p.foamNoiseAmount, 0.0f);
     gpu.foamExtra = glm::vec4(p.foamMaskFloor, p.foamDiffuseFloor, p.foamAmbient, 0.0f);
     gpu.foamContact = glm::vec4(p.foamContactWidth, p.foamContactAmount, p.foamContactAlpha, p.foamContactFloor);
     gpu.foamShape = glm::vec4(p.foamEdge, p.foamCoverage, 0.0f, 0.0f);

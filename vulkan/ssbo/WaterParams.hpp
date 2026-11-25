@@ -41,7 +41,7 @@ struct WaterParams {
     glm::vec4 waveWarp;         // xyz reserved, w=shore gradient step(texels)
     glm::vec4 waveMask;         // x=shoreWaveFade (depth over which the swell fades out at the shore)
     glm::vec4 foamParams;       // x=crest threshold, y=trail phase, z=decay/m, w=color amount
-    glm::vec4 foamNoise;        // x=foam noise period (converted to scale at upload), y=time speed, z=noise amount, w=shore amount
+    glm::vec4 foamNoise;        // x=foam noise period (converted to scale at upload), y=time speed, z=noise amount, w=unused
     glm::vec4 foamExtra;        // x=mask floor, y=diffuse floor, z=ambient, w=unused
     glm::vec4 foamContact;      // x=contact width(world), y=contact amount, z=contact alpha, w=contact pulse floor
     glm::vec4 foamShape;        // x=edge hardness, y=coverage, zw=reserved
