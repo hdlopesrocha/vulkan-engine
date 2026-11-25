@@ -515,22 +515,20 @@ void DebugCubeRenderer::cleanup(VulkanApp* app) {
 }
 
 void DebugCubeRenderer::removeCubeForNode(NodeID id) {
-    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
-    nodeDebugCubes.erase(id);
+    // No producer populates the per-node debug cube cache (the octree explorer
+    // overlay passes its cubes straight to renderOverlay), so the cache and its
+    // removal/clear hooks are gone; the entry point stays for the app's scene
+    // change handlers.
+    (void)id;
 }
 
 void DebugCubeRenderer::clearCubes() {
-    std::lock_guard<std::recursive_mutex> lock(cubesMutex);
-    nodeDebugCubes.clear();
 }
 
 void DebugCubeRenderer::renderOverlay(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet ds,
                                       const std::vector<CubeWithColor>& widgetCubes) {
     std::lock_guard<std::recursive_mutex> lock(cubesMutex);
-    std::vector<CubeWithColor> all = widgetCubes;
-    all.reserve(all.size() + nodeDebugCubes.size());
-    for (const auto& p : nodeDebugCubes) all.push_back(p.second);
-    setCubes(all);
+    setCubes(widgetCubes);
     render(app, cmd, ds);
 }
 

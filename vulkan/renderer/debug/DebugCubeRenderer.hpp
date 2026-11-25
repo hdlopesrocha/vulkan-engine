@@ -70,13 +70,11 @@ public:
 
     void cleanup(VulkanApp* app) override;
 
-    // ── Per-node debug cube tracking (moved from SceneRenderer) ──
-    // Consumed as a copy on the render thread.
+    // ── Per-node debug cube hooks (kept for the scene change handlers) ──
     void removeCubeForNode(NodeID id);
     void clearCubes();
-    // Render the octree node debug cubes merged with the supplied widget cubes.
-    // Reads the per-node cache internally — no external getCubes. The widget cubes
-    // (octree explorer overlay) are passed in; the per-node cache is merged here.
+    // Render the octree explorer's widget cubes (there is no per-node debug
+    // cube cache any more: the explorer supplies the cube list directly).
     void renderOverlay(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet ds,
                        const std::vector<CubeWithColor>& widgetCubes);
 
@@ -110,8 +108,6 @@ private:
     // applies the settings toggle.
     std::atomic<bool> enabled_{false};
 
-    // Per-node debug cubes keyed by octree node id
-    std::unordered_map<NodeID, CubeWithColor> nodeDebugCubes;
     // Per-chunk mesh bounding boxes keyed by chunk node id
     std::unordered_map<NodeID, std::vector<CubeWithColor>> chunkBBoxCubes;
     mutable std::recursive_mutex cubesMutex;
