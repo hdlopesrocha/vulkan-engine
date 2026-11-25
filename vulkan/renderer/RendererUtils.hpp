@@ -199,15 +199,11 @@ inline VkPipeline buildFullscreenPipeline(
 // recordTransitionBatch is counted here. Call beginFrame() at the start of
 // each frame and endFrameReport() at the end to get a throttled log line.
 struct BarrierStats {
-    inline static std::atomic<uint64_t> totalCalls{0};
-    inline static std::atomic<uint64_t> totalImageBarriers{0};
     inline static std::atomic<uint64_t> frameCalls{0};
     inline static std::atomic<uint64_t> frameImageBarriers{0};
     inline static std::atomic<uint64_t> frameIndex{0};
 
     static void noteBarrier(uint64_t imageBarrierCount) {
-        totalCalls.fetch_add(1, std::memory_order_relaxed);
-        totalImageBarriers.fetch_add(imageBarrierCount, std::memory_order_relaxed);
         frameCalls.fetch_add(1, std::memory_order_relaxed);
         frameImageBarriers.fetch_add(imageBarrierCount, std::memory_order_relaxed);
     }
@@ -412,29 +408,6 @@ inline void beginColorDepthPassLoadDepth(
     scissor.offset = {0, 0};
     scissor.extent = {width, height};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
-}
-
-// Fill the standard dynamic viewport/scissor pipeline state used by the
-// water and wireframe pipelines: one viewport/scissor, VIEWPORT + SCISSOR
-// dynamic. pDynamicStates points at a function-local constexpr table that
-// stays valid for the duration of the pipeline create call.
-inline void fillViewportScissorState(
-    VkPipelineViewportStateCreateInfo& viewportState,
-    VkPipelineDynamicStateCreateInfo&  dynamicState)
-{
-    viewportState = {};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-
-    static constexpr VkDynamicState dynamicStates[] = {
-        VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR
-    };
-    dynamicState = {};
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 2;
-    dynamicState.pDynamicStates = dynamicStates;
 }
 
 } // namespace RendererUtils

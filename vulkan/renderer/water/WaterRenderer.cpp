@@ -91,7 +91,6 @@ WaterRenderer::~WaterRenderer() = default;
 void WaterRenderer::init(VulkanApp* app, Buffer& paramsBuffer,
                          const std::vector<WaterSettings>& waterParams,
                          uint32_t layerCount) {
-    appPtr = app;
     waterParamsBuffer = paramsBuffer;
     waterParamsCount = layerCount;
 
@@ -172,5 +171,4 @@ void WaterRenderer::cleanup(VulkanApp* app) {
         }
     }
     if (waterRenderUBO_.buffer != VK_NULL_HANDLE) waterRenderUBO_ = {};
-    appPtr = nullptr;
 }

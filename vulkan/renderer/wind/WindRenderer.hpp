@@ -66,8 +66,6 @@ public:
 
     void cleanup(VulkanApp* app) override;
 
-    bool ready() const { return computePipeline_ != VK_NULL_HANDLE && trailPipeline_ != VK_NULL_HANDLE; }
-
     // Trail segments drawn per particle for a given requested duration. Shared
     // by the host draw-count math and (mirrored) by WindTrail.vert.
     static uint32_t trailSegments(float durationSeconds);

@@ -42,8 +42,6 @@ public:
     VkImageView getWaterDepthView(uint32_t) const { return dummyWaterView_; }
     VkImageView getWaterGeomDepthView(uint32_t) const { return dummyWaterView_; }
     VkImage getWaterGeomDepthImage(uint32_t) const { return dummyWaterImage_; }
-    VkImageView getWaterBodyView(uint32_t) const { return dummyWaterView_; }
-    VkImageView getWaterColumnView(uint32_t) const { return dummyWaterView_; }
     VkImageLayout getWaterGeomDepthLayout(uint32_t) const {
         return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
@@ -51,14 +49,12 @@ public:
 
     void createRenderTargets(VulkanApp*, uint32_t, uint32_t) {}
     void destroyRenderTargets(VulkanApp*) {}
-    void clearRenderTargets(VulkanApp*, VkCommandBuffer, uint32_t) {}
 
 private:
     void ensureDummyView(VulkanApp* app);
 
     Buffer waterParamsBuffer;
     uint32_t waterParamsCount = 0;
-    VulkanApp* appPtr = nullptr;
 
     Buffer waterRenderUBO_;
 

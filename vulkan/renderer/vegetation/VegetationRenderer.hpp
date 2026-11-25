@@ -620,7 +620,6 @@ private:
     // targets.
     TrackedHandle<VkDescriptorSet> vegBakeDescSet;
     TrackedHandle<VkDescriptorSet> vegBakeDescSetAlt;
-    uint32_t vegCullFrameIndex = 0;        // auto-cycling frame index for triple buffering
     uint32_t vegCullCurrentSlot = 0;       // slot selected for current frame's cull + draws
     bool vegConsolidationDirty = true;     // rebuild concatenated buffer + metadata
     // M11 (perf report 22): the GPU chunk table mirrors the consolidated set,

@@ -1546,9 +1546,6 @@ void SceneRenderer::drainPendingMeshes(std::deque<PendingMeshData>& out, size_t 
 }
 
 void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, std::deque<PendingMeshData>& batch) {
-    // Cache the camera position for the shadow pass (which culls with the
-    // same camPos/lodBias so shadow draws match the main pass LoD selection).
-    lastCameraPos_ = cameraPos;
     solidRenderer->getIndirectRenderer().pollPendingTransfers(app);
 
     // Keep the GPU LoD gate meta in sync with the tree (self-correcting once

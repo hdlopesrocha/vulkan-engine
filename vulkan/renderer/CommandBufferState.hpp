@@ -18,11 +18,9 @@
 // cmdState=nullptr to avoid data races.
 struct CommandBufferState {
     VkPipeline lastGraphicsPipeline = VK_NULL_HANDLE;
-    VkPipeline lastComputePipeline  = VK_NULL_HANDLE;
 
     void reset() {
         lastGraphicsPipeline = VK_NULL_HANDLE;
-        lastComputePipeline  = VK_NULL_HANDLE;
     }
 
     void bindGraphicsPipeline(VkCommandBuffer cmd, VkPipeline pipeline) {
@@ -50,7 +48,6 @@ struct CommandBufferState {
     }
 
     void bindComputePipelineUnchecked(VkCommandBuffer cmd, VkPipeline pipeline) {
-        lastComputePipeline = pipeline;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     }
 };

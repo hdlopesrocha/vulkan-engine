@@ -5,11 +5,6 @@
 
 // Stateless helpers for host-side descriptor-buffer writes.
 struct DescriptorBufferHelper {
-    static size_t alignUp(size_t v, size_t a) {
-        if (a == 0) return v;
-        return (v + a - 1) & ~(a - 1);
-    }
-
     // Device address of a buffer (0 when the buffer lacks
     // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT).
     static VkDeviceAddress bufferAddress(VkDevice device, VkBuffer buffer) {

@@ -45,8 +45,6 @@ public:
 
     void cleanup(VulkanApp* app) override;
 
-    bool ready() const { return pipeline_ != VK_NULL_HANDLE; }
-
 private:
     void createPipeline(VulkanApp* app);
     void createDescriptors(VulkanApp* app);

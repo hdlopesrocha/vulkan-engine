@@ -202,7 +202,6 @@ bool VideoRenderer::createVideoDescriptorSet(VulkanApp* app) {
                                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 0, 1);
         });
-        dummyLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         // Neutral derived dummy: flat normal, mid bump/roughness.
         VkImageCreateInfo derivedInfo = imageInfo;

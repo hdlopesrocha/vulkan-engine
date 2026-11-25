@@ -37,7 +37,6 @@ public:
         uint32_t pendingVersion = 0; // octree version being built (ReadyToSwap)
         uint32_t slotIndex = UINT32_MAX; // stable IndirectRenderer slot (assigned on upload)
         uint32_t version = 0;       // octree version at last rebuild
-        uint32_t rebuildCount = 0;  // monotonically increasing
         bool queuedForRebuild = false; // in dirty queue (prevents duplicates)
     };
 
@@ -62,9 +61,6 @@ public:
     // IndirectRenderer slots and are never held here.
     // Call once per frame from the main thread.
     void processSwapQueue();
-
-    // Check if a chunk is currently being processed.
-    bool isChunkBusy(ChunkId id) const;
 
     // Remove a chunk entirely (e.g., on scene unload).
     void removeChunk(ChunkId id);
@@ -96,11 +92,6 @@ public:
 
     // Transition a chunk from any state → Clean (cancel rebuild).
     void cancelRebuild(ChunkId id);
-
-    // ── Query ───────────────────────────────────────────────────────────────
-
-    size_t dirtyQueueSize() const;
-    size_t activeChunkCount() const;
 
 private:
     // Set chunk state with optional version update.
@@ -146,13 +137,6 @@ inline bool ChunkManager::markDirty(ChunkId id, uint32_t version) {
     entry.queuedForRebuild = true;
     dirtyQueue_.push_back(id);
     return true;
-}
-
-inline bool ChunkManager::isChunkBusy(ChunkId id) const {
-    std::lock_guard<std::mutex> lock(mapMutex_);
-    auto it = stateMap_.find(id);
-    if (it == stateMap_.end()) return false;
-    return it->second.state != ChunkState::Clean;
 }
 
 inline void ChunkManager::removeChunk(ChunkId id) {
@@ -227,7 +211,6 @@ inline void ChunkManager::processSwapQueue() {
         entry.currentVersion = entry.pendingVersion;
         entry.state = ChunkState::Clean;
         entry.queuedForRebuild = false;
-        entry.rebuildCount++;
 
         // Check if chunk was dirtied again during the build
         if (entry.version > entry.currentVersion) {
@@ -236,11 +219,6 @@ inline void ChunkManager::processSwapQueue() {
             dirtyQueue_.push_back(id);
         }
     }
-}
-
-inline size_t ChunkManager::dirtyQueueSize() const {
-    std::lock_guard<std::mutex> lock(mapMutex_);
-    return dirtyQueue_.size();
 }
 
 inline void ChunkManager::setSlotIndex(ChunkId id, uint32_t slotIndex) {
@@ -256,9 +234,4 @@ inline uint32_t ChunkManager::getSlotIndex(ChunkId id) const {
     auto it = stateMap_.find(id);
     if (it == stateMap_.end()) return UINT32_MAX;
     return it->second.slotIndex;
-}
-
-inline size_t ChunkManager::activeChunkCount() const {
-    std::lock_guard<std::mutex> lock(mapMutex_);
-    return stateMap_.size();
 }

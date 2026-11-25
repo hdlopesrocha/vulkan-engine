@@ -16,7 +16,6 @@ public:
     VkQueue vegetationQueue = VK_NULL_HANDLE;
     VkQueue sdfQueue        = VK_NULL_HANDLE;
     VkQueue bboxQueue       = VK_NULL_HANDLE;
-    VkQueue geometryQueue   = VK_NULL_HANDLE;
     VkQueue brushQueue      = VK_NULL_HANDLE;
     VkQueue solidQueue      = VK_NULL_HANDLE;
     VkQueue waterQueue      = VK_NULL_HANDLE;
@@ -40,7 +39,6 @@ public:
         vegetationQueue   = (pg.size() > 1) ? pg[1] : graphicsQueue;
         sdfQueue          = (pg.size() > 2) ? pg[2] : graphicsQueue;
         bboxQueue         = (pg.size() > 3) ? pg[3] : graphicsQueue;
-        geometryQueue     = (pg.size() > 4) ? pg[4] : graphicsQueue;
         solidQueue        = (pg.size() > 5) ? pg[5] : graphicsQueue;
         waterQueue        = (pg.size() > 6) ? pg[6] : graphicsQueue;
         skyQueue          = (pg.size() > 7) ? pg[7] : graphicsQueue;

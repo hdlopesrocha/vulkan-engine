@@ -1196,10 +1196,10 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         vkCmdPipelineBarrier2(cmd, &depFill);
     }
 
-    // Bind and dispatch compute cull. Always bind (Unchecked): CommandBufferState
-    // tracks lastComputePipeline globally, not per-CB, so a shared cmdState across
-    // the main-view and shadow cull command buffers would otherwise skip the bind
-    // on the second CB and leave its dispatch with no pipeline bound.
+    // Bind and dispatch compute cull. Always bind (Unchecked): the shared
+    // cmdState is reused across the main-view and shadow cull command buffers,
+    // so a deduplicated bind could be skipped on the second CB and leave its
+    // dispatch with no pipeline bound.
     if (cmdState) cmdState->bindComputePipelineUnchecked(cmd, computePipeline);
     else vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
     if (cmdState) cmdState->bindComputeDescriptorSets(cmd, computePipelineLayout, 0, 1, &descSet, 0, nullptr);

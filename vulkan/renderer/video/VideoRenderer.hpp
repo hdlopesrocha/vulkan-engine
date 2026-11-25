@@ -94,7 +94,6 @@ private:
     TextureImage dummyVideo;
     TextureImage dummyDerived;
     VkSampler dummySampler = VK_NULL_HANDLE;
-    VkImageLayout dummyLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     std::array<VkImage, VIDEO_FRAMES> colorImages{};
     std::array<VmaAllocation, VIDEO_FRAMES> colorAllocations{};

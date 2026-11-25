@@ -322,7 +322,6 @@ public:
     // images are complete and visible before the ray march samples them.
     VkSampler ssrColorSampler = VK_NULL_HANDLE;
     VkSampler ssrDepthSampler = VK_NULL_HANDLE;
-    glm::mat4 prevViewProj_ = glm::mat4(1.0f);
     void initSSRSamplers(VulkanApp* app);
     void writeSSRBindings(VulkanApp* app);
     void destroySSRSamplers(VulkanApp* app);
@@ -415,11 +414,6 @@ private:
     // Offsets cover the set-0 bindings in use (binding 11 stays absent —
     // legacy cubemap removed).
     Set0DescriptorBuffers descBuffers_;
-
-    // Camera position from the last processPendingMeshes call; used by the
-    // shadow pass to cull with the same camPos/lodBias as the main pass so
-    // shadow draws use the identical per-chunk LoD selection.
-    glm::vec3 lastCameraPos_ = glm::vec3(0.0f);
 
     // Async visible-count snapshot for stats (updated once per frame in
     // processPendingMeshes from the IRs' host-visible readback buffers;
