@@ -1294,6 +1294,10 @@ public:
                 std::cout << "[MyApp] displacement test camera: (-800, 320, 0)" << std::endl;
             }
         }
+        // Headless debug view: VULKAN_DEBUG_MODE=<DebugMode int>. Used by the
+        // displacement test sweep for the original/displaced-normal views.
+        if (const char* env = std::getenv("VULKAN_DEBUG_MODE"))
+            settings.debugMode = static_cast<int>(debugModeFromInt(std::atoi(env)));
         // Headless A/B switches for layer isolation (diagnostics only): each
         // forces the matching Settings toggle off/on before the first frame.
         if (std::getenv("VULKAN_NO_SOLID") != nullptr) settings.renderSolid = false;

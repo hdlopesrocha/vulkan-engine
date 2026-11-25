@@ -363,8 +363,9 @@ VULKAN_TEST_FRAMES=24 ./scripts/test_raymarch_displacement.sh
 ```
 
 It covers baseline, positive/negative amplitude, high frequency, offset/bounds,
-procedural source, caster off, AO off and the full-map smoke case, and fails on
-any validation error or device loss.
+procedural source, caster off, AO off, the displaced-normal debug view and the
+full-map smoke case, and fails on any validation error or device loss.
+`VULKAN_DEBUG_MODE=<id>` selects any debug view headlessly.
 
 ## 10. Known limitations
 

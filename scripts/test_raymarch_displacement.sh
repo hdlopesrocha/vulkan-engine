@@ -67,6 +67,12 @@ run_case caster_off VULKAN_DISPLACEMENT_TEST=1 VULKAN_DISPLACEMENT=1 \
 run_case ao_off VULKAN_DISPLACEMENT_TEST=1 VULKAN_DISPLACEMENT=1 \
     VULKAN_DISPLACEMENT_AO=0 VULKAN_DISPLACEMENT_AMP=1 VULKAN_DISPLACEMENT_FREQ=2
 
+# 7b. Displaced-normal debug view (54): exercises the debug branch and the
+# true-gradient normal path.
+run_case debug_normals VULKAN_DISPLACEMENT_TEST=1 VULKAN_DISPLACEMENT=1 \
+    VULKAN_DISPLACEMENT_AMP=1 VULKAN_DISPLACEMENT_FREQ=2 \
+    VULKAN_DEBUG_MODE=54 VULKAN_HIDE_UI=1
+
 # 8. Full procedural / catalogue scene (complex octree geometry) with a small
 #    amplitude. This is the heavy case; 8 frames is enough for a smoke test.
 FRAMES=8 run_case large_scene VULKAN_DISPLACEMENT=1 \
@@ -74,7 +80,8 @@ FRAMES=8 run_case large_scene VULKAN_DISPLACEMENT=1 \
     VULKAN_DISPLACEMENT_CASTER=0
 
 # The enable log is emitted by setupTexturesFinish for every non-baseline run.
-for n in positive negative highfreq offset_bounds procedural caster_off ao_off large_scene; do
+for n in positive negative highfreq offset_bounds procedural caster_off ao_off \
+         debug_normals large_scene; do
     if ! grep -q '\[MyApp\] true displacement:' "logs/run-displacement-${n}.log"; then
         echo "FAIL: displacement material setup missing in ${n}" >&2
         exit 1
