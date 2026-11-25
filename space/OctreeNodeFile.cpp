@@ -72,7 +72,7 @@ OctreeNode * OctreeNodeFile::loadSubtree(Octree * tree, OctreeNode * workingNode
 	if(chunked && cube.getLengthX() <= chunkSize) {
 		std::string chunkName = getChunkName(cube);
 		OctreeNodeFile file(tree, workingNode, baseFolder + "/" + filename_ + "_" + chunkName + ".bin");
-		file.load(baseFolder, cube);
+		file.load(cube);
 	} else {
 		for(int j=0 ; j <8 ; ++j){
 			int index = serialized.children[j];
@@ -86,7 +86,7 @@ OctreeNode * OctreeNodeFile::loadSubtree(Octree * tree, OctreeNode * workingNode
 	return workingNode;
 }
 
-void OctreeNodeFile::load(std::string baseFolder, const BoundingCube &cube) {
+void OctreeNodeFile::load(const BoundingCube &cube) {
 	std::ifstream file = std::ifstream(filename, std::ios::binary);
     if (!file) {
         std::cerr << "Error opening file for reading: " << filename << std::endl;
@@ -122,7 +122,7 @@ uint OctreeNodeFile::saveSubtree(Octree * tree, OctreeNode * inNode,
 		if(chunked && cube.getLengthX() <= chunkSize) {
 			std::string chunkName = getChunkName(cube);
 			OctreeNodeFile file(tree, inNode, baseFolder + "/" + filename_ + "_" + chunkName + ".bin");
-			file.save(baseFolder);
+			file.save();
 		} else {
 			OctreeNode * children[8] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 			inNode->getChildren(*tree->allocator, children);
@@ -137,7 +137,7 @@ uint OctreeNodeFile::saveSubtree(Octree * tree, OctreeNode * inNode,
 	return 0;
 }
 
-void OctreeNodeFile::save(std::string baseFolder){
+void OctreeNodeFile::save(){
     std::vector<OctreeNodeSerialized> nodes;
 
 	std::ofstream file = std::ofstream(filename, std::ios::binary);

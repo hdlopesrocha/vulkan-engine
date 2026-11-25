@@ -271,7 +271,7 @@ void Octree::buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOp
     }
 }
 
-void Octree::buildResultSDF(const bool isLeaf, const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext) const {
+void Octree::buildResultSDF(const bool isLeaf, const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8]) const {
     if(isLeaf) {
         for (uint i = 0; i < 8; ++i) {
             r.resultSDF[i] = args.operation->combine(frame.sdf[i], r.shapeSDF[i]);
@@ -683,10 +683,10 @@ void Octree::shape(
         // nothing below touches r.shapeSDF on the leaf path. buildResultSDF
         // only reads those values, so the second corner pass is redundant
         // (perf report 29, C1).
-        buildResultSDF(true, args, frame, r, children, threadContext);
+        buildResultSDF(true, args, frame, r, children);
     } else if(process && !processed) {
         buildShapeSDF(args, frame, r, children, threadContext, false);
-        buildResultSDF(false, args, frame, r, children, threadContext);
+        buildResultSDF(false, args, frame, r, children);
     }
 
     // The stored result field is authoritative. Several fast paths classify a

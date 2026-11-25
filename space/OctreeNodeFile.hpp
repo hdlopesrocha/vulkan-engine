@@ -30,6 +30,6 @@ class OctreeNodeFile {
 
 public:
     OctreeNodeFile(Octree * tree, OctreeNode * node, std::string filename);
-    void save(std::string baseFolder);
-    void load(std::string baseFolder, const BoundingCube &cube);
+    void save();
+    void load(const BoundingCube &cube);
 };

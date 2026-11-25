@@ -81,7 +81,7 @@ class Octree: public BoundingCube {
     bool isThreadNode(float nodeLength, float minSize, int threadSize) const;
 private:
     void buildShapeSDF(const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext, bool leafPass) const;
-    void buildResultSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8], OctreeThreadContext * threadContext) const;
+    void buildResultSDF(const bool isLeaf,const ShapeArgs &args, OctreeNodeFrame &frame, NodeOperationResult &r, NodeOperationResult children[8]) const;
     float evaluateSDF(const ShapeArgs &args, OctreeThreadContext * threadContext, glm::vec3 p) const;
     // Fills the per-apply lattice fields of args (see ShapeArgs/ShapeSdfCache).
     void configureShapeCache(ShapeArgs &args) const;

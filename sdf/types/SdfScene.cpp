@@ -41,7 +41,7 @@ glm::mat3 rotationFromEuler(const glm::vec3& e) {
 
 // Local (pre-rotation, pre-translation) half extents for a definition.
 // radial = scale*radiusScale, height = scale*heightScale, uni = scale.
-glm::vec3 localHalfExtents(SdfPrimitiveType prim, const glm::vec4& p0, const glm::vec4& p1,
+glm::vec3 localHalfExtents(SdfPrimitiveType prim, const glm::vec4& p0,
                            float radial, float height, float uni) {
     const float r = std::max(p0.x, 0.0f);
     switch (prim) {
@@ -177,7 +177,7 @@ BoundingBox SdfScene::computeInstanceBounds(const SdfInstance& in) const {
         const float uni = std::max(in.scale, 0.0001f);
         const float radial = uni * std::max(in.radiusScale, 0.0001f);
         const float height = uni * std::max(in.heightScale, 0.0001f);
-        half = localHalfExtents(def.prim, def.params0, def.params1, radial, height, uni);
+        half = localHalfExtents(def.prim, def.params0, radial, height, uni);
         pad = deformationPadding(def, turbulence);
         if (def.prim == SdfPrimitiveType::Flame) {
             // Spike displacement is spikiness (local) * instance scale in
