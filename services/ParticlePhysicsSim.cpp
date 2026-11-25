@@ -302,9 +302,6 @@ void ParticlePhysicsSim::dispatch(VkCommandBuffer cmd, float substepSeconds, con
     // cell or touches its 26 neighbours, and the hash stays sparse.
     const float gridCell = std::max(0.5f, 4.0f * std::max(0.05f, cfg.particleRadius));
 
-    VkCommandBufferBeginInfo bi{};
-    (void)bi;
-
     if (shapeDirty_) {
         // Host pattern -> device state (radius/mass only; positions stay
         // untouched so a shape change never teleports the particles).

@@ -327,10 +327,8 @@ void RemoteScene::loadScene(SceneLoaderCallback& /*callback*/,
                         const uint8_t layer = raw[off];
                         ensureLayerForMetaLocked(layer);
                         memcpy(&rootMin_[layer], raw.data() + off + 1, 12);
-                        float rootLen, chunkSize;
-                        memcpy(&rootLen, raw.data() + off + 13, 4);
+                        float chunkSize;
                         memcpy(&chunkSize, raw.data() + off + 17, 4);
-                        (void)rootLen;
                         chunkSize_[layer] = chunkSize;
                         rootChunkLod_[layer] = raw[off + 21];
                         haveMeta_[layer] = true;

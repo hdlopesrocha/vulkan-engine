@@ -116,15 +116,10 @@ public:
         Octree& opaqueLayer,
         Octree::OctreeNodeDataHandler& opaqueUpdateHandler,
         Octree::OctreeNodeDataHandler& opaqueDeleteHandler,
-        Octree::OctreeNodeDataHandler& transparentUpdateHandler,
-        Octree::OctreeNodeDataHandler& transparentDeleteHandler,
         Octree& videoLayer,
         Octree::OctreeNodeDataHandler& videoUpdateHandler,
         Octree::OctreeNodeDataHandler& videoDeleteHandler
     ) {
-        (void)transparentUpdateHandler;
-        (void)transparentDeleteHandler;
-
         int tileSize = 8;
         const glm::vec3 objectSize(128.0f, 128.0f, 128.0f);
         const glm::vec3 objectMargin(32.0f, 32.0f, 32.0f);
@@ -374,8 +369,6 @@ public:
         Octree& opaqueLayer,
         Octree::OctreeNodeDataHandler& opaqueUpdateHandler,
         Octree::OctreeNodeDataHandler& opaqueDeleteHandler,
-        Octree::OctreeNodeDataHandler& transparentUpdateHandler,
-        Octree::OctreeNodeDataHandler& transparentDeleteHandler,
         Octree& videoLayer,
         Octree::OctreeNodeDataHandler& videoUpdateHandler,
         Octree::OctreeNodeDataHandler& videoDeleteHandler
@@ -384,8 +377,7 @@ public:
         // per-shape work (including the conditional SdfGiven/video demos).
         for (int i = 0; i < static_cast<int>(TestShape::Count); ++i) {
             applyTestObject(static_cast<TestShape>(i), opaqueLayer, opaqueUpdateHandler,
-                            opaqueDeleteHandler, transparentUpdateHandler, transparentDeleteHandler,
-                            videoLayer, videoUpdateHandler, videoDeleteHandler);
+                            opaqueDeleteHandler, videoLayer, videoUpdateHandler, videoDeleteHandler);
         }
     }
 
@@ -673,8 +665,7 @@ public:
         }
 
 
-        applyTestObjects(opaqueLayer, opaqueUpdateHandler, opaqueDeleteHandler, 
-                            transparentUpdateHandler, transparentDeleteHandler,
+        applyTestObjects(opaqueLayer, opaqueUpdateHandler, opaqueDeleteHandler,
                          videoLayer, videoUpdateHandler, videoDeleteHandler);
 
     }

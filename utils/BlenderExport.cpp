@@ -849,9 +849,7 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
         terrainPrimitives.push_back(std::move(prim));
     }
     const int terrainMesh = writer.addMesh("OctreeTerrain", std::move(terrainPrimitives));
-    const int terrainNode = writer.addNode("OctreeTerrain", terrainMesh);
-
-    int waterNode = -1;
+    writer.addNode("OctreeTerrain", terrainMesh);
     if (!water.indices.empty()) {
         std::vector<GltfWriter::Primitive> waterPrimitives;
         GltfWriter::Primitive prim;
@@ -864,10 +862,9 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
         prim.indices = std::move(water.indices);
         waterPrimitives.push_back(std::move(prim));
         const int waterMesh = writer.addMesh("OctreeWater", std::move(waterPrimitives));
-        waterNode = writer.addNode("OctreeWater", waterMesh);
+        writer.addNode("OctreeWater", waterMesh);
     }
 
-    int grassNode = -1;
     if (!grassPoints.empty()) {
         GltfWriter::Primitive prim;
         prim.name = "GrassPoints";
@@ -891,11 +888,8 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
         std::vector<GltfWriter::Primitive> grassPrimitives;
         grassPrimitives.push_back(std::move(prim));
         const int grassMesh = writer.addMesh("GrassPoints", std::move(grassPrimitives));
-        grassNode = writer.addNode("GrassPoints", grassMesh);
+        writer.addNode("GrassPoints", grassMesh);
     }
-    (void)terrainNode;
-    (void)waterNode;
-    (void)grassNode;
 
     std::string writeError;
     if (!writer.write(outPath.string(), writeError)) {

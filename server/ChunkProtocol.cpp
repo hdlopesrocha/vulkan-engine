@@ -191,10 +191,6 @@ std::vector<uint8_t> buildMeshBatch(const MeshData* meshes, size_t count) {
 
 void encodeRecord(const ChunkRecord& r, uint8_t* o) {
     // Little-endian explicit writes; floats via bit copy (IEEE754 LE on x86).
-    auto wU16 = [&](size_t off, uint16_t x) {
-        o[off] = static_cast<uint8_t>(x & 0xFF);
-        o[off+1] = static_cast<uint8_t>((x >> 8) & 0xFF);
-    };
     auto wU32 = [&](size_t off, uint32_t x) {
         o[off] = static_cast<uint8_t>(x & 0xFF);
         o[off+1] = static_cast<uint8_t>((x >> 8) & 0xFF);
@@ -216,7 +212,6 @@ void encodeRecord(const ChunkRecord& r, uint8_t* o) {
     wU32(36, r.version);
     wU32(40, static_cast<uint32_t>(r.brushIndex));
     for (int i = 0; i < 8; ++i) wF32(44 + 4*i, r.sdf[i]);
-    (void)wU16;
 }
 
 bool decodeRecord(const uint8_t* in, size_t avail, ChunkRecord& out) {

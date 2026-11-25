@@ -63,9 +63,6 @@ struct ShadowParams {
 
         // ---- 4. Per-cascade orthographic bounds in stable light space ----
         for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i) {
-            float res = (float)shadowMapSizes[i];
-            (void)res;
-
             // Frustum-slice corners for this cascade
             float tNear = (splits[i] - nearPlane) / (farPlane - nearPlane);
             float tFar  = (splits[i + 1] - nearPlane) / (farPlane - nearPlane);
