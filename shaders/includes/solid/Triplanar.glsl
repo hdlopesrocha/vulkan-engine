@@ -82,4 +82,3 @@ float computeTriplanarAODominant(in vec3 triW, in int brushIndex, in vec2 uvX, i
     vec2 uv = uvX * dx + uvY * dy + uvZ * (1.0 - dx - dy);
     return texture(aoArray, vec3(uv, float(brushLayer(brushIndex)))).r;
 }
-

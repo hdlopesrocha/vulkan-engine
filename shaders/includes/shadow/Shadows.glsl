@@ -106,5 +106,3 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 worldPos, float bias, out i
 float ShadowCalculationHard(vec4 fragPosLightSpace, vec3 worldPos, float bias) {
     return ShadowCalculation(fragPosLightSpace, worldPos, bias);
 }
-
-
