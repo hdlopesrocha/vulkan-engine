@@ -4,12 +4,6 @@
 #include "../sdf/core/SDF.hpp"
 
 
-OctreeNodeFrame::OctreeNodeFrame()
-    : node(NULL), iteratedNode(NULL), cube(), type(SpaceType::Empty), level(0), brushIndex(DISCARD_BRUSH_INDEX), hsv(0.0f, 0.5f, 0.5f), chunkCube()
-{
-    for(int i=0;i<8;++i) sdf[i] = INFINITY;
-}
-
 OctreeNodeFrame::OctreeNodeFrame(const OctreeNodeFrame &t)
     : node(t.node), iteratedNode(t.iteratedNode), cube(t.cube), type(t.type), level(t.level), brushIndex(t.brushIndex), hsv(t.hsv), chunkCube(t.chunkCube)
 {

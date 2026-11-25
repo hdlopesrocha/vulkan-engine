@@ -17,7 +17,6 @@ struct OctreeNodeFrame {
     int brushIndex;
     glm::vec3 hsv;
     BoundingCube chunkCube;
-    OctreeNodeFrame();
     OctreeNodeFrame(const OctreeNodeFrame &t);
     OctreeNodeFrame(OctreeNode* node, OctreeNode* iteratedNode, const BoundingCube &cube, SpaceType type, uint level, float * sdf, int brushIndex, const BoundingCube &chunkCube);
 };
