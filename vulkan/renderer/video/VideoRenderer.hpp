@@ -64,11 +64,6 @@ public:
     VkImageView depthView(uint32_t frameIndex) const {
         return (frameIndex < VIDEO_FRAMES) ? depthViews[frameIndex] : VK_NULL_HANDLE;
     }
-    VkImageLayout depthLayout(uint32_t frameIndex) const {
-        return (frameIndex < VIDEO_FRAMES) ? depthLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED;
-    }
-    uint32_t getRenderWidth() const { return renderWidth; }
-    uint32_t getRenderHeight() const { return renderHeight; }
 
 private:
     // Opens the dynamic-rendering scope with a cleared color (0,0,0,0) and
