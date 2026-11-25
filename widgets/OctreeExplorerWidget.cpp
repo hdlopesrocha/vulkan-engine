@@ -81,7 +81,7 @@ void OctreeExplorerWidget::render() {
     renderTree(tree);
 }
 
-bool OctreeExplorerWidget::buildMouseRay(const Octree& tree, Ray& outRay) const {
+bool OctreeExplorerWidget::buildMouseRay(Ray& outRay) const {
     if (!camera) return false;
 
     const ImGuiIO& io = ImGui::GetIO();
@@ -153,7 +153,7 @@ void OctreeExplorerWidget::handleRayExpandShortcut(const Octree& tree) {
     if (!tree.root || !tree.allocator) return;
 
     Ray ray;
-    if (!buildMouseRay(tree, ray)) return;
+    if (!buildMouseRay(ray)) return;
 
     rayOpenState.clear();
     rootRayOpen = updateRayOpenStateRecursive(tree.root, static_cast<const BoundingCube&>(tree), tree.allocator, ray);
@@ -201,7 +201,7 @@ void OctreeExplorerWidget::renderTree(const Octree& tree) {
     renderSdfInline(root);
     
     if (open) {
-        renderNode(root, rootCube, 0, allocator, rootFlags);
+        renderNode(root, rootCube, 0, allocator);
         ImGui::TreePop();
     }
 
@@ -211,7 +211,7 @@ void OctreeExplorerWidget::renderTree(const Octree& tree) {
     if (applyRayOpenState) applyRayOpenState = false;
 }
 
-void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube, int depth, OctreeAllocator* allocator, ImGuiTreeNodeFlags extraFlags) {
+void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube, int depth, OctreeAllocator* allocator) {
     if (!node || depth >= maxDepth) return;
 
     OctreeNode* children[8] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
@@ -273,7 +273,7 @@ void OctreeExplorerWidget::renderNode(OctreeNode* node, const BoundingCube& cube
             if (isExpanded) {
                 // Track this cube as expanded for debug visualization
                 expandedCubes.push_back({childCube, getNodeColor(child)});
-                renderNode(child, childCube, depth + 1, allocator, flags);
+                renderNode(child, childCube, depth + 1, allocator);
                 ImGui::TreePop();
             }
         }

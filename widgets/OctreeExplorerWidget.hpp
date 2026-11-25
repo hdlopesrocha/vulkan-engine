@@ -53,10 +53,10 @@ private:
     }
 
     void renderTree(const Octree& tree);
-    void renderNode(OctreeNode* node, const BoundingCube& cube, int depth, OctreeAllocator* allocator, ImGuiTreeNodeFlags extraFlags = 0);
+    void renderNode(OctreeNode* node, const BoundingCube& cube, int depth, OctreeAllocator* allocator);
     void renderSdfInline(const OctreeNode* node);
     void handleRayExpandShortcut(const Octree& tree);
-    bool buildMouseRay(const Octree& tree, Ray& outRay) const;
+    bool buildMouseRay(Ray& outRay) const;
     bool updateRayOpenStateRecursive(OctreeNode* node, const BoundingCube& cube, OctreeAllocator* allocator, const Ray& ray);
     static const char* spaceTypeToString(SpaceType t);
 
