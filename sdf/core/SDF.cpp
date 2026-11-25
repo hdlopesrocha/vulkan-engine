@@ -45,9 +45,6 @@ glm::vec3 SDF::getPosition(float sdf[8], const BoundingCube &cube) {
         if (!std::isfinite(d0) || !std::isfinite(d1)) {
             continue;
         }
-        if (std::fabs(d0) > INFINITY * 0.5f || std::fabs(d1) > INFINITY * 0.5f) {
-            continue;
-        }
 
         bool sign0 = d0 < 0.0f;
         bool sign1 = d1 < 0.0f;

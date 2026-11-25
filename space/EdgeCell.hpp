@@ -6,8 +6,7 @@
 class OctreeNode;
 
 // One cell visited by the octree triangle walk (OctreeTriangleTessellator):
-// its node, its root-consistent cube and the +1-shifted STORED ladder level it
-// sits at.
+// its node and its root-consistent cube.
 //
 // Cube/level identity: cubes are rebuilt root-consistently by replaying the
 // parent-index chain (never the cached/drifting per-node cubes), which is
@@ -15,7 +14,6 @@ class OctreeNode;
 struct EdgeCell {
     OctreeNode *node = NULL;
     BoundingCube cube;
-    int level = 0;
 
     // A cell contributes its vertex to a segment when it is a surface node, at
     // ANY ladder level, AND its own eight corner samples actually straddle the

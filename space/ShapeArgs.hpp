@@ -19,7 +19,6 @@ struct ShapeArgs {
     const SignedDistanceFunction &function;
     const BrushPainter &painter;
     const TextureCoordPainter &coordPainter;
-    const Transformation &model;
     const Simplifier &simplifier;
     float minSize;
 
@@ -38,7 +37,6 @@ struct ShapeArgs {
         const SignedDistanceFunction &function,
         const BrushPainter &painter,
         const TextureCoordPainter &coordPainter,
-        const Transformation &model,
         const Simplifier &simplifier,
         float minSize
     );

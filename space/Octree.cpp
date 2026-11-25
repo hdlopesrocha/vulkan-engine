@@ -325,7 +325,7 @@ void Octree::apply(
     ) {
     std::unique_lock<std::shared_mutex> writeLock(treeMutex);
 
-    ShapeArgs args = ShapeArgs(operation, function, painter, coordPainter, model, simplifier, minSize);	
+    ShapeArgs args = ShapeArgs(operation, function, painter, coordPainter, simplifier, minSize);	
     expand(args);
     // Must run after expand(): the root cube (and therefore the lattice
     // origin, leaf length and packed index range) is final then.
