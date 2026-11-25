@@ -242,6 +242,20 @@ void SettingsWidget::render() {
         ImGui::SliderFloat("##Tess Max Distance", &settings.tessMaxDistance, 1.0f, 2048.0f, "%.1f");
     });
 
+    // 10: Triplanar Mapping
+    sections.emplace_back([this]() {
+        ImGui::Text("Triplanar Mapping");
+        ImGuiComponents::ColSeparator();
+        ImGuiComponents::FieldLabel("Triplanar Threshold", "? (dead-zone before blending)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Triplanar Threshold", &settings.triplanarThreshold, 0.0f, 0.5f, "%.3f");
+        ImGuiComponents::TooltipOnHover("? (dead-zone before blending)");
+        ImGuiComponents::FieldLabel("Triplanar Exponent", "? (>1 = steeper)");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Triplanar Exponent", &settings.triplanarExponent, 1.0f, 12.0f, "%.2f");
+        ImGuiComponents::TooltipOnHover("? (>1 = steeper)");
+    });
+
     // 11: Debug Visualisation (advanced — last)
     sections.emplace_back([this]() {
         ImGui::Text("Debug Visualisation");

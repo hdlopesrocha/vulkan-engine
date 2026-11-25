@@ -4327,9 +4327,6 @@ public:
             command.execute(settings);
             return;
         }
-        if (std::dynamic_pointer_cast<RebuildBrushEvent>(event)) {
-            return;
-        }
         if (auto applyEvent = std::dynamic_pointer_cast<ApplyBrushToSceneEvent>(event)) {
             brushApplyToScenePending = true;
             return;
