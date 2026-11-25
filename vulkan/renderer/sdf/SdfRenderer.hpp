@@ -93,7 +93,6 @@ public:
     // vegetation generator does. Main thread only (called from
     // processPendingMeshes / octree delete handlers); guarded by sceneMutex
     // because the async sdf task reads the mirrors.
-    static constexpr int kLavaBrushIndex = 4;
     static constexpr size_t kMaxLavaPerChunk = 12;
     static constexpr size_t kMaxLavaAnchors = 2048;
     // GPU-build replacement: flame anchors resolved from the chunk's brush-4

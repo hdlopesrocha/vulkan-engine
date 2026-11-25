@@ -50,7 +50,6 @@ class World;
 #include "CommandBufferState.hpp"
 #include "../LodMesh.hpp"
 #include "../PendingMeshData.hpp"
-#include "PendingNode.hpp"
 #include "PendingDeleteEntry.hpp"
 #include "SceneLayerState.hpp"
 #include "StreamStats.hpp"
