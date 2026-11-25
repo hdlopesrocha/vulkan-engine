@@ -724,7 +724,6 @@ bool LocalScene::buildRaymarchTable(OctreeRaymarchTable& out, size_t maxNodes) {
 void LocalScene::requestSDFCubes(Layer& layer, OctreeNodeData &data, const SdfCubeCallback& callback, ThreadPool* poolOverride) {
     std::shared_ptr<Octree> tree = layer.octreeRef();
     if (!tree) return;
-    OctreeThreadContext context;
 
     // Walk starts AT the chunk node (not the whole tree): only this chunk's
     // subtree is visited, so the whole-tree inSubtree filter is no longer needed.
@@ -733,7 +732,7 @@ void LocalScene::requestSDFCubes(Layer& layer, OctreeNodeData &data, const SdfCu
         IteratorHandler handler;
         ThreadPool& pool = (poolOverride != nullptr) ? *poolOverride : tree->threadPool;
         handler.iterateMultiThreaded(*tree, data, pool,
-        [tree, &data, &context, &callback](const Octree &treeRef, OctreeNodeData &params) {
+        [&data, &callback](const Octree &treeRef, OctreeNodeData &params) {
             if (params.node->getType() != SpaceType::Surface) {
                 return true;  // descend through non-surface cells toward the chunk
             }
@@ -755,7 +754,7 @@ void LocalScene::requestSDFCubes(Layer& layer, OctreeNodeData &data, const SdfCu
         [](const Octree &treeRef, OctreeNodeData &params, uint8_t order[8]) {
             for (int i = 0; i < 8; ++i) order[i] = i;
         },
-        [tree, &data, &context](const Octree &treeRef, OctreeNodeData &params) {
+        [](const Octree &treeRef, OctreeNodeData &params) {
             return params.node ? params.node->chunkLod > 0 : false;
         }
         );
@@ -765,7 +764,6 @@ void LocalScene::requestSDFCubes(Layer& layer, OctreeNodeData &data, const SdfCu
 void LocalScene::requestBoundingBoxes(Layer& layer, OctreeNodeData &data, const BBoxCallback& callback, ThreadPool* poolOverride) {
     std::shared_ptr<Octree> tree = layer.octreeRef();
     if (!tree) return;
-    OctreeThreadContext context;
 
     // Walk starts AT the chunk node (not the whole tree): only this chunk's
     // subtree is visited, so the whole-tree inSubtree filter is no longer needed.
@@ -774,7 +772,7 @@ void LocalScene::requestBoundingBoxes(Layer& layer, OctreeNodeData &data, const 
         IteratorHandler handler;
         ThreadPool& pool = (poolOverride != nullptr) ? *poolOverride : tree->threadPool;
         handler.iterateMultiThreaded(*tree, data, pool,
-        [tree, &data, &context, &callback](const Octree &treeRef, OctreeNodeData &params) {
+        [&data, &callback](const Octree &treeRef, OctreeNodeData &params) {
             if (params.node->getType() != SpaceType::Surface) {
                 return true;  // descend through non-surface cells toward the chunk
             }
@@ -792,7 +790,7 @@ void LocalScene::requestBoundingBoxes(Layer& layer, OctreeNodeData &data, const 
         [](const Octree &treeRef, OctreeNodeData &params, uint8_t order[8]) {
             for (int i = 0; i < 8; ++i) order[i] = i;
         },
-        [tree, &data, &context](const Octree &treeRef, OctreeNodeData &params) {
+        [](const Octree &treeRef, OctreeNodeData &params) {
             return params.node ? params.node->chunkLod > 0 : false;
         }
         );
