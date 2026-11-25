@@ -554,8 +554,6 @@ clean:
 	@if [ "$(RESET)" = "1" ]; then reset; fi
 	# Remove bin/ directory
 	rm -rf $(OUT_DIR)
-	# Remove generated SPIR-V files in shaders/ (if present)
-	-rm -f $(SPVS)
 	rm -f pipeline_cache.bin
 	@$(call PLAY_SOUND,clean)
 
