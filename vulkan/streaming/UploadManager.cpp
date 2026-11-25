@@ -231,8 +231,7 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
 void UploadManager::prepareFrameWaits(VulkanApp* app) {
     // Always register each in-flight upload's (fresh) binary semaphore with the
     // frame submit via the engine's cross-queue hazard mechanism. This makes the
-    // integration drop-in: no drawFrame modification is required. (The timeline,
-    // when available, is used only for recycling/ordering.)
+    // integration drop-in: no drawFrame modification is required.
     for (auto& s : staging_.slots()) {
         // A binary semaphore may be waited on exactly once. A slot can stay busy
         // for several frames (transfer not yet complete / not yet recycled); only

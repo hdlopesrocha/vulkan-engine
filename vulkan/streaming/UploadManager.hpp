@@ -21,8 +21,8 @@ namespace streaming {
 //   * It imposes NO fixed uploads-per-frame cap. The only limiter is the number
 //     of staging slots (GPU/CPU memory) and GPU completion.
 //   * It runs entirely on the main thread and never blocks (no vkQueueWaitIdle /
-//     vkDeviceWaitIdle). Completed slots are detected with non-blocking fence /
-//     timeline polling.
+//     vkDeviceWaitIdle). Completed slots are detected with non-blocking fence
+//     polling.
 //   * Transfers are submitted to the engine's RADV-safe upload queue
 //     (geometryTransferQueue(), i.e. a graphics-family queue distinct from the
 //     render queue) so uploading and rendering overlap.

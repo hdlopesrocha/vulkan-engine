@@ -1809,7 +1809,7 @@ void VulkanApp::throttleIfTooManyPending() {
 }
 
 // Ground-truth completion query (see header): never sticks, unlike the
-// tracking-list membership test above when the pump is not running.
+// tracking-list membership test when the pump is not running.
 bool VulkanApp::isFenceDone(VkFence fence) {
     // Freed by the pump only after signaling: untracked means complete.
     // trackedFenceStatus performs the tracking check and the query atomically
