@@ -4327,11 +4327,7 @@ public:
             command.execute(settings);
             return;
         }
-        if (auto rebuildEvent = std::dynamic_pointer_cast<RebuildBrushEvent>(event)) {
-            // The preview is streamed per frame from the selected entry, so a
-            // rebuild event needs no deferred work; kept for compatibility
-            // with publishers that announce brush edits.
-            (void)rebuildEvent;
+        if (std::dynamic_pointer_cast<RebuildBrushEvent>(event)) {
             return;
         }
         if (auto applyEvent = std::dynamic_pointer_cast<ApplyBrushToSceneEvent>(event)) {

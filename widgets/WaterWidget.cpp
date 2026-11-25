@@ -133,8 +133,6 @@ void WaterWidget::render() {
             "Global foam coverage multiplier (lighter/airier foam < 1).");
         SliderFloatField("Foam Decay", &layerParams.foamDecay, 0.0f, 0.5f, "%.4f",
             "Foam extinction per meter below the breaker line.");
-        SliderFloatField("Shore Foam (legacy)", &layerParams.foamShoreAmount, 0.0f, 1.0f, "%.3f",
-            "LEGACY - no effect. The shoreline line is the Contact Foam below.");
     }});
 
     sections.push_back({[&]() {
