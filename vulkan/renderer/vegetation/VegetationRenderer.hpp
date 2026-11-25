@@ -338,8 +338,8 @@ public:
     void preallocate(VulkanApp* app, uint32_t maxChunks = kMaxVegChunks,
                      uint32_t maxInstancesPerChunk = kMaxVegInstancesPerChunk);
 
-    // GPU frustum culling: dispatch compute shader that culls chunks against
-    // viewProj and compacts visible draw commands. Must be called OUTSIDE any
+    // GPU frustum culling: publishes the chunk table for the solid
+    // IndirectRenderer's merged cull dispatch. Must be called OUTSIDE any
     // render pass (compute dispatches are illegal inside dynamic rendering).
     // Auto-cycles through triple-buffered culling slots internally.
     void prepareCull();

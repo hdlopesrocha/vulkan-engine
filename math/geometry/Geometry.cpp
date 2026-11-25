@@ -7,22 +7,6 @@
 Geometry::Geometry() {
 }
 
-Geometry::Geometry(const Geometry& other)
-    : vertices(other.vertices), indices(other.indices)
-{
-    // compactMap is dropped: it is only used transiently during build (addVertex)
-    // and is not required once the geometry is complete.
-}
-
-Geometry& Geometry::operator=(const Geometry& other) {
-    if (this != &other) {
-        vertices = other.vertices;
-        indices = other.indices;
-        compactMap.reset();
-    }
-    return *this;
-}
-
 Geometry::~Geometry() {
 }
 

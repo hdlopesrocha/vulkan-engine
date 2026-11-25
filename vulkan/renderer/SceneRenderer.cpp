@@ -21,7 +21,6 @@
 #include <cassert>
 #include <cstring>
 #include <chrono>
-#include <thread>
 #include <cmath>
 #include <cfloat>
 #include <mutex>

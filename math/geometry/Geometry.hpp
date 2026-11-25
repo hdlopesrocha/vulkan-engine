@@ -25,9 +25,7 @@ public:
 
     Geometry();
     ~Geometry();
-    Geometry(const Geometry& other);            // copies verts/indices; drops compactMap
     Geometry(Geometry&&) = default;
-    Geometry& operator=(const Geometry& other); // same
     Geometry& operator=(Geometry&&) = default;
 
     void addVertex(const Vertex &vertex);

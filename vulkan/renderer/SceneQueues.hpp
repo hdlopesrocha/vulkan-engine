@@ -6,8 +6,8 @@
 // Scene/renderer-specific graphics queues.
 //
 // These encode *how* this particular engine stages its rendering passes:
-// vegetation GPU culling, SDF, bounding-box, solid, water, sky, brush
-// preview, and geometry compute. They are intentionally owned by the
+// vegetation GPU culling, SDF, bounding-box, solid, sky, brush preview, and
+// geometry compute. They are intentionally owned by the
 // application (MyApp) and configured from VulkanApp's generic parallel
 // graphics-queue pool, so the VulkanApp framework stays agnostic about *what*
 // is rendered and *how* the scene is split across queues.
