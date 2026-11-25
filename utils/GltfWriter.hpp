@@ -26,7 +26,6 @@ public:
         float metallic = 0.0f;
         float roughness = 0.85f;
         glm::vec3 emissive{0.0f};
-        float emissiveStrength = 1.0f;
         int baseColorImage = -1; // addImage() index, -1 = none
         int normalImage = -1;
         bool doubleSided = true;

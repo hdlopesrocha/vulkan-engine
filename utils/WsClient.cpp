@@ -83,7 +83,6 @@ bool WsClient::readExact(uint8_t* out, size_t len, int timeoutMs) {
 bool WsClient::connect(const std::string& host, uint16_t port,
                        const std::string& path, int timeoutMs) {
     close();
-    sawClose_ = false;
     lastError_.clear();
     const int64_t deadline = nowMs() + timeoutMs;
 
@@ -279,7 +278,6 @@ bool WsClient::recvMessage(std::vector<uint8_t>& out, int timeoutMs) {
             for (uint64_t i = 0; i < len; ++i) payload[(size_t)i] ^= mask[i % 4];
         }
         if (opcode == 0x8) { // close
-            sawClose_ = true;
             lastError_ = "server closed the connection";
             return false;
         }

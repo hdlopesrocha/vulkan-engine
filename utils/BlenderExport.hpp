@@ -72,7 +72,6 @@ struct Options {
     std::atomic<bool>* cancel = nullptr;
     bool includeWater = true;
     bool includeGrass = true;
-    bool includeSdf = true;
 
     // Vegetation runtime settings that shape the deterministic placement.
     uint32_t billboardCount = 3;
@@ -123,7 +122,6 @@ struct Stats {
     std::string scriptPath;
     std::string configPath;
     std::string readmePath;
-    std::string tileDir;
     std::string blenderLogPath;
     // Non-fatal problem (e.g. Blender missing): the glb + script are still
     // valid, the caller should surface this as a warning.

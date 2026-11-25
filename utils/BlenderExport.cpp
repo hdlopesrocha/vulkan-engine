@@ -1061,7 +1061,6 @@ Stats exportSceneToBlender(Scene& scene, const Options& options, const Extras& e
         }
     }
     stats.scriptPath = scriptPath.string();
-    stats.tileDir = (outDir / (stem + "_tiles")).string();
 
     // ── README ──────────────────────────────────────────────────────────────
     const fs::path readmePath = outDir / (stem + "_README.txt");
