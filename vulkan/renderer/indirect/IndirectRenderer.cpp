@@ -2196,7 +2196,6 @@ uint32_t IndirectRenderer::addMeshSlotted(const Geometry& mesh, uint32_t chunkId
         if (slotIdx >= slotAlloc.capacity()) return UINT32_MAX;
         if (isNewChunk) {
             MeshInfo m{};
-            m.id        = chunkId;
             m.slotIndex = slotIdx;
             m.active    = true;
             m.boundsBase = boundsBase ? glm::vec4(*boundsBase, 0.0f) : glm::vec4(0.0f);
@@ -2355,7 +2354,6 @@ SpanReservation IndirectRenderer::reserveSpanLocked(
         // A brand-new slot for a removed-and-recreated node: allocate a fresh
         // entry whose span is filled below.
         MeshInfo m{};
-        m.id         = chunkId;
         m.slotIndex  = slotIdx;
         m.active     = true;
         m.boundsBase = boundsBase ? glm::vec4(*boundsBase, 0.0f) : glm::vec4(0.0f);
@@ -2378,11 +2376,8 @@ SpanReservation IndirectRenderer::reserveSpanLocked(
         ld.boundsMax = glm::vec4(0.0f);
     }
 
-    // Flat mirrors used by legacy-style callers that read the mesh info.
-    chunk->baseVertex  = ld.baseVertex;
-    chunk->vertexCount = ld.vertexCount;
-    chunk->firstIndex  = ld.firstIndex;
-    chunk->indexCount  = ld.indexCount;
+    // Bounds copied for the downstream cull/veg-table consumers; drawIndex
+    // keys the per-solid-draw vegetation table (binding 9).
     chunk->drawIndex   = slotIdx;
     chunk->boundsMin   = ld.boundsMin;
     chunk->boundsMax   = ld.boundsMax;
@@ -2507,8 +2502,6 @@ bool IndirectRenderer::publishGpuMeshSpan(uint32_t slotIndex, uint32_t vertexCou
         spaceAlloc.freeIndex(ld.firstIndex + indexCount, extraI);
     ld.vertexCount = vertexCount;
     ld.indexCount = indexCount;
-    info->vertexCount = vertexCount;
-    info->indexCount = indexCount;
 
     if (vertexCount == 0 || indexCount == 0) {
         if (slotIndex < indirectCommands.size())
@@ -2601,10 +2594,6 @@ void IndirectRenderer::releaseGpuMeshSpan(uint32_t slotIndex)
         spaceAlloc.freeVertex(ld.baseVertex, ld.vertexCount);
         spaceAlloc.freeIndex(ld.firstIndex, ld.indexCount);
         ld = LevelData{};
-        info->baseVertex = 0;
-        info->vertexCount = 0;
-        info->firstIndex = 0;
-        info->indexCount = 0;
     }
     if (slotIndex < indirectCommands.size())
         indirectCommands[slotIndex] = VkDrawIndexedIndirectCommand{};

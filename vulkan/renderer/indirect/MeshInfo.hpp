@@ -9,14 +9,8 @@
 
 // One registered chunk mesh (draw metadata + packed-pool span).
 struct MeshInfo {
-    uint32_t id = UINT32_MAX;
-    uint32_t baseVertex = 0;
-    uint32_t vertexCount = 0;
-    uint32_t firstIndex = 0;
-    uint32_t indexCount = 0;
     glm::vec4 boundsMin = glm::vec4(0.0f); // object-space AABB min (xyz)
     glm::vec4 boundsMax = glm::vec4(0.0f); // object-space AABB max (xyz)
-    VkDeviceSize indirectOffset = 0; // byte offset into indirect buffer
     uint32_t drawIndex = UINT32_MAX; // position in indirectCommands list
     uint32_t slotIndex = UINT32_MAX; // stable slot (if using slotted mode)
     bool active = false;
