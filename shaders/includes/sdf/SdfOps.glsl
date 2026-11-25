@@ -10,7 +10,6 @@
 
 #include "operations/Combine.glsl"
 #include "operations/Repeat.glsl"
-#include "operations/Mirror.glsl"
 #include "operations/EulerMat.glsl"
 
 #endif // SDF_OPS_GLSL

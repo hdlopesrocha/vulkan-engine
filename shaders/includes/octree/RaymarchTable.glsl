@@ -155,9 +155,4 @@ bool rmRayBoxInv(vec3 boxMin, float boxSize, vec3 ro, vec3 inv,
     return rmRayBoxInv(boxMin, vec3(boxSize), ro, inv, t0, t1);
 }
 
-bool rmRayBox(vec3 boxMin, float boxSize, vec3 ro, vec3 rd, out float t0, out float t1) {
-    vec3 inv = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
-    return rmRayBoxInv(boxMin, boxSize, ro, inv, t0, t1);
-}
-
 #endif // OCTREE_RAYMARCH_TABLE_GLSL

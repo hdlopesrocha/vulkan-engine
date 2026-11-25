@@ -13,10 +13,6 @@
 #include "../../types/WaterWaveField.glsl"
 #include "../noise/Perlin.glsl"
 
-const int WATER_OCT_FULL = 64;
-const int WATER_VERTEX_OCT = 2;
-
-
 
 // ── ONE wind-driven Gerstner swell ───────────────────────────────────────
 // A single directional swell travels along the wind-blended wave direction:
@@ -171,68 +167,6 @@ vec3 waterRippleNormal(vec3 normal, vec3 baseN, vec3 basePos, vec2 waveDir,
     // the water black in the normal view.
     if (!(dot(n, n) > 0.25)) n = normalize(baseN);
     return n;
-}
-
-// Height-only entry point (debug views). The tessellation probe uses
-// waterWaveTessProbe() below instead: it needs a density bias, not the full
-// field.
-float waterWaveDisplacement(vec3 xyz, float time, float depth, float amp,
-                            vec2 shoreDir, WaterParamsNamed wp) {
-    return waterWaveField(xyz, time, depth, amp, shoreDir, wp, false, WATER_OCT_FULL,
-                          vec2(0.0), vec2(0.0)).height;
-}
-
-// Cheap tessellation probe: the same single sine the field displaces with
-// (one evaluation, no noise chain). The mask is deliberately skipped - a
-// triangle-density bias only needs the crest curvature - and the result is
-// deterministic per shared edge, so both patches meeting at an edge agree.
-// The range matches waterWaveDisplacement() (about [-1, 1]), so the density
-// bias keeps its authored meaning.
-// Cheap tessellation probe: the same single sine, deep-water phase.
-float waterWaveTessProbe(vec3 pos, float time, WaterParamsNamed wp) {
-    vec2 shoreDir = normalize(wp.waveDirection + vec2(1e-5, 0.0));
-    float k = 6.28318530718 * max(wp.wavePeriodScale, 1e-6);
-    return sin(k * dot(pos.xz, shoreDir) - k * max(wp.waveSpeed, 0.0) * time);
-}
-
-// Height + analytic gradient, vec4(height, dHeight/dx, dHeight/dy, dHeight/dz).
-// The y component is 0: the field is a height field over xz.  This is the
-// single wave field the TES displacement, the per-pixel normal and the
-// caustic curvature all derive from. `octBudget` forwards the caller's
-// evaluation-time LOD (WATER_OCT_FULL where none applies).
-vec4 waterWaveSample(vec3 xyz, float time, float depth, float amp,
-                     vec2 shoreDir, WaterParamsNamed wp, int octBudget,
-                     vec2 dPosdx, vec2 dPosdy) {
-    WaterWaveField f = waterWaveField(xyz, time, depth, amp, shoreDir, wp, false, octBudget,
-                                      dPosdx, dPosdy);
-    return vec4(f.height, f.grad);
-}
-
-// Second directional derivative of the wave height along `u`, for the
-// wave-shape caustics (perf report 20 C3).
-//
-// The caustic term needs d²h/du². The original implementation central-
-// differenced the analytic gradient over ±ec about the sun-ray entry point:
-// TWO full field evaluations, i.e. 8 FBM chains and 32 four-dimensional Perlin
-// evaluations per pixel, because the curvature spectrum needs every chain —
-// the chop, the calm mask and both ridged trains all contribute, through the
-// direct term and through the amplitude-modulation product rule.
-//
-// This helper keeps the same field and the same analytic gradient but
-// differences it one-sidedly against an evaluation the shading normal has
-// ALREADY paid for: `dhduCenter` is dot(waveField.grad, u) at the shaded
-// surface point. The caustic therefore costs one extra evaluation instead of
-// two. A one-sided difference of the analytic derivative has no cancellation
-// (the gradient difference is O(step·h''), comparable to the gradients
-// themselves) and its O(step) truncation is far inside the caustic softness
-// clamp; the caller keeps its quarter-wavelength step, so the caustic detail
-// still follows the band-limited field the surface is displaced with.
-float waterWaveCurvature(vec3 pos, float time, float depth, float amp, vec2 shoreDir,
-                         vec3 u, float step, float dhduCenter, WaterParamsNamed wp,
-                         int octBudget, vec2 dPosdx, vec2 dPosdy) {
-    WaterWaveField f = waterWaveField(pos + u * step, time, depth, amp, shoreDir, wp, false,
-                                      octBudget, dPosdx, dPosdy);
-    return (dot(f.grad, u) - dhduCenter) / step;
 }
 
 #endif // GERSTNER_GLSL

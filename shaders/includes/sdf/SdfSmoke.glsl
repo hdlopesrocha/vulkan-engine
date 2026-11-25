@@ -117,20 +117,6 @@ vec3 smokeDebugRamp(float v) {
     return mix(c, vec3(1.0, 0.1, 0.1), smoothstep(0.8, 1.0, v));
 }
 
-// Closest point on the finite bullet segment + longitudinal coordinate.
-// Returns (Q.xyz, s) with s clamped to [0, pathLen].
-vec4 smokeBulletClosest(vec3 p, Bullet bl) {
-    vec3 D = bl.velocity / max(length(bl.velocity), 1e-6);
-    float s = clamp(dot(p - bl.start, D), 0.0, max(bl.pathLength, 1e-3));
-    return vec4(bl.start + D * s, s);
-}
-
-// Finite capsule SDF of the bullet path (for the marched field, §4).
-float smokeBulletSDF(vec3 p, Bullet bl, float radius) {
-    vec4 q = smokeBulletClosest(p, bl);
-    return length(p - q.xyz) - max(radius, 1e-3);
-}
-
 // Wake-aged carve radius: the bore starts at the bullet's own radius at
 // the head (tau = 0, fresh passage) and widens behind it as entrained air
 // drifts outward. Outflow u0 = entrainment * bullet speed (wake.y) loses

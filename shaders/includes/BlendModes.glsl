@@ -305,10 +305,4 @@ vec3 blendModeColor(int mode, vec3 base, vec3 blend)
     }
 }
 
-// Inline alias used by material blending code paths.
-vec3 applyMaterialBlend(int mode, vec3 base, vec3 blendColor)
-{
-    return blendModeColor(mode, base, blendColor);
-}
-
 #endif // BLEND_MODES_GLSL

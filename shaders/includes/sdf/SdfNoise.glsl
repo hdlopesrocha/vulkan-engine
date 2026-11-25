@@ -3,11 +3,8 @@
 //
 // Evaluation budget (documented contract for the raymarcher):
 //   sdfNoise       = 8 hash evals (1 noise eval)
-//   sdfFbm         = 3 noise evals
-//   sdfDomainWarp  = 2 noise evals
 //   sdfFlameDeform = 1 noise eval
 //   sdfCnoise      = classic Perlin (reference parity), ~2x sdfNoise
-// A warp + deform + one shape-noise sample costs at most 4 noise evals.
 
 #ifndef SDF_NOISE_GLSL
 #define SDF_NOISE_GLSL
@@ -47,22 +44,7 @@ float sdfNoise(vec3 p) {
     return mix(nxy0, nxy1, u.z);
 }
 
-// 3-octave fBm in [0, 1] (normalized by the amplitude sum).
-float sdfFbm(vec3 p) {
-    float total = 0.0;
-    float amplitude = 0.5;
-    float frequency = 1.0;
-    float norm = 0.0;
-    for (int i = 0; i < 3; i++) {
-        total += sdfNoise(p * frequency) * amplitude;
-        norm += amplitude;
-        amplitude *= 0.5;
-        frequency *= 2.0;
-    }
-    return total / max(norm, 1e-6);
-}
-
-// N-octave fBm in [0, 1] (normalized). sdfFbm(p) == sdfFbmOct(p, 3).
+// N-octave fBm in [0, 1] (normalized).
 // Used by volumetric consumers (cloud bands) that need per-band detail.
 float sdfFbmOct(vec3 p, int octaves) {
     float total = 0.0;
@@ -77,14 +59,6 @@ float sdfFbmOct(vec3 p, int octaves) {
         frequency *= 2.0;
     }
     return total / max(norm, 1e-6);
-}
-
-// Domain warp: offsets p by two low-frequency noise channels scaled by t
-// (t = warp strength in world units). 2 noise evals.
-vec3 sdfDomainWarp(vec3 p, float t, float seed) {
-    float w1 = sdfNoise(p * 0.9 + vec3(seed * 13.1, seed * 5.7, -seed * 3.3));
-    float w2 = sdfNoise(p * 1.7 - vec3(0.0, t * 0.15, 0.0) + vec3(seed * 7.7));
-    return p + (vec3(w1, w2, (w1 + w2) * 0.5) - 0.5) * t;
 }
 
 // Rising-plume deformation: upward-scrolling noise plus a height-scaled

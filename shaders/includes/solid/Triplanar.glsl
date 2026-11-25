@@ -23,28 +23,6 @@ vec3 computeTriplanarAlbedoUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in 
     return cX * triW.x + cY * triW.y + cZ * triW.z;
 }
 
-// Sample albedo using precomputed triplanar UVs with an explicit mip level.
-// textureLod needs no screen-space derivatives, so this is the ONLY variant
-// that is safe inside non-uniform control flow (ray-query hit blocks gated
-// on per-fragment roughness / hit distance). Implicit-LOD texture() there is
-// undefined behavior (garbage albedo + derivative-uniformity validation
-// errors on most drivers).
-vec3 computeTriplanarAlbedoUVsLod(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ, in float lod) {
-    vec3 cX = triW.x > 0.0 ? textureLod(albedoArray, vec3(uvX, float(brushLayer(brushIndex))), lod).rgb : vec3(0.0);
-    vec3 cY = triW.y > 0.0 ? textureLod(albedoArray, vec3(uvY, float(brushLayer(brushIndex))), lod).rgb : vec3(0.0);
-    vec3 cZ = triW.z > 0.0 ? textureLod(albedoArray, vec3(uvZ, float(brushLayer(brushIndex))), lod).rgb : vec3(0.0);
-
-    return cX * triW.x + cY * triW.y + cZ * triW.z;
-}
-
-// Reoriented Normal Mapping (RNM) helper: reorient a blended world-space normal
-// toward the geometric normal while preserving surface detail.
-vec3 reorientNormal(in vec3 blendedWorld, in vec3 geomN) {
-    vec3 b = normalize(blendedWorld);
-    float d = dot(b, geomN);
-    return normalize(b + geomN * (1.0 - d));
-}
-
 // Helper: compute normal from a single projection with given tangent basis
 // (factored for the C3 blended path; identical operations, identical order:
 // the Y-flip / XZ-swap convention ops are norm-preserving, so
@@ -68,39 +46,8 @@ vec3 computeProjectionNormal(vec2 uv, int brushIndex, vec3 surfaceN) {
     return transformProjectionNormal(sampleNormalTexel(uv, brushIndex), surfaceN);
 }
 
-// Compute triplanar normal by sampling the normal map for each projection and transforming each to world-space,
-// using precomputed triplanar UVs. `surfaceN` is the smooth interpolated normal (TBN base).
-vec3 computeTriplanarNormalUVs(in vec3 triW, in int brushIndex, in vec3 surfaceN, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
-    vec3 nmX = vec3(0.0);
-    vec3 nmY = vec3(0.0);
-    vec3 nmZ = vec3(0.0);
-
-    // Normalize incoming triplanar weights and use them directly for blending
-    float wsum = triW.x + triW.y + triW.z + 1e-6;
-    vec3 w = triW / wsum;
-
-    // X projection
-    if (triW.x > 0.0) {
-        nmX = computeProjectionNormal(uvX, brushIndex, surfaceN);
-    }
-
-    // Y projection
-    if (triW.y > 0.0) {
-        nmY = computeProjectionNormal(uvY, brushIndex, surfaceN);
-    }
-
-    // Z projection
-    if (triW.z > 0.0) {
-        nmZ = computeProjectionNormal(uvZ, brushIndex, surfaceN);
-    }
-
-    // Blend the per-projection world-space normals using the normalized triW weights
-    return normalize(nmX * w.x + nmY * w.y + nmZ * w.z);
-}
-
 // Compute triplanar normal by blending the normal-map TEXELS first, then a
-// single basis transform (perf report 21 C3). Same texels and same
-// renormalized weights as computeTriplanarNormalUVs, but one T/B build and
+// single basis transform (perf report 21 C3). One T/B build and
 // two normalizes instead of three + one; the three texel fetches remain
 // (roughness/AO below are where fetches drop). The basis is
 // projection-independent, so no dominant-projection choice is needed.
@@ -116,14 +63,6 @@ vec3 computeTriplanarNormalBlended(in vec3 triW, in int brushIndex, in vec3 surf
     return transformProjectionNormal(normalize(t), surfaceN);
 }
 
-// Sample roughness using precomputed triplanar UVs (R channel)
-float computeTriplanarRoughnessUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
-    float rX = triW.x > 0.0 ? texture(roughnessArray, vec3(uvX, float(brushLayer(brushIndex)))).r : 0.0;
-    float rY = triW.y > 0.0 ? texture(roughnessArray, vec3(uvY, float(brushLayer(brushIndex)))).r : 0.0;
-    float rZ = triW.z > 0.0 ? texture(roughnessArray, vec3(uvZ, float(brushLayer(brushIndex)))).r : 0.0;
-    return rX * triW.x + rY * triW.y + rZ * triW.z;
-}
-
 // Single-projection roughness (perf report 21 C3): roughness is a
 // low-frequency signal that needs no per-projection sampling. One fetch on
 // the dominant (max-weight) projection, selected branchlessly so all lanes
@@ -135,14 +74,6 @@ float computeTriplanarRoughnessDominant(in vec3 triW, in int brushIndex, in vec2
     return texture(roughnessArray, vec3(uv, float(brushLayer(brushIndex)))).r;
 }
 
-// Sample ambient occlusion using precomputed triplanar UVs (R channel)
-float computeTriplanarAOUVs(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
-    float aX = triW.x > 0.0 ? texture(aoArray, vec3(uvX, float(brushLayer(brushIndex)))).r : 0.0;
-    float aY = triW.y > 0.0 ? texture(aoArray, vec3(uvY, float(brushLayer(brushIndex)))).r : 0.0;
-    float aZ = triW.z > 0.0 ? texture(aoArray, vec3(uvZ, float(brushLayer(brushIndex)))).r : 0.0;
-    return aX * triW.x + aY * triW.y + aZ * triW.z;
-}
-
 // Single-projection AO (perf report 21 C3): same dominant-projection
 // argument as roughness above; AO modulates ambient only.
 float computeTriplanarAODominant(in vec3 triW, in int brushIndex, in vec2 uvX, in vec2 uvY, in vec2 uvZ) {
@@ -152,33 +83,3 @@ float computeTriplanarAODominant(in vec3 triW, in int brushIndex, in vec2 uvX, i
     return texture(aoArray, vec3(uv, float(brushLayer(brushIndex)))).r;
 }
 
-vec4 computeTriplanarTangent(in ivec3 texIndices, in vec3 matWeights, in vec3 geomN, in vec3 triW, in vec3 fragPosWorld, in vec2 fragUV, in vec3 N, out vec3 T, out vec3 B) {
-    // Calculate tangent and bitangent from UV derivatives
-    vec3 dpdx = dFdx(fragPosWorld);
-    vec3 dpdy = dFdy(fragPosWorld);
-    vec2 duvdx = dFdx(fragUV);
-    vec2 duvdy = dFdy(fragUV);
-
-    // Tangent: direction of increasing U
-    T = normalize(duvdx.x * dpdx + duvdy.x * dpdy);
-    // Bitangent: direction of increasing V
-    B = normalize(duvdx.y * dpdx + duvdy.y * dpdy);
-
-    // Safeguard against invalid vectors (e.g., if derivatives are zero)
-    if (T.x != T.x || T.y != T.y || T.z != T.z || length(T) < 1e-6) {
-        vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-        T = normalize(cross(up, N));
-    }
-    if (B.x != B.x || B.y != B.y || B.z != B.z || length(B) < 1e-6) {
-        B = normalize(cross(N, T));
-    }
-
-    // Ensure T and B are orthogonal to N
-    T = normalize(T - dot(T, N) * N);
-    B = normalize(B - dot(B, N) * N);
-
-    // Compute handedness
-    float handed = sign(dot(cross(N, T), B));
-    if (handed == 0.0 || handed != handed) handed = 1.0;
-    return vec4(T, handed);
-}

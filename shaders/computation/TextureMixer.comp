@@ -52,12 +52,6 @@ uint hash(uint x) {
     return x;
 }
 
-// Generate random float from 0 to 1
-float random(uvec2 v) {
-    uint n = hash(v.x ^ hash(v.y));
-    return float(n) / float(0xffffffffu);
-}
-
 // Generate random gradient vector for 3D noise (returns vec3)
 vec3 randomGradient3D(ivec3 p) {
     // Wrap XY coordinates based on scale to make seamless in XY plane

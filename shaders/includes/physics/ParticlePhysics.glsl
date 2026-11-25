@@ -42,7 +42,7 @@ layout(push_constant) uniform PC {
 
 const uint GRID_BUCKETS = 8192u;
 const uint GRID_MAX_PER_BUCKET = 64u;
-const uint LOCAL_SIZE = 64u;
+
 
 const uint FLAG_ACTIVE = 1u;
 

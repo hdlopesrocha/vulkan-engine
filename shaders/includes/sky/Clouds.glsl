@@ -282,15 +282,6 @@ float cloudSlabDensity(vec3 pos, int tier, bool cheap) {
     return dens * cloudVerticalProfile(h01, tier) * max(t.y, 0.0);
 }
 
-// Full density at a world-space point (0 outside every enabled slab).
-float cloudDensityAt(vec3 pos) {
-    if (sky.cloudsEnabled == 0u) return 0.0;
-    float d = cloudSlabDensity(pos, 0, false)
-            + cloudSlabDensity(pos, 1, false)
-            + cloudSlabDensity(pos, 2, false);
-    return d * max(sky.densityScale, 0.0);
-}
-
 // Cheap density (puff SDF + reduced base noise, no warp/detail/erosion) for
 // the light march and other multi-sample queries (§19/§25: cheap first).
 float cloudDensityCheapAt(vec3 pos) {

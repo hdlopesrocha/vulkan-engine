@@ -156,7 +156,6 @@ float nodeSdf(uint id, int idx) {
     vec4 v = (idx < 4) ? sdf0[id] : sdf1[id];
     return v[idx & 3];
 }
-ivec4 nodeMeta(uint id) { return meta[id]; }
 int nodeLod(uint id) { return meta[id].x; }
 int nodeType(uint id) { return meta[id].y; }
 int nodeBrush(uint id) { return meta[id].z; }
@@ -175,8 +174,6 @@ int nodeChild(uint id, int i) {
 }
 // AbstractBoundingBox::getCorner = min + getShift(i) * getLength()
 vec3 nodeCorner(uint id, int i) { return nodeMin(id) + CORNERS[i] * nodeSize(id); }
-// AbstractBoundingBox::getCenter = (getMin() + getMax()) * 0.5f
-vec3 nodeCenter(uint id) { return (nodeMin(id) + (nodeMin(id) + vec3(nodeSize(id)))) * 0.5; }
 
 bool isFiniteF(float v) { return !(isnan(v) || isinf(v)); }
 
@@ -244,31 +241,6 @@ vec3 cellNormal(Cell c, vec3 position) {
     float sdf[8];
     for (int i = 0; i < 8; ++i) sdf[i] = nodeSdf(c.id, i);
     return sdfCellNormal(sdf, c.mn, c.sz, position);
-}
-
-// glm::determinant(mat3) — column-major indexing m[col][row].
-float det3(mat3 m) {
-    return m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2])
-         - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2])
-         + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
-}
-
-// Math::solveLinearSystem (Cramer's rule, first column replaced).
-vec3 solveLinearSystem(mat3 A, vec3 b) {
-    float detA = det3(A);
-    if (abs(detA) < 1e-6) {
-        return vec3(0.0);
-    }
-    mat3 A1 = A;
-    mat3 A2 = A;
-    mat3 A3 = A;
-    A1[0] = b;
-    A2[1] = b;
-    A3[2] = b;
-    float x = det3(A1) / detA;
-    float y = det3(A2) / detA;
-    float z = det3(A3) / detA;
-    return vec3(x, y, z);
 }
 
 // SDF::getPosition (QEF with corner snap, sentinel guard and fallbacks).

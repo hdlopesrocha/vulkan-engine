@@ -1,7 +1,5 @@
 // Tangent-Bitangent-Normal (TBN) helper functions
 
-const float TBN_EPSILON = 1e-6;
-
 // Apply per-material normal map conventions: flip Y and swap X/Z channels
 vec3 applyNormalConvention(in vec3 n, in vec4 normalParams) {
     vec3 nn = n;

@@ -53,7 +53,6 @@
 #include "../../includes/Locations.glsl"
 #include "../../includes/SceneBindings.glsl"
 
-#include "../../includes/water/WaterTint.glsl"
 #include "../../includes/water/Gerstner.glsl"
 #include "../../includes/DebugModes.glsl"
 #include "../../includes/Textures.glsl"
@@ -450,11 +449,6 @@ uint rmFindNodeAtImpl(uint root, vec3 pos, out bool nonSurfaceStop) {
     nonSurfaceStop = false;
     if (!rmNodeContains(root, pos)) return RM_INVALID_NODE;
     return rmDescendFrom(root, pos, nonSurfaceStop);
-}
-
-uint rmFindNodeAt(uint root, vec3 pos, out bool nonSurfaceStop) {
-    rmCount(RM_COUNTER_RING_DESCENTS);
-    return rmFindNodeAtImpl(root, pos, nonSurfaceStop);
 }
 
 // Phase 1 ancestor-start descent. The nearest accepted hit's node and its

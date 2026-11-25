@@ -26,11 +26,6 @@ SdfModel sdfModelFromInstance(SdfInstance inst) {
     return m;
 }
 
-// local -> world: scale, then rotate, then translate.
-vec3 sdfModelToWorld(SdfModel m, vec3 lpos) {
-    return sdfEulerMat(m.rotation) * (lpos * m.scale) + m.translation;
-}
-
 // world -> local (inverse TRS). outScale is the conservative local->world
 // distance scale (min axis): a local distance d maps to at most d * outScale,
 // so sphere tracing never oversteps the world-space field.

@@ -187,13 +187,6 @@ vec3 sdfWorldToLocal(vec3 wpos, SdfInstance inst, out float outScale) {
     return sdfModelToLocal(sdfModelFromInstance(inst), wpos, outScale);
 }
 
-void sdfGrassWindLean(SdfInstance inst, SdfDefinition def, float time,
-                      out vec2 windL, out float windAmp) {
-    // SDF grass retired: no wind lean.
-    windL = vec2(0.0);
-    windAmp = 0.0;
-}
-
 float sdfEvalInstance(vec3 wpos, SdfInstance inst, SdfDefinition def,
                       SdfMaterial mat, float time, float lodT,
                       vec2 grassWindL, float grassWindAmp) {
