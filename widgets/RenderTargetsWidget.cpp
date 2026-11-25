@@ -7,11 +7,7 @@
 #include "../vulkan/renderer/shadow/ShadowRenderer.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
-#include <string>
-#include <cstdio>
 #include <stdexcept>
-#include "../utils/FileReader.hpp"
-#include <vector>
 #include <array>
 #include "components/ImGuiHelpers.hpp"
 
@@ -75,7 +71,6 @@ void RenderTargetsWidget::init(VulkanApp* app_, int width, int height) {
 
     // Create graphics pipeline from SPV files (if available)
     if (linearizePipeline == VK_NULL_HANDLE && linearizePipelineLayout != VK_NULL_HANDLE) {
-        std::vector<char> vertCode, fragCode;
         VkShaderModule vert = VK_NULL_HANDLE;
         VkShaderModule frag = VK_NULL_HANDLE;
         try { vert = app->getOrCreateShaderModule("shaders/RenderTargetsWidget.vert.spv"); } catch (...) { }
