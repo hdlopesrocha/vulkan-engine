@@ -104,12 +104,6 @@ ObjDistanceFunction::ObjDistanceFunction(const std::string &objPath,
     build(mesh, model, bias);
 }
 
-ObjDistanceFunction::ObjDistanceFunction(const ObjMesh &mesh,
-                                         const Transformation &model, float bias)
-    : SignedDistanceFunction(model.translate, model) {
-    build(mesh, model, bias);
-}
-
 void ObjDistanceFunction::build(const ObjMesh &mesh, const Transformation &model,
                                 float bias) {
     worldRadius_ = 0.0f;

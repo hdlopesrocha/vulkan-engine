@@ -37,7 +37,6 @@ public:
     // Loads `objPath` and builds the field. An unreadable/empty file leaves
     // the function empty (empty() == true) and the octree apply is a no-op.
     ObjDistanceFunction(const std::string &objPath, const Transformation &model, float bias);
-    ObjDistanceFunction(const ObjMesh &mesh, const Transformation &model, float bias);
     ~ObjDistanceFunction() override = default;
 
     float distance(const glm::vec3 &p) const override;

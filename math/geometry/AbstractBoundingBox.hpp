@@ -11,7 +11,6 @@ class AbstractBoundingBox : public BoundingVolume {
 protected:
     glm::vec3 min;
 public:
-    AbstractBoundingBox();
     AbstractBoundingBox(glm::vec3 min_);
     virtual ~AbstractBoundingBox() {}
 
