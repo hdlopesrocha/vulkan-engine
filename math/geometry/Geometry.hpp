@@ -34,15 +34,6 @@ public:
     void addTriangle(const Vertex &v0, const Vertex &v1, const Vertex &v2);
 };
 
-using GeometryLodCallback = std::function<void(
-    const Geometry& geo,
-    uint8_t lod,
-    uint version,
-    uintptr_t emittingNodeId,
-    const BoundingCube& cube, // the emitting cell's OWN cube (band box, for frustum cull)
-    const BoundingCube& baseCube // the FINEST chunk's cube (shared column anchor)
-)>;
-
 // Appends the 36 indices of a 24-vertex cube (six CCW quads, four vertices per
 // face in the order the proxy cube builders emit them).
 inline void appendCubeQuadIndices(std::vector<uint32_t>& indices) {

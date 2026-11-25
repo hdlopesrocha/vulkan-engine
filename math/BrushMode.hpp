@@ -11,6 +11,4 @@
 // independent: any dynamic layer using NormalBrush gets the same behavior.
 #define NORMAL_BRUSH_INDEX 254
 
-enum BrushMode { ADD, REMOVE, REPLACE, PAINT, BrushMode_COUNT };
-
  

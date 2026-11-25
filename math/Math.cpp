@@ -2,7 +2,6 @@
 #include <glm/glm.hpp>
 #include "geometry/BoundingSphere.hpp"
 #include "geometry/BoundingBox.hpp"
-#include <filesystem>
 #include "BrushMode.hpp"
 #include <sstream>
 #include <fstream>
@@ -18,12 +17,6 @@ int Math::clamp(int val, int min, int max) {
 
 float Math::clamp(float val, float min, float max) {
 	return val < min ? min : val > max ? max : val;
-}
-
-void ensureFolderExists(const std::string& folder) {
-    if (!std::filesystem::exists(folder)) {
-        std::filesystem::create_directories(folder);
-    }
 }
 
 std::stringstream gzipDecompressFromIfstream(std::ifstream& inputFile) {

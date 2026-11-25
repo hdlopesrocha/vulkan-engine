@@ -45,14 +45,6 @@ public:
         : position(pos), color(glm::vec3(1.0f)), texCoord(tex), normal(norm), brushIndex(brushIdx), textureType(static_cast<int>(TextureType::Triplanar)), hsv(0.0f, 0.5f, 0.5f) {
     }
 
-    // Compatibility constructor to allow aggregate-style initialization used across the codebase
-    Vertex(std::array<float,3> posArr, std::array<float,3> colorArr, std::array<float,2> texArr, std::array<float,3> normalArr, float brushIndexF)
-        : position(posArr[0], posArr[1], posArr[2]),
-          color(colorArr[0], colorArr[1], colorArr[2]),
-          texCoord(texArr[0], texArr[1]),
-          normal(normalArr[0], normalArr[1], normalArr[2]),
-          brushIndex(static_cast<int>(brushIndexF)), textureType(static_cast<int>(TextureType::Triplanar)), hsv(0.0f, 0.5f, 0.5f) {}
-
     Vertex() : position(glm::vec3(0.0f)), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), textureType(static_cast<int>(TextureType::Triplanar)), hsv(0.0f, 0.5f, 0.5f) {}
 
     Vertex(glm::vec3 pos) : position(pos), color(glm::vec3(1.0f)), texCoord(glm::vec2(0.0f)), normal(glm::vec3(0.0f)), brushIndex(0), textureType(static_cast<int>(TextureType::Triplanar)), hsv(0.0f, 0.5f, 0.5f) {}
@@ -71,22 +63,9 @@ public:
                brushIndex == o.brushIndex &&
                textureType == o.textureType;
     }
-
-    bool operator!=(const Vertex& other) const {
-        return !(*this == other);
-    }
 };
 
 namespace std {
-
-template <> struct hash<glm::vec4> {
-    uint64_t operator()(const glm::vec4& v) const {
-        uint64_t h = 0;
-        h = hashCombine(h, pack2(v.x, v.y));
-        h = hashCombine(h, pack2(v.z, v.w));
-        return h;
-    }
-};
 
 template<> struct hash<glm::vec3> {
     uint64_t operator()(const glm::vec3& v) const noexcept {
