@@ -373,10 +373,6 @@ private:
     std::unordered_map<uintptr_t, std::vector<sdf_gpu::SdfScene::FlameAnchor>> lavaByChunk_;
     // Shared tuning (single source of truth for renderer + widgets).
     SdfEffectConfig config_;
-    // C2: true = legacy 3700 m XZ smoke pad (default, A/B baseline);
-    // false = tight ball + live-flight fit (see fitSmokeTightLocked).
-    // Guarded by sceneMutex.
-    bool smokeWideContainer_ = true;
     bool lavaDirty_ = false;    // anchors changed -> rebuild staged
 
     // Smoke bomb state (second generic consumer). Scene topology is static
@@ -425,18 +421,6 @@ private:
     // Re-merge lava + smoke scenes into pendingScene_, rebuild its
     // bounds and grids (caller holds sceneMutex). Marks all scene slots dirty.
     void refreshMergedLocked();
-    // C2 (report 25): tight smoke-container fit. liveBulletBoundsLocked
-    // returns the world-space AABB of every LIVE bullet's full flight segment
-    // (start -> start+dir*pathLength, radius + wake margin; smoke-local frame
-    // mapped to world via the shape rotation). Full path, not current
-    // traveled distance, so bounds stay static during flight: one refit on
-    // birth, one on death. tightSmokeBoundsLocked unions that with the smoke
-    // ball and snaps out to kSmokeFitQuantum (the epsilon mechanism).
-    // Caller holds sceneMutex.
-    bool liveBulletBoundsLocked(glm::vec3& mn, glm::vec3& mx) const;
-    void tightSmokeBoundsLocked(glm::vec3& mn, glm::vec3& mx) const;
-    void fitSmokeTightLocked();
-    void refitSmokeContainerIfNeededLocked();
     // M10: true when any merged container can cover a pixel (conservative:
     // true until the first view-projection arrives). Takes sceneMutex.
     bool containersOverlapScreen();

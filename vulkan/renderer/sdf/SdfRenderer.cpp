@@ -17,15 +17,6 @@
 // Shape ids shared with SdfSmokeConfig + the shaders: 0 cloud, 1 sphere,
 // 2 cube, 3 fire (one generic flame instance on the volumetric fire path).
 static constexpr int kSmokeShapeFire = 3;
-// C2 (report 25): tight smoke-container quantization. Fitted bounds snap out
-// to this grid so a flying bullet does not rebuild the scene every frame
-// (full-path fit => bounds are static during flight; rebuilds happen only on
-// bullet birth/death or smoke param edits). 128 m keeps the worst proxy at
-// ~2.7 km only while a max-range round is actually live, vs 7.4 km always.
-// TODO: adapt the container grid resolution to the fitted extent (currently
-// fixed 4x4x4 from createSmokeBomb, so fitted cells are coarser than the
-// ball-only case; DDA-skip cost per cell rises while coverage falls).
-static constexpr float kSmokeFitQuantum = 128.0f;
 
 // EVSM moment format of the shadow cascades (must match ShadowRenderer's
 // EVSM_FORMAT); used by the grass-shadow pipeline's color attachment.
@@ -435,19 +426,11 @@ void SdfRenderer::ensureSmokeScene() {
             // outside the smoke AABB stay empty and march at DDA-skip cost
             // only. XZ only: bullets fly in the shape's local XZ plane, and a
             // Y margin would overlap the terrain/lava containers below.
-            // C2: wide (default, A/B baseline) keeps the legacy pad above;
-            // tight fits the ball + live bullet flights (quantized). The
-            // caller re-merges afterwards (refreshMergedLocked), which marks
-            // the scene slots dirty through the existing upload path.
             if (!smokeScene_.containers().empty()) {
-                if (smokeWideContainer_) {
-                    auto& c = smokeScene_.containers()[0];
-                    const float ext = 3700.0f;
-                    c.boundsMin -= glm::vec3(ext, 0.0f, ext);
-                    c.boundsMax += glm::vec3(ext, 0.0f, ext);
-                } else {
-                    fitSmokeTightLocked();
-                }
+                auto& c = smokeScene_.containers()[0];
+                const float ext = 3700.0f;
+                c.boundsMin -= glm::vec3(ext, 0.0f, ext);
+                c.boundsMax += glm::vec3(ext, 0.0f, ext);
             }
         }
     } else {
@@ -467,101 +450,6 @@ void SdfRenderer::setOcclusionViewProj(const glm::mat4& vp) {
     std::lock_guard<std::mutex> lock(sceneMutex);
     occlusionViewProj_ = vp;
     occlusionViewProjValid_ = true;
-}
-
-bool SdfRenderer::liveBulletBoundsLocked(glm::vec3& mn, glm::vec3& mx) const {
-    // Union of every LIVE bullet's full flight segment in world space. Uses
-    // the same live window as the shader and anyManualBulletLiveLocked
-    // (flight + 8 s wake grace), so a visible round is never outside the
-    // fitted container. Slot 0 (looped auto) included via fmod age.
-    bool any = false;
-    const glm::mat3 rot = smokeRotLocked(); // smoke-local -> world rotation
-    const glm::vec3 origin = config_.smoke.pos;
-    // Wake churn spreads past the bore: keep the wake radius + 2 m slack on
-    // top of the head radius (conservative; shrinks nothing else).
-    const float margin = smokeState_.tuning.wakeRadius + 2.0f;
-    for (uint32_t i = 0; i < kSmokeMaxBullets; ++i) {
-        const Bullet& b = smokeState_.bullets[i];
-        if (b.intensity <= 0.0f) continue;
-        const float speed = std::max(glm::length(b.velocity), 1e-3f);
-        const float travelTime = std::max(b.pathLength, 1e-3f) / speed;
-        const float age = (b.loopDuration > 0.0f)
-            ? std::fmod(lastTime_ - b.phase, b.loopDuration)
-            : (lastTime_ - b.phase);
-        if (age < 0.0f || age > travelTime + 8.0f) continue;
-        const glm::vec3 dirL = b.velocity / speed;
-        const glm::vec3 endL = b.start + dirL * b.pathLength;
-        const float r = std::max(b.radiusStart, b.radiusEnd) + margin;
-        const glm::vec3 sW = origin + rot * b.start;
-        const glm::vec3 eW = origin + rot * endL;
-        const glm::vec3 bmn = glm::min(sW, eW) - glm::vec3(r);
-        const glm::vec3 bmx = glm::max(sW, eW) + glm::vec3(r);
-        if (!any) {
-            mn = bmn;
-            mx = bmx;
-            any = true;
-        } else {
-            mn = glm::min(mn, bmn);
-            mx = glm::max(mx, bmx);
-        }
-    }
-    return any;
-}
-
-void SdfRenderer::tightSmokeBoundsLocked(glm::vec3& mn, glm::vec3& mx) const {
-    // Ball term mirrors createSmokeBomb (sdf/types/SdfScene.cpp): the tight
-    // ball container is center +/- (pad + scale) with pad = max(scale*0.25,
-    // 4). That container covers the smoke instance AABB (half = scale +
-    // turbulence pad < scale + 4), so starting from it can never clip the
-    // ball; rotation keeps a uniform cube invariant. MUST stay in sync with
-    // createSmokeBomb's pad formula.
-    const float ballPad = std::max(config_.smoke.scale * 0.25f, 4.0f);
-    const float ballR = ballPad + config_.smoke.scale;
-    mn = config_.smoke.pos - glm::vec3(ballR);
-    mx = config_.smoke.pos + glm::vec3(ballR);
-    glm::vec3 bmn, bmx;
-    if (liveBulletBoundsLocked(bmn, bmx)) {
-        mn = glm::min(mn, bmn);
-        mx = glm::max(mx, bmx);
-    }
-    // Snap OUT to the fit quantum: the epsilon mechanism. Refit compares
-    // quantized bounds, so sub-quantum drift (a flying bullet's head is
-    // inside the already-fitted full path) never rebuilds.
-    mn = glm::floor(mn / kSmokeFitQuantum) * kSmokeFitQuantum;
-    mx = glm::ceil(mx / kSmokeFitQuantum) * kSmokeFitQuantum;
-}
-
-void SdfRenderer::fitSmokeTightLocked() {
-    // One-container bounds rewrite (no scene rebuild here); the caller
-    // (ensureSmokeScene paths) re-merges via refreshMergedLocked, which
-    // rebuilds the grid through the existing rebuild() path.
-    if (smokeScene_.containers().empty()) return;
-    glm::vec3 mn, mx;
-    tightSmokeBoundsLocked(mn, mx);
-    auto& c = smokeScene_.containers()[0];
-    c.boundsMin = mn;
-    c.boundsMax = mx;
-}
-
-void SdfRenderer::refitSmokeContainerIfNeededLocked() {
-    // Per-frame live-path refit from updateParams (caller holds sceneMutex).
-    // Steady state (no birth/death/edit) compares quantized bounds and
-    // returns with zero allocation and zero GPU work.
-    if (smokeWideContainer_) return;
-    if (!config_.smoke.enabled || config_.smoke.shape == kSmokeShapeFire) return;
-    if (smokeScene_.containers().empty()) return;
-    glm::vec3 mn, mx;
-    tightSmokeBoundsLocked(mn, mx);
-    const auto& c = smokeScene_.containers()[0];
-    constexpr float kEps = 1e-3f;
-    const glm::vec3 dMn = glm::abs(c.boundsMin - mn);
-    const glm::vec3 dMx = glm::abs(c.boundsMax - mx);
-    if (dMn.x <= kEps && dMn.y <= kEps && dMn.z <= kEps &&
-        dMx.x <= kEps && dMx.y <= kEps && dMx.z <= kEps) return;
-    smokeScene_.containers()[0].boundsMin = mn;
-    smokeScene_.containers()[0].boundsMax = mx;
-    smokeScene_.rebuild(); // refresh the single-container grid (4x4x4)
-    refreshMergedLocked(); // re-merge + mark scene slots dirty (existing path)
 }
 
 bool SdfRenderer::containersOverlapScreen() {
@@ -609,9 +497,6 @@ void SdfRenderer::updateParams(float timeSec, uint32_t frameIndex) {
     params_.time = timeSec;
     lastTime_ = timeSec; // bullet birth clock (fireBullet stamps this)
     syncAutoBulletLocked(); // re-arm auto when a manual round dies (transition-only write)
-    // C2: per-frame live-path container refit (quantized; steady state is a
-    // bounds compare with no allocation). No-op on the wide (default) path.
-    refitSmokeContainerIfNeededLocked();
     refreshTracerLocked(); // H4: bullet heads are a function of time: re-pack every frame
     repackDebugMode();
     paramsDirtySlots_.fill(true);
