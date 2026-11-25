@@ -154,10 +154,6 @@ void SettingsWidget::render() {
         ImGui::Checkbox("Enable Shadows", &settings.enableShadows);
         ImGuiComponents::TooltipOnHover("Globally enable or disable all shadowing");
         if (shadowParams) {
-            ImGuiComponents::FieldLabel("Base Ortho Size", "Shadow camera orthographic size for the base cascade");
-            ImGui::SetNextItemWidth(kSettingsColWidth);
-            ImGui::SliderFloat("##Base Ortho Size", &shadowParams->orthoSize, 10.0f, 2048.0f, "%.0f");
-            ImGuiComponents::TooltipOnHover("Shadow camera orthographic size for the base cascade");
             for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
                 ImGui::Text("  Cascade %d", i);
             }

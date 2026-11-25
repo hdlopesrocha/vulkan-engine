@@ -78,7 +78,7 @@ void SkyRenderer::init(VulkanApp* app) {
         std::cerr << "[SKY FULLSCREEN GRID PIPELINE] Created pipeline=" << (void*)(VkPipeline)skyFullscreenGridPipeline << std::endl;
     }
 }
-void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode) {
+void SkyRenderer::render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, SkySettings::Mode skyMode) {
     // Select fullscreen pipeline based on sky mode (no vertex input, 3-vertex triangle)
     VkPipeline activePipeline = (skyMode == SkySettings::Mode::Grid) ? (VkPipeline)skyFullscreenGridPipeline : (VkPipeline)skyFullscreenPipeline;
     VkPipelineLayout activeLayout = (skyMode == SkySettings::Mode::Grid) ? (VkPipelineLayout)skyFullscreenGridPipelineLayout : (VkPipelineLayout)skyFullscreenPipelineLayout;
@@ -268,8 +268,7 @@ void SkyRenderer::destroyOffscreenTargets(VulkanApp* app) {
 
 void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                                    VkDescriptorSet descriptorSet, Buffer &uniformBuffer,
-                                   const UniformObject &ubo, const glm::mat4 &viewProjection,
-                                   SkySettings::Mode skyMode) {
+                                   const UniformObject &ubo) {
     if (frameIndex >= skyColorImages.size() || skyColorImageViews[frameIndex] == VK_NULL_HANDLE)
         return;
     if (skyEquirectPipeline == VK_NULL_HANDLE || skyEquirectPipelineLayout == VK_NULL_HANDLE)

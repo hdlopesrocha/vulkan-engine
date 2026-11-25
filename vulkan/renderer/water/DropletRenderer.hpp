@@ -27,7 +27,7 @@ public:
     // scales the rendered sphere (1 = the collision radius). Returns false when
     // the pass is not ready (no sky view / no state buffer) and nothing was
     // recorded.
-    bool draw(VkCommandBuffer cmd, VulkanApp* app, uint32_t frameIndex,
+    bool draw(VkCommandBuffer cmd, uint32_t frameIndex,
               VkDescriptorSet mainSet, VkBuffer dropletState, uint32_t count,
               float radiusScale, float ior, float debugMode, VkImageView skyView);
 

@@ -1315,8 +1315,6 @@ public:
         sceneQueues->configure(getParallelGraphicsQueues(), getGraphicsQueue());
 
         sceneRenderer = new SceneRenderer();
-        for (int i = 0; i < SHADOW_CASCADE_COUNT; ++i)
-            shadowParams.shadowMapSizes[i] = sceneRenderer->shadowMapper->getShadowMapSize(i);
         // Initialize application-owned water params with two default elements
         {
             // First (default) water material: shore waves enabled. All other
@@ -1593,7 +1591,7 @@ public:
         glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspectRatio, settings.nearPlane, settings.farPlane);
         proj[1][1] *= -1; // Vulkan Y-flip
         camera.setProjection(proj);
-        shadowParams.update(camera.getPosition(), light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
+        shadowParams.update(light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
         
         // Position camera to view the terrain
         printf("[Camera Setup] Final Position: (%.1f, %.1f, %.1f)\n", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
@@ -1905,7 +1903,7 @@ public:
             }
         }
 
-        shadowParams.update(camera.getPosition(), light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
+        shadowParams.update(light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
 
         // Drain the pending mesh queue populated by the background scene-loading
         // thread.  GPU uploads happen here on the main thread so newly generated
@@ -2505,7 +2503,7 @@ public:
                 this->sceneRenderer->solidRenderer->getIndirectRenderer().acquireBuffers(cullCmd);
                 if (this->sceneRenderer->vegetationRenderer &&
                     (settings.vegetationEnabled || grassImpostorsEnabled))
-                    this->sceneRenderer->vegetationRenderer->prepareCull(cullCmd, viewProj);
+                    this->sceneRenderer->vegetationRenderer->prepareCull();
                 if (settings.showSDFDebug && this->sceneRenderer && this->sceneRenderer->debugSDFRenderer)
                     this->sceneRenderer->debugSDFRenderer->registerToIndirect();
                 if (settings.showBoundingBoxes && this->sceneRenderer && this->sceneRenderer->boundingBoxRenderer)
@@ -2712,7 +2710,6 @@ public:
         // active the probe re-renders every frame; when off, the H8 cache
         // applies unchanged (cloudT collapses to 0).
         {
-            SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
             const SkySettings& sky = this->sceneRenderer->getSkySettings();
             const CloudSettings& clouds = this->sceneRenderer->getCloudSettings();
             const glm::vec3 skyLightDir = glm::normalize(light.getDirection());
@@ -2765,7 +2762,7 @@ public:
                 // frame retries instead of caching stale contents.
                 std::array<float, 42> sigCopy{};
                 for (int i = 0; i < 42; ++i) sigCopy[i] = skySigNow[i];
-                asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, skyMode, v, sigCopy]() {
+                asyncSkyFuture = asyncThreadPool.enqueue([this, frameIdx, v, sigCopy]() {
                     MyApp* app = this;
                     VkCommandBuffer skyCmd = app->beginAsyncTask("sky");
                     if (skyCmd == VK_NULL_HANDLE) return;
@@ -2779,7 +2776,7 @@ public:
                     this->sceneRenderer->setCmdState(&taskState);
                     if (this->sceneRenderer->skyRenderer)
                         this->sceneRenderer->skyRenderer->renderOffscreen(this, skyCmd, frameIdx,
-                            getMainDescriptorSet(), this->sceneRenderer->mainUniformBuffers[frameIdx], this->uboStatic, viewProj, skyMode);
+                            getMainDescriptorSet(), this->sceneRenderer->mainUniformBuffers[frameIdx], this->uboStatic);
                     this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
                     // submitCommandBufferAsyncToQueue ends the command buffer and submits
                     // it (do NOT call vkEndCommandBuffer here). registerSignal=true ->
@@ -2949,8 +2946,7 @@ public:
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPools[frameIdx], 8);
                     if (this->sceneRenderer->skyRenderer) {
                         SkySettings::Mode skyMode = this->sceneRenderer->getSkySettings().mode;
-                        this->sceneRenderer->skyRenderer->render(this, solidCmd, getMainDescriptorSet(),
-                            this->sceneRenderer->mainUniformBuffers[frameIdx], uboStatic, viewProj, skyMode);
+                        this->sceneRenderer->skyRenderer->render(this, solidCmd, getMainDescriptorSet(), skyMode);
                     }
                     if (profilingEnabled && queryPools[frameIdx] != VK_NULL_HANDLE)
                         vkCmdWriteTimestamp(solidCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 9);
@@ -2983,7 +2979,7 @@ public:
                             VkImageView skyView = this->sceneRenderer->skyRenderer
                                 ? this->sceneRenderer->skyRenderer->getSkyView(frameIdx)
                                 : VK_NULL_HANDLE;
-                            dropletRenderer->draw(solidCmd, this, frameIdx, getMainDescriptorSet(),
+                            dropletRenderer->draw(solidCmd, frameIdx, getMainDescriptorSet(),
                                                   particleSim->stateBuffer(), dropletDrawCount,
                                                   1.0f, settings.dropletIor, 0.0f, skyView);
                         }

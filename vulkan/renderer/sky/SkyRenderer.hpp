@@ -20,7 +20,7 @@ public:
     void init(VulkanApp* app);
 
     // Render sky sphere using internal VBO/descriptor/uniform
-    void render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, Buffer &uniformBuffer, const UniformObject &ubo, const glm::mat4 &viewProjection, SkySettings::Mode skyMode);
+    void render(VulkanApp* app, VkCommandBuffer &cmd, VkDescriptorSet descriptorSet, SkySettings::Mode skyMode);
 
     // Initialize the sky sphere and internal VBO (optional)
     void init(VulkanApp* app, SkySettings& skySettings, VkDescriptorSet descriptorSet);
@@ -49,8 +49,7 @@ public:
     // Render the sky to its own offscreen color attachment
     void renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t frameIndex,
                          VkDescriptorSet descriptorSet, Buffer &uniformBuffer,
-                         const UniformObject &ubo, const glm::mat4 &viewProjection,
-                         SkySettings::Mode skyMode);
+                         const UniformObject &ubo);
 
     // Access offscreen sky color view for sampling
     VkImageView getSkyView(uint32_t frameIndex) const {

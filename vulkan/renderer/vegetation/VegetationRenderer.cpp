@@ -683,7 +683,7 @@ bool VegetationRenderer::pollConsolidation() {
     return true;
 }
 
-void VegetationRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj) {
+void VegetationRenderer::prepareCull() {
     // Generational flow (no-vegetation fix): publish any fence-complete
     // generation first, then submit a new one only if the set moved. The
     // cull below runs on the last COMPLETED snapshot (vegNumChunks) even

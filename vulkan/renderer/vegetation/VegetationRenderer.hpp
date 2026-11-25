@@ -342,7 +342,7 @@ public:
     // viewProj and compacts visible draw commands. Must be called OUTSIDE any
     // render pass (compute dispatches are illegal inside dynamic rendering).
     // Auto-cycles through triple-buffered culling slots internally.
-    void prepareCull(VkCommandBuffer cmd, const glm::mat4& viewProj);
+    void prepareCull();
 
     // Cascade-aware culling: single dispatch that culls against all 3 cascade
     // frustums simultaneously. Each chunk is culled independently per cascade.

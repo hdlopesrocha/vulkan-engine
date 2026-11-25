@@ -177,7 +177,7 @@ void DropletRenderer::writeSet(uint32_t slot, VkBuffer state, VkImageView sky) {
     boundSky_[slot] = sky;
 }
 
-bool DropletRenderer::draw(VkCommandBuffer cmd, VulkanApp* vkApp, uint32_t frameIndex,
+bool DropletRenderer::draw(VkCommandBuffer cmd, uint32_t frameIndex,
                            VkDescriptorSet mainSet, VkBuffer dropletState, uint32_t count,
                            float radiusScale, float ior, float debugMode, VkImageView skyView) {
     if (pipeline_ == VK_NULL_HANDLE || dropletState == VK_NULL_HANDLE || count == 0u ||

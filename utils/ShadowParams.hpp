@@ -10,14 +10,10 @@
 #include <cfloat>
 
 struct ShadowParams {
-    float orthoSize = 1024.0f;
-    // Per-cascade shadow map resolution set by ShadowRenderer.
-    // Defaults here are overwritten at init from ShadowRenderer.
-    uint32_t shadowMapSizes[SHADOW_CASCADE_COUNT] = {2048, 1024, 512};
     glm::mat4 lightSpaceMatrix[SHADOW_CASCADE_COUNT];
     float splits[SHADOW_CASCADE_COUNT + 1];
 
-    void update(const glm::vec3& camPos, Light& light,
+    void update(Light& light,
                 const glm::mat4& cameraViewProj,
                 float nearPlane, float farPlane) {
         glm::vec3 lightDir = glm::normalize(light.getDirection());
