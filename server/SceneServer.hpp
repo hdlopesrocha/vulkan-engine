@@ -44,14 +44,13 @@ public:
     SceneServer& operator=(const SceneServer&) = delete;
 
     // Starts the transport and wires the providers. Throws std::runtime_error
-    // when the port cannot be bound (see lastError for the message).
+    // when the port cannot be bound.
     void start();
     void stop();
     bool running() const { return running_.load(); }
 
     uint16_t port() const { return web_.port(); }
     size_t clientCount() const { return web_.clientCount(); }
-    const std::string& lastError() const { return error_; }
 
     // Live octree streaming. `layer` is the scene layer index the node belongs
     // to (0 = opaque terrain, 1 = transparent water by default). Safe from any
@@ -77,6 +76,5 @@ private:
     std::atomic<uint64_t> transparentUpserts_{0};
     std::atomic<uint64_t> solidDeletes_{0};
     std::atomic<uint64_t> transparentDeletes_{0};
-    std::string error_;
     bool verbose_ = true;
 };

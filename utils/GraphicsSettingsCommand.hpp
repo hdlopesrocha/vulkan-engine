@@ -24,8 +24,6 @@ class GraphicsSettingsCommand {
 public:
     explicit GraphicsSettingsCommand(GraphicsQuality quality) : quality_(quality) {}
 
-    GraphicsQuality quality() const { return quality_; }
-
     // Global Settings only; the authored per-layer WaterSettings stay untouched.
     void execute(Settings& settings) const {
         switch (quality_) {

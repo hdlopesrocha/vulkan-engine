@@ -17,7 +17,6 @@ SceneServer::~SceneServer() {
 
 void SceneServer::start() {
     if (running_.load()) return;
-    error_.clear();
 
     // Full chunk listing + scene metadata for REQUEST_ALL. Both take the
     // scene's tree lock internally, so this is safe while the application
@@ -33,12 +32,7 @@ void SceneServer::start() {
         return chunkmesh::buildChunkMesh(ids_, scene_, id, mesh);
     });
 
-    try {
-        web_.start();
-    } catch (const std::exception& e) {
-        error_ = e.what();
-        throw;
-    }
+    web_.start();
     running_.store(true);
     if (verbose_) {
         std::cout << "[SceneServer] serving on http://localhost:" << port()
