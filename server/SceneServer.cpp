@@ -88,9 +88,5 @@ SceneServer::Counters SceneServer::counters() const {
     Counters c;
     c.upserts = upserts_.load();
     c.deletes = deletes_.load();
-    c.solidUpserts = solidUpserts_.load();
-    c.transparentUpserts = transparentUpserts_.load();
-    c.solidDeletes = solidDeletes_.load();
-    c.transparentDeletes = transparentDeletes_.load();
     return c;
 }

@@ -33,10 +33,6 @@ public:
     struct Counters {
         uint64_t upserts = 0;
         uint64_t deletes = 0;
-        uint64_t solidUpserts = 0;
-        uint64_t transparentUpserts = 0;
-        uint64_t solidDeletes = 0;
-        uint64_t transparentDeletes = 0;
     };
 
     // `scene` must outlive the server (the providers reference it). The scene's
