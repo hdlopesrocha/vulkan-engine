@@ -5709,7 +5709,6 @@ void VulkanApp::createLogicalDevice() {
               << " transferQueue handle: " << transferQueue
               << " dedicatedTransfer=" << (transferQueue != graphicsQueue ? "yes" : "no")
                << " solidQueue=" << (parallelGraphicsQueues.size() > 5 ? "dedicated" : "aliased")
-               << " waterQueue=" << (parallelGraphicsQueues.size() > 6 ? "dedicated" : "aliased")
               << "\n";
 
 }

@@ -18,7 +18,6 @@ public:
     VkQueue bboxQueue       = VK_NULL_HANDLE;
     VkQueue brushQueue      = VK_NULL_HANDLE;
     VkQueue solidQueue      = VK_NULL_HANDLE;
-    VkQueue waterQueue      = VK_NULL_HANDLE;
     VkQueue skyQueue        = VK_NULL_HANDLE;
 
     VkQueue getVegetationQueue() const { return vegetationQueue; }
@@ -26,7 +25,6 @@ public:
     VkQueue getBoundingBoxQueue() const { return bboxQueue; }
     VkQueue getBrushQueue() const { return brushQueue; }
     VkQueue getSolidQueue() const { return solidQueue; }
-    VkQueue getWaterQueue() const { return waterQueue; }
     VkQueue getSkyQueue() const { return skyQueue; }
 
     // Assign each role from the device's parallel graphics-queue pool (`pg`),
@@ -40,7 +38,6 @@ public:
         sdfQueue          = (pg.size() > 2) ? pg[2] : graphicsQueue;
         bboxQueue         = (pg.size() > 3) ? pg[3] : graphicsQueue;
         solidQueue        = (pg.size() > 5) ? pg[5] : graphicsQueue;
-        waterQueue        = (pg.size() > 6) ? pg[6] : graphicsQueue;
         skyQueue          = (pg.size() > 7) ? pg[7] : graphicsQueue;
         brushQueue        = (pg.size() > 8) ? pg[8] : graphicsQueue;
     }
