@@ -361,14 +361,12 @@ public:
         VkFence runSingleTimeCommandsAsyncOnTransfer(const std::function<void(VkCommandBuffer)>& fn, VkSemaphore* outSemaphore = nullptr);
         // Synchronous variant: record, submit to the transfer queue and wait for completion.
         void runSingleTimeCommandsOnTransfer(const std::function<void(VkCommandBuffer)>& fn);
-        // Query whether a given fence is still tracked as pending by VulkanApp
-        bool isFencePending(VkFence fence);
         // Ground-truth completion query for a fence: true when there is
         // nothing left to wait for (NULL handle, no longer tracked because
         // the pump freed it after signaling, or vkGetFenceStatus SUCCESS).
-        // Unlike isFencePending (which reports tracking-list membership and
-        // goes stale when processPendingCommandBuffers is not pumped), this
-        // can never stick: a signaled fence always reports done. The find +
+        // Unlike tracking-list membership (which goes stale when
+        // processPendingCommandBuffers is not pumped), this can never stick:
+        // a signaled fence always reports done. The find +
         // status check run under m_submissionMutex, atomic with respect to
         // the pump's removeFence+vkDestroyFence. Safe for per-frame polling;
         // never blocks.
@@ -620,7 +618,6 @@ public:
         VkQueue getSdfQueue() const;
         VkQueue getBoundingBoxQueue() const;
         VkQueue getSolidQueue() const;
-        VkQueue getWaterQueue() const;
         VkQueue getSkyQueue() const;
         // Return a graphics-family queue for parallel face work (round-robin index).
         // When only one graphics queue exists (all dedicated queues aliased), every

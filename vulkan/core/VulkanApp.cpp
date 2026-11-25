@@ -1809,15 +1809,6 @@ void VulkanApp::throttleIfTooManyPending() {
     waitForAllPendingCommandBuffers();
 }
 
-// Check whether a fence is currently tracked as pending
-bool VulkanApp::isFencePending(VkFence fence) {
-    std::lock_guard<std::recursive_mutex> lk(m_submissionMutex);
-    for (auto &p : m_pendingCommandBuffers) {
-        if (p.second == fence) return true;
-    }
-    return false;
-}
-
 // Ground-truth completion query (see header): never sticks, unlike the
 // tracking-list membership test above when the pump is not running.
 bool VulkanApp::isFenceDone(VkFence fence) {
@@ -5881,6 +5872,5 @@ VkQueue VulkanApp::getVegetationQueue() const { return sceneQueues ? sceneQueues
 VkQueue VulkanApp::getSdfQueue() const { return sceneQueues ? sceneQueues->getSdfQueue() : VK_NULL_HANDLE; }
 VkQueue VulkanApp::getBoundingBoxQueue() const { return sceneQueues ? sceneQueues->getBoundingBoxQueue() : VK_NULL_HANDLE; }
 VkQueue VulkanApp::getSolidQueue() const { return sceneQueues ? sceneQueues->getSolidQueue() : VK_NULL_HANDLE; }
-VkQueue VulkanApp::getWaterQueue() const { return sceneQueues ? sceneQueues->getWaterQueue() : VK_NULL_HANDLE; }
 VkQueue VulkanApp::getSkyQueue() const { return sceneQueues ? sceneQueues->getSkyQueue() : VK_NULL_HANDLE; }
 VkQueue VulkanApp::getBrushQueue() const { return sceneQueues ? sceneQueues->getBrushQueue() : VK_NULL_HANDLE; }
