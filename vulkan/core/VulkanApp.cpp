@@ -146,7 +146,6 @@ Buffer VulkanApp::createDeviceLocalBufferAsync(const void* data, VkDeviceSize si
 
 // Async submission bookkeeping migrated to VulkanApp members (m_submissionMutex guards all).
 #include "VulkanApp.hpp"
-#include "../resources/TextureArrayManager.hpp"
 #include "../../utils/FileReader.hpp"
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
@@ -4708,7 +4707,6 @@ void VulkanApp::drawFrame() {
 
     // Process pending command buffers and deferred-destroy callbacks now that present is done
     processPendingCommandBuffers();
-    //std::cerr << "presented image " << imageIndex << "\n";
 
     // Hook for derived apps to run post-submit instrumentation (e.g., readback).
     // During bring-up the app may only be partially initialized; boot stages are
