@@ -105,37 +105,6 @@ void IndirectRenderer::writeIndirectCommand(const Buffer& buffer, uint32_t index
     }
 }
 
-void IndirectRenderer::syncHostBuffersToGPU() {
-    std::lock_guard<std::recursive_mutex> lock(mutex);
-    // Ensure every active slot's indirect/bounds is visible via host mapping.
-    // This is the fallback path for water when deferredWriteMeta hasn't yet run.
-    for (const auto& kv : meshes) {
-        const MeshInfo& mi = kv.second;
-        if (!mi.active) continue;
-        uint32_t slotIdx = mi.slotIndex;
-        if (slotIdx >= slotAlloc.capacity()) continue;
-        const auto& ld = mi.level_;
-        if (!ld.allocated) continue;
-        VkDrawIndexedIndirectCommand cmd{};
-        cmd.indexCount = ld.indexCount;
-        cmd.instanceCount = 1;
-        cmd.firstIndex = ld.firstIndex;
-        cmd.vertexOffset = static_cast<int32_t>(ld.baseVertex);
-        cmd.firstInstance = slotIdx;
-        writeIndirectCommand(indirectBuffer, slotIdx, cmd);
-        VkDeviceSize bOff = static_cast<VkDeviceSize>(slotIdx) * 4 * sizeof(glm::vec4);
-        void* bdst = boundsBuffer.map(bOff);
-        if (bdst) {
-            float cellSize = mi.boundsMax.x - mi.boundsMin.x;
-            coarsestPublishedLevel_ = std::max(coarsestPublishedLevel_, static_cast<int>(ld.level));
-            glm::vec4 lodMeta(cellSize, static_cast<float>(ld.level), metaMaxLevel(), 0.0f);
-            glm::vec4 bnds[4] = { mi.boundsMin, mi.boundsMax, lodMeta, mi.boundsBase };
-            std::memcpy(bdst, bnds, sizeof(bnds));
-            boundsBuffer.unmap();
-        }
-    }
-}
-
 void IndirectRenderer::acquireBuffers(VkCommandBuffer cmd) {
     VkBufferMemoryBarrier2 barriers[4]{};
     uint32_t count = 0;
@@ -1643,32 +1612,6 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
 }
 
 
-
-void IndirectRenderer::drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws) {
-    if (vertexBuffer.buffer == VK_NULL_HANDLE || indexBuffer.buffer == VK_NULL_HANDLE) {
-        static bool reported = false;
-        if (!reported) {
-            printf("[IndirectRenderer::drawPreparedWithBuffers] vertex or index buffer is NULL, skipping\n");
-            reported = true;
-        }
-        return;
-    }
-
-    VkBuffer vbs[] = { vertexBuffer.buffer };
-    VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-    vkCmdBindIndexBuffer(cmd, indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-    uint32_t maxCount = maxDraws > 0 ? maxDraws : static_cast<uint32_t>(indirectCommands.size());
-    uint32_t bufMaxCount = static_cast<uint32_t>(meshCapacity);
-    if (maxCount > bufMaxCount) {
-        std::cerr << "[drawPreparedWithBuffers] CLAMPING maxCount from " << maxCount << " to meshCapacity " << bufMaxCount << std::endl;
-        maxCount = bufMaxCount;
-    }
-    if (maxCount == 0) return; // nothing to draw — avoid calling indirect draw with 0 maxDraw
-
-    vkCmdDrawIndexedIndirectCount(cmd, compactBuffer, 0, visibleCountBuffer, 0, maxCount, sizeof(VkDrawIndexedIndirectCommand));
-}
 
 void IndirectRenderer::drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws) {
     // NOTE: No mutex lock here - this is only called from the main render thread

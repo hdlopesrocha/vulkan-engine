@@ -19,8 +19,6 @@
 
 #include "../../LodMesh.hpp"
 
-class Geometry; // math/Geometry.hpp (positions + brushIndex per vertex)
-
 // ─── Required scene / GPU types ────────────────────────────────────────────
 // -I. (repo root) is on the build include path, so the root-relative forms
 // below resolve. The canonical GPU-layout structs live in sdf/types/ (one
@@ -84,9 +82,6 @@ public:
     // for the Blender exporter. Call from the render thread; the scene
     // is refreshed by the regular render path.
     const sdf_gpu::SdfScene& exportScene() const { return pendingScene_; }
-    // Returns true when a re-upload was staged; the upload itself happens in
-    // prepareCull on the render thread.
-    bool rebuildGridIfDirty();
 
     // ── Lava-anchored fire (brushIndex 4) ────────────────────────────────
     // Flame anchors are derived from the SOLID shape of lava terrain chunks
@@ -101,10 +96,10 @@ public:
     static constexpr int kLavaBrushIndex = 4;
     static constexpr size_t kMaxLavaPerChunk = 12;
     static constexpr size_t kMaxLavaAnchors = 2048;
-    void ingestLavaChunk(uintptr_t nid, const Geometry& geom);
     // GPU-build replacement: flame anchors resolved from the chunk's brush-4
     // surface-node SDFs (no Cartesian vertex stream needed). Same replace
-    // semantics as ingestLavaChunk; an empty span removes the chunk's anchors.
+    // semantics as the legacy chunk-geometry collector; an empty span removes
+    // the chunk's anchors.
     void ingestLavaAnchors(uintptr_t nid, std::span<const LavaAnchor> anchors);
     void removeLavaChunk(uintptr_t nid);
     void clearLava();

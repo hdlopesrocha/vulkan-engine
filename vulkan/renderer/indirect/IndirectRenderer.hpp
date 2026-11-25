@@ -60,7 +60,6 @@ public:
         uploadMgr_ = mgr;
         streamCategory_ = category;
     }
-    bool hasUploadManager() const { return uploadMgr_ != nullptr; }
 
     IndirectRenderer();
     ~IndirectRenderer();
@@ -282,17 +281,11 @@ public:
     VkBuffer getVegBbCount(uint32_t frame) const  { return vegBbCountBuf[frame]; }
     VkBuffer getVegImpCompact(uint32_t frame) const { return vegImpCompactBuf[frame]; }
     VkBuffer getVegImpCount(uint32_t frame) const  { return vegImpCountBuf[frame]; }
-    VkBuffer getVegTableBuffer() const { return vegTableBuffer.buffer; }
-    bool isVegetationCullEnabled() const { return vegCullEnabled; }
-    // Dummy buffer bound to the vegetation bindings (5..9) on dispatches that do
-    // not run vegetation culling, so the layout is always complete.
-    VkBuffer getVegDummyBuffer() const { return vegDummyBuffer.buffer; }
     // Current cull frame index (so callers can align their draw frame with the one
     // the merged dispatch wrote into).
     uint32_t getCurrentCullFrame() const { return currentCullFrame; }
     // Issue indirect draw using the compacted indirect buffer (call inside render pass).
     void drawPrepared(VkCommandBuffer cmd, uint32_t maxDraws = 0);
-    void drawPreparedWithBuffers(VkCommandBuffer cmd, VkBuffer compactBuffer, VkBuffer visibleCountBuffer, uint32_t maxDraws = 0);
     void bindBuffers(VkCommandBuffer cmd);
 
     // ── Cascade-aware culling (single pass, 3 cascades) ──
@@ -303,26 +296,9 @@ public:
     // Draw a specific cascade's compacted output (call inside render pass).
     void drawCascadeOnly(VkCommandBuffer cmd, uint32_t cascadeIndex);
 
-    // Accessors
-    const Buffer& getIndirectBuffer() const { return indirectBuffer; }
-    const Buffer& getBoundsBuffer() const { return boundsBuffer; }
-    const Buffer& getCompactBuffer(uint32_t frame) const { return compactIndirectBuffers[frame % MAX_CULL_FRAMES]; }
-    // Compacted indirect commands / visible count written by the most recent
-    // cull -- the same pair drawPrepared() consumes. Used by the water
-    // back-face pass to reuse the main water cull output when it is guaranteed
-    // complete (shadows off); see the ordering proof in MyApp.cpp.
-    VkBuffer getCurrentCompactBuffer() const { return compactIndirectBuffers[currentCullFrame].buffer; }
-    VkBuffer getCurrentVisibleCountBuffer() const { return visibleCountBuffers[currentCullFrame].buffer; }
-    // Last observed visible count for a cull frame (async readback cache, 1-frame latency, for stats only).
-    uint32_t getLastVisibleCount(uint32_t frame) const { return lastVisibleCount[frame % MAX_CULL_FRAMES]; }
-    VkDescriptorSetLayout getComputeDescriptorSetLayout() const { return computeDescriptorSetLayout; }
-
     // Get the pre-allocated slot-pool capacity (fixed by initSlots).
     // Used for sizing external compact buffers (e.g. cubemap).
     size_t getMeshCapacity() const { return meshCapacity; }
-
-    // Force host-visible indirect/bounds to GPU (for water fallback without transfer)
-    void syncHostBuffersToGPU();
 
     // Get count of active meshes (memoized: recomputed under the same mutex
     // only after a meshes mutation, so per-frame stats/sizing calls do not
@@ -339,16 +315,6 @@ public:
     // Host-read of the GPU-visible count. Uses a per-frame fence to avoid
     // stalling unrelated queue work.
     uint32_t readVisibleCount(VulkanApp* app) const;
-
-    // Invoke `visitor(const MeshInfo&)` for each active mesh (thread-safe).
-    // Avoids allocating a temporary vector.
-    template<typename F>
-    void visitActiveMeshInfos(F&& visitor) const {
-        std::lock_guard<std::recursive_mutex> guard(mutex);
-        for (const auto& kv : meshes) {
-            if (kv.second.active) std::forward<F>(visitor)(kv.second);
-        }
-    }
 
     VkBuffer getVertexBufferHandle() const { return vertexBuffer.buffer; }
     VkBuffer getIndexBufferHandle() const { return indexBuffer.buffer; }
