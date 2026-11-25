@@ -10,8 +10,6 @@
 #include <stdexcept>
 #include "../../utils/LocalScene.hpp"
 #include "../../services/OctreeTopologyCompute.hpp"
-#include "../../space/OctreeTriangleTessellator.hpp"
-#include "../../space/Tesselator.hpp"
 #include "../../sdf/core/SDF.hpp"
 #include "../includes/shader/locations.hpp"
 #include "../includes/debug/DebugModes.hpp"
@@ -397,7 +395,7 @@ SceneRenderer::~SceneRenderer() {
     // VulkanApp instance.
 }
 
-void SceneRenderer::beginInit(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams) {
+void SceneRenderer::beginInit(VulkanApp* app, TextureArrayManager* textureArrayManager) {
     if (!app) {
         std::cerr << "[SceneRenderer::init] app is nullptr!" << std::endl;
         return;
@@ -923,15 +921,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
 
 
 }
-
-// Compatibility entry point: run all three phases back to back. The staged
-// path (MyApp) uses beginInit()/pollInit()/finishInit() instead.
-void SceneRenderer::init(VulkanApp* app, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams) {
-    beginInit(app, textureArrayManager, materialManager, waterParams);
-    while (!pollInit()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    finishInit(app, textureArrayManager, materialManager, waterParams);
-}
-
 
 // ── Descriptor-buffer migration (Phase 1) ───────────────────────────────────
 // Step 1: allocate 3 host-visible descriptor buffers (one per frame). Size =
@@ -1541,7 +1530,7 @@ void SceneRenderer::drainPendingMeshes(std::deque<PendingMeshData>& out, size_t 
     }
 }
 
-void SceneRenderer::processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, std::deque<PendingMeshData>& batch) {
+void SceneRenderer::processPendingMeshes(VulkanApp* app, std::deque<PendingMeshData>& batch) {
     solidRenderer->getIndirectRenderer().pollPendingTransfers(app);
 
     // Keep the GPU LoD gate meta in sync with the tree (self-correcting once
@@ -2035,7 +2024,7 @@ bool SceneRenderer::buildChunkResident(Layer::Id layer, NodeID nid,
     return true;
 }
 
-void SceneRenderer::processNodeLayer(Scene& scene, Layer::Id layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, float minSize, ThreadPool* poolOverride) {
+void SceneRenderer::processNodeLayer(Scene& scene, Layer::Id layer, NodeID nid, OctreeNodeData& nodeData, GeometryHandler onGeometry, ThreadPool* poolOverride) {
 
     // Local Solid/Water terrain is SDF-raymarched from the octree directly.
     // It must not enter the GPU topology/mesh path: doing so would flatten

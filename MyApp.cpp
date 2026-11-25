@@ -138,7 +138,7 @@
 // wires them behind a UniqueChangeCollector dedup stage and dispatches on the
 // main thread.
 std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(SceneRenderer* renderer, VulkanApp* app, Scene* scene,
-              Layer::Id layer, float minSize, ThreadPool* genPool, const PublishTarget& target) {
+              Layer::Id layer, ThreadPool* genPool, const PublishTarget& target) {
 
     // Solid/Water terrain is consumed directly by the SDF raymarch table: the
     // octree shape only has to materialize its SDF nodes. No chunk topology
@@ -148,7 +148,7 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
     const bool raymarchOnlyLayer =
         layerObj && layerObj->renderer() != LayerRendererType::Video;
 
-    Octree::OctreeNodeDataHandler onAdded = [renderer, app, scene, layer, minSize, genPool, target, raymarchOnlyLayer](const OctreeNodeData& nd) {
+    Octree::OctreeNodeDataHandler onAdded = [renderer, app, scene, layer, genPool, target, raymarchOnlyLayer](const OctreeNodeData& nd) {
         NodeID nid = reinterpret_cast<NodeID>(nd.node);
 
         if (raymarchOnlyLayer) {
@@ -159,7 +159,7 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
             renderer->processNodeLayer(
                 *scene, layer, nid, nodeCopy,
                 [](Layer::Id, NodeID, const LoDMesh&) {},
-                minSize, genPool);
+                genPool);
             return;
         }
 
@@ -205,7 +205,6 @@ std::pair<Octree::OctreeNodeDataHandler, Octree::OctreeNodeDataHandler> build(Sc
                 std::lock_guard<std::mutex> lock(target.queueMutex);
                 target.meshData[nid_] = {layer_, nid_, lodMesh, nodeCopy};
             },
-            minSize,
             genPool);
     };
 
@@ -963,7 +962,7 @@ public:
             // create those targets.
             if (sceneRenderer) {
                 sceneRenderer->setVegetationRenderScale(settings.vegetationRenderScale);
-                sceneRenderer->beginInit(this, &textureArrayManager, &materialManager, waterParams);
+                sceneRenderer->beginInit(this, &textureArrayManager);
             }
             setupDiagStep("renderer init groups started");
             advanceBoot();
@@ -1929,7 +1928,7 @@ public:
             }
             std::deque<PendingMeshData> pendingBatch;
             sceneRenderer->drainPendingMeshes(pendingBatch, 16);
-            sceneRenderer->processPendingMeshes(this, camera.getPosition(), pendingBatch);
+            sceneRenderer->processPendingMeshes(this, pendingBatch);
         }
 
         // Octree SDF raymarch: rebuild the node table on a debounce and keep
@@ -5293,7 +5292,7 @@ void MyApp::undoBrushLayer(Layer::Id layer, bool group) {
             else ++it;
         }
         if (!pending.empty()) {
-            sceneRenderer->processPendingMeshes(this, camera.getPosition(), pending);
+            sceneRenderer->processPendingMeshes(this, pending);
         }
     }
     sceneRenderer->removeAllLayerMeshes(layer);
@@ -5631,10 +5630,9 @@ void MyApp::ensureLayerHandlers() {
     // PublishTarget references to the layer's heap-allocated GPU state, so a
     // removed layer's handlers must not stay reachable.
     Scene* sceneForChanges = &world->activeScene();
-    const float minSize = 30.0f;
     for (Layer::Id id : ids) {
         auto handlers = build(
-            sceneRenderer, this, sceneForChanges, id, minSize,
+            sceneRenderer, this, sceneForChanges, id,
             &sceneRenderer->layerGenPool(id),
             {
                 sceneRenderer->pendingMeshQueue,

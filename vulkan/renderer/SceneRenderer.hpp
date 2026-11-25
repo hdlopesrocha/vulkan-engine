@@ -15,7 +15,6 @@ class World;
 #include "../../utils/FileReader.hpp"
 #include "../../math/geometry/Vertex.hpp"
 #include "../../math/geometry/Geometry.hpp"
-#include "../../math/geometry/BoundingCubeHasher.hpp"
 #include <unordered_map>
 #include <unordered_set>
 #include <array>
@@ -216,14 +215,12 @@ public:
     // load/generation; steady-state cost is zero (console output only).
     void logMemoryUtilization();
 
-    void init(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams);
     // ── Staged bring-up (S1) ─────────────────────────────────────────────
     // beginInit() runs the serial prologue and starts the four heavy renderer
     // groups on worker threads, then returns. pollInit() is a non-blocking
     // "are the groups done?" check; finishInit() joins them and performs the
-    // main-thread wiring (shadow map, vegetation, descriptors, pools). The
-    // compatibility init() below runs all three back to back.
-    void beginInit(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams);
+    // main-thread wiring (shadow map, vegetation, descriptors, pools).
+    void beginInit(VulkanApp* app_, TextureArrayManager* textureArrayManager);
     bool pollInit();
     void finishInit(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams);
     bool initStarted() const { return initStarted_; }
@@ -264,7 +261,6 @@ public:
         NodeID nid, 
         OctreeNodeData& nodeData, 
         GeometryHandler onGeometry, 
-        float minSize, 
         ThreadPool* poolOverride = nullptr
     );
 
@@ -350,7 +346,7 @@ public:
     // Unify the given pending geometry batch into the GPU. One common path for
     // solid and water: each entry routes itself to the right IndirectRenderer
     // and deferred-slot bookkeeping by layer.
-    void processPendingMeshes(VulkanApp* app, glm::vec3 cameraPos, std::deque<PendingMeshData>& batch);
+    void processPendingMeshes(VulkanApp* app, std::deque<PendingMeshData>& batch);
 
     // Async streaming orchestrator (parallel per-category pools, lock-free
     // queues, drop-in staging upload manager). Currently scaffolded: its
