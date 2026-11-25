@@ -33,7 +33,6 @@ struct ImGui_ImplVulkan_InitInfo;
 #include "GraphicsPipelineConfig.hpp"
 #include "PendingLayoutUpdate.hpp"
 #include "QueueSegment.hpp"
-#include "ResourceType.hpp"
 #include "MemoryHeapBudget.hpp"
 #include "BatchTransition.hpp"
 
@@ -156,7 +155,6 @@ class VulkanApp {
     static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 
     VmaContext vma;
-    bool vmaReady = false;
 
     std::vector<uint64_t> imagesInFlight; // stores frameTimeline value when image was last acquired
     // frame index for round-robin CPU frames-in-flight
@@ -289,16 +287,10 @@ public:
         std::mutex& getQueueSubmitMutex(VkQueue q);
         // Submit a pre-recorded command buffer and block until it completes.
         void submitCommandBufferAndWait(VkCommandBuffer commandBuffer);
-        // Wait for the graphics queue to become idle (vkQueueWaitIdle) while holding
-        // `graphicsSubmitMutex` to avoid races with concurrent submissions.  This is
-        // usually sufficient for synchronizing most operations and avoids the
-        // cost of a full device-level idle.  Use `runSingleTimeCommands` for
-        // small transient waits that also need pipeline barriers.
-        VkResult queueWaitIdle();
         // Call `vkDeviceWaitIdle` while holding `graphicsSubmitMutex` to avoid races
         // with concurrent queue submissions.  This method is retained for
         // compatibility but should be avoided in new code; prefer
-        // `queueWaitIdle` or `runSingleTimeCommands` instead.
+        // `runSingleTimeCommands` instead.
         VkResult deviceWaitIdle();
         // Wait for all per-frame in-flight fences to signal (blocks).
         void waitForFrameFences();
@@ -388,9 +380,6 @@ public:
         void addExtraWaitSemaphore(VkSemaphore sem, VkPipelineStageFlags2 stage);
         ~VulkanApp();
 
-    // ImGui integration glue: backend can call these to route submits through the
-    // application's synchronized submission helpers. `g_imguiVulkanApp` is defined
-    // in VulkanApp.cpp and set during `initImGui()`.
     void cleanupSwapchain();
     void recreateSwapchain();
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
@@ -441,7 +430,6 @@ public:
         VkSampler createTextureSampler(uint32_t mipLevels);
         VkSampler createSampler(const VkSamplerCreateInfo& info, const char* name);
         VkSampler createSamplerLinearClamp(const char* name);
-        VkSampler createSamplerNearestClamp(const char* name);
         void updateUniformBuffer(Buffer &uniform, void * data, size_t dataSize);
     void createDescriptorPool(uint32_t uboCount, uint32_t samplerCount);
         VkDescriptorSet createDescriptorSet(VkDescriptorSetLayout layout);
@@ -454,7 +442,6 @@ public:
         const std::vector<VkDescriptorSet>& getRegisteredDescriptorSets() const { return registeredDescriptorSets; }
         VkDescriptorSetLayout getDescriptorSetLayout() const;
         VkDescriptorSet getStaticDescriptorSet() const;
-        VkDescriptorSetLayout getMaterialDescriptorSetLayout() const;
         VkDescriptorSetLayout getBrushParamsDescriptorSetLayout() const;
         // Register a descriptor set layout with the resource manager (used by
         // SceneDescriptorLayout for cleanup tracking). Kept on VulkanApp so the
@@ -891,11 +878,4 @@ public:
         std::unordered_map<VkBuffer, VkDeviceSize> bufferSizes_;
 
 };
-
-// ImGui integration glue: backend can call these to route submits through the
-// application's synchronized submission helpers. `g_imguiVulkanApp` is defined
-// in VulkanApp.cpp and set during `initImGui()`.
-extern VulkanApp* g_imguiVulkanApp;
-void setImGuiVulkanApp(VulkanApp* app);
-VulkanApp* getImGuiVulkanApp();
 

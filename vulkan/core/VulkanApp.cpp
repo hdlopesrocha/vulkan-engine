@@ -167,12 +167,6 @@ static std::string wallClockNow() {
     return std::string(buf);
 }
 
-// ImGui glue pointer (set during initImGui)
-VulkanApp* g_imguiVulkanApp = nullptr;
-
-void setImGuiVulkanApp(VulkanApp* app) { g_imguiVulkanApp = app; }
-VulkanApp* getImGuiVulkanApp() { return g_imguiVulkanApp; }
-
 void VulkanApp::initVulkan() {
     loadBuildTimestamp();
     createInstance();
@@ -182,7 +176,6 @@ void VulkanApp::initVulkan() {
     createLogicalDevice();
     createPipelineCache();
     vma.init(instance, physicalDevice, device);
-    vmaReady = true;
     resources.setAllocator(vma.allocator);
     stagingRing.init(vma.allocator);
     createSwapchain();
@@ -731,9 +724,6 @@ void VulkanApp::initImGui() {
     fillImGuiInitInfo(init_info);
 
     bool imguiInitOk = ImGui_ImplVulkan_Init(&init_info);
-    // Expose this VulkanApp instance to the ImGui backend so it can route
-    // synchronous submits/waits through our helpers to avoid threading races.
-    setImGuiVulkanApp(this);
     printf("[ImGui] ImGui_ImplVulkan_Init returned %s\n", imguiInitOk ? "true" : "false");
 
     // Fonts are uploaded automatically by the backend on first NewFrame()
@@ -1318,15 +1308,6 @@ VkResult VulkanApp::waitTrackedFence(VkFence fence, uint64_t timeoutNs) {
             std::this_thread::sleep_for(std::chrono::nanoseconds(pollNs));
         }
     }
-}
-
-// Wait only for the graphics queue to become idle.  This mirrors
-// `runSingleTimeCommands` behavior and is usually sufficient for
-// synchronization, avoiding the cost of `vkDeviceWaitIdle`.
-VkResult VulkanApp::queueWaitIdle() {
-    std::lock_guard<std::mutex> qlock(getQueueSubmitMutex(graphicsQueue));
-    VkResult r = vkQueueWaitIdle(graphicsQueue);
-    return r;
 }
 
 VkResult VulkanApp::deviceWaitIdle() {
@@ -3321,22 +3302,6 @@ VkSampler VulkanApp::createSamplerLinearClamp(const char* name) {
     info.unnormalizedCoordinates = VK_FALSE;
     info.compareEnable = VK_FALSE;
     info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    return createSampler(info, name);
-}
-
-VkSampler VulkanApp::createSamplerNearestClamp(const char* name) {
-    VkSamplerCreateInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    info.magFilter = VK_FILTER_NEAREST;
-    info.minFilter = VK_FILTER_NEAREST;
-    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    info.anisotropyEnable = VK_FALSE;
-    info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    info.unnormalizedCoordinates = VK_FALSE;
-    info.compareEnable = VK_FALSE;
-    info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     return createSampler(info, name);
 }
 
@@ -5902,9 +5867,6 @@ VkDescriptorSetLayout VulkanApp::getDescriptorSetLayout() const {
 }
 VkDescriptorSet VulkanApp::getStaticDescriptorSet() const {
     return sceneDescriptorLayout ? sceneDescriptorLayout->staticDescriptorSet() : VK_NULL_HANDLE;
-}
-VkDescriptorSetLayout VulkanApp::getMaterialDescriptorSetLayout() const {
-    return sceneDescriptorLayout ? sceneDescriptorLayout->materialDescriptorSetLayout() : VK_NULL_HANDLE;
 }
 VkDescriptorSetLayout VulkanApp::getBrushParamsDescriptorSetLayout() const {
     return sceneDescriptorLayout ? sceneDescriptorLayout->brushParamsDescriptorSetLayout() : VK_NULL_HANDLE;
