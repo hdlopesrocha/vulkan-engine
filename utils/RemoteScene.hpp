@@ -100,7 +100,6 @@ private:
         OctreeNode node;      // address-stable identity for NodeID use
         BoundingCube cube{glm::vec3(0.0f), 0.0f};
         uint32_t level = 0;
-        uint64_t serverId = 0;
         uint8_t layer = 0;
         bool alive = true;
     };

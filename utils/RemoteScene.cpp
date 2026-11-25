@@ -205,7 +205,6 @@ RemoteScene::Stub* RemoteScene::upsertStub(const chunkproto::ChunkRecord& rec) {
     }
     // Refresh all published attributes (same id always names the same node
     // while alive — server ids are never recycled, see ChunkIds.hpp).
-    stub->serverId = rec.id;
     stub->layer = rec.layer;
     stub->level = rec.level;
     stub->cube = BoundingCube(glm::vec3(rec.minX, rec.minY, rec.minZ), rec.size);
