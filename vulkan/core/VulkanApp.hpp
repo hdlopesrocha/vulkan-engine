@@ -512,34 +512,6 @@ public:
         const GraphicsPipelineConfig& config,
         VkPipelineLayout layout);
 
-    // Backwards-compatible wrapper for callers that pass an initializer_list
-    inline std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
-        std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
-        const std::vector<VkVertexInputBindingDescription>& bindingDescriptions,
-        std::initializer_list<VkVertexInputAttributeDescription> attributeDescriptions,
-        const std::vector<VkDescriptorSetLayout>& setLayouts = {},
-        const VkPushConstantRange* pushConstantRange = nullptr,
-        VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL,
-        VkCullModeFlagBits cullMode = VK_CULL_MODE_BACK_BIT,
-        bool depthWrite = true,
-        bool colorWrite = true,
-        VkCompareOp depthCompare = VK_COMPARE_OP_LESS,
-        VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        bool depthClampEnable = false,
-        const std::vector<VkFormat>& colorFormats = {},
-        VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
-        bool noColorAttachment = false,
-        bool depthBiasEnable = false,
-        VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE,
-        bool depthTestEnable = true,
-        bool blendEnable = false) {
-        std::vector<VkVertexInputAttributeDescription> vec(attributeDescriptions);
-        return createGraphicsPipeline(stages, bindingDescriptions, vec, setLayouts, pushConstantRange,
-            polygonMode, cullMode, depthWrite, colorWrite, depthCompare, topology, depthClampEnable,
-            colorFormats, depthFormat, noColorAttachment, depthBiasEnable, frontFace, depthTestEnable,
-            blendEnable);
-    }
-
     // Config-based wrapper for initializer_list attribute descriptions
     inline std::pair<VkPipeline, VkPipelineLayout> createGraphicsPipeline(
         std::initializer_list<VkPipelineShaderStageCreateInfo> stages,
