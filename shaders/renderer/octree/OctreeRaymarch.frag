@@ -31,6 +31,13 @@
 // isosurface by exactly the same amount; both paths therefore show the same
 // bumped terrain with the same material height maps/gates.
 //
+// Distance LOD: the table stores every Surface level down to the finest leaf
+// lattice, but the march only descends while the current cell is larger than
+// the screen-space target for the ray distance traveled. Past that point the
+// cell's trilinear field is sampled directly, so distant rays skip several
+// hierarchy levels instead of walking to lod 0. Near cells still reach the
+// leaf lattice and the hit-time ring reconstruction keeps its full detail.
+//
 // Brush blending: a hit rebuilds the local Surface-Nets triangle (the four
 // quadrant cells around the nearest crossing edge, deduped and owner-rotated
 // exactly like OctreeTriangles.comp) and shades with up to three unique brush
@@ -142,18 +149,34 @@ const int RM_MAX_STACK = 16;
 const int RM_MAX_ROOTS = 16;
 const int RM_BISECT_STEPS = 7;
 
+// World size of one pixel at distance t. viewProjection[1][1] holds
+// 1/tan(fovy/2) and pc.viewport is the solid target extent in pixels.
+float rmPixelWorldSize(float t) {
+    float pixelAngle = 2.0 / max(abs(ubo.viewProjection[1][1]) * max(pc.viewport.y, 1.0), 1e-6);
+    return max(t, 0.0) * pixelAngle;
+}
+
 // Distance-adaptive hit tolerance. The node epsilon is the base floor; with a
 // screen-space tolerance enabled the band widens with the world size of one
 // pixel at the sample distance, so distant and grazing rays stop as soon as
-// the crossing is sub-pixel instead of over-resolving it. One pixel's world
-// size at distance t is 2*tan(fovy/2)/height * t; viewProjection[1][1] holds
-// 1/tan(fovy/2) (pc.viewport is the solid target extent in pixels).
+// the crossing is sub-pixel instead of over-resolving it.
 float rmHitEpsilon(float nodeSize, float t) {
     float eps = max(nodeSize * 2.0e-3, 1.0e-4);
     float px = ubo.raymarchScreenEps;
     if (px <= 0.0) return eps;
-    float pixelAngle = 2.0 / max(abs(ubo.viewProjection[1][1]) * max(pc.viewport.y, 1.0), 1e-6);
-    return max(eps, px * max(t, 0.0) * pixelAngle);
+    return max(eps, px * rmPixelWorldSize(t));
+}
+
+// Distance-adaptive octree LOD: the smallest cell worth descending into for a
+// sample at distance t. The table stores the full Surface hierarchy down to
+// the finest leaf lattice; walking every level is expensive and unnecessary
+// once a cell covers only a few pixels. Past this target the march samples the
+// current node's parent-like trilinear field instead of its stored children.
+// Eight pixels keeps near cells at leaf detail while cutting the distant node
+// count by several hierarchy levels.
+const float RM_LOD_CELL_PIXELS = 8.0;
+float rmLodCellSize(float t) {
+    return max(rmPixelWorldSize(t) * RM_LOD_CELL_PIXELS, 1.0e-4);
 }
 
 // Resolve a node's shading material at a given QEF position. Shared by the
@@ -956,10 +979,20 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
         // The step below must never jump over the child cell that contains p:
         // stored Surface children are only noticed when the sample lands inside
         // them, and a thin front-face shell is much smaller than the distance
-        // step that a coarse parent field (pruned-children fallback) produces.
-        // Clamp every step to this child's exit so the ray visits the next cell
-        // (and descends into a Surface child) instead of skipping it.
+        // step that a coarse parent field (pruned children or the distance LOD
+        // gate) produces. Clamp every step to this child's exit so the ray
+        // visits the next cell (and descends into a Surface child) instead of
+        // skipping it. When the LOD gate stops descending, cellExit stays at
+        // nodeExit and the parent field is sampled for the whole node.
         float cellExit = nodeExit;
+
+        // Distance-adaptive LOD gate. Once this cell is no larger than the
+        // screen-space target for the current ray distance, keep sampling its
+        // trilinear field for the rest of the cell instead of descending into
+        // the stored children. The children remain available to the hit-time
+        // ring reconstruction; only the march itself is coarsened. At close
+        // range the target is below the leaf size, so lod 0 is still reached.
+        bool descend = !rmNodeIsLeaf(node) && nodeSize > rmLodCellSize(t);
 
         // Descend into the child cell containing p. Select the cell at a small
         // forward nudge: after a cell skip/exit t lands exactly on a shared
@@ -969,7 +1002,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
         // far-too-large interval and every sibling in between is skipped (the
         // observed cause of the missing terrain). The nudge is negligible at
         // cell scale but strictly inside the cell the ray is about to enter.
-        if (!rmNodeIsLeaf(node)) {
+        if (descend) {
             vec3 mn = rmNodeMin(node);
             float nudge = max(nodeSize * 1.0e-5, 1.0e-4);
             float tn = t + nudge;
