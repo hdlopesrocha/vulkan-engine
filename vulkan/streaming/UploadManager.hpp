@@ -78,11 +78,6 @@ private:
     VkDeviceSize   slotSize_ = 0;
 
     std::array<MPSCQueue<UploadJob>, (size_t)StreamCategory::Count> queues_;
-
-    // Timeline-semaphore completion path (preferred when supported).
-    VkSemaphore   m_timeline = VK_NULL_HANDLE;
-    uint64_t      m_timelineSignal = 0;
-    bool          m_timelineSupported = false;
 };
 
 // Orchestrates the whole subsystem: the UploadManager and two independent

@@ -79,23 +79,6 @@ void UploadManager::init(VulkanApp* app,
     const VkDeviceSize slotSize = chunkVertexBytes + chunkIndexBytes;
     slotSize_ = slotSize;
     staging_.init(vma_, device_, queueFamily_, stagingSlots, slotSize);
-
-    // Timeline semaphore for completion tracking when the device supports it
-    // (core in Vulkan 1.2+). Falls back to per-slot fences via isComplete().
-    VkSemaphoreTypeCreateInfo tci{};
-    tci.sType         = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-    tci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-    tci.initialValue  = 0;
-    VkSemaphoreCreateInfo sci{};
-    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    sci.pNext = &tci;
-    if (vkCreateSemaphore(device_, &sci, nullptr, &m_timeline) == VK_SUCCESS) {
-        m_timelineSupported = true;
-        std::cout << "[UploadManager] timeline-semaphore completion path enabled\n";
-    } else {
-        m_timelineSupported = false;
-        std::cout << "[UploadManager] timeline unavailable; using per-slot fences\n";
-    }
 }
 
 void UploadManager::enqueue(UploadJob&& job) {
@@ -113,8 +96,8 @@ std::mutex& UploadManager::pickMutex() {
 
 bool UploadManager::isComplete(const StagingSlot& s) const {
     // Completion is tracked by the binary submit fence (s.fence), which is
-    // signaled at the end of the same vkQueueSubmit2 that also signals m_timeline.
-    // Use the fence directly instead of vkGetSemaphoreCounterValue(m_timeline):
+    // signaled at the end of the same vkQueueSubmit2.
+    // Use the fence directly instead of a semaphore counter query:
     // querying a timeline semaphore from the host triggers the validation layer's
     // UNASSIGNED-VkSemaphore-state-timeout false positive
     // (KhronosGroup/Vulkan-ValidationLayers#4968 / #8461), which aborts the app.
@@ -207,16 +190,12 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
     if (vkEndCommandBuffer(s.cmd) != VK_SUCCESS)
         throw std::runtime_error("UploadManager: failed to end upload command buffer");
 
-    // Signal the timeline (used for recycling/ordering) AND always a fresh binary
-    // semaphore for cross-queue frame synchronization. We always register the
-    // binary semaphore via addExtraWaitSemaphore so the integration needs NO
-    // modification to drawFrame; the timeline remains an internal optimization.
+    // Always signal a fresh binary semaphore for cross-queue frame
+    // synchronization. We register it via addExtraWaitSemaphore so the
+    // integration needs NO modification to drawFrame.
     // A fresh binary semaphore per submission is required: reusing one would stay
     // permanently signaled and let a later frame render before the slot's NEW
     // transfer finished.
-    uint64_t tlValue = 0;
-    if (m_timelineSupported) tlValue = ++m_timelineSignal;
-
     std::array<VkSemaphoreSubmitInfo, 2> sig{};
     uint32_t sigCount = 0;
 
@@ -226,15 +205,6 @@ void UploadManager::submitJob(StagingSlot& s, UploadJob&& job) {
     bin.value     = 0;
     bin.stageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     sig[sigCount++] = bin;
-
-    if (m_timelineSupported) {
-        VkSemaphoreSubmitInfo tl{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-        tl.semaphore   = m_timeline;
-        tl.value       = tlValue;
-        tl.stageMask   = VK_PIPELINE_STAGE_2_COPY_BIT;
-        tl.deviceIndex = 0;
-        sig[sigCount++] = tl;
-    }
 
     VkCommandBufferSubmitInfo cbs{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
     cbs.commandBuffer = s.cmd;
@@ -432,7 +402,6 @@ void UploadManager::destroy() {
         while (q.tryPop(job)) {}
     }
     staging_.destroy();
-    if (m_timeline) { vkDestroySemaphore(device_, m_timeline, nullptr); m_timeline = VK_NULL_HANDLE; }
 }
 
 // ----------------------------------------------------------------------------
