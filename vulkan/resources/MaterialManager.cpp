@@ -47,7 +47,6 @@ void MaterialManager::allocate(size_t count, VulkanApp* app) {
     }
 
     materialCount = count;
-    cpuCache.assign(materialCount, Material{});
 
     // Initialize to zeros on GPU
     memset(materialBuffer.mappedData, 0, materialBufferSize);
@@ -57,7 +56,6 @@ void MaterialManager::update(size_t index, const MaterialProperties& mat, Vulkan
     if (!app) throw std::runtime_error("MaterialManager::update: app is null");
     if (index >= materialCount) throw std::out_of_range("MaterialManager::update: index out of range");
     Material gpu = toGPU(mat);
-    cpuCache[index] = gpu;
 
     VkDeviceSize offset = static_cast<VkDeviceSize>(index) * sizeof(Material);
     memcpy(materialBuffer.map(offset), &gpu, sizeof(Material));

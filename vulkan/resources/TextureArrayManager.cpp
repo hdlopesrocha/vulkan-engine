@@ -352,9 +352,6 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	// initialize layer initialized flags
 	layerInitialized.clear();
 	layerInitialized.resize(layerAmount, 0);
-	// (re)size the per-layer albedo averages (mid-gray until loaded)
-	albedoAvg.clear();
-	albedoAvg.resize(layerAmount, {0.5f, 0.5f, 0.5f});
 
 	// initialize per-layer layout trackers to UNDEFINED by default
 	albedoLayerLayouts.clear(); albedoLayerLayouts.resize(layerAmount, VK_IMAGE_LAYOUT_UNDEFINED);
@@ -376,23 +373,6 @@ void TextureArrayManager::allocate(uint32_t layers, uint32_t w, uint32_t h, Vulk
 	++this->version;
 	// notify listeners that arrays changed
 	notifyAllocationListeners();
-}
-
-// Mean linear RGB of an RGBA8 buffer (values already 0..255 linear).
-static std::array<float, 3> meanLinearRGB(const unsigned char* data, size_t pixelCount) {
-	std::array<float, 3> avg{0.5f, 0.5f, 0.5f};
-	if (!data || pixelCount == 0) return avg;
-	double r = 0.0, g = 0.0, b = 0.0;
-	for (size_t p = 0; p < pixelCount; ++p) {
-		r += data[p * 4 + 0];
-		g += data[p * 4 + 1];
-		b += data[p * 4 + 2];
-	}
-	const float inv = 1.0f / (255.0f * static_cast<float>(pixelCount));
-	avg[0] = static_cast<float>(r * inv);
-	avg[1] = static_cast<float>(g * inv);
-	avg[2] = static_cast<float>(b * inv);
-	return avg;
 }
 
 // Area-average resample (RGBA8). Each destination texel averages the source
@@ -572,17 +552,15 @@ size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureT
 		for (auto& w : workers) w.join();
 
 		// Assign layer indices in submission order; a triple is usable only when
-		// all five maps decoded. meanLinearRGB is a cheap sequential scan of the
-		// albedo slab compared with the decode itself.
-		struct Ready { size_t slot; std::array<float, 3> albedoAvg; };
+		// all five maps decoded.
+		struct Ready { size_t slot; };
 		std::vector<Ready> ready;
 		ready.reserve(batch);
 		for (size_t slot = 0; slot < batch; ++slot) {
 			bool ok = true;
 			for (int m = 0; m < 5; ++m) ok = ok && taskOk[slot * 5u + static_cast<size_t>(m)] != 0;
 			if (!ok) continue;
-			unsigned char* base = static_cast<unsigned char*>(staging.mappedData) + perTripleBytes * slot;
-			ready.push_back({slot, meanLinearRGB(base, static_cast<size_t>(width) * height)});
+			ready.push_back({slot});
 		}
 		if (ready.empty()) {
 			next += batch;
@@ -632,7 +610,6 @@ size_t TextureArrayManager::loadTriples(VulkanApp* a, const std::vector<TextureT
 		for (size_t n = 0; n < ready.size(); ++n) {
 			const uint32_t layer = currentLayer++;
 			for (int m = 0; m < 5; ++m) setLayerLayout(m, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			if (layer < albedoAvg.size()) albedoAvg[layer] = ready[n].albedoAvg;
 			setLayerInitialized(layer, true);
 			++loaded;
 		}
@@ -700,12 +677,6 @@ bool TextureArrayManager::isLayerInitialized(uint32_t layer) const {
 void TextureArrayManager::setLayerInitialized(uint32_t layer, bool v) {
 	if (layer >= layerInitialized.size()) return;
 	layerInitialized[layer] = v ? 1 : 0;
-}
-
-std::array<float, 3> TextureArrayManager::albedoAverage(uint32_t layer) const {
-	static const std::array<float, 3> kFallback{0.5f, 0.5f, 0.5f};
-	if (layer >= albedoAvg.size()) return kFallback;
-	return albedoAvg[layer];
 }
 
 ImTextureID TextureArrayManager::getImTexture(size_t layer, int map) {

@@ -184,7 +184,6 @@ void VulkanResourceManager::addImageVma(VkImage img, VmaAllocation alloc, const 
 bool VulkanResourceManager::removePipeline(VkPipeline p) { std::lock_guard<std::mutex> lk(mtx); return pipelines.erase((uintptr_t)p) > 0; }
 bool VulkanResourceManager::removePipelineLayout(VkPipelineLayout pl) { std::lock_guard<std::mutex> lk(mtx); return pipelineLayouts.erase((uintptr_t)pl) > 0; }
 bool VulkanResourceManager::removeDescriptorPool(VkDescriptorPool dp) { std::lock_guard<std::mutex> lk(mtx); return descriptorPools.erase((uintptr_t)dp) > 0; }
-bool VulkanResourceManager::removeDescriptorSet(VkDescriptorSet ds) { std::lock_guard<std::mutex> lk(mtx); return descriptorSets.erase((uintptr_t)ds) > 0; }
 bool VulkanResourceManager::removeDescriptorSetLayout(VkDescriptorSetLayout dsl) { std::lock_guard<std::mutex> lk(mtx); return descriptorSetLayouts.erase((uintptr_t)dsl) > 0; }
 bool VulkanResourceManager::removeSemaphore(VkSemaphore s) { std::lock_guard<std::mutex> lk(mtx); return semaphores.erase((uintptr_t)s) > 0; }
 bool VulkanResourceManager::removeFence(VkFence f) { std::lock_guard<std::mutex> lk(mtx); return fences.erase((uintptr_t)f) > 0; }

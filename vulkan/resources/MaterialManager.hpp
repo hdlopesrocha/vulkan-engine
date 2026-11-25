@@ -5,7 +5,6 @@
 #include "types/MaterialProperties.hpp"
 #include "types/ImageType.hpp"
 #include "../ssbo/Material.hpp"
-#include <vector>
 #include <glm/glm.hpp>
 
 class VulkanApp;
@@ -29,13 +28,6 @@ public:
     Buffer& getBrushMapBuffer() { return brushMapBuffer; }
     size_t brushMapEntryCount() const { return brushMapCount; }
 
-    // CPU-side mirror strength of a material [0..1]. Used when packing the RT
-    // scene-geometry meta so reflection rays can decide whether a hit surface
-    // is itself reflective (multi-bounce reflections).
-    float reflectionStrength(size_t index) const {
-        return (index < cpuCache.size()) ? cpuCache[index].tessLevelParams.z : 0.0f;
-    }
-
     // Access underlying storage buffer (for descriptor binding)
     Buffer& getBuffer() { return materialBuffer; }
     // Byte size of the storage buffer (for vkGetDescriptorEXT, which forbids
@@ -46,7 +38,6 @@ private:
     Buffer materialBuffer{};
     size_t materialCount = 0;
     size_t materialBufferSize = 0;
-    std::vector<Material> cpuCache;
     Buffer brushMapBuffer{};
     size_t brushMapCount = 0;
     size_t brushMapByteSize = 0;

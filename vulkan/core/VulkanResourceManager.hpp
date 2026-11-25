@@ -88,7 +88,6 @@ public:
     bool removePipeline(VkPipeline p);
     bool removePipelineLayout(VkPipelineLayout pl);
     bool removeDescriptorPool(VkDescriptorPool dp);
-    bool removeDescriptorSet(VkDescriptorSet ds);
     bool removeDescriptorSetLayout(VkDescriptorSetLayout dsl);
     // VMA-aware image tracking
     void addImageVma(VkImage img, VmaAllocation alloc, const char* desc = nullptr);

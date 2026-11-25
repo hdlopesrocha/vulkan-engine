@@ -16,7 +16,6 @@ void convertSRGB8ToLinearInPlace(unsigned char* data, size_t pixelCount);
 #pragma once
 
 #include <cstdint>
-#include <array>
 #include <atomic>
 #include "Buffer.hpp"
 #include "TextureImage.hpp"
@@ -70,14 +69,6 @@ public:
     std::vector<VkImageLayout> bumpLayerLayouts;
     std::vector<VkImageLayout> roughnessLayerLayouts;
     std::vector<VkImageLayout> aoLayerLayouts;
-
-    // Per-layer average albedo (linear RGB, computed from the uploaded pixels
-    // at load time). Feeds the per-layer average albedo reporting so
-    // plausible terrain colors instead of flat gray (kills gray-vs-sky
-    // rectangular tiles in grazing water reflections/refractions).
-    std::vector<std::array<float, 3>> albedoAvg;
-    // Linear-space average albedo of a layer; gray fallback when out of range.
-    std::array<float, 3> albedoAverage(uint32_t layer) const;
 
     TextureArrayManager() = default;
 
