@@ -346,10 +346,8 @@ bool PostProcessRenderer::writeSlotToDescriptorBuffer(VulkanApp* app, uint32_t s
     Buffer& dst = descBuffers_[slot];
     if (dst.buffer == VK_NULL_HANDLE || dst.mappedData == nullptr) return false;
     const auto& props = app->descriptorBufferProps;
-    const size_t align = props.descriptorBufferOffsetAlignment ? props.descriptorBufferOffsetAlignment : 1;
     DescriptorBuffer view(app->getDevice(), app->fpGetDescriptorEXT,
-                          app->fpGetDescriptorSetLayoutBindingOffsetEXT,
-                          dst.mappedData, static_cast<size_t>(descSetSize_), align);
+                          dst.mappedData, static_cast<size_t>(descSetSize_));
     const size_t imgSize = props.combinedImageSamplerDescriptorSize;
     const size_t uboSize = props.uniformBufferDescriptorSize;
     bool ok = true;

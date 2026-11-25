@@ -10,18 +10,18 @@
 // Owns no Vulkan objects: the backing VkBuffer is created by the caller with
 // VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
 // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT and host-visible + coherent memory.
-// This wrapper only computes aligned binding offsets (via
-// vkGetDescriptorSetLayoutBindingOffsetEXT when available) and forwards writes
-// to DescriptorBufferHelper, so per-frame updates are plain host memcpys.
+// Binding offsets are resolved by the caller via
+// vkGetDescriptorSetLayoutBindingOffsetEXT; this wrapper only forwards the
+// writes to DescriptorBufferHelper, so per-frame updates are plain host
+// memcpys.
 class DescriptorBuffer {
 public:
     DescriptorBuffer() = default;
     DescriptorBuffer(VkDevice device,
                      PFN_vkGetDescriptorEXT fpGetDescriptor,
-                     PFN_vkGetDescriptorSetLayoutBindingOffsetEXT fpBindingOffset,
-                     void* mapped, size_t size, size_t alignment)
-        : device_(device), fpGet_(fpGetDescriptor), fpOffset_(fpBindingOffset),
-          mapped_(static_cast<char*>(mapped)), size_(size), alignment_(alignment) {}
+                     void* mapped, size_t size)
+        : device_(device), fpGet_(fpGetDescriptor),
+          mapped_(static_cast<char*>(mapped)), size_(size) {}
 
     bool valid() const { return device_ != VK_NULL_HANDLE && mapped_ != nullptr && fpGet_ != nullptr; }
     void* at(size_t byteOffset) const {
@@ -50,8 +50,6 @@ public:
 private:
     VkDevice device_ = VK_NULL_HANDLE;
     PFN_vkGetDescriptorEXT fpGet_ = nullptr;
-    PFN_vkGetDescriptorSetLayoutBindingOffsetEXT fpOffset_ = nullptr;
     char* mapped_ = nullptr;
     size_t size_ = 0;
-    size_t alignment_ = 1;
 };

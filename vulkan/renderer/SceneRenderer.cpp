@@ -1026,7 +1026,6 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
     if (!app || !descBuffers_.ready || !app->useDescriptorBuffer()) return;
     if (!app->fpGetDescriptorEXT) return;
     const auto& props = app->descriptorBufferProps;
-    const size_t align = props.descriptorBufferOffsetAlignment ? props.descriptorBufferOffsetAlignment : 1;
 
     Buffer skyUBO{};
     if (skyRenderer) skyUBO = skyRenderer->getSkyUniformBuffer();
@@ -1046,8 +1045,7 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
         Buffer& dst = descBuffers_.buffers[fi];
         if (dst.buffer == VK_NULL_HANDLE || dst.mappedData == nullptr) { ++failures; continue; }
         DescriptorBuffer view(app->getDevice(), app->fpGetDescriptorEXT,
-                              app->fpGetDescriptorSetLayoutBindingOffsetEXT,
-                              dst.mappedData, static_cast<size_t>(descBuffers_.setSize), align);
+                              dst.mappedData, static_cast<size_t>(descBuffers_.setSize));
         auto imgSize = props.combinedImageSamplerDescriptorSize;
         auto uboSize = props.uniformBufferDescriptorSize;
         auto ssboSize = props.storageBufferDescriptorSize;

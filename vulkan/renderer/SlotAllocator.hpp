@@ -57,9 +57,6 @@ public:
             s.active         = false;
             freeSlots_.push_back(static_cast<uint32_t>(i));
         }
-
-        vertexCapacityPerSlot_ = vertexCapacityPerSlot;
-        indexCapacityPerSlot_  = indexCapacityPerSlot;
     }
 
     // Allocate a slot for a mesh with the given vertex/index counts.
@@ -139,8 +136,6 @@ private:
     mutable std::mutex mutex_;
     std::vector<Slot> slots_;
     std::vector<uint32_t> freeSlots_;
-    uint32_t vertexCapacityPerSlot_ = 0;
-    uint32_t indexCapacityPerSlot_ = 0;
     uint32_t activeCount_ = 0;
     uint32_t peakActive_ = 0;
 };
