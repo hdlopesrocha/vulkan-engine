@@ -30,7 +30,6 @@ public:
     virtual glm::vec3 getCenter() const { return m_center; }
     glm::quat getRotation() const { return m_model.quaternion; }
     glm::vec3 getScale() const { return m_model.scale; }
-    glm::vec3 getPosition() const { return m_model.translate; }
 
     virtual ContainmentType check(const BoundingCube &cube) const { return m_sphere.test(cube); }
     virtual bool isContained(const BoundingCube &cube) const { return cube.contains(m_sphere); }
@@ -38,7 +37,6 @@ public:
     // Conservative bound already computed by the constructor. Composition
     // wrappers use this to merge child bounds without knowing their models.
     const BoundingSphere& getBoundingSphere() const { return m_sphere; }
-    virtual BoundingBox getBox(float bias) const { return BoundingBox(); }
 };
 
  

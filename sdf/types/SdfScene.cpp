@@ -122,8 +122,6 @@ float deformationPadding(const SdfDefinition& def, float turbulence) {
     if (def.deformFlags & kDeformBend) pad += 0.5f;
     if (def.deformFlags & kDeformTaper) pad += 0.5f;
     if (def.deformFlags & kDeformRepeat) pad += 2.0f;
-    // Noise flag is already covered by the turbulence term; keep a minimum.
-    (void)kDeformNoise;
     return std::max(pad, 0.5f);
 }
 

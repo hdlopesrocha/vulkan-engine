@@ -32,6 +32,5 @@ private:
     // Outward normals of the original face planes; the inset faces are
     // parallel to them.
     std::array<glm::vec3, 4> faceNormals_{};
-    glm::vec3 centroid_{0.0f};
     float bevel_ = 0.0f;
 };

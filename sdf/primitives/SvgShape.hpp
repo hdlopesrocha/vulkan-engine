@@ -26,7 +26,6 @@ public:
     std::vector<SvgContour> contours;
     glm::vec2 viewMin = glm::vec2(0.0f);
     glm::vec2 viewSize = glm::vec2(1.0f);
-    std::string source;  // path or "<string>" for diagnostics
 
     // Load + parse. Returns false and fills `error` on I/O or parse failure
     // (a parse failure with zero contours is an error; a valid but empty SVG
@@ -37,10 +36,4 @@ public:
     static bool loadFromFileResolved(const std::string& path, SvgShape& out, std::string& error,
                                      std::string* resolvedPath = nullptr);
     static bool fromString(const std::string& text, SvgShape& out, std::string& error);
-
-    // Index of the contour that contains p (the last matched contour wins so
-    // later/drawn-on-top shapes colour the pixel), or -1.
-    int containingContour(const glm::vec2& p) const;
-
-    static bool parseColor(const std::string& text, glm::vec3& rgb);
 };

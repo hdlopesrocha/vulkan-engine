@@ -115,7 +115,6 @@ TetrahedronDistanceFunction::TetrahedronDistanceFunction(const Transformation &m
         }
     }
 
-    centroid_ = (inset[0] + inset[1] + inset[2] + inset[3]) * 0.25f;
     for (int f = 0; f < 4; ++f) {
         triangles_[f] = {inset[kFaces[f][0]], inset[kFaces[f][1]], inset[kFaces[f][2]]};
     }

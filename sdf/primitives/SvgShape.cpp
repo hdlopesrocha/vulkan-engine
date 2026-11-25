@@ -7,7 +7,6 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
-#include <unordered_map>
 
 namespace {
 
@@ -56,24 +55,6 @@ std::string attr(const std::string& tag, const char* name) {
         pos = after;
     }
     return {};
-}
-
-// style="fill:#abc;..." property lookup (used when the attribute is absent).
-std::string styleProp(const std::string& tag, const std::string& prop) {
-    std::string style = lowerCopy(attr(tag, "style"));
-    if (style.empty()) return {};
-    const std::string needle = prop + ":";
-    size_t pos = style.find(needle);
-    if (pos == std::string::npos) return {};
-    pos += needle.size();
-    const size_t end = style.find(';', pos);
-    return trimCopy(style.substr(pos, end == std::string::npos ? std::string::npos : end - pos));
-}
-
-std::string fillSpec(const std::string& tag) {
-    std::string fill = attr(tag, "fill");
-    if (fill.empty()) fill = styleProp(tag, "fill");
-    return fill;
 }
 
 // 2x3 affine transform: x' = a*x + c*y + e, y' = b*x + d*y + f.
@@ -435,79 +416,6 @@ float firstNumber(const std::string& text, float fallback = 0.0f) {
 // SvgShape
 // ---------------------------------------------------------------------------
 
-bool SvgShape::parseColor(const std::string& text, glm::vec3& rgb) {
-    const std::string s = lowerCopy(trimCopy(text));
-    if (s.empty()) return false;
-    if (s == "none" || s == "transparent" || s == "currentcolor") return false;
-    if (s[0] == '#') {
-        std::string hex = s.substr(1);
-        if (hex.size() == 3) hex = std::string() + hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
-        if (hex.size() != 6) return false;
-        const auto digit = [](char c) -> int {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-            return -1;
-        };
-        int v[6];
-        for (int i = 0; i < 6; ++i) {
-            v[i] = digit(hex[i]);
-            if (v[i] < 0) return false;
-        }
-        rgb = glm::vec3((v[0] * 16 + v[1]) / 255.0f, (v[2] * 16 + v[3]) / 255.0f,
-                        (v[4] * 16 + v[5]) / 255.0f);
-        return true;
-    }
-    if (s.rfind("rgb", 0) == 0) {
-        const size_t open = s.find('(');
-        const size_t close = s.find(')');
-        if (open == std::string::npos || close == std::string::npos || close <= open) return false;
-        const std::string components = s.substr(open + 1, close - open - 1);
-        NumScanner sc(components);
-        float r = 0, g = 0, b = 0;
-        if (!sc.number(r) || !sc.number(g) || !sc.number(b)) return false;
-        const float scale = (r > 1.0f || g > 1.0f || b > 1.0f) ? (1.0f / 255.0f) : 1.0f;
-        rgb = glm::clamp(glm::vec3(r, g, b) * scale, 0.0f, 1.0f);
-        return true;
-    }
-    static const std::unordered_map<std::string, glm::vec3> kNamed = {
-        {"white", {1, 1, 1}},       {"black", {0, 0, 0}},
-        {"red", {1, 0, 0}},         {"green", {0, 0.5019608f, 0}},
-        {"lime", {0, 1, 0}},        {"blue", {0, 0, 1}},
-        {"yellow", {1, 1, 0}},      {"cyan", {0, 1, 1}},
-        {"aqua", {0, 1, 1}},        {"magenta", {1, 0, 1}},
-        {"fuchsia", {1, 0, 1}},     {"gray", {0.502f, 0.502f, 0.502f}},
-        {"grey", {0.502f, 0.502f, 0.502f}}, {"silver", {0.753f, 0.753f, 0.753f}},
-        {"maroon", {0.502f, 0, 0}}, {"olive", {0.502f, 0.502f, 0}},
-        {"navy", {0, 0, 0.502f}},   {"teal", {0, 0.502f, 0.502f}},
-        {"purple", {0.502f, 0, 0.502f}}, {"orange", {1, 0.647f, 0}},
-    };
-    const auto it = kNamed.find(s);
-    if (it != kNamed.end()) {
-        rgb = it->second;
-        return true;
-    }
-    return false;
-}
-
-int SvgShape::containingContour(const glm::vec2& p) const {
-    int found = -1;
-    for (size_t i = 0; i < contours.size(); ++i) {
-        const SvgContour& contour = contours[i];
-        if (!contour.closed || contour.points.size() < 3) continue;
-        bool cross = false;
-        for (size_t k = 0, j = contour.points.size() - 1; k < contour.points.size(); j = k++) {
-            const glm::vec2& a = contour.points[k];
-            const glm::vec2& b = contour.points[j];
-            if (((a.y > p.y) != (b.y > p.y)) &&
-                (p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x)) {
-                cross = !cross;
-            }
-        }
-        if (cross) found = static_cast<int>(i);  // topmost (last drawn) wins
-    }
-    return found;
-}
-
 bool SvgShape::loadFromFile(const std::string& path, SvgShape& out, std::string& error) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
@@ -516,7 +424,6 @@ bool SvgShape::loadFromFile(const std::string& path, SvgShape& out, std::string&
     }
     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (!fromString(text, out, error)) return false;
-    out.source = path;
     return true;
 }
 
@@ -537,7 +444,6 @@ bool SvgShape::loadFromFileResolved(const std::string& path, SvgShape& out, std:
 
 bool SvgShape::fromString(const std::string& rawText, SvgShape& out, std::string& error) {
     out = SvgShape();
-    out.source = "<string>";
     std::string text = rawText;
 
     const auto stripBetween = [&text](const char* open, const char* close) {
@@ -583,17 +489,14 @@ bool SvgShape::fromString(const std::string& rawText, SvgShape& out, std::string
     }
 
     std::vector<Affine> transformStack{Affine()};
-    std::vector<glm::vec3> fillStack{glm::vec3(1.0f)};
 
     const auto normalize = [&out](const glm::vec2& p) {
         return glm::vec2(2.0f * (p.x - out.viewMin.x) / out.viewSize.x - 1.0f,
                          1.0f - 2.0f * (p.y - out.viewMin.y) / out.viewSize.y);
     };
-    const auto pushContour = [&out, &normalize](std::vector<glm::vec2>&& pts, bool closed,
-                                                const glm::vec3& rgb) {
+    const auto pushContour = [&out, &normalize](std::vector<glm::vec2>&& pts, bool closed) {
         if (pts.size() < (closed ? 3u : 2u)) return;
         SvgContour contour;
-        contour.rgb = rgb;
         contour.closed = closed;
         contour.points.reserve(pts.size());
         for (const glm::vec2& p : pts) contour.points.push_back(normalize(p));
@@ -613,7 +516,6 @@ bool SvgShape::fromString(const std::string& rawText, SvgShape& out, std::string
         if (trimmed[0] == '/') {
             if (trimmed.rfind("/g", 0) == 0) {
                 if (transformStack.size() > 1) transformStack.pop_back();
-                if (fillStack.size() > 1) fillStack.pop_back();
             }
             continue;
         }
@@ -625,11 +527,6 @@ bool SvgShape::fromString(const std::string& rawText, SvgShape& out, std::string
             const Affine xf =
                 transformStack.back().compose(parseTransform(attr(trimmed, "transform")));
             transformStack.push_back(xf);
-            glm::vec3 fill = fillStack.back();
-            glm::vec3 parsed;
-            const std::string spec = fillSpec(trimmed);
-            if (!spec.empty() && parseColor(spec, parsed)) fill = parsed;
-            fillStack.push_back(fill);
             continue;
         }
         if (name != "path" && name != "rect" && name != "circle" && name != "ellipse" &&
@@ -639,19 +536,13 @@ bool SvgShape::fromString(const std::string& rawText, SvgShape& out, std::string
 
         const Affine xf =
             transformStack.back().compose(parseTransform(attr(trimmed, "transform")));
-        glm::vec3 rgb = fillStack.back();
-        {
-            glm::vec3 parsed;
-            const std::string spec = fillSpec(trimmed);
-            if (!spec.empty() && parseColor(spec, parsed)) rgb = parsed;
-        }
 
         if (name == "path") {
             PathFlattener flattener([&](std::vector<glm::vec2>&& pts, bool closed) {
                 std::vector<glm::vec2> transformed;
                 transformed.reserve(pts.size());
                 for (const glm::vec2& p : pts) transformed.push_back(xf.apply(p));
-                pushContour(std::move(transformed), closed, rgb);
+                pushContour(std::move(transformed), closed);
             });
             flattener.run(attr(trimmed, "d"));
             continue;
@@ -664,7 +555,7 @@ bool SvgShape::fromString(const std::string& rawText, SvgShape& out, std::string
             if (w > 0.0f && h > 0.0f) {
                 std::vector<glm::vec2> pts = {xf.apply({x, y}), xf.apply({x + w, y}),
                                               xf.apply({x + w, y + h}), xf.apply({x, y + h})};
-                pushContour(std::move(pts), true, rgb);
+                pushContour(std::move(pts), true);
             }
             continue;
         }
@@ -686,7 +577,7 @@ bool SvgShape::fromString(const std::string& rawText, SvgShape& out, std::string
                     const float t = 2.0f * kPi * static_cast<float>(i) / kSegments;
                     pts.push_back(xf.apply({cx + rx * std::cos(t), cy + ry * std::sin(t)}));
                 }
-                pushContour(std::move(pts), true, rgb);
+                pushContour(std::move(pts), true);
             }
             continue;
         }
@@ -696,7 +587,7 @@ bool SvgShape::fromString(const std::string& rawText, SvgShape& out, std::string
             std::vector<glm::vec2> pts;
             float x = 0, y = 0;
             while (sc.number(x) && sc.number(y)) pts.push_back(xf.apply({x, y}));
-            pushContour(std::move(pts), name == "polygon", rgb);
+            pushContour(std::move(pts), name == "polygon");
             continue;
         }
         if (name == "line") {
@@ -705,7 +596,7 @@ bool SvgShape::fromString(const std::string& rawText, SvgShape& out, std::string
             const float x2 = firstNumber(attr(trimmed, "x2"), 0.0f);
             const float y2 = firstNumber(attr(trimmed, "y2"), 0.0f);
             std::vector<glm::vec2> pts = {xf.apply({x1, y1}), xf.apply({x2, y2})};
-            pushContour(std::move(pts), false, rgb);
+            pushContour(std::move(pts), false);
             continue;
         }
     }

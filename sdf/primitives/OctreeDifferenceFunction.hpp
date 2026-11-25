@@ -12,7 +12,7 @@ class OctreeDifferenceFunction : public SignedDistanceFunction {
     OctreeDifferenceFunction(Octree * tree_, BoundingBox box_, float bias_, const Transformation &model = Transformation());
     float distance(const glm::vec3 &p) const override;
     glm::vec3 getCenter() const override;
-    BoundingBox getBox(float bias) const override;
+    BoundingBox getBox(float bias) const;
     ContainmentType check(const BoundingCube &cube) const override;
     bool isContained(const BoundingCube &cube) const override;
 
