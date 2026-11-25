@@ -24,7 +24,7 @@ namespace {
 // destroying it would violate VUID-vkDestroySemaphore-semaphore-05149, so the
 // caller must NOT destroy it (a leak at teardown is acceptable — the OS
 // reclaims everything when the process exits).
-static bool consumeBinarySignal(VkDevice dev, VkQueue queue, VkSemaphore sem, std::mutex& submitMutex) {
+static bool consumeBinarySignal(VkQueue queue, VkSemaphore sem, std::mutex& submitMutex) {
     if (sem == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) return false;
     VkSemaphoreSubmitInfo wait{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
     wait.semaphore = sem;
@@ -285,7 +285,7 @@ void UploadManager::prepareFrameWaits(VulkanApp* app) {
                         // drain submit fails (device lost), the semaphore may still
                         // be referenced by a cancelled batch — skip the destroy
                         // (leak at teardown; the OS reclaims it).
-                        if (consumeBinarySignal(dev, uploadQueue, ss,
+                        if (consumeBinarySignal(uploadQueue, ss,
                                                 app->getQueueSubmitMutex(uploadQueue)))
                             vkDestroySemaphore(dev, ss, nullptr);
                     });
@@ -387,7 +387,7 @@ void UploadManager::destroy() {
                 // submit fails (device lost), the semaphore may still be
                 // referenced by a cancelled batch — skip the destroy (leak at
                 // teardown; the OS reclaims it).
-                if (consumeBinarySignal(device_, queue_, s.signalSem, pickMutex()))
+                if (consumeBinarySignal(queue_, s.signalSem, pickMutex()))
                     vkDestroySemaphore(device_, s.signalSem, nullptr);
             }
             s.signalSem = VK_NULL_HANDLE;
