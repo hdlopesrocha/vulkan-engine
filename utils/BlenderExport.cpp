@@ -90,7 +90,6 @@ bool readFileBytes(const std::string& path, std::vector<uint8_t>& out) {
 struct Image8 {
     int width = 0;
     int height = 0;
-    int channels = 0;
     std::vector<uint8_t> rgba;
 };
 
@@ -103,7 +102,6 @@ bool loadImage8(const std::string& path, Image8& out, std::string& error) {
     }
     out.width = w;
     out.height = h;
-    out.channels = 4;
     out.rgba.assign(pixels, pixels + static_cast<size_t>(w) * h * 4);
     stbi_image_free(pixels);
     return true;
@@ -265,7 +263,6 @@ Image8 blendMaps(const Image8& primary, const Image8& secondary,
     Image8 out;
     out.width = size;
     out.height = size;
-    out.channels = 4;
     out.rgba.resize(static_cast<size_t>(size) * size * 4);
     for (int y = 0; y < size; ++y) {
         for (int x = 0; x < size; ++x) {
@@ -300,7 +297,6 @@ Image8 blendMaps(const Image8& primary, const Image8& secondary,
 struct ChunkRef {
     OctreeNode* node = nullptr;
     BoundingCube cube;
-    uint32_t level = 0;
 };
 
 void collectChunks(const Octree& tree, std::vector<ChunkRef>& out) {
@@ -327,7 +323,6 @@ void collectChunks(const Octree& tree, std::vector<ChunkRef>& out) {
             ChunkRef ref;
             ref.node = cur.node;
             ref.cube = cur.cube;
-            ref.level = cur.level;
             out.push_back(ref);
             continue;
         }
