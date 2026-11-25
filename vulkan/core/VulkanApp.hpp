@@ -845,7 +845,7 @@ public:
         // fence -> iterator into queueSegments_ for not-yet-completed segments.
         std::unordered_map<VkFence, std::list<QueueSegment>::iterator> queueTimelineLive_;
         std::atomic<uint64_t> frameCounter_{0};
-        void recordQueueSegment(VkQueue queue, VkFence fence, uint64_t submitId);
+        void recordQueueSegment(VkQueue queue, VkFence fence);
         void markQueueSegmentDone(VkFence fence, uint64_t endNs);
         static uint64_t nowNs();
 

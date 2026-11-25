@@ -1992,7 +1992,7 @@ VkFence VulkanApp::submitCommandBufferAsyncToQueue(VkCommandBuffer commandBuffer
             m_totalSubmitted++;
             m_queuePending[targetQueue]++;
             // Record a queue-timeline segment for the queue-usage slotted view.
-            recordQueueSegment(targetQueue, fence, submitId);
+            recordQueueSegment(targetQueue, fence);
         }
 
         // Promote pending layout updates for this submission
@@ -4692,7 +4692,7 @@ void VulkanApp::drawFrame() {
     }
     // Record a (zero-duration) timeline segment for the present queue so the
     // queue-usage slotted view can show present as a distinct row/event.
-    recordQueueSegment(presentQueue, VK_NULL_HANDLE, frameCounter_.load(std::memory_order_relaxed));
+    recordQueueSegment(presentQueue, VK_NULL_HANDLE);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || framebufferResized) {
         framebufferResized = false;
         // Defer resize processing until setup completes (see the acquire path).
@@ -5812,12 +5812,12 @@ void VulkanApp::getQueueTimeline(std::vector<QueueSegment>& out) const {
     for (const auto& s : queueSegments_) out.push_back(s);
 }
 
-void VulkanApp::recordQueueSegment(VkQueue queue, VkFence fence, uint64_t submitId) {
+void VulkanApp::recordQueueSegment(VkQueue queue, VkFence fence) {
     std::lock_guard<std::mutex> lk(queueTimelineMtx_);
     // Cap the retained segments so the slotted view cannot grow unbounded.
     while (queueSegments_.size() > 4096) queueSegments_.pop_front();
     queueSegments_.push_back({ queue, fence, frameCounter_.load(std::memory_order_relaxed),
-                               submitId, nowNs(), 0 });
+                               nowNs(), 0 });
     queueTimelineLive_[fence] = std::prev(queueSegments_.end());
 }
 
