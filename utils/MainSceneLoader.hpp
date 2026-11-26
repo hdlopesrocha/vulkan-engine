@@ -137,26 +137,16 @@ public:
             std::cout << "\tpattern test: slab" << std::endl;
         }
         static const char* labels[] = {
-            "triangles", "hexagons", "perlin", "voronoi"
+            "triangles", "hexagons", "perlin", "voronoi",
+            "tetrahedron", "cube", "octahedron", "dodecahedron",
+            "icosahedron"
         };
-        // Flat pattern references: one plate per secondary SDF type so the
-        // tiling can be inspected without the swept-sphere curvature.
-        for (int i = 0; i < 4; ++i) {
-            const float x = -180.0f + 120.0f * static_cast<float>(i);
-            BoundingBox plate(glm::vec3(x - 32.0f, 0.0f, -120.0f),
-                              glm::vec3(x + 32.0f, 4.0f, -40.0f));
-            Transformation plateModel(plate.getLength() * 0.5f,
-                                      plate.getCenter(), 0, 0, 0);
-            BoxDistanceFunction plateFn(plateModel, tileSize);
-            layer.apply(AddSignedDistanceOperation(), plateFn,
-                        SimpleBrush(44 + i), TriplanarMappingPainter(),
-                        tileSize, simplifier, update, remove);
-            std::cout << "\tpattern test: flat " << labels[i] << std::endl;
-        }
-        for (int i = 0; i < 4; ++i) {
-            const float x = -180.0f + 120.0f * static_cast<float>(i);
+        // Nine swept spheres in a 3x3 grid, ordered like the pattern enum.
+        for (int i = 0; i < 9; ++i) {
+            const float x = static_cast<float>(i % 3 - 1) * 150.0f;
+            const float z = static_cast<float>(i / 3 - 1) * 150.0f;
             Transformation model(glm::vec3(64.0f),
-                                 glm::vec3(x, 64.0f, 0.0f),
+                                 glm::vec3(x, 64.0f, z),
                                  0.0f, 0.0f, 0.0f);
             TaperedCapsuleDistanceFunction trail(
                 glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
@@ -377,11 +367,18 @@ public:
             case TestShape::SweptDirectionalSphereTriangles:
             case TestShape::SweptDirectionalSphereHexagons:
             case TestShape::SweptDirectionalSpherePerlin:
-            case TestShape::SweptDirectionalSphereVoronoi: {
+            case TestShape::SweptDirectionalSphereVoronoi:
+            case TestShape::SweptDirectionalSphereTetrahedron:
+            case TestShape::SweptDirectionalSphereCube:
+            case TestShape::SweptDirectionalSphereOctahedron:
+            case TestShape::SweptDirectionalSphereDodecahedron:
+            case TestShape::SweptDirectionalSphereIcosahedron: {
                 const int patternIndex = static_cast<int>(shape) -
                     static_cast<int>(TestShape::SweptDirectionalSphereTriangles);
                 static const char* patternLabels[] = {
-                    "triangles", "hexagons", "perlin", "voronoi"
+                    "triangles", "hexagons", "perlin", "voronoi",
+                    "tetrahedron", "cube", "octahedron", "dodecahedron",
+                    "icosahedron"
                 };
                 std::cout << "\topaqueLayer.add(swept directional sphere, "
                           << patternLabels[patternIndex] << ")" << std::endl;

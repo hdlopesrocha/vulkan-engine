@@ -269,9 +269,10 @@ void Brush3dWidget::renderEntry(int index) {
     {
         static const char* patternNames[] = {
             "Texture", "Triangular Scales", "Hexagonal Scales",
-            "Perlin Noise", "Voronoi Cells"
+            "Perlin Noise", "Voronoi Cells", "Tetrahedron",
+            "Cube", "Octahedron", "Dodecahedron", "Icosahedron"
         };
-        int source = e.useSecondarySdf ? std::clamp(e.secondarySdfType, 0, 4) : 0;
+        int source = e.useSecondarySdf ? std::clamp(e.secondarySdfType, 0, 9) : 0;
         if (ImGui::Combo("Displacement Source", &source, patternNames,
                          IM_ARRAYSIZE(patternNames))) {
             e.useSecondarySdf = source != 0;

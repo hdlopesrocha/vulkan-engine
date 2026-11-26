@@ -41,7 +41,7 @@ struct MaterialNamed {
     float displacementBounds;   // 0 = use |amplitude| * strength
     int displacementTexture;    // -1 = material's own height layer
     // Secondary SDF pattern (0 = texture, 1 = triangles, 2 = hexagons,
-    // 3 = Perlin, 4 = Voronoi),
+    // 3 = Perlin, 4 = Voronoi, 5..9 = platonic solids),
     // peak displacement, world-unit repeat, segment time/velocity/intensity.
     int displacementPattern;
     float displacementPatternDisplacement;

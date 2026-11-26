@@ -83,7 +83,7 @@ struct BrushEntry {
     // surface. The secondary SDF is never stored in the octree: it is
     // evaluated in the raymarcher (and its shadow/AO traces) from the packed
     // material state.
-    // 0 = texture, 1 = triangles, 2 = hexagons, 3 = Perlin, 4 = Voronoi.
+    // 0 = texture, 1 = triangles, 2 = hexagons, 3 = Perlin, 4 = Voronoi, 5..9 = platonic solids.
     bool useSecondarySdf = false;
     int secondarySdfType = 1;
     // World-unit peak displacement and world-unit pattern cell/repeat size.

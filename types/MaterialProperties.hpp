@@ -98,7 +98,8 @@ struct MaterialProperties {
     // ── Secondary SDF displacement ────────────────────────────────────────
     // Alternative to the height texture: a GPU-evaluated scale pattern oriented
     // by the brush segment velocity. 0 = texture path, 1 = triangular scales,
-    // 2 = hexagonal scales, 3 = animated Perlin, 4 = animated Voronoi.
+    // 2 = hexagonal scales, 3 = animated Perlin, 4 = animated Voronoi,
+    // 5..9 = tetrahedron/cube/octahedron/dodecahedron/icosahedron reliefs.
     // The pattern is never stored in the octree.
     int displacementPattern = 0;
     // Peak world-unit displacement of the pattern and its world-unit repeat

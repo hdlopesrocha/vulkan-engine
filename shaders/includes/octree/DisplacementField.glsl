@@ -104,7 +104,7 @@ RmDisplacement rmDisplacementParams(int material) {
     }
 
     d.strength = clamp(m.displacementStrength, 0.0, 1.0);
-    d.pattern = clamp(m.displacementPattern, 0, 4);
+    d.pattern = clamp(m.displacementPattern, 0, 9);
     d.patternDisplacement = m.displacementPatternDisplacement;
     d.patternRepeat = max(m.displacementPatternRepeat, 1.0e-4);
     d.patternTime = m.displacementSegmentTime;
@@ -226,6 +226,92 @@ float rmHexagonScale(vec2 q) {
     return shape;
 }
 
+// ── Platonic-solid secondary patterns ─────────────────────────────────────
+// Convex polyhedra are represented by their normalized face planes. The max
+// plane distance is a valid defining field for the solid (and is exact along
+// each face normal); it is enough for a displacement relief and keeps the
+// five solids cheap enough for a per-sample pattern.
+const vec3 RM_TETRA_N[4] = vec3[4](
+    vec3( 0.577350269,  0.577350269,  0.577350269),
+    vec3( 0.577350269, -0.577350269, -0.577350269),
+    vec3(-0.577350269,  0.577350269, -0.577350269),
+    vec3(-0.577350269, -0.577350269,  0.577350269));
+const vec3 RM_DODECA_N[12] = vec3[12](
+    vec3(0.0, 0.525731112, 0.850650808), vec3(0.0, 0.525731112, -0.850650808),
+    vec3(0.0, -0.525731112, 0.850650808), vec3(0.0, -0.525731112, -0.850650808),
+    vec3(0.525731112, 0.850650808, 0.0), vec3(0.525731112, -0.850650808, 0.0),
+    vec3(-0.525731112, 0.850650808, 0.0), vec3(-0.525731112, -0.850650808, 0.0),
+    vec3(0.850650808, 0.0, 0.525731112), vec3(0.850650808, 0.0, -0.525731112),
+    vec3(-0.850650808, 0.0, 0.525731112), vec3(-0.850650808, 0.0, -0.525731112));
+const vec3 RM_ICOSA_N[20] = vec3[20](
+    vec3( 0.577350269,  0.577350269,  0.577350269), vec3( 0.577350269,  0.577350269, -0.577350269),
+    vec3( 0.577350269, -0.577350269,  0.577350269), vec3( 0.577350269, -0.577350269, -0.577350269),
+    vec3(-0.577350269,  0.577350269,  0.577350269), vec3(-0.577350269,  0.577350269, -0.577350269),
+    vec3(-0.577350269, -0.577350269,  0.577350269), vec3(-0.577350269, -0.577350269, -0.577350269),
+    vec3(0.0, 0.525731112, 0.850650808), vec3(0.0, 0.525731112, -0.850650808),
+    vec3(0.0, -0.525731112, 0.850650808), vec3(0.0, -0.525731112, -0.850650808),
+    vec3(0.525731112, 0.850650808, 0.0), vec3(0.525731112, -0.850650808, 0.0),
+    vec3(-0.525731112, 0.850650808, 0.0), vec3(-0.525731112, -0.850650808, 0.0),
+    vec3(0.850650808, 0.0, 0.525731112), vec3(0.850650808, 0.0, -0.525731112),
+    vec3(-0.850650808, 0.0, 0.525731112), vec3(-0.850650808, 0.0, -0.525731112));
+
+float rmPlatonicSdf(int type, vec3 p) {
+    if (type == 5) { // tetrahedron
+        float d = dot(p, RM_TETRA_N[0]);
+        for (int i = 1; i < 4; ++i) d = max(d, dot(p, RM_TETRA_N[i]));
+        return d - 0.14;
+    }
+    if (type == 6) { // cube
+        return max(max(abs(p.x), abs(p.y)), abs(p.z)) - 0.27;
+    }
+    if (type == 7) { // octahedron
+        return (abs(p.x) + abs(p.y) + abs(p.z)) * 0.577350269 - 0.20;
+    }
+    if (type == 8) { // dodecahedron
+        float d = dot(p, RM_DODECA_N[0]);
+        for (int i = 1; i < 12; ++i) d = max(d, dot(p, RM_DODECA_N[i]));
+        return d - 0.20;
+    }
+    // icosahedron
+    float d = dot(p, RM_ICOSA_N[0]);
+    for (int i = 1; i < 20; ++i) d = max(d, dot(p, RM_ICOSA_N[i]));
+    return d - 0.18;
+}
+
+float rmPlatonicPatternDisplacement(RmDisplacement d, vec3 p) {
+    float repeat = max(d.patternRepeat, 1.0e-4);
+    float intensity = clamp(d.patternIntensity, 0.0, 1.0);
+    float age = max(ubo.brushPhase - d.patternTime, 0.0);
+
+    vec3 axis = d.patternVelocity;
+    if (dot(axis, axis) < 1.0e-8) axis = vec3(0.0, 1.0, 0.0);
+    axis = normalize(axis);
+    vec3 helper = abs(axis.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 bitangent = normalize(cross(helper, axis));
+    vec3 normal = normalize(cross(axis, bitangent));
+
+    // The lattice is advected with the full 3D velocity; intensity also
+    // controls how fast the solids spin.
+    vec3 q = p / repeat + d.patternVelocity * (age * (0.25 + 0.75 * intensity) / repeat)
+             + vec3(age * 0.025);
+    vec3 cell = floor(q);
+    vec3 f = fract(q) - 0.5;
+
+    // Orientation: local +Y follows velocity, then each cell spins around that
+    // axis with a cell-specific phase so the surface has a coherent but varied
+    // rotation field.
+    mat3 frame = mat3(bitangent, axis, normal);
+    vec3 local = transpose(frame) * f;
+    float phase = float(sdfHashU(uvec3(ivec3(cell)))) * (6.28318530718 / 4294967295.0);
+    float spin = (age * (0.35 + 0.65 * intensity) + phase);
+    float cs = cos(spin), sn = sin(spin);
+    local.xz = mat2(cs, -sn, sn, cs) * local.xz;
+
+    float sd = rmPlatonicSdf(d.pattern, local);
+    float shape = smoothstep(0.055, 0.0, sd);
+    return shape * d.patternDisplacement * d.strength * d.patternIntensity;
+}
+
 float rmVoronoi2D(vec2 uv) {
     vec2 cell = floor(uv);
     vec2 f = fract(uv);
@@ -286,6 +372,9 @@ float rmScalePatternHeight(vec2 uv, int type) {
 }
 
 float rmPatternDisplacement(RmDisplacement d, vec3 p) {
+    if (d.pattern >= 5) {
+        return rmPlatonicPatternDisplacement(d, p);
+    }
     if (d.pattern >= 3) {
         float shape = rmNoisePatternDisplacement(d, p);
         return shape * d.patternDisplacement * d.strength * d.patternIntensity;

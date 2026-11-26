@@ -801,10 +801,11 @@ public:
         // material arrays. MainSceneLoader's cubes paint with these slots.
         const size_t kVideoMaterialCount = 4;
         const size_t kExtraMaterialCount = kVideoMaterialCount + 1;
-        // Four dedicated secondary-SDF pattern materials (triangles, hexagons,
-        // Perlin, Voronoi) for the catalogue/test scenes. They are real Texture
-        // materials whose brush-map entry points them at a valid base layer.
-        const size_t kPatternMaterialCount = 4;
+        // Nine dedicated secondary-SDF pattern materials (two scale patterns,
+        // Perlin, Voronoi and five platonic solids) for the catalogue/test
+        // scenes. They are real Texture materials whose brush-map entry points
+        // them at a valid base layer.
+        const size_t kPatternMaterialCount = 9;
         size_t materialCount = static_cast<size_t>(loadedTextureLayers) + 1 +
                                kExtraMaterialCount + kPatternMaterialCount;
         // Same per-layer overrides the Blender exporter publishes.
@@ -1317,9 +1318,9 @@ public:
             settings.vegetationEnabled = false;
             settings.cloudsEnabled = false;
             if (patternTest && std::getenv("VULKAN_CAMERA") == nullptr) {
-                camera = Camera(glm::vec3(0.0f, 170.0f, 420.0f),
-                                Math::eulerToQuat(0.0f, -8.0f, 0.0f));
-                std::cout << "[MyApp] pattern test camera: (0, 170, 420)" << std::endl;
+                camera = Camera(glm::vec3(0.0f, 220.0f, 520.0f),
+                                Math::eulerToQuat(0.0f, -15.0f, 0.0f));
+                std::cout << "[MyApp] pattern test camera: (0, 220, 520)" << std::endl;
             } else if (std::getenv("VULKAN_CAMERA") == nullptr) {
                 // Math::eulerToQuat(0,0,0) looks along -Z; -90 deg yaw turns
                 // that toward +X, where the slab/sphere sit from this camera.
@@ -5271,7 +5272,7 @@ void MyApp::syncBrushMaterialDisplacement(const BrushEntry& entry) {
 
     MaterialProperties& mat = materials[idx];
     const int pattern = entry.useSecondarySdf
-        ? std::clamp(entry.secondarySdfType, 0, 4) : 0;
+        ? std::clamp(entry.secondarySdfType, 0, 9) : 0;
     const float displacement = pattern > 0 ? entry.secondarySdfDisplacement : 0.0f;
     const float repeat = std::max(entry.secondarySdfRepeat, 1.0e-3f);
     const float intensity = std::clamp(entry.secondarySdfIntensity, 0.0f, 1.0f);

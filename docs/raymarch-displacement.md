@@ -61,7 +61,7 @@ is enabled independently per material by a non-zero
 | Offset | `displacementOffset` | Normalized height bias (+0.5 raises the neutral surface by half the amplitude) |
 | Bounds | `displacementBounds` | Optional clamp on `|h|` in world units (0 = `|amplitude| * strength`) |
 | Texture | `displacementTexture` | Height layer used for displacement (-1 = the material's own layer, otherwise resolved through the brush map) |
-| Pattern | `displacementPattern` | 0 = texture, 1 = triangular scales, 2 = hexagonal scales, 3 = Perlin, 4 = Voronoi |
+| Pattern | `displacementPattern` | 0 = texture, 1 = triangles, 2 = hexagons, 3 = Perlin, 4 = Voronoi, 5..9 = platonic solids |
 | Pattern scale | `displacementPatternDisplacement` | Peak world-unit scale displacement |
 | Pattern repeat | `displacementPatternRepeat` | World-unit size of one scale cell |
 | Segment | `displacementSegmentTime/Velocity/Intensity` | Last dragged brush segment; orientation, animation phase and intensity |
@@ -199,6 +199,10 @@ octree. A material selects it with `displacementPattern`:
   velocity vector.
 * **Voronoi cells** — animated 2D cellular F1 field in the same cylindrical
   frame, advected by velocity and time.
+* **Platonic solids** — tetrahedron, cube, octahedron, dodecahedron and
+  icosahedron reliefs, one per pattern cell. Each cell spins around the
+  velocity axis with a cell-specific phase while the lattice itself is
+  advected by velocity and time.
 
 The pattern is evaluated in a cylindrical frame around the brush segment
 velocity:

@@ -328,9 +328,10 @@ void TextureViewer::render() {
             if (mat.displacementStrength > 0.0f) {
                 static const char* patternNames[] = {
                     "Texture", "Triangular Scales", "Hexagonal Scales",
-                    "Perlin Noise", "Voronoi Cells"
+                    "Perlin Noise", "Voronoi Cells", "Tetrahedron",
+                    "Cube", "Octahedron", "Dodecahedron", "Icosahedron"
                 };
-                int source = std::clamp(mat.displacementPattern, 0, 4);
+                int source = std::clamp(mat.displacementPattern, 0, 9);
                 if (ImGui::Combo("Displacement Source", &source, patternNames,
                                  IM_ARRAYSIZE(patternNames))) {
                     mat.displacementPattern = source;

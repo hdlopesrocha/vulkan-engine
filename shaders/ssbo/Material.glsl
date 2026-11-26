@@ -19,7 +19,7 @@ struct Material {
     // z = normalized height offset, w = strength [0..1].
     vec4 displacementParams;
     // Secondary SDF pattern: x = type (0 texture, 1 triangles, 2 hexagons,
-    // 3 Perlin, 4 Voronoi),
+    // 3 Perlin, 4 Voronoi, 5..9 platonic solids),
     // y = peak displacement, z = world-unit repeat, w = segment time.
     vec4 patternParams;
     // Dragged segment: xyz = world-space velocity (m/s), w = intensity [0..1].

@@ -161,6 +161,11 @@ std::vector<MaterialProperties> sceneMaterialProperties(size_t materialCount) {
         setPattern(45u, 2, "hexagonal scales");
         setPattern(46u, 3, "perlin noise");
         setPattern(47u, 4, "voronoi cells");
+        setPattern(48u, 5, "tetrahedron");
+        setPattern(49u, 6, "cube");
+        setPattern(50u, 7, "octahedron");
+        setPattern(51u, 8, "dodecahedron");
+        setPattern(52u, 9, "icosahedron");
     }
 
     // The rock biome seam layers must displace like the rock sources they
