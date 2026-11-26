@@ -262,6 +262,47 @@ void Brush3dWidget::renderEntry(int index) {
         ImGui::Unindent();
     }
 
+    // Secondary SDF displacement. The primary SDF defines the volume; this
+    // GPU-only pattern moves the painted material's surface and is oriented by
+    // the last drag segment's velocity.
+    ImGui::SeparatorText("Secondary SDF Displacement");
+    {
+        static const char* patternNames[] = {
+            "Texture", "Triangular Scales", "Hexagonal Scales"
+        };
+        int source = e.useSecondarySdf ? std::clamp(e.secondarySdfType, 0, 2) : 0;
+        if (ImGui::Combo("Displacement Source", &source, patternNames,
+                         IM_ARRAYSIZE(patternNames))) {
+            e.useSecondarySdf = source != 0;
+            e.secondarySdfType = source != 0 ? source : 1;
+            dirty = true;
+        }
+        ImGuiHelpers::SetTooltipIfHovered(
+            "Texture uses the material height path. The SDF patterns are evaluated live "
+            "on the GPU and are never stored in the octree.");
+        if (e.useSecondarySdf) {
+            ImGui::Indent();
+            if (ImGui::DragFloat("Displacement Scale", &e.secondarySdfDisplacement,
+                                 0.1f, -1000.0f, 1000.0f, "%.3f")) dirty = true;
+            ImGuiHelpers::SetTooltipIfHovered(
+                "World-unit peak SDF displacement; negative recesses the scales.");
+            if (ImGui::DragFloat("Repeat Scale", &e.secondarySdfRepeat,
+                                 1.0f, 0.01f, 10000.0f, "%.3f")) dirty = true;
+            ImGuiHelpers::SetTooltipIfHovered(
+                "World-unit size of one pattern cell. Larger values make fewer, larger scales.");
+
+            ImGui::Text("Drag Segment");
+            ImGui::TextDisabled("time %.3f s  |v| %.3f m/s  intensity %.3f",
+                                e.secondarySdfSegmentTime,
+                                glm::length(e.secondarySdfVelocity),
+                                e.secondarySdfIntensity);
+            if (ImGui::DragFloat3("Segment Velocity", &e.secondarySdfVelocity.x, 0.5f)) dirty = true;
+            if (ImGui::SliderFloat("Segment Intensity", &e.secondarySdfIntensity, 0.0f, 1.0f)) dirty = true;
+            if (ImGui::DragFloat("Segment Time", &e.secondarySdfSegmentTime, 0.01f, 0.0f, 100000.0f)) dirty = true;
+            ImGui::Unindent();
+        }
+    }
+
     // Capsule-specific parameters
     if (e.sdfType == 2) { // Capsule
         ImGui::Text("Capsule Parameters:");

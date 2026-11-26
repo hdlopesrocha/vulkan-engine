@@ -19,6 +19,10 @@ struct ControllerAction {
     glm::vec3 scaleDelta = glm::vec3(0.0f);// per-axis scale add this frame
     int textureDelta = 0;                  // material index increment
     int attributeDelta = 0;                // generic attribute increment
+    // Brush segment metadata carried by the dragging controller.
+    float deltaTime = 0.0f;
+    float timeSeconds = 0.0f;
+    float intensity = 1.0f;
 };
 
 namespace {
@@ -52,7 +56,14 @@ inline bool applyControllerAction(const ControllerContext &ctx, EventManager *em
     // independent of the active subpage, so the Brush > Transform subpage
     // combines all three operations at once.
     bool changed = false;
-    if (nonzero(a.translate)) { be->translate += a.translate; changed = true; }
+    if (nonzero(a.translate)) {
+        // A directional drag segment. Time is the app clock, velocity is the
+        // controller-driven world delta over the frame, and intensity is the
+        // normalized controller magnitude (stick/trigger/axis).
+        brushApplyTranslation(*be, a.translate, a.deltaTime,
+                               a.timeSeconds, a.intensity);
+        changed = true;
+    }
     if (nonzero(a.rotateDeg)) {
         be->yaw += a.rotateDeg.x;
         be->pitch += a.rotateDeg.y;

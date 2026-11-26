@@ -1,4 +1,6 @@
 #include "NunchukPublisher.hpp"
+
+#include <GLFW/glfw3.h>
 #include "EventManager.hpp"
 #include "ControllerManager.hpp"
 #include "ControllerContext.hpp"
@@ -422,8 +424,12 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 if (brushManager->controlMode != BrushControlMode::AIM) {
                     BrushEntry* be = brushManager->getSelectedEntry();
                     if (be) {
-                        if (jx != 0.0f) be->translate += right * (jx * vel);
-                        if (jy != 0.0f) be->translate += forward * (jy * vel);
+                        glm::vec3 delta(0.0f);
+                        if (jx != 0.0f) delta += right * (jx * vel);
+                        if (jy != 0.0f) delta += forward * (jy * vel);
+                        brushApplyTranslation(*be, delta, deltaTime,
+                                              static_cast<float>(glfwGetTime()),
+                                              glm::max(std::abs(jx), std::abs(jy)));
                     }
                 }
             }
@@ -449,9 +455,9 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 em->publish(std::make_shared<TranslateCameraEvent>(upDelta));
             } else if (brushManager && !aimActive) {
                 BrushEntry* be = brushManager->getSelectedEntry();
-                if (be) {
-                    be->translate += upDelta;
-                }
+                if (be)
+                    brushApplyTranslation(*be, upDelta, deltaTime,
+                                          static_cast<float>(glfwGetTime()), 1.0f);
             }
         }
 
@@ -461,9 +467,9 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                 em->publish(std::make_shared<TranslateCameraEvent>(downDelta));
             } else if (brushManager && !aimActive) {
                 BrushEntry* be = brushManager->getSelectedEntry();
-                if (be) {
-                    be->translate += downDelta;
-                }
+                if (be)
+                    brushApplyTranslation(*be, downDelta, deltaTime,
+                                          static_cast<float>(glfwGetTime()), 1.0f);
             }
         }
     }
@@ -626,16 +632,22 @@ void NunchukPublisher::applyControls(EventManager* em, const Camera& cam, float 
                         if (jx != 0.0f) delta += right * (jx * vel);
                         if (jy != 0.0f) delta += forward * (jy * vel);
                         be->snapTranslation += delta;
-                        be->translate += delta;
+                        brushApplyTranslation(*be, delta, deltaTime,
+                                              static_cast<float>(glfwGetTime()),
+                                              glm::max(std::abs(jx), std::abs(jy)));
                     }
                 }
                 if (s.buttonC) {
-                    be->snapTranslation += up * (cam.speed * deltaTime * joystickAccel);
-                    be->translate += up * (cam.speed * deltaTime * joystickAccel);
+                    glm::vec3 delta = up * (cam.speed * deltaTime * joystickAccel);
+                    be->snapTranslation += delta;
+                    brushApplyTranslation(*be, delta, deltaTime,
+                                          static_cast<float>(glfwGetTime()), 1.0f);
                 }
                 if (s.buttonZ) {
-                    be->snapTranslation -= up * (cam.speed * deltaTime * joystickAccel);
-                    be->translate -= up * (cam.speed * deltaTime * joystickAccel);
+                    glm::vec3 delta = up * (-(cam.speed * deltaTime * joystickAccel));
+                    be->snapTranslation += delta;
+                    brushApplyTranslation(*be, delta, deltaTime,
+                                          static_cast<float>(glfwGetTime()), 1.0f);
                 }
             }
         }

@@ -76,6 +76,26 @@ struct BrushEntry {
     bool sweepMode = false;
     // Brush position from the previous frame (used in sweep mode)
     glm::vec3 previousTranslate = glm::vec3(0.0f, 0.0f, 0.0f);
+
+    // ── Secondary SDF displacement ─────────────────────────────────────────
+    // The primary SDF above defines the brush volume. These fields define a
+    // GPU-only secondary SDF pattern that displaces the painted material's
+    // surface. The secondary SDF is never stored in the octree: it is
+    // evaluated in the raymarcher (and its shadow/AO traces) from the packed
+    // material state.
+    // 1 = triangular scales, 2 = hexagonal scales; 0 = texture source.
+    bool useSecondarySdf = false;
+    int secondarySdfType = 1;
+    // World-unit peak displacement and world-unit pattern cell/repeat size.
+    float secondarySdfDisplacement = 8.0f;
+    float secondarySdfRepeat = 64.0f;
+    // Segment state, refreshed while a controller drags the brush. `time` is
+    // the application clock at the stamp, `velocity` is the world-space brush
+    // velocity (m/s) and `intensity` is the dragging controller's magnitude.
+    float secondarySdfSegmentTime = 0.0f;
+    glm::vec3 secondarySdfVelocity = glm::vec3(0.0f, 1.0f, 0.0f);
+    float secondarySdfIntensity = 1.0f;
+
     // Rendering opacity (0 = fully transparent, 1 = fully opaque)
     float opacity = 0.5f;
     // Per-vertex HSV tint (H=0..360, S=0..1, V=0..1)
@@ -94,6 +114,17 @@ struct BrushEntry {
     float interpolationFactor = 0.5f;
     BrushSdfTarget interpolationTarget{};
 };
+
+// Apply a controller-driven translation and refresh the directional segment
+// metadata used by the secondary SDF. The caller owns any sweep-start logic.
+inline void brushApplyTranslation(BrushEntry& e, const glm::vec3& delta,
+                                 float deltaTime, float timeSeconds, float intensity) {
+    if (glm::dot(delta, delta) <= 1.0e-12f) return;
+    e.secondarySdfSegmentTime = timeSeconds;
+    e.secondarySdfVelocity = (deltaTime > 1.0e-5f) ? (delta / deltaTime) : delta;
+    e.secondarySdfIntensity = glm::clamp(intensity, 0.0f, 1.0f);
+    e.translate += delta;
+}
 
 // Copy SDF-relevant fields from a brush entry into an interpolation target.
 inline BrushSdfTarget brushTargetFromEntry(const BrushEntry& e) {

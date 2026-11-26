@@ -177,8 +177,16 @@ bool rmShadowMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd, float tMax,
         // Shadow LOD: the cascade texel footprint is large, so stop descending
         // once a cell covers only a few texels. This bounds the caster's
         // per-texel node count without changing the field definition.
+        // Secondary-SDF patterns are authored macro detail, so they keep a
+        // finer floor (two texels) instead of vanishing from the cascade.
+        int rawMaterial = rmNodes[node].meta.z;
+        float patternFlag =
+            (rawMaterial >= 0 && rawMaterial != LAND_BRUSH_INDEX &&
+             rawMaterial != NORMAL_BRUSH && rawMaterial < materials.length())
+            ? materials[rawMaterial].patternParams.x : 0.0;
+        float lodTexels = (patternFlag > 0.5) ? 2.0 : SHADOW_LOD_TEXELS;
         bool descend = !rmNodeIsLeaf(node) &&
-                       nodeSize > max(texelWorld * SHADOW_LOD_TEXELS, 1.0e-4);
+                       nodeSize > max(texelWorld * lodTexels, 1.0e-4);
         if (descend) {
             vec3 mn = rmNodeMin(node);
             float nudge = max(nodeSize * 1.0e-5, 1.0e-4);
@@ -253,8 +261,11 @@ bool rmShadowMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd, float tMax,
                 float feature = clamp(wavelength, nodeSize * 1.0e-4,
                                       nodeSize * 0.5);
                 // Shadow detail below several texels cannot be represented in
-                // the cascade; do not pay for it in the caster.
-                feature = max(feature, texelWorld * SHADOW_STEP_TEXELS);
+                // the cascade; do not pay for it in the caster. Patterned
+                // materials use two texels so the scale relief still shapes
+                // the shadow silhouette.
+                float stepTexels = (patternFlag > 0.5) ? 2.0 : SHADOW_STEP_TEXELS;
+                feature = max(feature, texelWorld * stepTexels);
                 float Lbase = 1.0 / max(invLip, 1.0e-3);
                 float Ldisp = 6.28318530718 * maxDisp / max(feature, 1.0e-4);
                 float L = max(Lbase + Ldisp, 1.0e-4);

@@ -319,35 +319,70 @@ void TextureViewer::render() {
                     "Independent of tessellation; the legacy tessellation height bump above is "
                     "unchanged when this is off.")) {
                 mat.displacementStrength = dispEnabled ? 1.0f : 0.0f;
-                if (dispEnabled && mat.displacementAmplitude == 0.0f)
+                if (dispEnabled && mat.displacementPattern == 0 && mat.displacementAmplitude == 0.0f)
                     mat.displacementAmplitude = 1.0f;
+                if (dispEnabled && mat.displacementPattern > 0 && mat.displacementPatternDisplacement == 0.0f)
+                    mat.displacementPatternDisplacement = 8.0f;
                 materialDirty = true;
             }
             if (mat.displacementStrength > 0.0f) {
-                if (SliderFloatField("Displacement Amplitude", &mat.displacementAmplitude,
-                        -64.0f, 64.0f, "%.3f",
-                        "Signed world-unit offset at the height extremes. Negative inverts the "
-                        "height field (peaks become pits).")) materialDirty = true;
-                if (SliderFloatField("Displacement Frequency", &mat.displacementFrequency,
-                        0.001f, 64.0f, "%.3f",
-                        "UV multiplier on top of the painted per-vertex texture scale. Also "
-                        "sets the feature wavelength used by the conservative march.",
-                        ImGuiSliderFlags_Logarithmic)) materialDirty = true;
+                static const char* patternNames[] = {
+                    "Texture", "Triangular Scales", "Hexagonal Scales"
+                };
+                int source = std::clamp(mat.displacementPattern, 0, 2);
+                if (ImGui::Combo("Displacement Source", &source, patternNames,
+                                 IM_ARRAYSIZE(patternNames))) {
+                    mat.displacementPattern = source;
+                    if (source > 0 && mat.displacementPatternDisplacement == 0.0f)
+                        mat.displacementPatternDisplacement = 8.0f;
+                    materialDirty = true;
+                }
+                if (mat.displacementPattern == 0) {
+                    if (SliderFloatField("Displacement Amplitude", &mat.displacementAmplitude,
+                            -64.0f, 64.0f, "%.3f",
+                            "Signed world-unit offset at the height extremes. Negative inverts the "
+                            "height field (peaks become pits).")) materialDirty = true;
+                    if (SliderFloatField("Displacement Frequency", &mat.displacementFrequency,
+                            0.001f, 64.0f, "%.3f",
+                            "UV multiplier on top of the painted per-vertex texture scale. Also "
+                            "sets the feature wavelength used by the conservative march.",
+                            ImGuiSliderFlags_Logarithmic)) materialDirty = true;
+                    if (SliderFloatField("Displacement Offset", &mat.displacementOffset,
+                            -1.0f, 1.0f, "%.3f",
+                            "Normalized height bias added before the amplitude (+0.5 raises the "
+                            "neutral surface by half the amplitude).")) materialDirty = true;
+                    if (SliderFloatField("Displacement Bounds", &mat.displacementBounds,
+                            0.0f, 64.0f, "%.3f",
+                            "Optional clamp on |displacement| in world units. 0 = |amplitude| * strength.")) materialDirty = true;
+                    if (SliderIntField("Displacement Texture", &mat.displacementTexture,
+                            -2, static_cast<int>(materials->size()) - 1,
+                            "Height source: -1 = this material's own height texture, "
+                            "-2 = procedural world-space Perlin displacement, otherwise another "
+                            "material index resolved through the brush map.")) materialDirty = true;
+                } else {
+                    if (SliderFloatField("SDF Displacement Scale", &mat.displacementPatternDisplacement,
+                            -64.0f, 64.0f, "%.3f",
+                            "Peak world-unit scale-pattern displacement; negative recesses the scales.")) materialDirty = true;
+                    if (SliderFloatField("SDF Repeat Scale", &mat.displacementPatternRepeat,
+                            0.01f, 1000.0f, "%.3f",
+                            "World-unit size of one scale cell. Larger values create fewer, larger scales.",
+                            ImGuiSliderFlags_Logarithmic)) materialDirty = true;
+                    ImGui::TextDisabled("Segment: t %.3f s  |v| %.2f m/s  intensity %.2f",
+                                        mat.displacementSegmentTime,
+                                        glm::length(mat.displacementSegmentVelocity),
+                                        mat.displacementSegmentIntensity);
+                    if (ImGui::DragFloat3("Segment Velocity", &mat.displacementSegmentVelocity.x, 0.5f))
+                        materialDirty = true;
+                    if (SliderFloatField("Segment Intensity", &mat.displacementSegmentIntensity,
+                            0.0f, 1.0f, "%.2f",
+                            "Dragging-controller magnitude; scales the SDF displacement.")) materialDirty = true;
+                    if (SliderFloatField("Segment Time", &mat.displacementSegmentTime,
+                            0.0f, 100000.0f, "%.3f",
+                            "Application time at the stamp; the shader animates from this point.")) materialDirty = true;
+                }
                 if (SliderFloatField("Displacement Strength", &mat.displacementStrength,
                         0.0f, 1.0f, "%.2f",
-                        "Blend between the undisplaced surface (0) and the full amplitude (1).")) materialDirty = true;
-                if (SliderFloatField("Displacement Offset", &mat.displacementOffset,
-                        -1.0f, 1.0f, "%.3f",
-                        "Normalized height bias added before the amplitude (+0.5 raises the "
-                        "neutral surface by half the amplitude).")) materialDirty = true;
-                if (SliderFloatField("Displacement Bounds", &mat.displacementBounds,
-                        0.0f, 64.0f, "%.3f",
-                        "Optional clamp on |displacement| in world units. 0 = |amplitude| * strength.")) materialDirty = true;
-                if (SliderIntField("Displacement Texture", &mat.displacementTexture,
-                        -2, static_cast<int>(materials->size()) - 1,
-                        "Height source: -1 = this material's own height texture, "
-                        "-2 = procedural world-space Perlin displacement, otherwise another "
-                        "material index resolved through the brush map.")) materialDirty = true;
+                        "Blend between the undisplaced surface (0) and the full displacement (1).")) materialDirty = true;
             }
             ImGui::TextUnformatted("Distance-based range");
             int minLvl = static_cast<int>(mat.tessMinLevel + 0.5f);

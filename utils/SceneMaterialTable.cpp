@@ -1,5 +1,7 @@
 #include "SceneMaterialTable.hpp"
 
+#include <iostream>
+
 std::vector<SceneTextureTriple> sceneTextureTriples() {
     return {
         { "textures/Wall_Stone_010/COLOR.jpg", "textures/Wall_Stone_010/NORMAL.jpg", "textures/Wall_Stone_010/HEIGHT.jpg", "textures/Wall_Stone_010/ROUGH.jpg", "textures/Wall_Stone_010/OCC.jpg" },
@@ -135,6 +137,30 @@ std::vector<MaterialProperties> sceneMaterialProperties(size_t materialCount) {
         mat.invertHeight = true;
         mat.reflectionStrength = mi.reflectionStrength;
     }
+    // GPU-only secondary SDF patterns for the swept directional sphere test
+    // objects. The primary SDF and its material index are stored in the octree;
+    // these scale patterns are re-evaluated by the raymarcher every frame.
+    {
+        auto setPattern = [&](size_t index, int type, const char* label) {
+            if (index >= materials.size()) return;
+            MaterialProperties& mat = materials[index];
+            mat.displacementPattern = type;
+            mat.displacementPatternDisplacement = 4.0f;
+            mat.displacementPatternRepeat = 48.0f;
+            mat.displacementSegmentTime = 0.0f;
+            mat.displacementSegmentVelocity = glm::vec3(0.0f, 48.0f, 0.0f);
+            mat.displacementSegmentIntensity = 1.0f;
+            mat.displacementStrength = 1.0f;
+            mat.mappingMode = true;
+            mat.textureIndex = 6; // neutral linoleum: pattern relief is readable
+            mat.reflectionStrength = 0.05f;
+            std::cout << "[SceneMaterialTable] material " << index
+                      << " secondary SDF: " << label << std::endl;
+        };
+        setPattern(38u, 1, "triangular scales");
+        setPattern(39u, 2, "hexagonal scales");
+    }
+
     // The rock biome seam layers must displace like the rock sources they
     // blend, otherwise the tessellation/bump detail drops out exactly at the
     // biome boundaries. Derive their layer indices from the mixer table so a

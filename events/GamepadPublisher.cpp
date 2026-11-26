@@ -162,6 +162,10 @@ void GamepadPublisher::update(EventManager* em, const Camera& cam, float deltaTi
 
     // ---- Map raw stick/trigger input into an action based on active page ----
     ControllerAction action;
+    action.deltaTime = deltaTime;
+    action.timeSeconds = static_cast<float>(glfwGetTime());
+    action.intensity = glm::clamp(glm::max(glm::max(std::abs(lx), std::abs(ly)),
+                                           std::abs(net)), 0.0f, 1.0f);
     const PageCategory cat = gctx.activeCategory();
     const PageControl ctrl = gctx.activeControl();
 

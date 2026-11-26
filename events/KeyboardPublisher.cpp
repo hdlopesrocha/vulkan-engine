@@ -53,6 +53,9 @@ void KeyboardPublisher::update(GLFWwindow* window, EventManager* em, const Camer
 
     // ---- Map raw keys into a controller-agnostic action based on active page ----
     ControllerAction action;
+    action.deltaTime = deltaTime;
+    action.timeSeconds = static_cast<float>(glfwGetTime());
+    action.intensity = 1.0f;
     glm::vec3 forward = cam.getForward();
     glm::vec3 up = cam.getUp();
     glm::vec3 right = cam.getRight();

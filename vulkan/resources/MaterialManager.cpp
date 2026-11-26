@@ -19,6 +19,12 @@ static Material toGPU(const MaterialProperties &m) {
     out.mappingOrigin = m.mappingOrigin;
     out.displacementParams = glm::vec4(m.displacementAmplitude, m.displacementFrequency,
                                        m.displacementOffset, m.displacementStrength);
+    out.patternParams = glm::vec4(static_cast<float>(m.displacementPattern),
+                                  m.displacementPatternDisplacement,
+                                  m.displacementPatternRepeat,
+                                  m.displacementSegmentTime);
+    out.segmentParams = glm::vec4(m.displacementSegmentVelocity,
+                                  m.displacementSegmentIntensity);
     // The reserved tessLevelParams.w carries the displacement clamp bound.
     out.tessLevelParams.w = m.displacementBounds;
     return out;

@@ -25,8 +25,13 @@ struct Material {
     // Legacy tessellation displacement stays controlled by mappingParams
     // (mappingEnabled + tessHeightScale) and the global tessellation toggle.
     glm::vec4 displacementParams;
+    // Secondary SDF pattern: x = type (0 texture, 1 triangles, 2 hexagons),
+    // y = peak displacement, z = world-unit pattern repeat, w = segment time.
+    glm::vec4 patternParams;
+    // Dragged segment: xyz = world-space velocity (m/s), w = intensity [0..1].
+    glm::vec4 segmentParams;
 };
-static_assert(sizeof(Material) == 144, "Material must be 144 bytes");
+static_assert(sizeof(Material) == 176, "Material must be 176 bytes");
 static_assert(offsetof(Material, materialFlags) == 0, "materialFlags offset");
 static_assert(offsetof(Material, mappingParams) == 16, "mappingParams offset");
 static_assert(offsetof(Material, specularParams) == 32, "specularParams offset");
@@ -36,3 +41,5 @@ static_assert(offsetof(Material, roughnessAOParams) == 80, "roughnessAOParams of
 static_assert(offsetof(Material, layerParams) == 96, "layerParams offset");
 static_assert(offsetof(Material, mappingOrigin) == 112, "mappingOrigin offset");
 static_assert(offsetof(Material, displacementParams) == 128, "displacementParams offset");
+static_assert(offsetof(Material, patternParams) == 144, "patternParams offset");
+static_assert(offsetof(Material, segmentParams) == 160, "segmentParams offset");

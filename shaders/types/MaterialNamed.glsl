@@ -40,6 +40,14 @@ struct MaterialNamed {
     float displacementStrength;
     float displacementBounds;   // 0 = use |amplitude| * strength
     int displacementTexture;    // -1 = material's own height layer
+    // Secondary SDF pattern (0 = texture, 1 = triangles, 2 = hexagons),
+    // peak displacement, world-unit repeat, segment time/velocity/intensity.
+    int displacementPattern;
+    float displacementPatternDisplacement;
+    float displacementPatternRepeat;
+    float displacementSegmentTime;
+    vec3 displacementSegmentVelocity;
+    float displacementSegmentIntensity;
 };
 
 #endif // MATERIAL_NAMED_GLSL

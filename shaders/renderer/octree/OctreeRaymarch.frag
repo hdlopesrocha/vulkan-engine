@@ -1382,7 +1382,13 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
                 float viewDist = length(ro - ubo.viewPosition);
                 float pixelFloor = max(rmPixelWorldSize(t),
                                        rmPixelWorldSize(viewDist));
-                feature = max(feature, pixelFloor * 16.0);
+                // Scale patterns are authored macro detail: their gaps are
+                // only a fraction of a repeat. Keep a 4-pixel floor for them
+                // (the 16-pixel floor is for texture displacement, where fine
+                // sub-pixel detail is intentionally filtered).
+                float patternFlag = (material >= 0)
+                    ? materials[material].patternParams.x : 0.0;
+                feature = max(feature, pixelFloor * (patternFlag > 0.5 ? 2.0 : 16.0));
                 float Lbase = 1.0 / max(invLip, 1.0e-3);
                 float Ldisp = 6.28318530718 * maxDisp / max(feature, 1.0e-4);
                 float L = max(Lbase + Ldisp, 1.0e-4);

@@ -804,6 +804,25 @@ public:
         size_t materialCount = static_cast<size_t>(loadedTextureLayers) + 1 + kExtraMaterialCount;
         // Same per-layer overrides the Blender exporter publishes.
         materials = sceneMaterialProperties(materialCount);
+        // Headless pattern A/B (used by the secondary-SDF validation scene):
+        // override the two pattern materials' displacement/repeat/intensity
+        // without touching the authored defaults.
+        if (const char* env = std::getenv("VULKAN_PATTERN_SCALE")) {
+            const float v = std::max(0.0f, static_cast<float>(std::atof(env)));
+            for (MaterialProperties& m : materials)
+                if (m.displacementPattern > 0) m.displacementPatternDisplacement = v;
+        }
+        if (const char* env = std::getenv("VULKAN_PATTERN_REPEAT")) {
+            const float v = std::max(0.01f, static_cast<float>(std::atof(env)));
+            for (MaterialProperties& m : materials)
+                if (m.displacementPattern > 0) m.displacementPatternRepeat = v;
+        }
+        if (const char* env = std::getenv("VULKAN_PATTERN_INTENSITY")) {
+            const float v = std::clamp(static_cast<float>(std::atof(env)), 0.0f, 1.0f);
+            for (MaterialProperties& m : materials)
+                if (m.displacementPattern > 0) m.displacementSegmentIntensity = v;
+        }
+
         for (size_t i = static_cast<size_t>(loadedTextureLayers) + 1;
              i < static_cast<size_t>(loadedTextureLayers) + 1 + kVideoMaterialCount; ++i) {
             MaterialProperties& m = materials[i];
@@ -1279,14 +1298,20 @@ public:
 
         // Displacement test scene: a deterministic close view of the slab and
         // sphere unless the caller supplied VULKAN_CAMERA.
-        if (std::getenv("VULKAN_DISPLACEMENT_TEST") != nullptr) {
+        const bool patternTest =
+            std::getenv("VULKAN_PATTERN_TEST") != nullptr;
+        if (std::getenv("VULKAN_DISPLACEMENT_TEST") != nullptr || patternTest) {
             // Clean deterministic capture: no particles/droplets/vegetation
-            // layered over the displaced slab and sphere.
+            // layered over the displaced test geometry.
             settings.windParticlesEnabled = false;
             settings.dropletsEnabled = false;
             settings.vegetationEnabled = false;
             settings.cloudsEnabled = false;
-            if (std::getenv("VULKAN_CAMERA") == nullptr) {
+            if (patternTest && std::getenv("VULKAN_CAMERA") == nullptr) {
+                camera = Camera(glm::vec3(0.0f, 190.0f, 560.0f),
+                                Math::eulerToQuat(0.0f, -8.0f, 0.0f));
+                std::cout << "[MyApp] pattern test camera: (0, 190, 560)" << std::endl;
+            } else if (std::getenv("VULKAN_CAMERA") == nullptr) {
                 // Math::eulerToQuat(0,0,0) looks along -Z; -90 deg yaw turns
                 // that toward +X, where the slab/sphere sit from this camera.
                 camera = Camera(glm::vec3(-800.0f, 320.0f, 0.0f),
@@ -1782,6 +1807,8 @@ public:
     // Apply one brush event to a layer's octree (shared by live apply and undo
     // replay); does not record history or advance previousTranslate.
     void applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& sweepStart, Layer::Id layer);
+    // Push the brush's secondary-SDF authoring/segment state into its material.
+    void syncBrushMaterialDisplacement(const BrushEntry& entry);
     // Serialize/restore the layer base and manage the per-layer brush stack.
     void ensureBrushBase(Layer::Id layer, Octree& tree);
     void recordBrushEvent(Layer::Id layer, const BrushHistoryEvent& event);
@@ -2338,17 +2365,25 @@ public:
         bool anyMaterialDisplacement = false;
         float maxMaterialDisplacementBound = 0.0f;
         for (const MaterialProperties& m : materials) {
-            if (m.displacementStrength > 0.0f && m.displacementAmplitude != 0.0f) {
+            const bool pattern = m.displacementPattern > 0;
+            const float amplitude = pattern ? m.displacementPatternDisplacement
+                                            : m.displacementAmplitude;
+            if (m.displacementStrength > 0.0f && amplitude != 0.0f) {
                 anyMaterialDisplacement = true;
-                float nmax = std::max(std::abs(-0.5f + m.displacementOffset),
-                                      std::abs(0.5f + m.displacementOffset));
-                float configured = m.displacementBounds > 0.0f
-                    ? m.displacementBounds
-                    : std::abs(m.displacementAmplitude) * m.displacementStrength;
-                maxMaterialDisplacementBound = std::max(
-                    maxMaterialDisplacementBound,
-                    std::min(configured,
-                             std::abs(m.displacementAmplitude) * m.displacementStrength * nmax));
+                float bound;
+                if (pattern) {
+                    bound = std::abs(amplitude) * m.displacementStrength *
+                            std::clamp(m.displacementSegmentIntensity, 0.0f, 1.0f);
+                } else {
+                    float nmax = std::max(std::abs(-0.5f + m.displacementOffset),
+                                          std::abs(0.5f + m.displacementOffset));
+                    float configured = m.displacementBounds > 0.0f
+                        ? m.displacementBounds
+                        : std::abs(amplitude) * m.displacementStrength;
+                    bound = std::min(configured,
+                                     std::abs(amplitude) * m.displacementStrength * nmax);
+                }
+                maxMaterialDisplacementBound = std::max(maxMaterialDisplacementBound, bound);
             } else if (settings.tessellationEnabled && m.mappingMode) {
                 maxMaterialDisplacementBound = std::max(
                     maxMaterialDisplacementBound, 0.5f * std::abs(m.tessHeightScale));
@@ -5220,8 +5255,45 @@ void MyApp::updateBrushPreview(uint32_t frameIndex) {
     }
 }
 
+void MyApp::syncBrushMaterialDisplacement(const BrushEntry& entry) {
+    if (!sceneRenderer || entry.materialIndex < 0) return;
+    const size_t idx = static_cast<size_t>(entry.materialIndex);
+    if (idx >= materials.size()) return;
+
+    MaterialProperties& mat = materials[idx];
+    const int pattern = entry.useSecondarySdf
+        ? std::clamp(entry.secondarySdfType, 0, 2) : 0;
+    const float displacement = pattern > 0 ? entry.secondarySdfDisplacement : 0.0f;
+    const float repeat = std::max(entry.secondarySdfRepeat, 1.0e-3f);
+    const float intensity = std::clamp(entry.secondarySdfIntensity, 0.0f, 1.0f);
+    const glm::vec3 velocity = entry.secondarySdfVelocity;
+
+    const bool changed =
+        mat.displacementPattern != pattern ||
+        mat.displacementPatternDisplacement != displacement ||
+        mat.displacementPatternRepeat != repeat ||
+        mat.displacementSegmentTime != entry.secondarySdfSegmentTime ||
+        mat.displacementSegmentVelocity != velocity ||
+        mat.displacementSegmentIntensity != intensity;
+    if (!changed) return;
+
+    mat.displacementPattern = pattern;
+    mat.displacementPatternDisplacement = displacement;
+    mat.displacementPatternRepeat = repeat;
+    mat.displacementSegmentTime = entry.secondarySdfSegmentTime;
+    mat.displacementSegmentVelocity = velocity;
+    mat.displacementSegmentIntensity = intensity;
+    if (pattern > 0 && mat.displacementStrength <= 0.0f)
+        mat.displacementStrength = 1.0f;
+    materialManager.update(idx, mat, this);
+}
+
 void MyApp::applyBrushEventToLayer(const BrushEntry& entry, const glm::vec3& sweepStart, Layer::Id targetLayer) {
     if (!world || !sceneRenderer || useRemote) return;
+
+    // The secondary SDF is GPU-only, but its material block must be current
+    // before this application starts a raymarch-table rebuild.
+    syncBrushMaterialDisplacement(entry);
 
     AddSignedDistanceOperation addOp;
     DeleteSignedDistanceOperation deleteOp;
@@ -5988,6 +6060,10 @@ void MyApp::startLocalContentLoad(bool fromFile, std::string path) {
                     contentHasSettings_ = true;
                     std::cout << "[MyApp::loadSceneFromFile] Octree loaded from '"
                               << path << "'\n";
+                } else if (std::getenv("VULKAN_PATTERN_TEST") != nullptr) {
+                    PatternTestLoader loader;
+                    world->scene().loadScene(loader, ups, dels);
+                    std::cout << "[MyApp::generateMap] pattern test scene constructed\n";
                 } else if (std::getenv("VULKAN_DISPLACEMENT_TEST") != nullptr) {
                     DisplacementTestLoader loader;
                     world->scene().loadScene(loader, ups, dels);

@@ -61,12 +61,15 @@ is enabled independently per material by a non-zero
 | Offset | `displacementOffset` | Normalized height bias (+0.5 raises the neutral surface by half the amplitude) |
 | Bounds | `displacementBounds` | Optional clamp on `|h|` in world units (0 = `|amplitude| * strength`) |
 | Texture | `displacementTexture` | Height layer used for displacement (-1 = the material's own layer, otherwise resolved through the brush map) |
+| Pattern | `displacementPattern` | 0 = texture, 1 = triangular scales, 2 = hexagonal scales |
+| Pattern scale | `displacementPatternDisplacement` | Peak world-unit scale displacement |
+| Pattern repeat | `displacementPatternRepeat` | World-unit size of one scale cell |
+| Segment | `displacementSegmentTime/Velocity/Intensity` | Last dragged brush segment; orientation, animation phase and intensity |
 
-The packed `Material` grows by one `vec4` (`displacementParams`) to 144 bytes.
-Two previously reserved floats carry the extra controls without another vec4:
-`tessLevelParams.w` is the bounds clamp and `layerParams.z` is the texture
-index. A material with `displacementStrength == 0` (the default) behaves
-exactly as before.
+The packed `Material` carries `displacementParams`, `patternParams` and
+`segmentParams` and is 176 bytes. Two previously reserved floats carry the
+texture bounds clamp and texture index. A material with
+`displacementStrength == 0` (the default) behaves exactly as before.
 
 ## 2. Conservative marching
 
@@ -181,6 +184,42 @@ map; the owner material's invert-U/V flags are still applied. The special value
 `-2` selects a procedural world-space 2D Perlin field in the same projection
 frame (the "procedural displacement function" path), so no height texture is
 required.
+
+### 3.1 Secondary SDF scale patterns
+
+The alternative source is a **GPU-only secondary SDF**: a procedural scale
+pattern that is added to the displacement field but never stored in the
+octree. A material selects it with `displacementPattern`:
+
+* **Triangular scales** — a staggered grid of isosceles scales. Each scale's
+  tip points along `-velocity`; its base is on the trailing side.
+* **Hexagonal scales** — a staggered grid of pointed hexagons using the same
+  `-velocity` orientation.
+
+The pattern is evaluated in a cylindrical frame around the brush segment
+velocity:
+`u = dot(p, axis)`, `v = angle(p - axis * dot(p, axis)) * radius`. Using a
+stable world-frame cylinder instead of a per-sample tangent frame is what
+keeps the scalar field continuous across octree cells. `u` animates from
+`appTime - segmentTime` and `v` uses the local radius, so triangles/hexagons
+stay cell-sized around the trail. The pattern height is multiplied by
+`displacementPatternDisplacement`, `displacementStrength` and the segment
+intensity, then clamped to the same conservative bound used by the march.
+
+`BrushEntry` carries the authoring fields and the last segment
+`(secondarySdfSegmentTime, secondarySdfVelocity, secondarySdfIntensity)`.
+Keyboard and gamepad brush translation compute velocity as
+`worldDelta / deltaTime`; gamepad intensity is the normalized stick/trigger
+magnitude, keyboard intensity is 1. Defaults are `(0, +Y, 1)` and can be edited
+in the Brush 3D widget. Applying the brush synchronizes the fields into the
+material's packed GPU block; selecting a different brush does not retroactively
+change an already-painted material until it is applied.
+
+The catalogue contains `SweptDirectionalSphereTriangles` and
+`SweptDirectionalSphereHexagons`: a tapered capsule from zero radius to the
+usual test-object radius, painted with dedicated pattern materials 38/39. The focused
+`VULKAN_PATTERN_TEST=1` scene uses the same two swept spheres over a slab and
+shows the patterns clearly in debug view 52.
 
 ## 4. Normals
 
@@ -384,6 +423,10 @@ full-map smoke case, and fails on any validation error or device loss.
   same limitation exists in the legacy tessellation path.
 * The CSM terrain caster is an extra fullscreen pass per cascade. A scene with
   no vegetation / raster receivers can disable it to recover the cost.
+* The secondary-SDF segment is material-level: the latest dragged segment
+  orients/animates the whole material. Voxels do not store a segment id, so a
+  later stroke reorients earlier stamps of the same material. This is the
+  explicit trade-off for keeping the secondary SDF out of the octree.
 * Water is never displaced by the solid material height map (the Gerstner
   swell is a shading normal/height offset, not a change of the lake's SDF
   interface); this preserves the existing water/terrain contract.
@@ -410,16 +453,17 @@ full-map smoke case, and fails on any validation error or device loss.
 | File | Role |
 |---|---|
 | `types/MaterialProperties.hpp` | CPU material controls |
-| `vulkan/ssbo/Material.hpp` | Packed GPU material (+1 vec4) |
+| `vulkan/ssbo/Material.hpp` | Packed GPU material (+3 vec4: displacement/pattern/segment) |
 | `vulkan/resources/MaterialManager.cpp` | CPU -> GPU packing |
 | `shaders/includes/octree/DisplacementField.glsl` | Shared field/material sampling/wavelength |
 | `shaders/renderer/octree/OctreeRaymarch.frag` | Camera march, normals, AO, depth, debug views |
 | `shaders/renderer/octree/OctreeRaymarchShadow.frag` | Displaced terrain caster for CSM |
 | `vulkan/renderer/octree/OctreeRaymarchRenderer.*` | Caster pipeline + record path |
 | `vulkan/renderer/shadow/ShadowRenderer.*` | Per-cascade caster integration |
-| `widgets/TextureViewerWidget.cpp` | Material displacement editor |
+| `widgets/TextureViewerWidget.cpp` | Material/texture and pattern displacement editor |
+| `widgets/Brush3dWidget.cpp` | Secondary-SDF authoring and segment defaults |
 | `widgets/RaymarchWidget.cpp` | Global path / AO / caster switches |
-| `scripts/test_raymarch_displacement.sh` | Headless A/B + validation test |
+| `scripts/test_raymarch_displacement.sh` | Headless A/B + secondary-SDF validation test |
 | `scripts/bench_raymarch_displacement.sh` | Timing A/B |
 
 ### Explicit pipeline bind in the caster

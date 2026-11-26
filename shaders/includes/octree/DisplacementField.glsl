@@ -42,6 +42,12 @@ struct RmDisplacement {
     float strength;    // [0..1]
     float bounds;      // |offset| clamp, 0 = |amplitude| * strength
     float maxAbs;      // conservative |h| bound for this material
+    int pattern;       // 0 = texture, 1 = triangular scales, 2 = hexagons
+    float patternDisplacement;
+    float patternRepeat;
+    float patternTime;
+    vec3 patternVelocity;
+    float patternIntensity;
 };
 
 // Resolve the material settings. The legacy branch reproduces the previous
@@ -59,14 +65,26 @@ RmDisplacement rmDisplacementParams(int material) {
     d.strength = 0.0;
     d.bounds = 0.0;
     d.maxAbs = 0.0;
+    d.pattern = 0;
+    d.patternDisplacement = 0.0;
+    d.patternRepeat = 1.0;
+    d.patternTime = 0.0;
+    d.patternVelocity = vec3(0.0, 1.0, 0.0);
+    d.patternIntensity = 1.0;
     if (material < 0) return d;
 
     MaterialNamed m = materialNamed(materials[material]);
 
     // The new material path takes precedence when configured; otherwise keep
-    // the legacy tessellation bump bit-compatible.
+    // the legacy tessellation bump bit-compatible. A secondary SDF pattern is
+    // an independent source (it does not need a height texture amplitude).
+    const bool textureConfigured = m.displacementStrength > 0.0 &&
+                                   m.displacementAmplitude != 0.0;
+    const bool patternConfigured = m.displacementStrength > 0.0 &&
+                                   m.displacementPattern > 0 &&
+                                   m.displacementPatternDisplacement != 0.0;
     const bool newConfigured = ubo.displacementEnabled != 0u &&
-        m.displacementStrength > 0.0 && m.displacementAmplitude != 0.0;
+                               (textureConfigured || patternConfigured);
     if (!newConfigured) {
         if (m.mappingEnabled && ubo.tessellationEnabled != 0u) {
             d.enabled = true;
@@ -83,11 +101,28 @@ RmDisplacement rmDisplacementParams(int material) {
         return d;
     }
 
+    d.strength = clamp(m.displacementStrength, 0.0, 1.0);
+    d.pattern = clamp(m.displacementPattern, 0, 2);
+    d.patternDisplacement = m.displacementPatternDisplacement;
+    d.patternRepeat = max(m.displacementPatternRepeat, 1.0e-4);
+    d.patternTime = m.displacementSegmentTime;
+    d.patternVelocity = m.displacementSegmentVelocity;
+    d.patternIntensity = clamp(m.displacementSegmentIntensity, 0.0, 1.0);
+    if (d.pattern > 0) {
+        d.enabled = abs(d.patternDisplacement) * d.strength * d.patternIntensity > 0.0;
+        d.amplitude = d.patternDisplacement;
+        d.frequency = 1.0;
+        d.offset = 0.0;
+        d.bounds = abs(d.patternDisplacement) * d.strength * d.patternIntensity;
+        d.textureIndex = -1;
+        d.maxAbs = d.bounds;
+        return d;
+    }
+
     d.enabled = true;
     d.amplitude = m.displacementAmplitude;
     d.frequency = max(m.displacementFrequency, 1e-4);
     d.offset = m.displacementOffset;
-    d.strength = clamp(m.displacementStrength, 0.0, 1.0);
     d.bounds = max(m.displacementBounds, 0.0);
     d.textureIndex = m.displacementTexture;
     // Normalized height range after the offset. |h - 0.5 + offset| <= nmax.
@@ -153,11 +188,85 @@ float rmSampleDisplacementHeight(RmDisplacement d, MaterialNamed m, int texType,
                              m.invertHeight, m.invertWidth, lod);
 }
 
+// ── Secondary SDF scale patterns ──────────────────────────────────────────
+// The pattern is evaluated in a cylindrical world frame whose axis follows the
+// brush segment velocity. Triangular scales put their tip at -x (opposite the
+// drag) and widen toward +x; hexagons use the same orientation. The stable
+// frame is what keeps the scalar field continuous across octree cells.
+// Everything is GPU-only: no scale is stored in the octree.
+
+float rmSdHexagon2(vec2 p, float r) {
+    const vec3 k = vec3(-0.866025404, 0.5, 0.577350269);
+    p = abs(p);
+    p -= 2.0 * min(dot(k.xy, p), 0.0) * k.xy;
+    p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);
+    return length(p) * sign(p.y);
+}
+
+float rmTriangleScale(vec2 q) {
+    // q is centered in one cell. Tip at x=-0.5, base at x=+0.5.
+    float x = q.x + 0.5;                 // 0 at tip, 1 at base
+    float halfWidth = 0.55 * x;
+    float edge = halfWidth - abs(q.y);
+    float shape = smoothstep(0.07, 0.0, edge);
+    shape *= smoothstep(1.0, 0.90, x);   // bevel the trailing base
+    shape *= smoothstep(0.0, 0.06, x);
+    return shape;
+}
+
+float rmHexagonScale(vec2 q) {
+    q.y *= 1.15;
+    float d = rmSdHexagon2(q, 0.34);
+    float shape = smoothstep(0.055, -0.005, d);
+    // The -x corner is the leading point; make it the high edge and taper
+    // toward the trailing +x side.
+    shape *= mix(0.55, 1.0, smoothstep(0.45, -0.30, q.x));
+    return shape;
+}
+
+float rmScalePatternHeight(vec2 uv, int type) {
+    float row = floor(uv.y);
+    uv.x += 0.5 * mod(row, 2.0);
+    vec2 q = fract(uv) - 0.5;
+    return (type == 1) ? rmTriangleScale(q) : rmHexagonScale(q);
+}
+
+float rmPatternDisplacement(RmDisplacement d, vec3 p) {
+    // Cylindrical frame around the drag axis. Unlike a per-sample surface
+    // tangent frame, this is continuous across octree cells (the scalar
+    // pattern does not inherit trilinear normal jumps), which is essential for
+    // a stable displaced zero set.
+    vec3 axis = d.patternVelocity;
+    if (dot(axis, axis) < 1.0e-8) axis = vec3(0.0, 1.0, 0.0);
+    axis = normalize(axis);
+    vec3 helper = abs(axis.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 bitangent = normalize(cross(helper, axis));
+    vec3 normal = normalize(cross(axis, bitangent));
+
+    float repeat = max(d.patternRepeat, 1.0e-4);
+    vec3 radial = p - axis * dot(p, axis);
+    float radius = max(length(radial), repeat * 0.25);
+    float angle = atan(dot(radial, bitangent), dot(radial, normal));
+    vec2 uv = vec2(dot(p, axis), angle * radius) / repeat;
+
+    float speed = length(d.patternVelocity);
+    float age = max(ubo.brushPhase - d.patternTime, 0.0);
+    uv.x += age * (0.20 + 0.35 * min(speed / repeat, 2.0));
+    float shape = rmScalePatternHeight(uv, d.pattern);
+    float pulse = 0.90 + 0.10 * sin(ubo.brushPhase * 2.0 + uv.y * 6.28318530718);
+    return shape * d.patternDisplacement * d.strength * d.patternIntensity * pulse;
+}
+
 // Signed world-space displacement at `p`. `n` is the base SDF normal used to
 // select the triplanar projection (the same normal the old bump used).
 float rmDisplacementValue(RmDisplacement d, MaterialNamed m, int material,
                           int texType, vec2 uvScale, vec3 p, vec3 n, float lod) {
     if (!d.enabled) return 0.0;
+
+    if (!d.legacy && d.pattern > 0) {
+        float disp = rmPatternDisplacement(d, p);
+        return clamp(disp, -d.bounds, d.bounds);
+    }
 
     float h;
     if (d.legacy) {
@@ -193,6 +302,7 @@ float rmDisplacementWavelength(RmDisplacement d, vec2 uvScale,
     if (d.legacy) {
         return nodeSize / clamp(legacyTessLevels, 1.0, 64.0);
     }
+    if (d.pattern > 0) return max(d.patternRepeat * 0.10, 1.0e-4);
     vec2 s = abs(uvScale) * d.frequency;
     float scale = max(max(s.x, s.y), 1e-6);
     return 1.0 / scale;

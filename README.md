@@ -6,6 +6,8 @@ A real-time 3D terrain and scene rendering engine built with modern Vulkan (targ
 
 Terrain supports **true raymarched displacement mapping**: a per-material height offset is folded into the SDF (`F(p) = d_original(p) - h(p)`) and the camera/shadow rays intersect the actual displaced zero set, so silhouettes, depth, normals, AO and shadows move with the geometry. It does not require tessellated meshes or permanent octree subdivision. See [docs/raymarch-displacement.md](docs/raymarch-displacement.md) for the math, conservative traversal, triplanar mapping, depth/shadow integration and performance limits.
 
+Displacement can come from a material height texture or from a **GPU-only secondary SDF**: triangular or hexagonal scale patterns oriented by the brush drag velocity. Each brush carries a segment `(time, 3D velocity, intensity)`; dragging with the keyboard/gamepad/nunchuk refreshes it from the controller delta and stick/trigger magnitude. The pattern is evaluated live on the GPU, never stored in the octree. The catalogue's `SweptDirectionalSphereTriangles` and `SweptDirectionalSphereHexagons` objects demonstrate both patterns on a zero-radius-to-full-radius swept sphere.
+
 ---
 
 ## Build and Run

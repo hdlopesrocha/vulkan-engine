@@ -94,4 +94,19 @@ struct MaterialProperties {
     // >= 0 selects another material index's height texture through the brush
     // map (letting several materials share one displacement source).
     int displacementTexture = -1;
+
+    // ── Secondary SDF displacement ────────────────────────────────────────
+    // Alternative to the height texture: a GPU-evaluated scale pattern oriented
+    // by the brush segment velocity. 0 = texture path, 1 = triangular scales,
+    // 2 = hexagonal scales. The pattern is never stored in the octree.
+    int displacementPattern = 0;
+    // Peak world-unit displacement of the pattern and its world-unit repeat
+    // cell (a larger repeat makes larger scales).
+    float displacementPatternDisplacement = 8.0f;
+    float displacementPatternRepeat = 64.0f;
+    // Last dragged brush segment. `time` is the application clock, velocity is
+    // world-space m/s, and intensity [0..1] scales the pattern displacement.
+    float displacementSegmentTime = 0.0f;
+    glm::vec3 displacementSegmentVelocity{0.0f, 1.0f, 0.0f};
+    float displacementSegmentIntensity = 1.0f;
 };

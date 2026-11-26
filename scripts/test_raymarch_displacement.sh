@@ -73,6 +73,15 @@ run_case debug_normals VULKAN_DISPLACEMENT_TEST=1 VULKAN_DISPLACEMENT=1 \
     VULKAN_DISPLACEMENT_AMP=1 VULKAN_DISPLACEMENT_FREQ=2 \
     VULKAN_DEBUG_MODE=54 VULKAN_HIDE_UI=1
 
+# 7c. Secondary SDF displacement: swept directional spheres with triangular
+# and hexagonal scale patterns (GPU-only, no octree storage).
+run_case secondary_sdf VULKAN_PATTERN_TEST=1
+
+# 7d. Displacement-magnitude debug view (52) with both procedural patterns
+# enabled; covers the pattern contribution to the signed h / bound view.
+run_case secondary_sdf_debug VULKAN_PATTERN_TEST=1 \
+    VULKAN_DEBUG_MODE=52 VULKAN_HIDE_UI=1
+
 # 8. Full procedural / catalogue scene (complex octree geometry) with a small
 #    amplitude. This is the heavy case; 8 frames is enough for a smoke test.
 FRAMES=8 run_case large_scene VULKAN_DISPLACEMENT=1 \
