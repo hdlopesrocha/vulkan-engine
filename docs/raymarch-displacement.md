@@ -61,7 +61,7 @@ is enabled independently per material by a non-zero
 | Offset | `displacementOffset` | Normalized height bias (+0.5 raises the neutral surface by half the amplitude) |
 | Bounds | `displacementBounds` | Optional clamp on `|h|` in world units (0 = `|amplitude| * strength`) |
 | Texture | `displacementTexture` | Height layer used for displacement (-1 = the material's own layer, otherwise resolved through the brush map) |
-| Pattern | `displacementPattern` | 0 = texture, 1 = triangular scales, 2 = hexagonal scales |
+| Pattern | `displacementPattern` | 0 = texture, 1 = triangular scales, 2 = hexagonal scales, 3 = Perlin, 4 = Voronoi |
 | Pattern scale | `displacementPatternDisplacement` | Peak world-unit scale displacement |
 | Pattern repeat | `displacementPatternRepeat` | World-unit size of one scale cell |
 | Segment | `displacementSegmentTime/Velocity/Intensity` | Last dragged brush segment; orientation, animation phase and intensity |
@@ -195,6 +195,10 @@ octree. A material selects it with `displacementPattern`:
   tip points along `-velocity`; its base is on the trailing side.
 * **Hexagonal scales** — a staggered grid of pointed hexagons using the same
   `-velocity` orientation.
+* **Perlin noise** — animated 4-octave 3D FBM, advected by the full segment
+  velocity vector.
+* **Voronoi cells** — animated 2D cellular F1 field in the same cylindrical
+  frame, advected by velocity and time.
 
 The pattern is evaluated in a cylindrical frame around the brush segment
 velocity:

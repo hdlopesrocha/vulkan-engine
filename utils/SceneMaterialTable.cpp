@@ -157,8 +157,10 @@ std::vector<MaterialProperties> sceneMaterialProperties(size_t materialCount) {
             std::cout << "[SceneMaterialTable] material " << index
                       << " secondary SDF: " << label << std::endl;
         };
-        setPattern(38u, 1, "triangular scales");
-        setPattern(39u, 2, "hexagonal scales");
+        setPattern(44u, 1, "triangular scales");
+        setPattern(45u, 2, "hexagonal scales");
+        setPattern(46u, 3, "perlin noise");
+        setPattern(47u, 4, "voronoi cells");
     }
 
     // The rock biome seam layers must displace like the rock sources they

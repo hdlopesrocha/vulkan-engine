@@ -268,9 +268,10 @@ void Brush3dWidget::renderEntry(int index) {
     ImGui::SeparatorText("Secondary SDF Displacement");
     {
         static const char* patternNames[] = {
-            "Texture", "Triangular Scales", "Hexagonal Scales"
+            "Texture", "Triangular Scales", "Hexagonal Scales",
+            "Perlin Noise", "Voronoi Cells"
         };
-        int source = e.useSecondarySdf ? std::clamp(e.secondarySdfType, 0, 2) : 0;
+        int source = e.useSecondarySdf ? std::clamp(e.secondarySdfType, 0, 4) : 0;
         if (ImGui::Combo("Displacement Source", &source, patternNames,
                          IM_ARRAYSIZE(patternNames))) {
             e.useSecondarySdf = source != 0;

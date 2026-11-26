@@ -801,7 +801,12 @@ public:
         // material arrays. MainSceneLoader's cubes paint with these slots.
         const size_t kVideoMaterialCount = 4;
         const size_t kExtraMaterialCount = kVideoMaterialCount + 1;
-        size_t materialCount = static_cast<size_t>(loadedTextureLayers) + 1 + kExtraMaterialCount;
+        // Four dedicated secondary-SDF pattern materials (triangles, hexagons,
+        // Perlin, Voronoi) for the catalogue/test scenes. They are real Texture
+        // materials whose brush-map entry points them at a valid base layer.
+        const size_t kPatternMaterialCount = 4;
+        size_t materialCount = static_cast<size_t>(loadedTextureLayers) + 1 +
+                               kExtraMaterialCount + kPatternMaterialCount;
         // Same per-layer overrides the Blender exporter publishes.
         materials = sceneMaterialProperties(materialCount);
         // Headless pattern A/B (used by the secondary-SDF validation scene):
@@ -916,6 +921,10 @@ public:
         brushMap.resize(brushMapCount);
         for (size_t i = 0; i < brushMapCount; ++i)
             brushMap[i] = BrushImage{ImageType::Image, static_cast<uint32_t>(i)};
+        // Pattern materials use a valid rock layer for albedo/normal quality;
+        // their displacement source is the secondary SDF, not that layer.
+        for (size_t i = materialCount - kPatternMaterialCount; i < materialCount; ++i)
+            brushMap[i] = BrushImage{ImageType::Image, 7u};
         const size_t imageCount = textureTriples_.size();  // base image layers
         for (size_t k = 0; k < mixerParams.size(); ++k) {
             const uint32_t layer = static_cast<uint32_t>(imageCount + k);
@@ -1308,9 +1317,9 @@ public:
             settings.vegetationEnabled = false;
             settings.cloudsEnabled = false;
             if (patternTest && std::getenv("VULKAN_CAMERA") == nullptr) {
-                camera = Camera(glm::vec3(0.0f, 190.0f, 560.0f),
+                camera = Camera(glm::vec3(0.0f, 170.0f, 420.0f),
                                 Math::eulerToQuat(0.0f, -8.0f, 0.0f));
-                std::cout << "[MyApp] pattern test camera: (0, 190, 560)" << std::endl;
+                std::cout << "[MyApp] pattern test camera: (0, 170, 420)" << std::endl;
             } else if (std::getenv("VULKAN_CAMERA") == nullptr) {
                 // Math::eulerToQuat(0,0,0) looks along -Z; -90 deg yaw turns
                 // that toward +X, where the slab/sphere sit from this camera.
@@ -5262,7 +5271,7 @@ void MyApp::syncBrushMaterialDisplacement(const BrushEntry& entry) {
 
     MaterialProperties& mat = materials[idx];
     const int pattern = entry.useSecondarySdf
-        ? std::clamp(entry.secondarySdfType, 0, 2) : 0;
+        ? std::clamp(entry.secondarySdfType, 0, 4) : 0;
     const float displacement = pattern > 0 ? entry.secondarySdfDisplacement : 0.0f;
     const float repeat = std::max(entry.secondarySdfRepeat, 1.0e-3f);
     const float intensity = std::clamp(entry.secondarySdfIntensity, 0.0f, 1.0f);

@@ -136,34 +136,35 @@ public:
                         TriplanarMappingPainter(), tileSize, simplifier, update, remove);
             std::cout << "\tpattern test: slab" << std::endl;
         }
+        static const char* labels[] = {
+            "triangles", "hexagons", "perlin", "voronoi"
+        };
         // Flat pattern references: one plate per secondary SDF type so the
-        // scale tiling can be inspected without the swept-sphere curvature.
-        for (int i = 0; i < 2; ++i) {
-            const bool hex = i == 1;
-            BoundingBox plate(glm::vec3(hex ? 40.0f : -120.0f, 0.0f, -120.0f),
-                              glm::vec3(hex ? 120.0f : -40.0f, 4.0f, -40.0f));
+        // tiling can be inspected without the swept-sphere curvature.
+        for (int i = 0; i < 4; ++i) {
+            const float x = -180.0f + 120.0f * static_cast<float>(i);
+            BoundingBox plate(glm::vec3(x - 32.0f, 0.0f, -120.0f),
+                              glm::vec3(x + 32.0f, 4.0f, -40.0f));
             Transformation plateModel(plate.getLength() * 0.5f,
                                       plate.getCenter(), 0, 0, 0);
             BoxDistanceFunction plateFn(plateModel, tileSize);
             layer.apply(AddSignedDistanceOperation(), plateFn,
-                        SimpleBrush(hex ? 39 : 38), TriplanarMappingPainter(),
+                        SimpleBrush(44 + i), TriplanarMappingPainter(),
                         tileSize, simplifier, update, remove);
-            std::cout << "\tpattern test: flat "
-                      << (hex ? "hexagons" : "triangles") << std::endl;
+            std::cout << "\tpattern test: flat " << labels[i] << std::endl;
         }
-        for (int i = 0; i < 2; ++i) {
-            const bool hex = i == 1;
+        for (int i = 0; i < 4; ++i) {
+            const float x = -180.0f + 120.0f * static_cast<float>(i);
             Transformation model(glm::vec3(64.0f),
-                                 glm::vec3(hex ? 120.0f : -120.0f, 64.0f, 0.0f),
+                                 glm::vec3(x, 64.0f, 0.0f),
                                  0.0f, 0.0f, 0.0f);
             TaperedCapsuleDistanceFunction trail(
                 glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
                 0.0f, 1.0f, model, tileSize);
             layer.apply(AddSignedDistanceOperation(), trail,
-                        SimpleBrush(hex ? 39 : 38), TriplanarMappingPainter(),
+                        SimpleBrush(44 + i), TriplanarMappingPainter(),
                         tileSize, simplifier, update, remove);
-            std::cout << "\tpattern test: swept sphere "
-                      << (hex ? "hexagons" : "triangles") << std::endl;
+            std::cout << "\tpattern test: swept sphere " << labels[i] << std::endl;
         }
     }
 };
@@ -374,10 +375,16 @@ public:
                 break;
             }
             case TestShape::SweptDirectionalSphereTriangles:
-            case TestShape::SweptDirectionalSphereHexagons: {
-                const bool hex = shape == TestShape::SweptDirectionalSphereHexagons;
+            case TestShape::SweptDirectionalSphereHexagons:
+            case TestShape::SweptDirectionalSpherePerlin:
+            case TestShape::SweptDirectionalSphereVoronoi: {
+                const int patternIndex = static_cast<int>(shape) -
+                    static_cast<int>(TestShape::SweptDirectionalSphereTriangles);
+                static const char* patternLabels[] = {
+                    "triangles", "hexagons", "perlin", "voronoi"
+                };
                 std::cout << "\topaqueLayer.add(swept directional sphere, "
-                          << (hex ? "hexagons" : "triangles") << ")" << std::endl;
+                          << patternLabels[patternIndex] << ")" << std::endl;
                 // Zero-radius tip at the bottom, usual sphere radius at the top:
                 // the tapered capsule is the swept envelope of a sphere growing
                 // from r=0 to r=objectSize/2 along +Y.
@@ -385,10 +392,10 @@ public:
                 TaperedCapsuleDistanceFunction trail(
                     glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
                     0.0f, 1.0f, trailModel, tileSize);
-                // Material 16 carries the triangular secondary SDF, material 18
-                // the hexagonal one; both are configured in the shared scene
-                // material table so the pattern is GPU-only (not octree data).
-                const int patternMaterial = hex ? 39 : 38;
+                // Dedicated pattern materials 44..47 are configured in the
+                // shared scene material table so the secondary SDF stays
+                // GPU-only (never stored in the octree).
+                const int patternMaterial = 44 + patternIndex;
                 opaqueLayer.apply(AddSignedDistanceOperation(), trail,
                                   SimpleBrush(patternMaterial), TriplanarMappingPainter(),
                                   tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);

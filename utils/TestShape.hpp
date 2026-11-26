@@ -31,6 +31,8 @@ enum class TestShape {
     SweptOctrahedron,
     SweptDirectionalSphereTriangles,
     SweptDirectionalSphereHexagons,
+    SweptDirectionalSpherePerlin,
+    SweptDirectionalSphereVoronoi,
     CubeProjectionX,
     CubeProjectionY,
     CubeProjectionZ,

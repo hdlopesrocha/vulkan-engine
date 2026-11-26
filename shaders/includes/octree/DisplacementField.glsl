@@ -28,6 +28,8 @@
 
 #include "../TextureMapping.glsl"
 #include "../noise/Perlin2D.glsl"
+#include "../noise/Perlin.glsl"
+#include "../sdf/SdfNoise.glsl"
 #include "../../types/MaterialNamed.glsl"
 
 // Resolved displacement configuration for one material.
@@ -102,7 +104,7 @@ RmDisplacement rmDisplacementParams(int material) {
     }
 
     d.strength = clamp(m.displacementStrength, 0.0, 1.0);
-    d.pattern = clamp(m.displacementPattern, 0, 2);
+    d.pattern = clamp(m.displacementPattern, 0, 4);
     d.patternDisplacement = m.displacementPatternDisplacement;
     d.patternRepeat = max(m.displacementPatternRepeat, 1.0e-4);
     d.patternTime = m.displacementSegmentTime;
@@ -224,6 +226,58 @@ float rmHexagonScale(vec2 q) {
     return shape;
 }
 
+float rmVoronoi2D(vec2 uv) {
+    vec2 cell = floor(uv);
+    vec2 f = fract(uv);
+    float minDist = 8.0;
+    for (int j = -1; j <= 1; ++j) {
+        for (int i = -1; i <= 1; ++i) {
+            vec2 g = vec2(float(i), float(j));
+            vec2 lattice = cell + g;
+            uint h0 = sdfHashU(uvec3(ivec3(lattice, 0)));
+            uint h1 = sdfHashU(uvec3(ivec3(lattice, 1)));
+            vec2 seed = vec2(float(h0) * (1.0 / 4294967295.0),
+                             float(h1) * (1.0 / 4294967295.0));
+            minDist = min(minDist, length(g + seed - f));
+        }
+    }
+    return 1.0 - smoothstep(0.0, 0.72, minDist);
+}
+
+float rmNoisePatternDisplacement(RmDisplacement d, vec3 p) {
+    float repeat = max(d.patternRepeat, 1.0e-4);
+    float age = max(ubo.brushPhase - d.patternTime, 0.0);
+    float intensity = clamp(d.patternIntensity, 0.0, 1.0);
+    float motion = age * (0.25 + 0.75 * intensity);
+
+    if (d.pattern == 3) {
+        // 3D Perlin: the domain is advected by the full velocity vector, so
+        // the noise travels along the brush trail as it animates.
+        vec3 q = p / repeat + d.patternVelocity * (motion / repeat)
+                 + vec3(age * 0.035);
+        float n = fbm(q, 4, 0.5, 2.0);
+        // Boost the low-contrast normalized FBM into a full 0..1 relief.
+        return smoothstep(-0.35, 0.35, n);
+    }
+
+    // Voronoi: a 2D cellular field in the same cylindrical frame as the scale
+    // patterns. This keeps the 9-cell search cheap while still advecting with
+    // the 3D velocity and time.
+    vec3 axis = d.patternVelocity;
+    if (dot(axis, axis) < 1.0e-8) axis = vec3(0.0, 1.0, 0.0);
+    axis = normalize(axis);
+    vec3 helper = abs(axis.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 bitangent = normalize(cross(helper, axis));
+    vec3 normal = normalize(cross(axis, bitangent));
+    vec3 radial = p - axis * dot(p, axis);
+    float radius = max(length(radial), repeat * 0.25);
+    float angle = atan(dot(radial, bitangent), dot(radial, normal));
+    vec2 uv = vec2(dot(p, axis), angle * radius) / repeat;
+    uv.x += motion * (0.25 + min(length(d.patternVelocity) / repeat, 2.0) * 0.5);
+    uv.y += age * 0.05;
+    return rmVoronoi2D(uv);
+}
+
 float rmScalePatternHeight(vec2 uv, int type) {
     float row = floor(uv.y);
     uv.x += 0.5 * mod(row, 2.0);
@@ -232,6 +286,11 @@ float rmScalePatternHeight(vec2 uv, int type) {
 }
 
 float rmPatternDisplacement(RmDisplacement d, vec3 p) {
+    if (d.pattern >= 3) {
+        float shape = rmNoisePatternDisplacement(d, p);
+        return shape * d.patternDisplacement * d.strength * d.patternIntensity;
+    }
+
     // Cylindrical frame around the drag axis. Unlike a per-sample surface
     // tangent frame, this is continuous across octree cells (the scalar
     // pattern does not inherit trilinear normal jumps), which is essential for
@@ -251,7 +310,9 @@ float rmPatternDisplacement(RmDisplacement d, vec3 p) {
 
     float speed = length(d.patternVelocity);
     float age = max(ubo.brushPhase - d.patternTime, 0.0);
-    uv.x += age * (0.20 + 0.35 * min(speed / repeat, 2.0));
+    float intensity = clamp(d.patternIntensity, 0.0, 1.0);
+    uv.x += age * (0.20 + 0.35 * min(speed / repeat, 2.0)) *
+            (0.25 + 0.75 * intensity);
     float shape = rmScalePatternHeight(uv, d.pattern);
     float pulse = 0.90 + 0.10 * sin(ubo.brushPhase * 2.0 + uv.y * 6.28318530718);
     return shape * d.patternDisplacement * d.strength * d.patternIntensity * pulse;
