@@ -77,6 +77,13 @@ run_case debug_normals VULKAN_DISPLACEMENT_TEST=1 VULKAN_DISPLACEMENT=1 \
 # and hexagonal scale patterns (GPU-only, no octree storage).
 run_case secondary_sdf VULKAN_PATTERN_TEST=1
 
+# 7c2. Secondary SDF CSG modes: union, intersection and subtraction against
+# the primary octree field. All three must remain validation-clean and keep
+# the inherited-LOD shadow path.
+run_case secondary_sdf_union VULKAN_PATTERN_TEST=1 VULKAN_SECONDARY_SDF_OP=1
+run_case secondary_sdf_intersection VULKAN_PATTERN_TEST=1 VULKAN_SECONDARY_SDF_OP=2
+run_case secondary_sdf_subtract VULKAN_PATTERN_TEST=1 VULKAN_SECONDARY_SDF_OP=3
+
 # 7d. Displacement-magnitude debug view (52) with both procedural patterns
 # enabled; covers the pattern contribution to the signed h / bound view.
 run_case secondary_sdf_debug VULKAN_PATTERN_TEST=1 \

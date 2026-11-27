@@ -6,7 +6,7 @@
 // Packed material data uploaded once to GPU. Matches the CPU-side Material
 // (vulkan/ssbo/Material.hpp) — canonical shared layout, std430 vec4 stride.
 struct Material {
-    vec4 materialFlags;    // .x = skipEnvMap (set during cubemap capture), .z = ambientFactor
+    vec4 materialFlags;    // .x = skipEnvMap (set during cubemap capture), .z = ambientFactor, .w = SecondarySdfOperation
     vec4 mappingParams;    // x = mappingEnabled (0/1), y = tessLevel, z = invertHeight (0/1), w = tessHeightScale
     vec4 specularParams;   // x = specularStrength, y = shininess
     vec4 normalParams;     // x = flipNormalY (0/1), y = swapNormalXZ (0/1), z = invertWidth (0/1)

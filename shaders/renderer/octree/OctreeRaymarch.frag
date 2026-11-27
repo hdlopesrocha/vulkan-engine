@@ -374,16 +374,37 @@ float rmDisplacement(uint id, int material, vec3 p, vec3 n) {
 // receives the Gerstner shading swell, never the solid material height-map
 // displacement. Applying it here shifted the flat lake surface by metres.
 //
-// DEBUG_MODE_ORIGINAL_SDF_SURFACE deliberately bypasses the offset so the
+// DEBUG_MODE_ORIGINAL_SDF_SURFACE deliberately bypasses the offset/CSG so the
 // debug view shows the base octree isosurface in the same pass.
-float rmField(uint id, vec3 p, int material, bool waterRoot,
-              out float base, out float maxDisp) {
+//
+// `csgField` reports that the returned value is a CSG combination of the
+// primary and secondary fields rather than a displaced primary surface. The
+// march uses it to pick a conservative feature-clamped step.
+float rmFieldEx(uint id, vec3 p, int material, bool waterRoot,
+                out float base, out float maxDisp, out bool csgField) {
     base = rmTrilinear(id, p);
     maxDisp = 0.0;
+    csgField = false;
     if (waterRoot || material < 0 || !rmIsFinite(base)) return base;
     if (ubo.debugMode == DEBUG_MODE_ORIGINAL_SDF_SURFACE) return base;
     RmDisplacement d = rmDisplacementParams(material);
     if (!d.enabled) return base;
+
+    // Secondary SDF CSG: the pattern is a signed field, not a surface offset.
+    // Union = min, intersection = max, subtraction = max(primary, -secondary).
+    if (!d.legacy && d.pattern > 0 && d.operation != RM_SECONDARY_DISPLACE) {
+        csgField = true;
+        maxDisp = d.maxAbs; // bound for bias/AO/debug; not a displacement band
+        float secondary = rmSecondarySdf(d, p);
+        if (!rmIsFinite(secondary)) {
+            csgField = false;
+            return base;
+        }
+        if (d.operation == RM_SECONDARY_UNION) return min(base, secondary);
+        if (d.operation == RM_SECONDARY_INTERSECTION) return max(base, secondary);
+        return max(base, -secondary);
+    }
+
     maxDisp = d.maxAbs;
     // Outside the band |base| > maxDisp, so F = base - disp has the sign of
     // base and |F| >= |base| - maxDisp. Returning the base value is enough for
@@ -397,6 +418,12 @@ float rmField(uint id, vec3 p, int material, bool waterRoot,
     float disp = rmDisplacementValue(d, m, material, texType, uvScale, p,
                                      rmNodeNormal(id, p), 0.0);
     return base - disp;
+}
+
+float rmField(uint id, vec3 p, int material, bool waterRoot,
+              out float base, out float maxDisp) {
+    bool csgField;
+    return rmFieldEx(id, p, material, waterRoot, base, maxDisp, csgField);
 }
 
 // Forward declaration: the legacy displacement wavelength needs the raster
@@ -413,6 +440,43 @@ float rmDisplacementWavelengthForNode(uint id, int material) {
         legacyLevels = clamp(rmTessLevel(id, material, rmNodeMin(id)) * 16.0, 1.0, 64.0);
     }
     return rmDisplacementWavelength(d, rmNodes[id].hsv1.xy, rmNodeSize(id), legacyLevels);
+}
+
+// Gradient of the combined field for a CSG secondary hit. The primary normal
+// (trilinear gradient) is not valid once min/max selects the secondary field,
+// so use a regular-tetrahedron finite difference of rmFieldEx itself. The
+// stencil is clamped to half the owning cell to avoid mixing neighbour cells.
+vec3 rmCsgNormal(uint id, vec3 p, int material, float eps) {
+    const vec3 kTetra[4] = vec3[4](
+        vec3( 0.57735026919,  0.57735026919,  0.57735026919),
+        vec3( 0.57735026919, -0.57735026919, -0.57735026919),
+        vec3(-0.57735026919,  0.57735026919, -0.57735026919),
+        vec3(-0.57735026919, -0.57735026919,  0.57735026919)
+    );
+
+    vec3 mn = rmNodeMin(id);
+    vec3 cellMax = mn + vec3(rmNodeSize(id));
+    vec3 dFace = min(p - mn, cellMax - p);
+    float faceDist = max(min(min(dFace.x, dFace.y), dFace.z), 0.0);
+    float h = max(min(eps, faceDist * 0.5), 1.0e-6);
+
+    float b0, m0;
+    bool c0;
+    float f0 = rmFieldEx(id, p, material, false, b0, m0, c0);
+    if (!rmIsFinite(f0)) return rmNodeNormal(id, p);
+
+    vec3 grad = vec3(0.0);
+    for (int i = 0; i < 4; ++i) {
+        float b, m;
+        bool c;
+        float fi = rmFieldEx(id, p + kTetra[i] * h, material, false, b, m, c);
+        if (!rmIsFinite(fi)) continue;
+        grad += (fi - f0) * kTetra[i];
+    }
+    grad *= 3.0 / (4.0 * h);
+    float gl = dot(grad, grad);
+    if (!(gl > 1.0e-12) || isnan(gl) || isinf(gl)) return rmNodeNormal(id, p);
+    return normalize(grad);
 }
 
 // Secant refinement of a hit accepted inside the (possibly screen-space
@@ -474,6 +538,8 @@ vec3 rmDisplacedNormal(uint id, int material, vec3 p, vec3 baseNormal,
                        float eps, out float dispAtHit) {
     dispAtHit = 0.0;
     if (material < 0 || !rmDisplacementActive(material)) return baseNormal;
+    // CSG secondary hits use the combined-field gradient instead.
+    if (rmSecondaryCsgActive(material)) return baseNormal;
 
     RmDisplacement d = rmDisplacementParams(material);
     if (!d.enabled) return baseNormal;
@@ -1091,9 +1157,15 @@ bool rmHitAllowed(uint node, vec3 p, vec3 rd, int material, bool waterRoot,
     if (waterRoot) return abs(normalize(baseNormal).y) > 1.0e-3;
     if (material == RAYMARCH_DISCARD_BRUSH) return false;
     if (ubo.debugMode == DEBUG_MODE_ORIGINAL_SDF_SURFACE) {
-        // The field bypasses displacement in this view; keep the visibility
-        // test on the base normal so it shows the original isosurface.
+        // The field bypasses displacement/CSG in this view; keep the
+        // visibility test on the base normal so it shows the original
+        // isosurface.
         return dot(normalize(baseNormal), rd) < 0.0;
+    }
+    if (rmSecondaryCsgActive(material)) {
+        // The combined field's gradient is the true surface normal.
+        normal = rmCsgNormal(node, p, material, normalEps);
+        return dot(normalize(normal), rd) < 0.0;
     }
     normal = rmDisplacedNormal(node, material, p, baseNormal, normalEps,
                                displacement);
@@ -1141,6 +1213,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
     float cachedD = 0.0;
     float cachedBase = 0.0;
     float cachedMaxDisp = 0.0;
+    bool cachedCsg = false;
 
     // Previous accepted sample of the CURRENT node, for the secant refinement
     // of a hit accepted inside a screen-space-widened tolerance band. Reset on
@@ -1298,6 +1371,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
         int material = rmCachedBrush(node);
         float baseD;
         float maxDisp;
+        bool csgD;
         float d;
         if (node == cachedNode && t == cachedT) {
             // Exact reuse: same node, same parameter, same expression.
@@ -1305,9 +1379,10 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
             d = cachedD;
             baseD = cachedBase;
             maxDisp = cachedMaxDisp;
+            csgD = cachedCsg;
         } else {
             rmCount(RM_COUNTER_FIELD_EVALS);
-            d = rmField(node, p, material, waterRoot, baseD, maxDisp);
+            d = rmFieldEx(node, p, material, waterRoot, baseD, maxDisp, csgD);
         }
         if (isnan(d)) d = 1.0; // defensive: never let a bad sample freeze the march
         float eps = rmHitEpsilon(nodeSize, t);
@@ -1371,7 +1446,18 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
             ? rmNodes[node].hsv1.z
             : 0.5;
         float stepLen;
-        if (maxDisp > 0.0) {
+        if (csgD) {
+            // CSG secondary field: not a displacement band. Use a half-
+            // distance step clamped to the pattern's declared feature size;
+            // the min/max combination can have a larger gradient than either
+            // input near the seam, so half-distance is conservative.
+            float wavelength = rmDisplacementWavelengthForNode(node, material);
+            if (!(wavelength > 0.0) || isnan(wavelength) || isinf(wavelength))
+                wavelength = nodeSize * 0.5;
+            float feature = clamp(wavelength, nodeSize * 1.0e-4,
+                                  nodeSize * 0.5);
+            stepLen = clamp(abs(d) * 0.5, eps, max(feature * 0.5, eps));
+        } else if (maxDisp > 0.0) {
             float safe = abs(baseD) - maxDisp;
             if (safe > eps) {
                 // Outside the band: base's own bound is exact for F's sign.
@@ -1431,15 +1517,17 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
         }
         float dNextBase;
         float dNextMax;
+        bool dNextCsg;
         rmCount(RM_COUNTER_FIELD_EVALS);
-        float dNext = rmField(node, ro + rd * tNext, material, waterRoot,
-                              dNextBase, dNextMax);
+        float dNext = rmFieldEx(node, ro + rd * tNext, material, waterRoot,
+                                dNextBase, dNextMax, dNextCsg);
         if (isnan(dNext)) {
             // Cache only finite values: the displacement branch consumes
             // baseD/maxDisp too, and a NaN there would poison the next reuse.
             dNext = -1.0;
             dNextBase = -1.0;
             dNextMax = 0.0;
+            dNextCsg = false;
         }
 
         // Sign change inside this cell: safeguarded secant/bisection refine.
@@ -1481,6 +1569,7 @@ bool rmMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd,
         cachedD = dNext;
         cachedBase = dNextBase;
         cachedMaxDisp = dNextMax;
+        cachedCsg = dNextCsg;
         // Bracket endpoint for the next iteration's hit refinement.
         prevNode = node;
         prevT = t;
@@ -1548,12 +1637,14 @@ RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
     // feature scale. `acceptedNormal` is the displaced normal (the true
     // surface normal); the base normal is recomputed from the trilinear field
     // and used ONLY for this inverse mapping, never for lighting.
+    const bool csg = rmSecondaryCsgActive(material);
     vec3 baseNormal = rmNodeNormal(node, hitPos);
     if (dot(baseNormal, baseNormal) <= 1e-12) {
         baseNormal = (dot(acceptedNormal, acceptedNormal) > 1e-12)
             ? normalize(acceptedNormal) : vec3(0.0, 1.0, 0.0);
     }
-    float hitDisplacement = rmDisplacement(node, material, hitPos, baseNormal);
+    float hitDisplacement = csg ? 0.0
+                                : rmDisplacement(node, material, hitPos, baseNormal);
     h.basePos = hitPos;
     if (hitDisplacement != 0.0) {
         h.basePos = hitPos - baseNormal * hitDisplacement;
@@ -1569,12 +1660,18 @@ RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
     bool baseCellNonSurface;
     uint blendCell = rmFindNodeFromStack(rootNode, node, h.basePos, baseCellNonSurface);
     if (blendCell == RM_INVALID_NODE || baseCellNonSurface) blendCell = node;
-    h.blend = rmBlendAtHit(rootNode, blendCell, h.basePos, hitPos, true);
+    // A CSG hit has no undisplaced base point; the ring must not apply the
+    // surface-displacement corner offset.
+    h.blend = rmBlendAtHit(rootNode, blendCell, h.basePos, hitPos, !csg);
 
     // True displacement: use normal(grad(base - disp)) computed by
     // rmDisplacedNormal at the accepted hit. The ring's per-vertex base
     // normals are only a raster-parity fallback for the undisplaced path.
-    if (rmDisplacementActive(material)) {
+    if (csg) {
+        // rmHitAllowed already solved the combined-field gradient.
+        h.normal = (dot(acceptedNormal, acceptedNormal) > 1e-12)
+            ? normalize(acceptedNormal) : baseNormal;
+    } else if (rmDisplacementActive(material)) {
         float hitDist = length(hitPos - ubo.viewPosition);
         float normalEps = clamp(rmPixelWorldSize(hitDist) * 0.5,
                                 rmNodeSize(node) * 2.0e-4,
@@ -1597,7 +1694,9 @@ RmHitShading rmResolveHitShading(uint rootNode, uint node, int material,
     // amplitude and half a feature wavelength, clamped to the hit cell so the
     // probes stay in the node table region the march already sampled.
     RmDisplacement d = rmDisplacementParams(material);
-    h.dispBound = d.maxAbs;
+    // CSG hits are not a surface offset; the shadow bias must follow the
+    // inherited cell size, not the (potentially huge) secondary bounds.
+    h.dispBound = csg ? 0.0 : d.maxAbs;
     h.ao = 1.0;
     if (d.enabled) {
         float wavelength = rmDisplacementWavelengthForNode(node, material);
@@ -1934,7 +2033,8 @@ bool rmShadowMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd, float tMax,
         int material = rmCachedBrush(node);
         float baseD;
         float maxDisp;
-        float d = rmField(node, p, material, false, baseD, maxDisp);
+        bool csgD;
+        float d = rmFieldEx(node, p, material, false, baseD, maxDisp, csgD);
         if (isnan(d)) d = 1.0; // defensive, same policy as the primary march
         // Tolerance follows the cell actually sampled (the inherited LOD in
         // the normal case, the explicit fallback cell in a missing-LOD region).
@@ -1972,7 +2072,14 @@ bool rmShadowMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd, float tMax,
             ? rmNodes[node].hsv1.z
             : 0.5;
         float stepLen;
-        if (maxDisp > 0.0) {
+        if (csgD) {
+            float wavelength = rmDisplacementWavelengthForNode(node, material);
+            if (!(wavelength > 0.0) || isnan(wavelength) || isinf(wavelength))
+                wavelength = nodeSize * 0.5;
+            float feature = clamp(wavelength, nodeSize * 1.0e-4,
+                                  nodeSize * 0.5);
+            stepLen = clamp(abs(d) * 0.5, eps, max(feature * 0.5, eps));
+        } else if (maxDisp > 0.0) {
             float safe = abs(baseD) - maxDisp;
             if (safe > eps) {
                 stepLen = max(safe * invLip, eps);

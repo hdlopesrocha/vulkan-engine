@@ -5,6 +5,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "SecondarySdfOperation.hpp"
+
 // SDF-only description used as the target of BrushEntry interpolation. It is a
 // value member (not an index) so undo snapshots and copies stay self-contained:
 // editing or removing another brush entry cannot invalidate it.
@@ -86,6 +88,10 @@ struct BrushEntry {
     // 0 = texture, 1 = triangles, 2 = hexagons, 3 = Perlin, 4 = Voronoi, 5..9 = platonic solids.
     bool useSecondarySdf = false;
     int secondarySdfType = 1;
+    // Displace folds the pattern into the surface; Union/Intersection/
+    // Subtraction combine it with the primary SDF as a CSG field.
+    SecondarySdfOperation secondarySdfOperation =
+        SecondarySdfOperation::Displace;
     // World-unit peak displacement and world-unit pattern cell/repeat size.
     float secondarySdfDisplacement = 8.0f;
     float secondarySdfRepeat = 64.0f;

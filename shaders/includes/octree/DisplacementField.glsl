@@ -32,6 +32,12 @@
 #include "../sdf/SdfNoise.glsl"
 #include "../../types/MaterialNamed.glsl"
 
+// Secondary-SDF combination modes (mirror types/SecondarySdfOperation.hpp).
+const int RM_SECONDARY_DISPLACE = 0;
+const int RM_SECONDARY_UNION = 1;
+const int RM_SECONDARY_INTERSECTION = 2;
+const int RM_SECONDARY_SUBTRACT = 3;
+
 // Resolved displacement configuration for one material.
 struct RmDisplacement {
     bool enabled;       // a non-zero offset can be produced
@@ -45,6 +51,7 @@ struct RmDisplacement {
     float bounds;      // |offset| clamp, 0 = |amplitude| * strength
     float maxAbs;      // conservative |h| bound for this material
     int pattern;       // 0 = texture, 1 = triangular scales, 2 = hexagons
+    int operation;     // 0 = displace, 1 = union, 2 = intersection, 3 = subtract
     float patternDisplacement;
     float patternRepeat;
     float patternTime;
@@ -68,6 +75,7 @@ RmDisplacement rmDisplacementParams(int material) {
     d.bounds = 0.0;
     d.maxAbs = 0.0;
     d.pattern = 0;
+    d.operation = RM_SECONDARY_DISPLACE;
     d.patternDisplacement = 0.0;
     d.patternRepeat = 1.0;
     d.patternTime = 0.0;
@@ -105,6 +113,7 @@ RmDisplacement rmDisplacementParams(int material) {
 
     d.strength = clamp(m.displacementStrength, 0.0, 1.0);
     d.pattern = clamp(m.displacementPattern, 0, 9);
+    d.operation = clamp(m.displacementPatternOperation, 0, 3);
     d.patternDisplacement = m.displacementPatternDisplacement;
     d.patternRepeat = max(m.displacementPatternRepeat, 1.0e-4);
     d.patternTime = m.displacementSegmentTime;
@@ -117,7 +126,11 @@ RmDisplacement rmDisplacementParams(int material) {
         d.offset = 0.0;
         d.bounds = abs(d.patternDisplacement) * d.strength * d.patternIntensity;
         d.textureIndex = -1;
-        d.maxAbs = d.bounds;
+        // CSG secondary shapes can extend beyond the surface offset. The root
+        // AABB / bias use this bound; keep it conservative for both modes.
+        d.maxAbs = (d.operation == RM_SECONDARY_DISPLACE)
+            ? d.bounds
+            : max(d.bounds * 2.0, d.patternRepeat * 0.5);
         return d;
     }
 
@@ -136,6 +149,14 @@ RmDisplacement rmDisplacementParams(int material) {
 
 bool rmDisplacementActive(int material) {
     return rmDisplacementParams(material).enabled;
+}
+
+// True when the secondary pattern is used as a CSG field rather than a
+// surface-offset displacement. Both paths share the same enable/settings.
+bool rmSecondaryCsgActive(int material) {
+    RmDisplacement d = rmDisplacementParams(material);
+    return d.enabled && !d.legacy && d.pattern > 0 &&
+           d.operation != RM_SECONDARY_DISPLACE;
 }
 
 float rmDisplacementBound(int material) {
@@ -278,7 +299,10 @@ float rmPlatonicSdf(int type, vec3 p) {
     return d - 0.18;
 }
 
-float rmPlatonicPatternDisplacement(RmDisplacement d, vec3 p) {
+// Platonic pattern field in local cell space. `sd` is negative inside the
+// solid and has a local-cell-unit scale, so multiplying by the world repeat
+// gives a distance-like world field for CSG.
+float rmPlatonicPatternShape(RmDisplacement d, vec3 p, out float sd) {
     float repeat = max(d.patternRepeat, 1.0e-4);
     float intensity = clamp(d.patternIntensity, 0.0, 1.0);
     float age = max(ubo.brushPhase - d.patternTime, 0.0);
@@ -307,8 +331,13 @@ float rmPlatonicPatternDisplacement(RmDisplacement d, vec3 p) {
     float cs = cos(spin), sn = sin(spin);
     local.xz = mat2(cs, -sn, sn, cs) * local.xz;
 
-    float sd = rmPlatonicSdf(d.pattern, local);
-    float shape = smoothstep(0.055, 0.0, sd);
+    sd = rmPlatonicSdf(d.pattern, local);
+    return smoothstep(0.055, 0.0, sd);
+}
+
+float rmPlatonicPatternDisplacement(RmDisplacement d, vec3 p) {
+    float sd;
+    float shape = rmPlatonicPatternShape(d, p, sd);
     return shape * d.patternDisplacement * d.strength * d.patternIntensity;
 }
 
@@ -330,7 +359,8 @@ float rmVoronoi2D(vec2 uv) {
     return 1.0 - smoothstep(0.0, 0.72, minDist);
 }
 
-float rmNoisePatternDisplacement(RmDisplacement d, vec3 p) {
+// Pattern mask in [0,1]; 1 = solid interior / peak.
+float rmNoisePatternShape(RmDisplacement d, vec3 p) {
     float repeat = max(d.patternRepeat, 1.0e-4);
     float age = max(ubo.brushPhase - d.patternTime, 0.0);
     float intensity = clamp(d.patternIntensity, 0.0, 1.0);
@@ -364,6 +394,11 @@ float rmNoisePatternDisplacement(RmDisplacement d, vec3 p) {
     return rmVoronoi2D(uv);
 }
 
+float rmNoisePatternDisplacement(RmDisplacement d, vec3 p) {
+    float shape = rmNoisePatternShape(d, p);
+    return shape * d.patternDisplacement * d.strength * d.patternIntensity;
+}
+
 float rmScalePatternHeight(vec2 uv, int type) {
     float row = floor(uv.y);
     uv.x += 0.5 * mod(row, 2.0);
@@ -371,15 +406,8 @@ float rmScalePatternHeight(vec2 uv, int type) {
     return (type == 1) ? rmTriangleScale(q) : rmHexagonScale(q);
 }
 
-float rmPatternDisplacement(RmDisplacement d, vec3 p) {
-    if (d.pattern >= 5) {
-        return rmPlatonicPatternDisplacement(d, p);
-    }
-    if (d.pattern >= 3) {
-        float shape = rmNoisePatternDisplacement(d, p);
-        return shape * d.patternDisplacement * d.strength * d.patternIntensity;
-    }
-
+// Scale-pattern mask in [0,1] in the cylindrical drag frame.
+float rmScalePatternShape(RmDisplacement d, vec3 p) {
     // Cylindrical frame around the drag axis. Unlike a per-sample surface
     // tangent frame, this is continuous across octree cells (the scalar
     // pattern does not inherit trilinear normal jumps), which is essential for
@@ -404,7 +432,47 @@ float rmPatternDisplacement(RmDisplacement d, vec3 p) {
             (0.25 + 0.75 * intensity);
     float shape = rmScalePatternHeight(uv, d.pattern);
     float pulse = 0.90 + 0.10 * sin(ubo.brushPhase * 2.0 + uv.y * 6.28318530718);
-    return shape * d.patternDisplacement * d.strength * d.patternIntensity * pulse;
+    return shape * pulse;
+}
+
+// Shape mask [0,1] for any secondary pattern. Platonic solids use their local
+// signed field through rmPlatonicPatternShape instead.
+float rmPatternShape(RmDisplacement d, vec3 p) {
+    if (d.pattern >= 5) {
+        float sd;
+        return rmPlatonicPatternShape(d, p, sd);
+    }
+    if (d.pattern >= 3) return rmNoisePatternShape(d, p);
+    return rmScalePatternShape(d, p);
+}
+
+float rmPatternDisplacement(RmDisplacement d, vec3 p) {
+    if (d.pattern >= 5) {
+        return rmPlatonicPatternDisplacement(d, p);
+    }
+    return rmPatternShape(d, p) * d.patternDisplacement * d.strength *
+           d.patternIntensity;
+}
+
+// Signed world-space secondary SDF used by the Union/Intersection/Subtraction
+// modes. Negative = inside the secondary shape. Platonic solids use their
+// local-cell distance scaled to world units; the mask patterns are converted
+// to a signed relief whose magnitude follows the material's SDF displacement
+// scale. The returned field is kept conservative enough for the raymarch's
+// feature-clamped CSG step.
+float rmSecondarySdf(RmDisplacement d, vec3 p) {
+    float scale = max(abs(d.patternDisplacement), 1.0e-4) *
+                  max(d.strength, 0.0) * max(d.patternIntensity, 0.0);
+    if (d.pattern >= 5) {
+        float sd;
+        rmPlatonicPatternShape(d, p, sd);
+        // Local sd is in cell units; patternDisplacement is the user-facing
+        // feature scale (2x maps the largest solid to roughly its diameter).
+        return sd * scale * 2.0;
+    }
+    float shape = (d.pattern >= 3) ? rmNoisePatternShape(d, p)
+                                   : rmScalePatternShape(d, p);
+    return (0.5 - shape) * scale;
 }
 
 // Signed world-space displacement at `p`. `n` is the base SDF normal used to
@@ -412,6 +480,9 @@ float rmPatternDisplacement(RmDisplacement d, vec3 p) {
 float rmDisplacementValue(RmDisplacement d, MaterialNamed m, int material,
                           int texType, vec2 uvScale, vec3 p, vec3 n, float lod) {
     if (!d.enabled) return 0.0;
+    // CSG modes drive the field directly; they are not a surface offset.
+    if (!d.legacy && d.pattern > 0 && d.operation != RM_SECONDARY_DISPLACE)
+        return 0.0;
 
     if (!d.legacy && d.pattern > 0) {
         float disp = rmPatternDisplacement(d, p);
@@ -453,6 +524,7 @@ float rmDisplacementWavelength(RmDisplacement d, vec2 uvScale,
         return nodeSize / clamp(legacyTessLevels, 1.0, 64.0);
     }
     if (d.pattern > 0) return max(d.patternRepeat * 0.10, 1.0e-4);
+
     vec2 s = abs(uvScale) * d.frequency;
     float scale = max(max(s.x, s.y), 1e-6);
     return 1.0 / scale;

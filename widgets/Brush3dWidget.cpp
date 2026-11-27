@@ -284,10 +284,26 @@ void Brush3dWidget::renderEntry(int index) {
             "on the GPU and are never stored in the octree.");
         if (e.useSecondarySdf) {
             ImGui::Indent();
+            static const char* operationNames[] = {
+                "Displace (surface offset)", "Union", "Intersection", "Subtraction"
+            };
+            int operation = static_cast<int>(e.secondarySdfOperation);
+            if (ImGui::Combo("SDF Operation", &operation, operationNames,
+                             IM_ARRAYSIZE(operationNames))) {
+                e.secondarySdfOperation =
+                    static_cast<SecondarySdfOperation>(std::clamp(operation, 0, 3));
+                dirty = true;
+            }
+            ImGuiHelpers::SetTooltipIfHovered(
+                "How the secondary SDF combines with the primary brush SDF:\n"
+                "Displace folds the pattern into the surface; Union/Intersection/\n"
+                "Subtraction evaluate the pattern as a CSG solid.");
             if (ImGui::DragFloat("Displacement Scale", &e.secondarySdfDisplacement,
                                  0.1f, -1000.0f, 1000.0f, "%.3f")) dirty = true;
             ImGuiHelpers::SetTooltipIfHovered(
-                "World-unit peak SDF displacement; negative recesses the scales.");
+                "World-unit secondary-SDF scale. In Displace mode it is the peak "
+                "surface offset (negative recesses); in CSG modes it sets the "
+                "secondary feature size.");
             if (ImGui::DragFloat("Repeat Scale", &e.secondarySdfRepeat,
                                  1.0f, 0.01f, 10000.0f, "%.3f")) dirty = true;
             ImGuiHelpers::SetTooltipIfHovered(

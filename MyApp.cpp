@@ -906,6 +906,22 @@ public:
             }
         }
 
+        // Headless A/B switch for the secondary-SDF combination mode:
+        // 0 = displace, 1 = union, 2 = intersection, 3 = subtraction.
+        if (const char* opEnv = std::getenv("VULKAN_SECONDARY_SDF_OP")) {
+            const int op = std::clamp(std::atoi(opEnv), 0, 3);
+            size_t applied = 0;
+            for (MaterialProperties& m : materials) {
+                if (m.displacementPattern <= 0) continue;
+                m.displacementPatternOperation =
+                    static_cast<SecondarySdfOperation>(op);
+                ++applied;
+            }
+            std::cout << "[MyApp] secondary SDF operation=" << op
+                      << " applied to " << applied << " pattern materials"
+                      << std::endl;
+        }
+
         // Allocate GPU-side material storage via MaterialManager
         materialManager.allocate(materialCount, this);
         for (size_t i = 0; i < materialCount; ++i) materialManager.update(i, materials[i], this);
@@ -2378,6 +2394,13 @@ public:
                 if (pattern) {
                     bound = std::abs(amplitude) * m.displacementStrength *
                             std::clamp(m.displacementSegmentIntensity, 0.0f, 1.0f);
+                    if (m.displacementPatternOperation !=
+                        SecondarySdfOperation::Displace) {
+                        // CSG secondary shapes extend beyond the surface
+                        // offset; keep the root rejection box conservative.
+                        bound = std::max(bound * 2.0f,
+                                         m.displacementPatternRepeat * 0.5f);
+                    }
                 } else {
                     float nmax = std::max(std::abs(-0.5f + m.displacementOffset),
                                           std::abs(0.5f + m.displacementOffset));
@@ -5160,9 +5183,12 @@ void MyApp::syncBrushMaterialDisplacement(const BrushEntry& entry) {
     const float repeat = std::max(entry.secondarySdfRepeat, 1.0e-3f);
     const float intensity = std::clamp(entry.secondarySdfIntensity, 0.0f, 1.0f);
     const glm::vec3 velocity = entry.secondarySdfVelocity;
+    const SecondarySdfOperation operation = entry.useSecondarySdf
+        ? entry.secondarySdfOperation : SecondarySdfOperation::Displace;
 
     const bool changed =
         mat.displacementPattern != pattern ||
+        mat.displacementPatternOperation != operation ||
         mat.displacementPatternDisplacement != displacement ||
         mat.displacementPatternRepeat != repeat ||
         mat.displacementSegmentTime != entry.secondarySdfSegmentTime ||
@@ -5171,6 +5197,7 @@ void MyApp::syncBrushMaterialDisplacement(const BrushEntry& entry) {
     if (!changed) return;
 
     mat.displacementPattern = pattern;
+    mat.displacementPatternOperation = operation;
     mat.displacementPatternDisplacement = displacement;
     mat.displacementPatternRepeat = repeat;
     mat.displacementSegmentTime = entry.secondarySdfSegmentTime;

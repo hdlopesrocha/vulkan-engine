@@ -55,6 +55,7 @@ MaterialNamed materialNamed(Material m) {
     n.displacementBounds = m.tessLevelParams.w;
     n.displacementTexture = int(m.layerParams.z + (m.layerParams.z >= 0.0 ? 0.5 : -0.5));
     n.displacementPattern = int(m.patternParams.x + 0.5);
+    n.displacementPatternOperation = int(m.materialFlags.w + 0.5);
     n.displacementPatternDisplacement = m.patternParams.y;
     n.displacementPatternRepeat = m.patternParams.z;
     n.displacementSegmentTime = m.patternParams.w;

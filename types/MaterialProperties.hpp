@@ -7,6 +7,7 @@
 #include "../math/TextureType.hpp"
 #include "MaterialKind.hpp"
 #include "MaterialBlendMode.hpp"
+#include "SecondarySdfOperation.hpp"
 
 // Material properties per texture (extracted from TextureManager.hpp)
 struct MaterialProperties {
@@ -102,6 +103,11 @@ struct MaterialProperties {
     // 5..9 = tetrahedron/cube/octahedron/dodecahedron/icosahedron reliefs.
     // The pattern is never stored in the octree.
     int displacementPattern = 0;
+    // How the pattern combines with the primary octree SDF. Displace keeps the
+    // signed-height behavior; Union/Intersection/Subtraction evaluate the
+    // pattern as a signed secondary field and apply the corresponding CSG op.
+    SecondarySdfOperation displacementPatternOperation =
+        SecondarySdfOperation::Displace;
     // Peak world-unit displacement of the pattern and its world-unit repeat
     // cell (a larger repeat makes larger scales).
     float displacementPatternDisplacement = 8.0f;

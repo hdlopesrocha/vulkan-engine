@@ -362,9 +362,25 @@ void TextureViewer::render() {
                             "-2 = procedural world-space Perlin displacement, otherwise another "
                             "material index resolved through the brush map.")) materialDirty = true;
                 } else {
+                    static const char* operationNames[] = {
+                        "Displace (surface offset)", "Union", "Intersection", "Subtraction"
+                    };
+                    int operation = static_cast<int>(mat.displacementPatternOperation);
+                    if (ImGui::Combo("SDF Operation", &operation, operationNames,
+                                     IM_ARRAYSIZE(operationNames))) {
+                        mat.displacementPatternOperation =
+                            static_cast<SecondarySdfOperation>(std::clamp(operation, 0, 3));
+                        materialDirty = true;
+                    }
+                    ImGuiHelpers::SetTooltipIfHovered(
+                        "How the secondary SDF combines with the primary octree SDF:\n"
+                        "Displace folds the pattern into the surface; Union/Intersection/\n"
+                        "Subtraction evaluate the pattern as a CSG solid.");
                     if (SliderFloatField("SDF Displacement Scale", &mat.displacementPatternDisplacement,
                             -64.0f, 64.0f, "%.3f",
-                            "Peak world-unit scale-pattern displacement; negative recesses the scales.")) materialDirty = true;
+                            "World-unit secondary-SDF scale. In Displace mode it is the peak "
+                            "surface offset (negative recesses); in CSG modes it sets the "
+                            "secondary feature size.")) materialDirty = true;
                     if (SliderFloatField("SDF Repeat Scale", &mat.displacementPatternRepeat,
                             0.01f, 1000.0f, "%.3f",
                             "World-unit size of one scale cell. Larger values create fewer, larger scales.",

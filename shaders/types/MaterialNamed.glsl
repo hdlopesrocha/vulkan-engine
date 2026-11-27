@@ -44,6 +44,8 @@ struct MaterialNamed {
     // 3 = Perlin, 4 = Voronoi, 5..9 = platonic solids),
     // peak displacement, world-unit repeat, segment time/velocity/intensity.
     int displacementPattern;
+    // 0 = displace, 1 = union, 2 = intersection, 3 = subtraction.
+    int displacementPatternOperation;
     float displacementPatternDisplacement;
     float displacementPatternRepeat;
     float displacementSegmentTime;

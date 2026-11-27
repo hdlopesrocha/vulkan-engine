@@ -63,7 +63,8 @@ is enabled independently per material by a non-zero
 | Bounds | `displacementBounds` | Optional clamp on `|h|` in world units (0 = `|amplitude| * strength`) |
 | Texture | `displacementTexture` | Height layer used for displacement (-1 = the material's own layer, otherwise resolved through the brush map) |
 | Pattern | `displacementPattern` | 0 = texture, 1 = triangles, 2 = hexagons, 3 = Perlin, 4 = Voronoi, 5..9 = platonic solids |
-| Pattern scale | `displacementPatternDisplacement` | Peak world-unit scale displacement |
+| Pattern operation | `displacementPatternOperation` | `Displace` (surface offset) or `Union` / `Intersection` / `Subtraction` against the primary octree SDF |
+| Pattern scale | `displacementPatternDisplacement` | Peak world-unit scale displacement / secondary-SDF feature scale |
 | Pattern repeat | `displacementPatternRepeat` | World-unit size of one scale cell |
 | Segment | `displacementSegmentTime/Velocity/Intensity` | Last dragged brush segment; orientation, animation phase and intensity |
 
@@ -214,6 +215,21 @@ keeps the scalar field continuous across octree cells. `u` animates from
 stay cell-sized around the trail. The pattern height is multiplied by
 `displacementPatternDisplacement`, `displacementStrength` and the segment
 intensity, then clamped to the same conservative bound used by the march.
+
+`displacementPatternOperation` selects how the secondary field combines with
+the primary octree SDF:
+
+- **Displace** — the historical path: the pattern becomes a signed surface
+  offset, `F = d_primary - h(pattern)`.
+- **Union** — `F = min(d_primary, d_secondary)`.
+- **Intersection** — `F = max(d_primary, d_secondary)`.
+- **Subtraction** — `F = max(d_primary, -d_secondary)`.
+
+The CSG modes use the pattern's signed field (platonic solids use their local
+cell distance; mask patterns become a signed relief scaled by the pattern
+displacement). Both the raymarch and its inherited-LOD shadow ray evaluate the
+same combined field, so the visible surface and its shadow agree. CSG hits use
+a finite-difference gradient of the combined field for the shading normal.
 
 `BrushEntry` carries the authoring fields and the last segment
 `(secondarySdfSegmentTime, secondarySdfVelocity, secondarySdfIntensity)`.
@@ -426,6 +442,10 @@ full-map smoke case, and fails on any validation error or device loss.
   orients/animates the whole material. Voxels do not store a segment id, so a
   later stroke reorients earlier stamps of the same material. This is the
   explicit trade-off for keeping the secondary SDF out of the octree.
+* CSG operations evaluate the secondary pattern as a global signed field.
+  `Intersection` can remove most of the primary shape and `Union` adds the
+  periodic pattern volumes around it; use a large repeat and a localized
+  platonic pattern when only a surface-scale relief is desired.
 * Water is never displaced by the solid material height map (the Gerstner
   swell is a shading normal/height offset, not a change of the lake's SDF
   interface); this preserves the existing water/terrain contract.
