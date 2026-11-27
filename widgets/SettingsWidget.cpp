@@ -3,7 +3,7 @@
 #include "vulkan/includes/debug/DebugModes.hpp"
 #include <vector>
 
-SettingsWidget::SettingsWidget(Settings& settingsRef, ShadowParams* shadowParams_) : Widget("Settings", u8"\uf013"), settings(settingsRef), shadowParams(shadowParams_) {
+SettingsWidget::SettingsWidget(Settings& settingsRef) : Widget("Settings", u8"\uf013"), settings(settingsRef) {
     isOpen = true;
 }
 
@@ -152,12 +152,26 @@ void SettingsWidget::render() {
         }
 
         ImGui::Checkbox("Enable Shadows", &settings.enableShadows);
-        ImGuiComponents::TooltipOnHover("Globally enable or disable all shadowing");
-        if (shadowParams) {
-            for (int i = 0; i < SHADOW_CASCADE_COUNT; i++) {
-                ImGui::Text("  Cascade %d", i);
-            }
-        }
+        ImGuiComponents::TooltipOnHover(
+            "Globally enable or disable SDF-raymarched directional shadows. Each "
+            "shadow ray inherits the primary hit's exact octree LOD.");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Shadow Softness", &settings.shadowSoftness,
+                           0.0f, 32.0f, "%.2f");
+        ImGuiComponents::TooltipOnHover(
+            "SDF soft-shadow penumbra factor k. 0 = hard shadows; visibility is "
+            "min(visibility, k * fieldDistance / rayDistance).");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderFloat("##Shadow Max Distance", &settings.shadowMaxDistance,
+                           0.0f, 16384.0f, "%.0f m");
+        ImGuiComponents::TooltipOnHover(
+            "Maximum shadow-ray length. 0 uses the camera far plane. Shorter rays "
+            "reduce cost for terrain-scale shadows.");
+        ImGui::SetNextItemWidth(kSettingsColWidth);
+        ImGui::SliderInt("##Shadow Max Steps", &settings.shadowMaxSteps,
+                         1, 256, "%d");
+        ImGuiComponents::TooltipOnHover(
+            "Hard early-out step budget per shadow ray (shader cap 256).");
     });
 
     // 6: Camera
@@ -223,8 +237,6 @@ void SettingsWidget::render() {
         ImGui::Text("Tessellation");
         ImGuiComponents::ColSeparator();
         ImGui::Checkbox("Enable Tessellation", &settings.tessellationEnabled);
-        ImGuiComponents::TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
-        ImGui::Checkbox("Enable Shadow Tessellation", &settings.shadowTessellationEnabled);
         ImGuiComponents::TooltipOnHover("Global toggle: when disabled, tessellation and displacement are skipped");
         ImGuiComponents::FieldLabel("Tessellation Factor", "Multiplies per-material min/max tess levels globally");
         ImGui::SetNextItemWidth(kSettingsColWidth);

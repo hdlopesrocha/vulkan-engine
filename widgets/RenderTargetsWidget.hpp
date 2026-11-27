@@ -8,17 +8,15 @@ class VulkanApp;
 class SceneRenderer;
 class SolidRenderer;
 class SkyRenderer;
-class ShadowRenderer;
 
-// Widget that displays render targets (Sky, Solid color/depth, Water depth,
-// Shadow cascades) as ImGui image thumbnails.
+// Widget that displays render targets (Sky, Solid color/depth, Water depth)
+// as ImGui image thumbnails.
 class RenderTargetsWidget : public Widget {
 private:
     VulkanApp*      app;
     SceneRenderer*  sceneRenderer;
     SolidRenderer*  solidRenderer;
     SkyRenderer*    skyRenderer;
-    ShadowRenderer* shadowMapper;
 
     // ImGui texture descriptors
     VkDescriptorSet skyDescriptor = VK_NULL_HANDLE;
@@ -84,14 +82,6 @@ private:
     // Single preview descriptor (widget displays one texture at a time)
     VkDescriptorSet previewDescriptor = VK_NULL_HANDLE;
 
-    // Per-cascade linearized shadow debug images
-    VkImage linearShadowDepthImage[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
-    VmaAllocation linearShadowDepthAllocation[SHADOW_CASCADE_COUNT] = {};
-    VkDeviceMemory linearShadowDepthMemory[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
-    VkImageView linearShadowDepthView[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
-    VkDescriptorSet linearShadowDepthDescriptor[SHADOW_CASCADE_COUNT] = { VK_NULL_HANDLE };
-    bool linearShadowDepthDescriptorOwned[SHADOW_CASCADE_COUNT] = { false };
-
     // Fixed preview width in pixels (all previews will be displayed at this width)
     // Preview scale removed — previews are fixed-size thumbnails now.
     int currentFrame = 0;
@@ -114,13 +104,9 @@ private:
         VegColor,
         VegDepth,
         LinearSceneDepth,
-        ShadowCascade,
         Count
     };
     PreviewTarget selectedPreview = PreviewTarget::SolidColor;
-    int selectedShadowCascade = 0;
-    bool showAllCascades = false;
-    enum class ShadowViewMode { Raw = 0, Linearized = 1 } shadowViewMode = ShadowViewMode::Linearized;
 
     // Auto-advance: cycle through all preview targets every N frames
     bool autoAdvance = true;
@@ -131,8 +117,7 @@ private:
     // Rely on renderer-provided tracked layouts.
 
 public:
-    RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky,
-                        ShadowRenderer* shadow = nullptr);
+    RenderTargetsWidget(VulkanApp* app_, SceneRenderer* scene, SolidRenderer* solid, SkyRenderer* sky);
     ~RenderTargetsWidget();
 
     // Initialize static GPU resources used by the widget (run once).

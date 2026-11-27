@@ -9,8 +9,6 @@
 struct StaticTextureSignature {
     VkSampler samplers[5] = {};
     VkImageView views[5] = {};
-    VkSampler shadowSampler = VK_NULL_HANDLE;
-    VkImageView shadowViews[3] = {};
     VkBuffer materials = VK_NULL_HANDLE;
     VkBuffer waterParams = VK_NULL_HANDLE;
     VkBuffer brushMap = VK_NULL_HANDLE;
@@ -23,9 +21,6 @@ struct StaticTextureSignature {
     bool matches(const StaticTextureSignature& o) const {
         for (int i = 0; i < 5; ++i)
             if (samplers[i] != o.samplers[i] || views[i] != o.views[i]) return false;
-        if (shadowSampler != o.shadowSampler) return false;
-        for (int i = 0; i < 3; ++i)
-            if (shadowViews[i] != o.shadowViews[i]) return false;
         return materials == o.materials && waterParams == o.waterParams &&
                brushMap == o.brushMap &&
                textureVersion == o.textureVersion;

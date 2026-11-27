@@ -93,6 +93,12 @@ enum class DebugMode : int {
     DisplacementStep,        // accepted-hi step length heat
     DisplacementResidual,    // |F| at the refined hit / hit epsilon
     DisplacementShadow,      // SDF shadow term + shadow-ray step heat
+    // SDF shadow LOD contract diagnostics (octree raymarch only).
+    PrimaryLod,              // effective primary-hit cell size, normalized per root
+    ShadowLod,               // inherited shadow cell size (must equal PrimaryLod)
+    ShadowVisibility,        // 1 - SDF shadow term (green = lit, red = blocked)
+    ShadowDistance,          // shadow-ray occluder distance (heat)
+    ShadowLodMissing,        // red where no exact inherited-LOD cell exists
     Count
 };
 
@@ -156,6 +162,11 @@ inline constexpr const char* kDebugModeNames[] = {
     "Displacement Conservative Step",
     "Displacement Intersection Residual",
     "Displacement Shadow Ray",
+    "Primary Ray Effective LOD",
+    "Shadow Ray Inherited LOD",
+    "SDF Shadow Visibility",
+    "SDF Shadow Ray Distance",
+    "Shadow Missing-LOD Regions",
 };
 
 static_assert(sizeof(kDebugModeNames) / sizeof(kDebugModeNames[0])

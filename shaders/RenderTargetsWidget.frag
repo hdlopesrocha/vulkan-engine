@@ -24,7 +24,7 @@ void main() {
     float d = texture(depthTex, uv).r;
     float v = 0.0;
     if (pc.mode >= 0.5) {
-        // Passthrough: treat sampled depth as already linear (e.g. shadow maps)
+        // Passthrough: treat sampled depth as already linear
         v = clamp(d, 0.0, 1.0);
     } else {
         float linear = LinearizeDepth(d, pc.zNear, pc.zFar);

@@ -3,7 +3,8 @@
 #include "../../includes/Locations.glsl"
 
 // Bladed grass color: procedural root->tip gradient + per-variant palette,
-// ambient + Lambert + Blinn-Phong, hard CSM shadows + cloud shadows.
+// ambient + Lambert + Blinn-Phong + cloud shadows. (Terrain sun shadows are
+// SDF-raymarched; vegetation is not part of that octree representation.)
 // Opaque triangles: no alpha discard (depth prepass writes every blade pixel).
 
 layout(location = VARY_UV) in vec3 inTexCoord;  // x=side, y=heightT, z=variant
@@ -20,10 +21,6 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 #include "../../includes/noise/Perlin.glsl"
 #include "../../includes/sky/Clouds.glsl"
 #include "../../includes/vegetation/BladeGrass.glsl"
-
-layout(set = 0, binding = 4) uniform sampler2D shadowMap;
-layout(set = 0, binding = 8) uniform sampler2D shadowMap1;
-layout(set = 0, binding = 9) uniform sampler2D shadowMap2;
 
 // Legacy billboard texture set (set=1) is retained in the pipeline layout for
 // compatibility but intentionally undeclared here: bladed grass is fully
@@ -46,9 +43,6 @@ layout(push_constant) uniform PushConstants {
     float impostorDistance;
 };
 
-vec3 fragPosWorld; // set in main() — required by shadows.glsl cascades 1 & 2
-
-#include "../../includes/shadow/Shadows.glsl"
 #include "../../includes/vegetation/GrassShading.glsl"
 
 void main() {

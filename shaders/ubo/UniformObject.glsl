@@ -1,56 +1,55 @@
 #ifndef UNIFORM_OBJECT_GLSL
 #define UNIFORM_OBJECT_GLSL
 
-// Canonical scene UBO (std140, 464 B). Single definition shared with the CPU:
+// Canonical scene UBO (std140, 288 B). Single definition shared with the CPU:
 // vulkan/ubo/UniformObject.hpp — same names, fields and offsets.
 // Offset table (verified against the C++ static_asserts):
-//   viewProjection 0, invViewProjection 64, lightSpaceMatrix 128,
-//   lightSpaceMatrix1 192, lightSpaceMatrix2 256, viewPosition 320,
-//   lightElevation 332, lightDirection 336, cubemapCapture 348,
-//   lightColor 352, triplanarThreshold 364, triplanarExponent 368,
-//   normalMappingEnabled 372, shadowsEnabled 376, debugMode 380,
-//   roughnessEnabled 384, ambientOcclusionEnabled 388, tessNearDist 392,
-//   tessFarDist 396, tessellationFactor 400, isShadowPass 404,
-//   tessellationEnabled 408, nearPlane 412, farPlane 416,
-//   brushTextureIndex 420, brushMode 424, brushPhase 428, brushHsv 432,
-//   raymarchScreenEps 444, displacementEnabled 448,
-//   displacementAOEnabled 452, displacementShadowCaster 456,
-//   displacementMaxBound 460. Block size 464.
+//   viewProjection 0, invViewProjection 64, viewPosition 128,
+//   lightElevation 140, lightDirection 144, cubemapCapture 156,
+//   lightColor 160, triplanarThreshold 172, triplanarExponent 176,
+//   normalMappingEnabled 180, shadowsEnabled 184, debugMode 188,
+//   roughnessEnabled 192, ambientOcclusionEnabled 196, tessNearDist 200,
+//   tessFarDist 204, tessellationFactor 208, tessellationEnabled 212,
+//   nearPlane 216, farPlane 220, brushTextureIndex 224, brushMode 228,
+//   brushPhase 232, brushHsv 240, raymarchScreenEps 252,
+//   displacementEnabled 256, displacementAOEnabled 260,
+//   displacementMaxBound 264, shadowSoftness 268,
+//   shadowMaxDistance 272, shadowMaxSteps 276, shadowReserved 280.
+// Block size 288.
 // Flags are uint (compare with == 0u / != 0u); debugMode is int.
 struct UniformObject {
     mat4 viewProjection;        // offset   0
     mat4 invViewProjection;     // offset  64
-    mat4 lightSpaceMatrix;      // offset 128  cascade 0
-    mat4 lightSpaceMatrix1;     // offset 192  cascade 1
-    mat4 lightSpaceMatrix2;     // offset 256  cascade 2
-    vec3 viewPosition;          // offset 320  camera world position
-    float lightElevation;       // offset 332  lightDirection.y
-    vec3 lightDirection;        // offset 336  FROM the light source toward the scene
-    uint cubemapCapture;        // offset 348
-    vec3 lightColor;            // offset 352
-    float triplanarThreshold;   // offset 364
-    float triplanarExponent;    // offset 368
-    uint normalMappingEnabled;  // offset 372
-    uint shadowsEnabled;        // offset 376
-    int debugMode;              // offset 380
-    uint roughnessEnabled;      // offset 384
-    uint ambientOcclusionEnabled; // offset 388
-    float tessNearDist;         // offset 392
-    float tessFarDist;          // offset 396
-    float tessellationFactor;   // offset 400
-    uint isShadowPass;          // offset 404
-    uint tessellationEnabled;   // offset 408
-    float nearPlane;            // offset 412
-    float farPlane;             // offset 416
-    uint brushTextureIndex;     // offset 420
-    uint brushMode;             // offset 424
-    float brushPhase;           // offset 428
-    vec3 brushHsv;              // offset 432
-    float raymarchScreenEps;    // offset 444  octree raymarch SS hit tolerance (px, 0 = off)
-    uint displacementEnabled;      // offset 448  master gate for the new path
-    uint displacementAOEnabled;    // offset 452  SDF ambient occlusion
-    uint displacementShadowCaster; // offset 456  raymarched CSM terrain caster
-    float displacementMaxBound;    // offset 460  max |h| over uploaded materials
+    vec3 viewPosition;          // offset 128
+    float lightElevation;       // offset 140  lightDirection.y
+    vec3 lightDirection;        // offset 144  FROM the light source toward the scene
+    uint cubemapCapture;        // offset 156
+    vec3 lightColor;            // offset 160
+    float triplanarThreshold;   // offset 172
+    float triplanarExponent;    // offset 176
+    uint normalMappingEnabled;  // offset 180
+    uint shadowsEnabled;        // offset 184
+    int debugMode;              // offset 188
+    uint roughnessEnabled;      // offset 192
+    uint ambientOcclusionEnabled; // offset 196
+    float tessNearDist;         // offset 200
+    float tessFarDist;          // offset 204
+    float tessellationFactor;   // offset 208
+    uint tessellationEnabled;   // offset 212
+    float nearPlane;            // offset 216
+    float farPlane;             // offset 220
+    uint brushTextureIndex;     // offset 224
+    uint brushMode;             // offset 228
+    float brushPhase;           // offset 232
+    vec3 brushHsv;              // offset 240
+    float raymarchScreenEps;    // offset 252  octree raymarch SS hit tolerance (px, 0 = off)
+    uint displacementEnabled;      // offset 256  master gate for the new path
+    uint displacementAOEnabled;    // offset 260  SDF ambient occlusion
+    float displacementMaxBound;    // offset 264  max |h| over uploaded materials
+    float shadowSoftness;          // offset 268  0 = hard, else penumbra k
+    float shadowMaxDistance;       // offset 272  0 = far plane
+    uint shadowMaxSteps;           // offset 276  shadow-ray step budget
+    uint shadowReserved;           // offset 280
 };
 
 #endif // UNIFORM_OBJECT_GLSL

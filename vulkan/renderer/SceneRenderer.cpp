@@ -119,9 +119,6 @@ void SceneRenderer::cleanup(VulkanApp* app) {
     if (videoRenderer && app) {
         videoRenderer->cleanup(app);
     }
-    if (shadowMapper && app) {
-        shadowMapper->cleanup(app);
-    }
     if (skyRenderer) {
         skyRenderer->cleanup(app);
     }
@@ -160,7 +157,6 @@ void SceneRenderer::cleanup(VulkanApp* app) {
 // Propagate the shared per-frame command state tracker to every renderer that
 // records on the main thread.
 void SceneRenderer::setCmdState(CommandBufferState* state) {
-    if (shadowMapper) shadowMapper->setCmdState(state);
     if (solidRenderer) solidRenderer->setCmdState(state);
     if (skyRenderer) skyRenderer->setCmdState(state);
     if (vegetationRenderer) vegetationRenderer->setCmdState(state);
@@ -362,7 +358,6 @@ void SceneRenderer::onSwapchainResized(VulkanApp* app, uint32_t width, uint32_t 
 
 SceneRenderer::SceneRenderer() :
     skyRenderer(std::make_unique<SkyRenderer>()),
-    shadowMapper(std::make_unique<ShadowRenderer>(2048)),
     postProcessRenderer(std::make_unique<PostProcessRenderer>()),
     solidRenderer(std::make_unique<SolidRenderer>()),
     waterRenderer(std::make_unique<WaterRenderer>()),
@@ -440,7 +435,7 @@ void SceneRenderer::beginInit(VulkanApp* app, TextureArrayManager* textureArrayM
     // and vkCreateGraphicsPipelines are thread-safe, and the shared resource /
     // shader-module / single-time-submit paths are locked. Run the heavy
     // pipeline creation concurrently; the renderers that consume these results
-    // (shadow, vegetation, water, brush, post) stay sequential.
+    // (vegetation, water, brush, post) stay sequential.
     initFutureSolid_ = std::async(std::launch::async, [this, app, initW, initH]() {
         solidRenderer->init();
         solidRenderer->destroyRenderTargets(app);
@@ -497,7 +492,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     initFutureDebug_.get();
 
 
-    shadowMapper->init(app);
     vegetationRenderer->init(app);
     // Own offscreen framebuffer for vegetation (decoupled from the solid pass so
     // it can be rendered on a parallel async command buffer).
@@ -531,10 +525,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
         mainUniformBuffers[i] = app->createBuffer(sizeof(UniformObject), uboUsage,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
-    // Per-frame staging buffers for shadow-pass UBO uploads are owned by
-    // ShadowRenderer (see createStagingBuffers).
-    shadowMapper->createStagingBuffers(app, dsCount);
-
     VkDescriptorSet mainDs = app->getMainDescriptorSetForFrame(0);
 
     // Initialize sky renderer now that descriptor sets are ready. Write the Sky
@@ -557,14 +547,14 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
         }
     }
 
-    // Bind texture arrays, shadow maps, materials, sky, water params (bindings 1-13)
+    // Bind texture arrays, materials, sky and water params to the static set
     // These static bindings are written once to the static descriptor set and then
     // copied into per-frame descriptor sets. Only binding 0 (per-frame UBO) is
     // written individually per frame.
     std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkDescriptorImageInfo> writesImg;
     std::vector<VkDescriptorBufferInfo> writesBuf;
-    writesImg.reserve(12);  // max image descriptors: 5 texture arrays + 3 shadow maps + 2 RT outputs (+1 spare; MUST exceed the emplace count — writes[] stores raw pImageInfo pointers into this vector, so any reallocation dangles them)
+    writesImg.reserve(9);  // max image descriptors: 5 texture arrays + 2 RT outputs (+2 spare; MUST exceed the emplace count — writes[] stores raw pImageInfo pointers into this vector, so any reallocation dangles them)
     writesBuf.reserve(10);  // materials SSBO + water params + water render UBO + wind-field UBO + RT params + RT meta + scene prim bases + scene albedo (+2 spare; same no-realloc requirement as writesImg)
 
     // Helper to add image write if valid. dstSet is set to the static descriptor set
@@ -600,10 +590,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     } else {
         std::cerr << "[SceneRenderer::init] No TextureArrayManager set — skipping texture array descriptor writes" << std::endl;
     }
-    addImageWrite(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImageWrite(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    addImageWrite(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
     // Create and bind Materials SSBO at binding 5. Require an external MaterialManager.
     materialManagerPtr = materialManager;
     if (!materialManager) {
@@ -627,7 +613,7 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     // allocated in setupTextures (before init in the normal app flow), but a
     // valid descriptor is mandatory even on paths that reach init first: bind
     // the materials buffer as a placeholder until updateTextureDescriptorSet
-    // sees the real map. Without this the shadow TES (which reads the brush
+    // sees the real map. Without this a shader that reads the brush
     // map) trips VUID-vkCmdDrawIndexedIndirectCount-None-08114.
     brushMapBuffer_ = materialManager->getBrushMapBuffer();
     VkBuffer brushMapBinding = (brushMapBuffer_.buffer != VK_NULL_HANDLE)
@@ -711,7 +697,7 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
 
     // ── Static descriptor set ──
     // Write scene-static bindings once. These resources rarely change
-    // (texture arrays, materials, shadow maps, sky, water params, RT handles).
+    // (texture arrays, materials, sky, water params, RT handles).
     // Per-frame descriptor sets will copy these via VkCopyDescriptorSet.
     {
         VkDescriptorSet staticSet = app->getStaticDescriptorSet();
@@ -814,83 +800,6 @@ void SceneRenderer::finishInit(VulkanApp* app, TextureArrayManager* textureArray
     // attachments) and stays idle until MyApp uploads a node table.
     if (octreeRaymarchRenderer) {
         octreeRaymarchRenderer->init(app);
-    }
-
-    // ── Wire scene sub-renderers into the pass orchestrators ──
-    // The shadow pass draws solid/vegetation geometry; the brush preview is an
-    // independent offscreen pass and is wired directly from MyApp.
-    if (shadowMapper) {
-        // The ray-marched terrain caster needs the shared node table (owned by
-        // octreeRaymarchRenderer) and the per-frame brush set for the shared
-        // three-set pipeline layout.
-        shadowMapper->setOctreeRaymarchRenderer(octreeRaymarchRenderer.get(),
-                                                brushRenderer.get());
-        shadowMapper->setSceneRenderers(solidRenderer.get(),
-                                        vegetationRenderer.get(), sdfRenderer.get());
-    }
-
-    // ── Allocate (once) and write shadow-specific descriptor sets per-frame ──
-    shadowDescriptorSets.resize(mainUniformBuffers.size());
-    for (size_t fi = 0; fi < shadowDescriptorSets.size(); ++fi) {
-        VkDescriptorSet ds = shadowDescriptorSets[fi];
-        if (ds == VK_NULL_HANDLE) {
-            ds = app->createDescriptorSet(app->getDescriptorSetLayout());
-            shadowDescriptorSets[fi] = ds;
-        }
-
-        DescriptorWriter wr(app->getDevice());
-        wr.writeBuffer(ds, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                       mainUniformBuffers[fi].buffer, 0, sizeof(UniformObject));
-
-        auto addImg = [&](uint32_t binding, VkSampler sampler, VkImageView view, VkImageLayout layout) {
-            if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) return;
-            wr.writeImage(ds, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                          sampler, view, layout);
-        };
-
-        if (textureArrayManager) {
-            addImg(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-        addImg(4, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        addImg(8, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getDummyDepthView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-        wr.writeBuffer(ds, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                       materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
-        wr.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                       waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
-        // Shadow TES displacement reads the brush map (binding 28). The shared
-        // shadow set must carry it too: the per-cascade sets are built by
-        // copying this set, and the solid shadow draw statically uses binding
-        // 28 (VUID-vkCmdDrawIndexedIndirectCount-None-08114 otherwise).
-        VkBuffer shadowBrushMap = (brushMapBuffer_.buffer != VK_NULL_HANDLE)
-                                      ? brushMapBuffer_.buffer : materialsBuffer.buffer;
-        wr.writeBuffer(ds, 28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                       shadowBrushMap, 0, VK_WHOLE_SIZE);
-        // Shared wind field (binding 27): the cascade sets copy it, and the
-        // vegetation shadow VS samples it when grass chunks are present.
-        if (vegetationRenderer) {
-            Buffer windFieldUBO = vegetationRenderer->getWindFieldBuffer();
-            if (windFieldUBO.buffer != VK_NULL_HANDLE)
-                wr.writeBuffer(ds, kWindFieldBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                               windFieldUBO.buffer, 0, sizeof(WindField));
-        }
-        wr.writeBuffer(ds, 10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                       waterRenderer->getWaterRenderUBO().buffer, 0, sizeof(WaterRenderUBO));
-        wr.flush();
-    }
-    // Shadow descriptor set handles are stable after init (subsequent writes
-    // only update them in place), so ShadowRenderer can cache them once.
-    // Pre-create all parallel cascade resources now (UBOs, cascade descriptor
-    // sets, internal semaphores) so renderParallel never falls back — it
-    // asserts cascadeSetsBuilt_ on every frame.
-    if (shadowMapper) {
-        shadowMapper->setShadowDescriptorSets(shadowDescriptorSets);
-        shadowMapper->ensureShadowParallelResources(app);
     }
 
     // Register listener so we update the main descriptor set when texture arrays are allocated later
@@ -1023,15 +932,6 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
     if (skyRenderer) skyUBO = skyRenderer->getSkyUniformBuffer();
     Buffer waterRenderUBO{};
     if (waterRenderer) waterRenderUBO = waterRenderer->getWaterRenderUBO();
-    VkSampler shadowSampler = VK_NULL_HANDLE;
-    VkImageView shadowViews[3] = {};
-    if (shadowMapper) {
-        shadowSampler = shadowMapper->getShadowMapSampler();
-        shadowViews[0] = shadowMapper->getShadowMapView(0);
-        shadowViews[1] = shadowMapper->getShadowMapView(1);
-        shadowViews[2] = shadowMapper->getShadowMapView(2);
-    }
-
     uint32_t failures = 0;
     for (size_t fi = 0; fi < descBuffers_.buffers.size(); ++fi) {
         Buffer& dst = descBuffers_.buffers[fi];
@@ -1068,10 +968,6 @@ void SceneRenderer::writeStaticDescriptorsToBuffers(VulkanApp* app, TextureArray
             wImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             wImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
-        // Bindings 4, 8, 9: shadow cascades.
-        wImg(4, shadowSampler, shadowViews[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        wImg(8, shadowSampler, shadowViews[1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        wImg(9, shadowSampler, shadowViews[2], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         // Binding 5: materials SSBO. Binding 7: water params SSBO.
         // NOTE: vkGetDescriptorEXT forbids VK_WHOLE_SIZE ranges
         // (VUID-VkDescriptorAddressInfoEXT-nullDescriptor-08939), so exact
@@ -1164,12 +1060,6 @@ StaticTextureSignature SceneRenderer::currentStaticSignature(TextureArrayManager
         sig.samplers[4] = textureArrayManager->aoSampler;
         sig.views[4] = textureArrayManager->aoArray.view;
     }
-    if (shadowMapper) {
-        sig.shadowSampler = shadowMapper->getShadowMapSampler();
-        sig.shadowViews[0] = shadowMapper->getShadowMapView(0);
-        sig.shadowViews[1] = shadowMapper->getShadowMapView(1);
-        sig.shadowViews[2] = shadowMapper->getShadowMapView(2);
-    }
     sig.materials = materialsBuffer.buffer;
     sig.waterParams = waterParamsBuffer_.buffer;
     sig.brushMap = brushMapBuffer_.buffer;
@@ -1186,7 +1076,7 @@ StaticTextureSignature SceneRenderer::currentStaticSignature(TextureArrayManager
 // change guard below additionally makes repeated calls with unchanged resources
 // a no-op, so steady state issues 0 vkUpdateDescriptorSets calls. Per-frame UBO
 // contents are streamed via host memcpy into the already-bound UBO buffers
-// (MyApp.cpp preRenderPass) or vkCmdCopyBuffer (shadow cascades) — never via
+// (MyApp.cpp preRenderPass) — never via
 // descriptor updates — so the GPU timeline overlaps descriptor-buffer-friendly
 // uploads with compute. When VulkanApp::useDescriptorBuffer() is true, the
 // static writes go to the per-frame descriptor buffers first (direct
@@ -1245,7 +1135,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
     // set. The branch keeps the GPU-side path compiled and exercised
     // (address queries) without breaking validation on current layouts.
     //
-    // skippedImageWrites counts texture/shadow bindings the guards below drop
+    // skippedImageWrites counts texture bindings the guards below drop
     // because their view or sampler is null; a non-zero count means a set kept
     // a stale binding. Reported once at the end (perf report 23 C1 follow-up).
     uint32_t skippedImageWrites = 0;
@@ -1270,13 +1160,6 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
         addImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         addImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // Shadow map samplers (bindings 4, 8, 9) for all cascades
-        if (shadowMapper) {
-            addImg(4, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(0), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(8, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(9, shadowMapper->getShadowMapSampler(), shadowMapper->getShadowMapView(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-
         // Materials SSBO (binding 5) — refreshed above.
         if (materialsBuffer.buffer != VK_NULL_HANDLE)
             writer.writeBuffer(staticDs, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1290,7 +1173,7 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
 
         // Brush map SSBO (binding 28) — per-brush image source table. Keep a
         // valid descriptor even before the map is allocated (fallback:
-        // materials) so the shadow/main sets never carry an unwritten binding.
+        // materials) so the main sets never carry an unwritten binding.
         {
             VkBuffer brushMap = (brushMapBuffer_.buffer != VK_NULL_HANDLE)
                                     ? brushMapBuffer_.buffer : materialsBuffer.buffer;
@@ -1342,54 +1225,6 @@ void SceneRenderer::updateTextureDescriptorSet(VulkanApp* app, TextureArrayManag
             vkUpdateDescriptorSets(app->getDevice(), 0, nullptr,
                                    static_cast<uint32_t>(copies.size()), copies.data());
         }
-    }
-
-    // ── Also update shadow descriptor sets (bindings 1-3, 5, 7) with new textures/materials.
-    // Shadow sets use dummy depth views for bindings 4, 8, 9, 11 so they cannot simply copy
-    // from the static set; we write them individually.
-    if (!shadowDescriptorSets.empty() && textureArrayManager) {
-        for (size_t si = 0; si < shadowDescriptorSets.size(); ++si) {
-            VkDescriptorSet ds = shadowDescriptorSets[si];
-            DescriptorWriter sw(app->getDevice());
-            auto addImg = [&](uint32_t b, VkSampler sm, VkImageView vw, VkImageLayout ly) {
-                if (vw == VK_NULL_HANDLE || sm == VK_NULL_HANDLE) { noteSkippedImage(b); return; }
-                sw.writeImage(ds, b, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sm, vw, ly);
-            };
-            addImg(1, textureArrayManager->albedoSampler, textureArrayManager->albedoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(2, textureArrayManager->normalSampler, textureArrayManager->normalArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(3, textureArrayManager->bumpSampler, textureArrayManager->bumpArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(12, textureArrayManager->roughnessSampler, textureArrayManager->roughnessArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            addImg(13, textureArrayManager->aoSampler, textureArrayManager->aoArray.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            if (materialsBuffer.buffer != VK_NULL_HANDLE)
-                sw.writeBuffer(ds, 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                               materialsBuffer.buffer, 0, VK_WHOLE_SIZE);
-            else
-                std::cerr << "[SceneRenderer::updateTextureDescriptorSet] shadow materials buffer not available — skipping shadow binding 5\n";
-            if (waterParamsBuffer_.buffer != VK_NULL_HANDLE)
-                sw.writeBuffer(ds, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                               waterParamsBuffer_.buffer, 0, VK_WHOLE_SIZE);
-            // The shadow TES displacement reads the brush map (binding 28).
-            {
-                VkBuffer brushMap = (brushMapBuffer_.buffer != VK_NULL_HANDLE)
-                                        ? brushMapBuffer_.buffer : materialsBuffer.buffer;
-                if (brushMap != VK_NULL_HANDLE)
-                    sw.writeBuffer(ds, 28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                   brushMap, 0, VK_WHOLE_SIZE);
-            }
-            // Shared wind field (binding 27) for the vegetation shadow VS.
-            if (vegetationRenderer) {
-                Buffer windFieldUBO = vegetationRenderer->getWindFieldBuffer();
-                if (windFieldUBO.buffer != VK_NULL_HANDLE)
-                    sw.writeBuffer(ds, kWindFieldBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                   windFieldUBO.buffer, 0, sizeof(WindField));
-            }
-            sw.flush();
-        }
-        // The per-cascade shadow sets are built once by copying the shared
-        // shadow sets; refresh them with the same bindings or the cascade
-        // passes keep the previous (destroyed) array views (perf report 23 C1
-        // follow-up: VUID-08114 on the cascade draw's Set 0, Binding 3).
-        if (shadowMapper) shadowMapper->refreshCascadeTextureBindings(app);
     }
 
     // Surface dropped texture-array writes instead of letting a stale binding

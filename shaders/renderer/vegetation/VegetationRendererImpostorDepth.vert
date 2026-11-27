@@ -94,18 +94,7 @@ void main() {
     // Best-view select (perf report 26 H4): shared helper, bit-identical
     // layer to the inline 20-iteration loop it replaces (see
     // VegetationRendererImpostor.vert note on why no cross-vertex broadcast).
-#ifdef VEG_SHADOW_PASS
-    // Shadow pass (VegetationRendererImpostorShadow.vert.spv): the rasterized
-    // quad faces the LIGHT, and the capture layer is the view nearest the
-    // light. Facing the main camera here (the color/depth orientation) makes
-    // the quad grazing to the sun, collapsing its shadow-map footprint to a
-    // sliver, and biases the reconstructed-depth silhouette by up to half a
-    // Fibonacci view. ubo.lightDirection points from the light toward the
-    // scene, so -lightDirection is the direction toward the light.
-    vec3 toCamera = normalize(-ubo.lightDirection);
-#else
     vec3 toCamera = normalize(ubo.viewPosition - worldPos);
-#endif
 
     int layerIdx = impostorBestLayerIndex(toCamera, rotFrac, billboardIdx);
 

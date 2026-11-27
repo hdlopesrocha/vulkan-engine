@@ -1,8 +1,8 @@
 // Unified grass shading shared by VegetationRenderer.frag (blades) and
 // VegetationRendererImpostor.frag (captured tufts), so the LOD hand-off has
 // no brightness edge. Requires before inclusion: SceneBindings.glsl (ubo),
-// SkyView.glsl (sky), Shadows.glsl (ShadowCalculationHard, cloudShadowAt)
-// and the fragPosWorld global. Callers supply the albedo, the two-sided
+// SkyView.glsl (sky) and Clouds.glsl (cloudShadowAt). Callers supply the
+// albedo, the two-sided
 // world normal, the (flat, pre-normalized) light direction, the true surface
 // world position and the shadowPass gate.
 #ifndef GRASS_SHADING_GLSL
@@ -28,10 +28,11 @@ float grassVariation(vec3 worldPos) {
     return (varHash - 0.5) * 0.22;
 }
 
-// Ambient + Lambert + Blinn-Phong + backlit translucency, gated by hard CSM
-// and cloud shadows. Writes the fragPosWorld global for cascades 1 & 2.
+// Ambient + Lambert + Blinn-Phong + backlit translucency, gated by cloud
+// shadows. Rasterized vegetation is not part of the octree SDF representation,
+// so it cannot evaluate the SDF shadow ray without inventing a different LOD;
+// direct sun visibility on terrain is evaluated by the octree raymarcher.
 vec3 grassShade(vec3 albedo, vec3 N, vec3 L, vec3 worldPos, bool shadowPass) {
-    fragPosWorld = worldPos;
     float NdotL = max(dot(N, L), 0.0);
     vec3 V = normalize(ubo.viewPosition - worldPos);
     vec3 H = normalize(L + V);
@@ -43,15 +44,6 @@ vec3 grassShade(vec3 albedo, vec3 N, vec3 L, vec3 worldPos, bool shadowPass) {
     vec3 diffuse  = NdotL                    * ubo.lightColor;
     vec3 specular = pow(NdotH, kGrassShine) * kGrassSpecular * ubo.lightColor;
     float shadow = 0.0;
-    if (!shadowPass && (ubo.shadowsEnabled != 0u)) {
-        if (NdotL > 0.01) {
-            float bias = max(0.0005 * (1.0 - NdotL), 0.00005);
-            vec4 fragPosLightSpace = ubo.lightSpaceMatrix * vec4(worldPos, 1.0);
-            shadow = ShadowCalculationHard(fragPosLightSpace, worldPos, bias);
-        } else {
-            shadow = 1.0;
-        }
-    }
     if (!shadowPass && (sky.cloudsEnabled != 0u) && NdotL > 0.01) {
         float cloudShadow = cloudShadowAt(worldPos);
         shadow = 1.0 - (1.0 - shadow) * (1.0 - cloudShadow);

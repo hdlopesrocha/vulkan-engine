@@ -168,24 +168,19 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
     vec3 toLight = -normalize(ubo.lightDirection);
     float NdotL = max(dot(worldNormal, toLight), 0.0);
 
-    // Shadow calculation. The raster solid path keeps the CSM authoritative
-    // macro sun-shadow. The octree raymarcher defines SOLID_SHADOW_TRACE and
-    // replaces the CSM
-    // sample with a second SDF ray march through the same node table: no
-    // terrain chunk meshes exist any more, so the cascades can no longer cast
-    // terrain shadows.
+    // Shadow calculation. SDF-raymarched surfaces evaluate direct sun
+    // visibility against the SAME octree representation that produced the hit
+    // (solidShadowTrace, defined by OctreeRaymarch.frag). The raster solid
+    // shader has no SDF primary ray / inherited LOD, so it keeps ambient and
+    // cloud shadowing but does not fabricate a sun-shadow approximation.
     float shadow = 0.0;
-    // Primary cascade hint for the secondary-hit fast path below (H6).
-    // Default 0 reproduces today's secondary behavior wherever unused.
-    int solidCascadeHint = 0;
-    vec4 adjustedPosLightSpace = fragPosLightSpace;
     if (ubo.shadowsEnabled != 0u) {
         if (NdotL > 0.01) {
 #ifdef SOLID_SHADOW_TRACE
-            shadow = solidShadowTrace(fragPosWorld, worldNormal, toLight, solidCascadeHint);
+            int solidShadowHint = 0;
+            shadow = solidShadowTrace(fragPosWorld, worldNormal, toLight, solidShadowHint);
 #else
-            float bias = max(0.002 * (1.0 - NdotL), 0.0005);
-            shadow = ShadowCalculation(adjustedPosLightSpace, fragPosWorld, bias, solidCascadeHint);
+            shadow = 0.0;
 #endif
         } else {
             shadow = 1.0;
@@ -193,10 +188,9 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
     }
     float totalShadow = shadow;
     // Volumetric cloud shadows: project the fragment along the sun direction
-    // onto the three cloud slabs and attenuate direct light. Combined as an
-    // independent occluder with CSM (clouds never brighten the shadow term).
-    // Skipped in the shadow pass (isShadowPass fast-path returned above) and
-    // when the surface faces away (NdotL == 0 keeps full shadow = 1.0).
+    // onto the three cloud slabs and attenuate direct light. Independent from
+    // the SDF sun visibility (clouds never brighten the shadow term).
+    // When the surface faces away (NdotL == 0) full shadow = 1.0 is kept.
     float cloudShadow = 0.0;
     if ((sky.cloudsEnabled != 0u) && NdotL > 0.01) {
         cloudShadow = cloudShadowAt(fragPosWorld);
@@ -412,8 +406,8 @@ void shadeSolidSurface(vec3 geomNormalOverride) {
         return;
     }
     if (debugMode == DEBUG_MODE_SHADOW) {
-        // R = CSM, G = (unused, kept for channel stability), B = combined
-        // term actually shaded.
+        // R = SDF sun visibility, G = unused (channel stability), B = combined
+        // term actually shaded (sun + clouds).
         outColor = vec4(shadow, shadow, totalShadow, 1.0);
         return;
     }

@@ -23,7 +23,7 @@ layout(location = ATTR_HSV) in vec3 inHSV;
 #ifdef SOLID_NO_TESS
 // ── Non-tessellation solid VS (shaders/SolidRendererNoTess.vert.spv) ────────────
 // Direct VS -> FS interface: writes every varying the DepthOnly.frag and
-// EVSM shadow fragment shaders consume, so the TRIANGLE_LIST depth/shadow
+// depth fragment shaders consume, so the TRIANGLE_LIST depth-only
 // pipelines need no TCS/TES. Valid only when tessellation is off: the TES
 // displacement collapses to the undisplaced position then
 // (mappingFlag *= tessellationEnabled), and tess levels are 1. Only passes
@@ -42,7 +42,6 @@ layout(location = VARY_NORMAL) out vec3 fragNormal;
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
 layout(location = VARY_BRUSHPATCH) flat out ivec3 fragTexIndices;
 layout(location = VARY_TEXTURETYPE) flat out ivec3 fragTextureTypes;
-layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace;
 layout(location = VARY_LOCALPOS) out vec3 fragPosWorldNotDisplaced;
 layout(location = VARY_TEXWEIGHTS) out vec3 fragTexWeights;
 layout(location = VARY_SHARPNORMAL) out vec3 fragSharpNormal; // unread by every solid FS; written for linkage
@@ -57,7 +56,6 @@ void main() {
     vec3 worldPos = inPos;
     fragPosWorld = worldPos;
     fragPosWorldNotDisplaced = worldPos;
-    fragPosLightSpace = ubo.lightSpaceMatrix * vec4(worldPos, 1.0);
     if (inBrushIndex < 0) {
         fragTexIndices = ivec3(0);
         fragTexWeights = vec3(0.0);
@@ -80,7 +78,6 @@ layout(location = VARY_NORMAL) out vec3 fragNormal;
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
 layout(location = VARY_BRUSHPATCH) out int fragBrushIndex;      // per-vertex texture index for TCS
 layout(location = VARY_TEXTURETYPE) out int fragTextureType;    // per-vertex texture type for TCS
-layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace;
 layout(location = VARY_LOCALPOS) out vec3 fragLocalPos;          // provide local/world pos to TCS
 layout(location = VARY_LOCALNORMAL) out vec3 fragLocalNormal;       // provide local/world normal to TCS
 layout(location = VARY_SHARPNORMAL) out vec3 fragSharpNormal;      // face normal
@@ -105,9 +102,6 @@ void main() {
     vec4 worldPos = model * vec4(inPos, 1.0);
     fragPosWorld = worldPos.xyz;
     fragLocalPos = worldPos.xyz;       // Use world-space position as local basis for displacement
-
-    // compute light-space position for shadow mapping
-    fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
 
     // Compute face normal (sharp normal) from model normal
     fragLocalNormal = fragNormal;      // Propagate normal for tessellation stages

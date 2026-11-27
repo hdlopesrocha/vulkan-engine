@@ -257,18 +257,14 @@ GLSL_OPT = -O
 OUT_SPVS = \
 	$(patsubst shaders/%,$(OUT_DIR)/shaders/%.spv,$(SHADER_FILES)) \
 	$(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv \
-	$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv \
-	$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv \
 	$(OUT_DIR)/shaders/renderer/sdf/SdfRendererSurface.frag.spv \
 	$(OUT_DIR)/shaders/renderer/vegetation/ImpostorCapture.vert.spv \
-	$(OUT_DIR)/shaders/renderer/vegetation/VegetationRendererImpostorShadow.vert.spv \
 
 # ── Compile-time shader variants ──────────────────────────────────────────
 # Each variant reuses a base source plus a define that selects an alternate
 # stage interface or feature set. Shader base names match the owning renderer
 # class; in-class pass qualifiers are concatenated PascalCase:
-#   SolidRenderer*      -> SolidRenderer (also bound by Shadow)
-#   ShadowRenderer*     -> ShadowRenderer
+#   SolidRenderer*      -> SolidRenderer
 #   VegetationRenderer* -> VegetationRenderer
 #   shared/no-owner     -> Fullscreen.vert
 # compile_shader <source> <output> <glslc defines> <glslang defines> <opt>
@@ -292,14 +288,6 @@ $(OUT_DIR)/shaders/renderer/solid/SolidRendererNoTess.vert.spv: shaders/renderer
 	$(call compile_shader,shaders/renderer/solid/SolidRenderer.vert,$@,-DSOLID_NO_TESS=1,--D SOLID_NO_TESS=1,$(GLSL_OPT))
 
 
-# H4 (perf report 21): shadow-only solid TES (position-varying outputs only,
-# displacement preserved) bound by the tessellated shadow pipeline; and the
-# narrower 5-tap EVSM blur for the outer cascades.
-$(OUT_DIR)/shaders/renderer/shadow/ShadowRenderer.tese.spv: shaders/renderer/solid/SolidRenderer.tese $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/solid/SolidRenderer.tese,$@,-DSHADOW_PASS=1,--D SHADOW_PASS=1,$(GLSL_OPT))
-$(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv: shaders/renderer/shadow/ShadowRendererBlur.frag $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/shadow/ShadowRendererBlur.frag,$@,-DBLUR5=1,--D BLUR5=1,$(GLSL_OPT))
-
 # H4/C2: ImpostorCapture variant of VegetationRenderer.vert (VEG_CAPTURE=1):
 # evaluates the height scale locally exactly as before the bake (canonical
 # single instance, no aux buffer bound). Built WITHOUT -O like its generic
@@ -312,14 +300,6 @@ $(OUT_DIR)/shaders/renderer/shadow/ShadowRendererBlur5.frag.spv: shaders/rendere
 # deleted and is intentionally NOT rebuilt by the generic pattern rule below.
 $(OUT_DIR)/shaders/renderer/vegetation/ImpostorCapture.vert.spv: shaders/renderer/vegetation/VegetationRenderer.vert $(SHADER_INCLUDES)
 	$(call compile_shader,shaders/renderer/vegetation/VegetationRenderer.vert,$@,-DVEG_CAPTURE=1,--D VEG_CAPTURE=1,)
-
-# Shadow-caster variant of the impostor depth VS (VEG_SHADOW_PASS=1): the
-# quad faces the LIGHT and the capture layer is the light-facing view, so
-# the rasterized footprint covers the sun and the captured-depth silhouette
-# is exact from the light's side (see the #ifdef in the source). Source IS
-# on disk; this is a compile-time define variant like VEG_CAPTURE above.
-$(OUT_DIR)/shaders/renderer/vegetation/VegetationRendererImpostorShadow.vert.spv: shaders/renderer/vegetation/VegetationRendererImpostorDepth.vert $(SHADER_INCLUDES)
-	$(call compile_shader,shaders/renderer/vegetation/VegetationRendererImpostorDepth.vert,$@,-DVEG_SHADOW_PASS=1,--D VEG_SHADOW_PASS=1,)
 
 # C1/L13 (perf report 25): SDF surface fragment variant. Same single source as
 # the generic module (shaders/renderer/sdf/SdfRenderer.frag); SDF_VARIANT=1

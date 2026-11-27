@@ -55,7 +55,7 @@ void RaymarchWidget::render() {
 
     // Terrain solid path: rasterized tessellated chunks vs. the full-screen
     // octree SDF raymarch. Both paths share the same cell materials/mapping,
-    // analytic normals, CSM/RT shading and tessellation displacement (the
+    // analytic normals, SDF shadow/RT shading and tessellation displacement (the
     // raymarcher folds the height offset into the marched SDF).
     addSection(190.0f, [this]() {
         ImGui::Text("Terrain Octree Path");
@@ -113,17 +113,6 @@ void RaymarchWidget::render() {
                 "Adds a small hemisphere SDF occlusion term evaluated on the displaced "
                 "surface (multiplied with the material AO texture). Only runs when AO "
                 "is enabled and the hit material uses displacement.");
-            bool caster = settings->displacementShadowCasterEnabled;
-            ImGui::PushID("DisplacementShadowCaster##octree");
-            if (ImGui::Checkbox("Raymarch terrain into CSM", &caster))
-                settings->displacementShadowCasterEnabled = caster;
-            ImGui::PopID();
-            ImGuiComponents::TooltipOnHover(
-                "Opt-in: raymarches the displaced terrain into every CSM cascade so "
-                "rasterized geometry (vegetation, SDF objects, video layers) receives "
-                "terrain shadows. This is a fullscreen 2048^2 + 1024^2 + 512^2 march "
-                "per frame and is expensive on integrated GPUs; terrain self-shadowing "
-                "does not require it. Camera and shadow passes use the same field.");
         }
         {
             ImGuiComponents::FieldLabel("SS hit epsilon",

@@ -202,8 +202,6 @@ public:
     VkImageLayout getVegDepthLayout(uint32_t frameIndex) const { return (frameIndex < VEG_FRAMES) ? vegDepthImageLayouts[frameIndex] : VK_IMAGE_LAYOUT_UNDEFINED; }
     void setVegDepthLayout(uint32_t frameIndex, VkImageLayout lay) { if (frameIndex < VEG_FRAMES) vegDepthImageLayouts[frameIndex] = lay; }
     
-    // (The single-cascade drawShadow entry point was removed with the dead
-    // code sweep — the parallel cascade path below uses drawShadowCascade.)
     // NOTE: vkCmdDrawIndexedIndirectCount is core since Vulkan 1.2 and is
     // called directly (device creation requires drawIndirectCount).
 
@@ -252,11 +250,9 @@ public:
 
     // Cross-queue guard for the consolidation copy (flicker fix): the pair it
     // overwrites was last read by the previous era's vegetation draws on the
-    // vegetation queue (and, transitively through tlShadow, the shadow
-    // cascade draws on the cube queues — the veg task waits tlShadow every
-    // frame before signaling its own timeline). The frame thread pushes the
-    // vegetation timeline semaphore + latest signaled value each frame; the
-    // consolidation submit waits it so the overwrite never races a reader.
+    // vegetation queue. The frame thread pushes the vegetation timeline
+    // semaphore + latest signaled value each frame; the consolidation submit
+    // waits it so the overwrite never races a reader.
     // VK_NULL_HANDLE (pre-startup) skips the wait.
     void setConsolidationWait(VkSemaphore sem, uint64_t value) {
         consolidationWaitSemaphore = sem;
@@ -269,7 +265,7 @@ public:
     void consolidateChunks(VulkanApp* app);
     // Publish a fence-complete consolidation generation (completedSnapshot_
     // + vegNumChunks + table-dirty flag). Idempotent per generation; safe to
-    // call every frame from prepareCull/prepareCullCascades. Returns true
+    // call every frame from prepareCull. Returns true
     // when a NEW generation completed (caller pushes metadata). Uses the
     // ground-truth fence query, never the pump-dependent tracking list.
     bool pollConsolidation();
@@ -332,7 +328,7 @@ public:
         static_cast<VkDeviceSize>(kMaxVegChunks) * kMaxVegInstancesPerChunk;
     // Pre-allocate ALL culling buffers to worst-case capacity in a single
     // init-time burst: concatenated instances, per-frame compact/count (main
-    // + impostor), chunk-info table, and cascade buffers. Idempotent — a
+    // + impostor) and the chunk-info table. Idempotent — a
     // second call with the same sizes is a no-op; different sizes assert.
     // Must be called once during SceneRenderer::init before scene loading.
     void preallocate(VulkanApp* app, uint32_t maxChunks = kMaxVegChunks,
@@ -343,16 +339,6 @@ public:
     // render pass (compute dispatches are illegal inside dynamic rendering).
     // Auto-cycles through triple-buffered culling slots internally.
     void prepareCull();
-
-    // Cascade-aware culling: single dispatch that culls against all 3 cascade
-    // frustums simultaneously. Each chunk is culled independently per cascade.
-    void prepareCullCascades(VkCommandBuffer cmd,
-                             const glm::mat4 cascadeMatrices[3]);
-    // Draw a specific cascade's vegetation compacted output.
-    void drawShadowCascade(VulkanApp* app, VkCommandBuffer& commandBuffer,
-                           VkDescriptorSet shadowDescriptorSet,
-                           const glm::vec3& cameraPos,
-                           uint32_t cascadeIndex);
 
     // Update the wind params UBO with current settings.
     // Must be called before any draw that uses wind.  Updates per-frame values
@@ -380,8 +366,6 @@ private:
     TrackedHandle<VkPipeline> vegetationDepthPipeline;
     TrackedHandle<VkPipelineLayout> vegetationDepthPipelineLayout;
     TrackedHandle<VkPipelineLayout> pipelineLayout;
-    TrackedHandle<VkPipeline> vegetationShadowPipeline;
-    TrackedHandle<VkPipelineLayout> shadowPipelineLayout;
     TrackedHandle<VkDescriptorSetLayout> descriptorSetLayout;
     TextureArrayManager* vegetationTextureArrayManager = nullptr;
     VkImageView billboardAlbedoView   = VK_NULL_HANDLE;
@@ -474,22 +458,19 @@ private:
     TrackedHandle<VkDescriptorPool> impostorDescPool;
     TrackedHandle<VkDescriptorSet> impostorDescSet;
 
-    // Impostor depth pipeline (shadow map depth-only pass).
+    // Impostor depth pipeline (camera depth prepass).
     TrackedHandle<VkPipeline> impostorDepthPipeline;
     TrackedHandle<VkPipelineLayout> impostorDepthPipelineLayout;
     TrackedHandle<VkDescriptorSetLayout> impostorDepthDescSetLayout;
     TrackedHandle<VkDescriptorPool> impostorDepthDescPool;
     TrackedHandle<VkDescriptorSet> impostorDepthDescSet;
-    // Impostor EVSM shadow pipeline (color + depth write, uses VegetationRendererImpostorShadow.frag)
-    TrackedHandle<VkPipeline> impostorShadowPipeline;
-    TrackedHandle<VkPipelineLayout> impostorShadowPipelineLayout;
 
     float                 impostorDistance       = 0.0f;
 
     // Wind params UBO (set=2, binding=0) — updated once per frame.
     Buffer                windParamsBuffer;
     // M11 (perf report 22): last payload written, so the repeated per-pass
-    // calls in one frame (depth + color + per-cascade shadow draws) skip the
+    // calls in one frame (depth + color) skip the
     // memcpy when nothing changed. All callers run on the single async task
     // thread, so the cache needs no extra synchronization.
     WindParamsUBO         windParamsCache{};
@@ -555,34 +536,17 @@ private:
     std::array<Buffer, VEG_CULL_FRAMES> impostorCountBuffers;
     uint32_t vegMainCompactCapacity = 0;
     // Creates (lazily) and grows the shared GPU chunk-info table used by the
-    // merged cull and the cascade cull. Re-points descriptors on growth.
+    // merged cull. Re-points descriptors on growth.
     void ensureChunkInfo(VulkanApp* app);
 
-    // ── Cascade-aware culling for vegetation shadows ──
-    // GPU-side cull (veg_cascade_cull.comp): per-cascade compact + count
-    // buffers for blades (indexCount=36) and impostors (indexCount=6).
-    struct VegCascadeCullFrame {
-        std::array<Buffer, 3> compactBuffers;        // billboard draw commands
-        std::array<Buffer, 3> countBuffers;          // billboard counts (GPU atomics)
-        std::array<Buffer, 3> impostorCompactBuffers; // impostor draw commands
-        std::array<Buffer, 3> impostorCountBuffers;   // impostor counts (GPU atomics)
-        VkDescriptorSet descSet = VK_NULL_HANDLE;
-    };
-    std::array<VegCascadeCullFrame, VEG_CULL_FRAMES> vegCascadeCullFrames;
-    bool vegCascadeCullInited = false;
-    uint32_t vegCascadeCompactCapacity = 0;
-    void initCascadeCull(VulkanApp* app);
     // Writes the GPU chunk table (aabbMin/aabbMax/instanceCount/firstInstance
     // triples) via memcpy into the host-visible chunk info buffer. Iteration
     // order MUST match consolidateChunks' concatenated-instance copy order so
     // firstInstance offsets point at the right instance ranges.
     void writeVegChunkInfo();
 
-    // Shared GPU-side chunk table for the veg cascade cull. The per-cascade
-    // billboard/impostor command + count buffers (vegCascadeCullFrames) are bound
-    // into the SOLID IndirectRenderer's merged IndirectRenderer.comp descriptor set (bindings
-    // 24..36) via solidIR->setVegCascadeData; the old veg_cascade_cull.comp pipeline
-    // is retired.
+    // Shared GPU-side chunk table (AABBs + instance counts + firstInstance)
+    // consumed by the merged vegetation cull.
     Buffer vegChunkInfoBuffer;
     void* vegChunkInfoMapped = nullptr;
 
@@ -623,13 +587,12 @@ private:
     // (static_cast<uint32_t>(chunk NodeID)). value = vec4(instanceCount,
     // firstInstance, 0, 0). Fed to solidIR via setVegetationChunkInfo().
     std::unordered_map<uint32_t, glm::vec4> vegChunkInfoMap;
-    // Cull frame to use for the MAIN-pass veg draws (mirrors solidIR's frame so
-    // the draw reads the slot the merged dispatch wrote). Falls back to the local
-    // counter for the shadow cascade path (which keeps its own dispatch).
+    // Cull frame to use for the MAIN-pass veg draws (mirrors solidIR's frame
+    // so the draw reads the slot the merged dispatch wrote).
     uint32_t vegFrame() const;
 
     // Per-frame scratch for read-barrier recording (recordReadBarriers). Might
-    // be called from the shadow worker (ShadowRenderer) and the vegetation
+    // be called from the vegetation worker
     // worker (MyApp veg block), so the scratch lives in a thread-local inside
     // the function and the version gate below is atomic (see .cpp).
     // M9-(1) (report 26): chunk-set version. Bumped (noteChunkBuffersChanged)
@@ -676,8 +639,7 @@ private:
     // covers every earlier one.
     VkFence streamingUploadFence = VK_NULL_HANDLE;
     // M9-(2) (report 26): serializes concurrent consolidateChunks calls from
-    // the cull worker (prepareCull) and the shadow path
-    // (prepareCullCascades). Short critical section only.
+    // the cull worker (prepareCull). Short critical section only.
     std::mutex consolidationMutex;
     // H7 (report 26): worker-side instance-pass elision state for
     // beginVegPass (M12, report 27: single unified arbiter — the MyApp

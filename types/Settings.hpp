@@ -17,6 +17,14 @@ public:
 
     // Global toggles
     bool enableShadows = true;
+    // SDF shadow raymarch (octree path). The ray always inherits the primary
+    // hit's effective LOD; these controls only bound cost and penumbra.
+    // softness: 0 = hard, otherwise k in visibility = min(v, k * distance / t).
+    // maxDistance: 0 = use the camera far plane (bounded by the shader cap).
+    // maxSteps: early-out step budget (1..1024, shader cap 256).
+    float shadowSoftness = 8.0f;
+    float shadowMaxDistance = 2048.0f;
+    int shadowMaxSteps = 256;
     // Volumetric clouds (sky raymarch + ground shadows + reflections).
     // Minimal preset disables; Maximum enables. Default off: the sky
     // gradient renders without the volumetric march.
@@ -151,13 +159,6 @@ public:
     // MaterialProperties; these gate the new path globally).
     bool displacementEnabled = true;
     bool displacementAOEnabled = true;
-    // Opt-in: raymarches the displaced terrain into every CSM cascade. This
-    // is a fullscreen per-texel march (2048^2 + 1024^2 + 512^2) and is too
-    // expensive for the full procedural map on the reference 680M; enable it
-    // for small scenes or when rasterized receivers need terrain shadows.
-    // Terrain self-shadowing (solidShadowTrace) is independent and always on.
-    bool displacementShadowCasterEnabled = false;
-    bool shadowTessellationEnabled = false;
     float tessellationFactor = 1.0f;
     float tessMaxDistance = 512.0f;
     float tessMinDistance = 1.0f;

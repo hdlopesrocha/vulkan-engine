@@ -1,9 +1,10 @@
 # True raymarched displacement mapping
 
 Status: implemented in the octree SDF raymarcher
-(`shaders/renderer/octree/OctreeRaymarch.frag`), its CSM terrain caster
-(`shaders/renderer/octree/OctreeRaymarchShadow.frag`) and the shared field
-definition `shaders/includes/octree/DisplacementField.glsl`.
+(`shaders/renderer/octree/OctreeRaymarch.frag`) and the shared field
+definition `shaders/includes/octree/DisplacementField.glsl`. Directional sun
+visibility is a per-hit SDF shadow ray that inherits the primary hit's exact
+effective LOD.
 
 This is real geometric displacement: the ray/surface intersection is moved, so
 silhouettes, depth, shadows, normals, AO and secondary rays all see the same
@@ -279,46 +280,34 @@ projection matrix already carries the engine's clip-space convention.
 
 `solidShadowTrace()` marches the same solid-layer roots from the shaded point
 toward the sun. Because it calls the same `rmField()` / `rmRootTestBox()`, the
-shadow ray intersects the displaced zero set, not the base surface. The ray
-starts at the displaced hit, lifted along the displaced normal by
+shadow ray intersects the displaced zero set, not the base surface.
+
+The shadow ray is locked to the effective LOD of the primary hit
+(`rmInheritedLodSize = rmNodeSize(hitNode)`). Its descent condition is
+`nodeSize > inheritedCellSize`; once a cell reaches that size it is sampled
+and the traversal never descends further. There is no distance, screen-space
+or camera-dependent LOD selection in the shadow path. If the inherited size is
+not stored in a region (leaf above it, pruned/non-surface child, cross-layer
+level mismatch), the explicit fallback samples the only existing
+representation and sets the `ShadowLodMissing` diagnostic.
+
+The ray starts at the displaced hit, lifted along the displaced normal by
 
 ```
-bias = max(0.1, displacementBound * 0.05) + 0.05 * bias * lightDir
+bias = max(lodCell * 2e-3, 1e-4, displacementBound * 0.05)
+        + 0.05 * bias * lightDir
 ```
 
 so a peak cannot shadow its own surface, while the bias scales with the
-material amplitude instead of being a fixed world constant.
+inherited cell size and material amplitude instead of a fixed world constant.
 
-### Rasterized receivers
+Soft shadows use the standard SDF penumbra estimate
+`visibility = min(visibility, k * fieldDistance / rayDistance)`; the shader
+skips the first few bias lengths and `k = 0` preserves hard shadows.
 
-`ShadowRenderer` records a fullscreen raymarched terrain caster into every CSM
-cascade after the rasterized casters (`OctreeRaymarchShadow.frag`). It
-reconstructs the orthographic light ray from the cascade's inverse light-space
-matrix, marches the solid roots of the same node table, and writes the
-accepted hit's EVSM moments + `gl_FragDepth`. Vegetation, SDF objects, video
-layers and any other CSM receiver therefore get shadows from the displaced
-terrain without changing their sampling code.
-
-The caster does not need `OctreeDerive.comp`'s payload: it resolves
-LAND/NORMAL sentinels itself and reads the corner Lipschitz bound directly, so
-it can run before the derive pass in the frame. Its shadow LOD descends while
-a cell is larger than two shadow texels.
-
-### Rasterized casters onto displaced terrain
-
-`solidShadowTrace()` also samples the raster CSM (`ShadowCalculation`) and
-combines it with the SDF term (`max(csm, sdf)`). The CSM carries every
-non-terrain caster, so ordinary geometry shadows displaced terrain. Since the
-terrain caster writes the same displaced field, the two terms are consistent
-instead of being two different surface approximations.
-
-The global toggle is `Settings::displacementShadowCasterEnabled`; the material
-amplitude is the bias scale. It is **opt-in and off by default** because the
-three fullscreen cascade marches are too expensive for the full procedural map
-on the reference Radeon 680M (they can trip the GPU watchdog at 720p); the SDF
-`solidShadowTrace` self-shadowing below is always on and does not require it.
-Enable the caster for small scenes or when rasterized receivers specifically
-need terrain shadows.
+There is no raster CSM term: the engine has no shadow maps, cascades or EVSM
+receiver path. Rasterized vegetation keeps ambient/cloud shading only because
+it is not part of the octree SDF representation.
 
 ## 7. Ambient occlusion and secondary effects
 
@@ -370,11 +359,13 @@ clamping and node payload cache. New costs are:
 * four extra displacement samples at each accepted solid hit for the true
   normal,
 * four field probes at each accepted solid hit when AO + displacement are on,
-* one fullscreen raymarch per CSM cascade when the terrain caster is enabled.
+* one shadow-ray march per shaded surface hit (bounded by the inherited LOD,
+  the configured maximum distance and the step budget).
 
 Outside the displacement band the step is the same base-SDF distance step as
-before, so flat/unmapped materials pay nothing. The shadow caster's LOD gate
-stops descending at two shadow texels per cell. The new path can be A/B tested
+before, so flat/unmapped materials pay nothing. The shadow ray stops at the
+first occluder and is capped by `shadowMaxDistance` / `shadowMaxSteps`. The new
+path can be A/B tested
 without touching materials through the global flags; the legacy path remains
 bit-compatible.
 
@@ -390,16 +381,15 @@ sphere test scene, geometry filling the view):
 | Displacement off, deterministic scene | below the app's 100 ms print threshold (≈70–90 ms) |
 | amp 1.0, freq 1, AO + SDF shadows | avg 106 ms (100–118) |
 | amp 1.0, freq 1, SDF AO off | avg 106 ms (100–133) |
-| amp 1.0, freq 1, CSM caster on | avg 124 ms (116–164) |
 | amp 0.4, freq 16 | avg 105 ms (100–117) |
 | amp 8.0, freq 2, AO + SDF shadows | ~700–1000 ms |
-| Full 15 km procedural map, amp 0.5, caster off | ~650–750 ms for the first ready frames (debug build) |
+| Full 15 km procedural map, amp 0.5 | ~650–750 ms for the first ready frames (debug build) |
 
 The full procedural map is already close to the Radeon 680M's watchdog budget
 even **without** displacement (the latest baseline `logs/run.log` shows
 ~0.5 s frames followed by a device loss after a long run). Enabling the
-three-cascade CSM caster on that map reliably crosses the watchdog, which is
-why it is opt-in/off by default. Use the deterministic test scene for
+shadow rays on that map can also cross the watchdog; use a bounded
+`shadowMaxDistance` and a small step budget. Use the deterministic test scene for
 validation and a small amplitude (≤1 m) on the full map. A release build and a
 smaller raycast resolution are the next steps for real-time use.
 
@@ -410,7 +400,7 @@ VULKAN_TEST_FRAMES=24 ./scripts/test_raymarch_displacement.sh
 ```
 
 It covers baseline, positive/negative amplitude, high frequency, offset/bounds,
-procedural source, caster off, AO off, the displaced-normal debug view and the
+procedural source, AO off, the displaced-normal debug view and the
 full-map smoke case, and fails on any validation error or device loss.
 `VULKAN_DEBUG_MODE=<id>` selects any debug view headlessly.
 
@@ -429,8 +419,9 @@ full-map smoke case, and fails on any validation error or device loss.
   transition, but two adjacent cells with very different displacement
   amplitudes can still show a small geometric step at their shared face. The
   same limitation exists in the legacy tessellation path.
-* The CSM terrain caster is an extra fullscreen pass per cascade. A scene with
-  no vegetation / raster receivers can disable it to recover the cost.
+* The SDF shadow ray inherits the primary hit's LOD, so a distant coarse hit
+  casts a coarse shadow. This is deliberate: it guarantees shadow and image
+  evaluate the same representation.
 * The secondary-SDF segment is material-level: the latest dragged segment
   orients/animates the whole material. Voxels do not store a segment id, so a
   later stroke reorients earlier stamps of the same material. This is the
@@ -451,8 +442,8 @@ full-map smoke case, and fails on any validation error or device loss.
   fill rate on lower-end GPUs.
 * Use a shared hierarchical empty-space skip that is displacement-aware (the
   current skip is suspended inside the band, which is correct but not optimal).
-* Add a compute-side acceleration structure for shadow rays (the current
-  caster re-traverses the node table per shadow texel).
+* Add a compute-side acceleration structure for shadow rays (the current path
+  re-traverses the node table per shaded fragment).
 * Extend the displacement texture selector to a full material slot with
   independent invert/offset controls in the editor.
 
@@ -464,22 +455,11 @@ full-map smoke case, and fails on any validation error or device loss.
 | `vulkan/ssbo/Material.hpp` | Packed GPU material (+3 vec4: displacement/pattern/segment) |
 | `vulkan/resources/MaterialManager.cpp` | CPU -> GPU packing |
 | `shaders/includes/octree/DisplacementField.glsl` | Shared field/material sampling/wavelength |
-| `shaders/renderer/octree/OctreeRaymarch.frag` | Camera march, normals, AO, depth, debug views |
-| `shaders/renderer/octree/OctreeRaymarchShadow.frag` | Displaced terrain caster for CSM |
-| `vulkan/renderer/octree/OctreeRaymarchRenderer.*` | Caster pipeline + record path |
-| `vulkan/renderer/shadow/ShadowRenderer.*` | Per-cascade caster integration |
+| `shaders/renderer/octree/OctreeRaymarch.frag` | Camera march, LOD-locked SDF shadow ray, normals, AO, depth, debug views |
+| `vulkan/renderer/octree/OctreeRaymarchRenderer.*` | Node-table pipeline + record path |
 | `widgets/TextureViewerWidget.cpp` | Material/texture and pattern displacement editor |
 | `widgets/Brush3dWidget.cpp` | Secondary-SDF authoring and segment defaults |
-| `widgets/RaymarchWidget.cpp` | Global path / AO / caster switches |
+| `widgets/RaymarchWidget.cpp` | Global path / AO switches |
+| `widgets/SettingsWidget.cpp` | Shadow softness / max distance / max steps |
 | `scripts/test_raymarch_displacement.sh` | Headless A/B + secondary-SDF validation test |
 | `scripts/bench_raymarch_displacement.sh` | Timing A/B |
-
-### Explicit pipeline bind in the caster
-
-`OctreeRaymarchRenderer::recordShadowCascade()` is recorded from
-`ShadowRenderer`'s per-cascade command buffer. The octree renderer's
-`CommandBufferState` pointer belongs to a different producer (solid task), so
-the caster binds its pipeline with `vkCmdBindPipeline` directly and updates the
-tracker afterwards. Relying on the cached state left the raster EVSM pipeline
-active while the caster's descriptor sets were bound, which is
-VUID-vkCmdDraw-None-08600.

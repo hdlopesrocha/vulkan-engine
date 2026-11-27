@@ -64,3 +64,10 @@ const int DEBUG_MODE_DISPLACEMENT_ITERATIONS = 55;
 const int DEBUG_MODE_DISPLACEMENT_STEP = 56;
 const int DEBUG_MODE_DISPLACEMENT_RESIDUAL = 57;
 const int DEBUG_MODE_DISPLACEMENT_SHADOW = 58;
+// SDF shadow LOD contract diagnostics (octree raymarch only). The primary and
+// shadow LOD views must show the same cell size for every shaded pixel.
+const int DEBUG_MODE_PRIMARY_LOD = 59;
+const int DEBUG_MODE_SHADOW_LOD = 60;
+const int DEBUG_MODE_SHADOW_VISIBILITY = 61;
+const int DEBUG_MODE_SHADOW_DISTANCE = 62;
+const int DEBUG_MODE_SHADOW_LOD_MISSING = 63;

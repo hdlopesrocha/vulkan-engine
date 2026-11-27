@@ -9,7 +9,7 @@
 // Shading mirrors the solid terrain shader (SolidSurface.glsl) for a single
 // material: the brush's material index drives the same triplanar material
 // arrays (albedo/normal/roughness/AO) and the same direct-light + HSV tint
-// formulas, minus what cannot apply to preview geometry (CSM/RT/cloud
+// formulas, minus what cannot apply to preview geometry (SDF shadows/RT/cloud
 // shadows, reflections) — the old BRUSH_PASS variant skipped those too.
 //
 // The fullscreen pass extends the inherited ray/triangle helpers only through
@@ -103,7 +103,7 @@ vec3 shadeBrushSurface(vec3 P, vec3 geomN) {
     }
     if (ubo.roughnessEnabled == 0u) roughnessValue = 0.0;
 
-    // Direct lighting: same formulas as SolidSurface.glsl (no CSM/RT/clouds).
+    // Direct lighting: same formulas as SolidSurface.glsl (no SDF shadows/RT/clouds).
     vec3 toLight = -normalize(ubo.lightDirection);
     float NdotL = max(dot(worldNormal, toLight), 0.0);
     vec4 materialFlags = materials[mi].materialFlags;

@@ -276,7 +276,6 @@ void SkyRenderer::renderOffscreen(VulkanApp* app, VkCommandBuffer cmd, uint32_t 
 
     // Update UBO so sky reads current lightDir, skyParams, etc.
     UniformObject skyUbo = ubo;
-    skyUbo.isShadowPass = 0u;
     skyUbo.tessellationEnabled = 0u;
     skyUbo.nearPlane = 0.0f;
     skyUbo.farPlane = 0.0f;

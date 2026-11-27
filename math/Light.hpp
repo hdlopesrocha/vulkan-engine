@@ -27,16 +27,8 @@ public:
     // Get spherical coordinates from current direction
     void getSpherical(float &azimuthDeg, float &elevationDeg) const;
     
-    // Projection and view-projection matrix (for shadow mapping)
-    void setProjection(const glm::mat4 &proj) { projection = proj; }
-    void setViewMatrix(const glm::mat4 &vm) { viewMatrix = vm; }
-    glm::mat4 getViewMatrix() const { return viewMatrix; }
-    glm::mat4 getViewProjectionMatrix() const { return projection * viewMatrix; }
-
 private:
     glm::vec3 direction;
     glm::vec3 color;
     float intensity;
-    glm::mat4 projection = glm::mat4(1.0f);
-    glm::mat4 viewMatrix = glm::mat4(1.0f);
 };

@@ -8,7 +8,7 @@ class VulkanApp;
 // Scene-level descriptor set layouts and descriptor sets.
 //
 // This bundles the descriptor-set *layout* that describes the application's
-// scene resources (per-frame UBO, texture/material arrays, shadow cascades,
+// scene resources (per-frame UBO, texture/material arrays,
 // sky UBO, water params, environment cubemap, roughness/AO maps) together with
 // the per-frame main descriptor sets and the static descriptor set.
 //

@@ -4949,7 +4949,7 @@ void VulkanApp::recreateSwapchain() {
     //   3. Destroy old pool   — safe after all descriptors are freed
     //   4. Create new pool    — fresh, uncorrupted pool
     //   5. Init + CreateFontsTexture
-    //   6. onImGuiRecreated   — re-allocate shadow cascade descriptors from new pool
+    //   6. onImGuiRecreated   — re-allocate widget descriptors from the new pool
     preImGuiShutdown();
     ImGui_ImplVulkan_Shutdown();
     if (imguiDescriptorPool != VK_NULL_HANDLE) {

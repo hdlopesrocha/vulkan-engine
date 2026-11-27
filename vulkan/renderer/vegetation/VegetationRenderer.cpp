@@ -168,8 +168,6 @@ void VegetationRenderer::destroyCulling() {
     vegNumChunks = 0;
     vegMainCompactCapacity = 0;
     vegChunkInfoCapacity = 0;
-    vegCascadeCompactCapacity = 0;
-    vegCascadeCullInited = false;
     vegPreallocatedChunks = 0;
     vegPreallocatedInstances = 0;
     vegPreallocated = false;
@@ -354,32 +352,6 @@ void VegetationRenderer::preallocate(VulkanApp* app, uint32_t maxChunks,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     vegChunkInfoMapped = vegChunkInfoBuffer.map(0);
-
-    // Cascade buffers at maxChunks (per frame × 3 cascades, billboard + impostor).
-    // DEVICE_LOCAL cull outputs (GPU-only): zero-initialized by createBuffer,
-    // reset each frame by vkCmdFillBuffer in the merged dispatch. Never mapped.
-    const VkDeviceSize cascadeCompactSize =
-        static_cast<VkDeviceSize>(maxChunks) * sizeof(VkDrawIndexedIndirectCommand);
-    if (!vegCascadeCullInited) {
-        vegCascadeCullInited = true;
-        for (uint32_t f = 0; f < VEG_CULL_FRAMES; f++) {
-            for (uint32_t c = 0; c < 3; c++) {
-                vegCascadeCullFrames[f].compactBuffers[c] = app->createBuffer(cascadeCompactSize,
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-                vegCascadeCullFrames[f].countBuffers[c] = app->createBuffer(sizeof(uint32_t),
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-                vegCascadeCullFrames[f].impostorCompactBuffers[c] = app->createBuffer(cascadeCompactSize,
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-                vegCascadeCullFrames[f].impostorCountBuffers[c] = app->createBuffer(sizeof(uint32_t),
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            }
-        }
-    }
-    vegCascadeCompactCapacity = maxChunks;
 
     // GPU placement scratch ring (see processPendingChunksGPU): one slice per
     // chunk, one buffer per in-flight batch. Placement writes here first so
@@ -725,21 +697,11 @@ void VegetationRenderer::prepareCull() {
     // publishes no solid mesh entries for the old per-draw veg path to key on.
     // The actual GPU dispatch happens inside solidIR->prepareCull, which runs
     // AFTER this call in the frame (see MyApp.cpp ordering).
-    if (!vegCascadeCullInited) initCascadeCull(appPtr);
-    if (vegCascadeCullInited) {
-        std::array<std::array<VkBuffer, 3>, VEG_CULL_FRAMES> bbCompact{}, bbCount{}, impCompact{}, impCount{};
-        for (uint32_t ff = 0; ff < VEG_CULL_FRAMES; ff++) {
-            for (uint32_t c = 0; c < 3; c++) {
-                bbCompact[ff][c] = vegCascadeCullFrames[ff].compactBuffers[c].buffer;
-                bbCount[ff][c]   = vegCascadeCullFrames[ff].countBuffers[c].buffer;
-                impCompact[ff][c]= vegCascadeCullFrames[ff].impostorCompactBuffers[c].buffer;
-                impCount[ff][c]  = vegCascadeCullFrames[ff].impostorCountBuffers[c].buffer;
-            }
-        }
-        solidIR->setVegCascadeData(vegChunkInfoBuffer.buffer, bbCompact, bbCount, impCompact, impCount);
-        solidIR->setMainVegChunkCount(vegNumChunks);
-    }
     if (solidIR) {
+        // The merged cull reads the flat chunk table (binding 9); the chunk
+        // count is what enables the main-view vegetation stream. Cascade
+        // buffers are no longer produced (SDF shadows replaced CSM).
+        solidIR->setMainVegChunkCount(vegNumChunks);
         solidIR->setVegetationCullData(compactedCmdBuffers, visibleCountBuffers,
                                        impostorCompactBuffers, impostorCountBuffers);
         // Only push the (potentially large) metadata map when a NEW
@@ -767,14 +729,6 @@ void VegetationRenderer::ensureChunkInfo(VulkanApp* app) {
 }
 
 // ── Cascade-aware culling for vegetation shadows ──────────────────────────────
-
-void VegetationRenderer::initCascadeCull(VulkanApp* app) {
-    if (vegCascadeCullInited) return;
-    // All cascade + chunk-info buffers are owned by preallocate() (worst-case
-    // 4096 chunks). Delegating here keeps the single init-time reservation
-    // path; the old 1024-entry sizing is retired.
-    preallocate(app);
-}
 
 void VegetationRenderer::writeVegChunkInfo() {
     if (!vegChunkInfoMapped) return;
@@ -822,218 +776,6 @@ void VegetationRenderer::writeVegChunkInfo() {
         instOff += order[i].second;
     }
     vegChunkInfoDirty = false;
-}
-
-void VegetationRenderer::prepareCullCascades(VkCommandBuffer cmd,
-                                              const glm::mat4 cascadeMatrices[3]) {
-    if (!appPtr) return;
-    if (!vegCascadeCullInited) initCascadeCull(appPtr);
-
-    if (!solidIR) return;
-    // The veg cascade streams are written by the SOLID IndirectRenderer's merged
-    // IndirectRenderer.comp dispatch (doVegCascade=true) into the buffers bound via
-    // setVegCascadeData. Those are indexed by the cull frame, so reuse the SAME
-    // frame the solid cascade + shadow draws read back (set by the main-view cull).
-    vegCullCurrentSlot = solidIR->getCurrentCullFrame();
-
-    // NO publish/swap here (flicker fix). The shadow path runs on its own
-    // worker AFTER the main prepareCull in the same frame (tlCull chain) and
-    // both run under the same vegetationEnabled gate, so the main poll has
-    // already published and swapped before the main cull consumed the table.
-    // Publishing here could swap the active instance pair BETWEEN the main
-    // cull (old-offset compact commands) and the main draws, making them read
-    // the new pair with stale offsets for one frame. Consolidation SUBMITS
-    // are still allowed: they only fill the inactive pair.
-    if (vegConsolidationDirty && !chunkBuffers.empty()) {
-        consolidateChunks(appPtr);
-    }
-
-    if (vegNumChunks == 0) return;
-
-    // DIAG (blade-shadow investigation): confirm the cascade cull runs and
-    // with what chunk/slot state. Throttled: cascade culls run every frame.
-    {
-        static uint32_t diagCount = 0;
-        if ((diagCount++ % 300u) == 0u) {
-            std::cerr << "[vegshadow-diag] prepareCullCascades: vegNumChunks=" << vegNumChunks
-                      << " slot=" << vegCullCurrentSlot << std::endl;
-        }
-    }
-
-    if (vegNumChunks > vegCascadeCompactCapacity) {
-        std::cerr << "[veg] prepareCullCascades: cascade capacity exceeded "
-                  << "(need " << vegNumChunks << " cap " << vegCascadeCompactCapacity << ")\n";
-        assert(false && "VegetationRenderer cascade capacity exceeded");
-        return;
-    }
-
-    // Grow the GPU chunk table if the scene exceeds the current capacity.
-    // This must NEVER overflow: writeVegChunkInfo and the compute dispatch
-    // both index up to vegNumChunks — writing/reading past the buffer would
-    // corrupt adjacent GPU-visible memory (a GPU-hang candidate). ensureChunkInfo
-    // re-points BOTH the cascade and main-cull descriptor sets so a growth
-    // triggered from either path keeps the other in sync.
-    ensureChunkInfo(appPtr);
-
-    static bool vegCullStatsLogged = false;
-    if (!vegCullStatsLogged) {
-        vegCullStatsLogged = true;
-        std::cerr << "[veg] chunk stats: vegNumChunks=" << vegNumChunks
-                  << " compactCap=" << vegCascadeCompactCapacity
-                  << " chunkInfoCap=" << vegChunkInfoCapacity << "\n";
-    }
-
-    // Upload the GPU chunk table (AABBs + instance counts + firstInstance offsets)
-    // that the veg cascade reads via binding 24 (VegCascadeChunkInfo).
-    writeVegChunkInfo();
-
-    // Bind the per-cascade billboard/impostor command + count buffers into the SOLID
-    // IR descriptor set (bindings 24..36). Done every call so re-grows above are
-    // always reflected. The veg cascade reads the per-veg-chunk AABB table via
-    // binding 24 (= vegChunkInfoBuffer).
-    std::array<std::array<VkBuffer, 3>, VEG_CULL_FRAMES> bbCompact{}, bbCount{}, impCompact{}, impCount{};
-    for (uint32_t ff = 0; ff < VEG_CULL_FRAMES; ff++) {
-        for (uint32_t c = 0; c < 3; c++) {
-            bbCompact[ff][c] = vegCascadeCullFrames[ff].compactBuffers[c].buffer;
-            bbCount[ff][c]   = vegCascadeCullFrames[ff].countBuffers[c].buffer;
-            impCompact[ff][c]= vegCascadeCullFrames[ff].impostorCompactBuffers[c].buffer;
-            impCount[ff][c]  = vegCascadeCullFrames[ff].impostorCountBuffers[c].buffer;
-        }
-    }
-    solidIR->setVegCascadeData(vegChunkInfoBuffer.buffer, bbCompact, bbCount, impCompact, impCount);
-
-    // Cascade matrices upload, output zeroing, dispatch and publish barriers all
-    // live in IndirectRenderer::prepareCull (doVegCascade=true). The main-view cull
-    // is NOT re-issued here (it runs in the main pass via the merged dispatch).
-    // Publishing is idempotent, so poll here too: this path must also observe
-    // completions when it runs without a preceding main prepareCull.
-    solidIR->prepareCull(cmd, glm::mat4(1.0f), glm::vec3(0.0f), 0.0f, 0,
-                         cascadeMatrices, /*doCascade=*/false, /*doMain=*/false,
-                         /*doVegCascade=*/true, /*vegChunkCount=*/vegNumChunks);
-}
-
-void VegetationRenderer::drawShadowCascade(VulkanApp* app, VkCommandBuffer& commandBuffer,
-                                            VkDescriptorSet shadowDescriptorSet,
-                                            const glm::vec3& cameraPos,
-                                            uint32_t cascadeIndex) {
-    if (cascadeIndex >= 3) return;
-    if (!app || vegetationShadowPipeline == VK_NULL_HANDLE) return;
-    if (chunkBuffers.empty()) return;
-    // H7 (report 26) as fixed for generational consistency: the provably-empty
-    // gate is zero COMPLETED chunks. A set-but-dirty consolidation means newer
-    // work streams, not that nothing is drawable — the cull and the draws
-    // below consume the last fence-complete snapshot (vegNumChunks), exactly
-    // as the main view does. Skipping on dirt hid all grass shadows (and,
-    // via the same pattern, all vegetation) for the entire streaming phase.
-    // Per-cascade GPU counts stay unread (no stall); the CPU-known empty
-    // state is the only one elided.
-    if (vegNumChunks == 0) return;
-    if (shadowDescriptorSet == VK_NULL_HANDLE) return;
-
-    // DIAG (blade-shadow investigation): confirm per-cascade shadow draws
-    // execute and which sub-paths run. Throttled: 3 cascades x every frame.
-    {
-        static uint32_t diagCount = 0;
-        const bool bladePipeOk = (vegetationShadowPipeline != VK_NULL_HANDLE);
-        const bool impPipeOk = (impostorShadowPipeline != VK_NULL_HANDLE) ||
-                              (impostorDepthPipeline != VK_NULL_HANDLE);
-        const bool impDescOk = (impostorDepthDescSet != VK_NULL_HANDLE);
-        if ((diagCount++ % 900u) == 0u) {
-            std::cerr << "[vegshadow-diag] drawShadowCascade: cascade=" << cascadeIndex
-                      << " vegNumChunks=" << vegNumChunks << " slot=" << vegCullCurrentSlot
-                      << " bladePipe=" << bladePipeOk
-                      << " impostorShadow=" << (impPipeOk && impDescOk && impostorDistance > 0.0f)
-                      << " (impPipe=" << impPipeOk << " impDesc=" << impDescOk
-                      << " impDist=" << impostorDistance << ")" << std::endl;
-        }
-    }
-
-    uint32_t f = vegCullCurrentSlot;
-    if (vegCascadeCullFrames[f].compactBuffers[cascadeIndex].buffer == VK_NULL_HANDLE) return;
-
-    // Raw binds (not cmdState): this records into the shadow cascade command
-    // buffers, but the vegetation renderer's state tracker belongs to the
-    // main/task command buffer. Eliding a bind through it could skip a
-    // required bind here — beginShadowPass has already bound the SOLID shadow
-    // pipeline in this command buffer (VUID-vkCmdDrawIndexedIndirectCount-
-    // None-08600).
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vegetationShadowPipeline);
-
-    updateWindParamsUBO(cameraPos);
-    // Bladed grass uses sets 0 (shadow/global) and 2 (wind) only; set 1
-    // (legacy billboard textures) is unbound (shader does not declare it).
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 1, &shadowDescriptorSet, 0, nullptr);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 2, 1, &windParamsDescSet, 0, nullptr);
-
-    WindPushConstants pc{};
-    pc.billboardScale = billboardScale;
-    pc.windEnabled = -1.0f;
-    pc.windTime = windTimeSeconds;
-    pc.impostorDistance = impostorDistance;
-
-    vkCmdPushConstants(commandBuffer, shadowPipelineLayout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(WindPushConstants), &pc);
-
-    vkCmdBindIndexBuffer(commandBuffer, billboardVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    if (activeConcatenatedBuffer().buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-        VkBuffer vbs[3] = { billboardVBO.vertexBuffer.buffer, activeConcatenatedBuffer().buffer, activeBakedHeightsBuffer().buffer };
-        VkDeviceSize offsets[3] = { 0, 0, 0 };
-        vkCmdBindVertexBuffers(commandBuffer, 0, 3, vbs, offsets);
-        {
-            uint32_t vegMaxDraws = std::min(vegNumChunks, vegCascadeCompactCapacity);
-            vkCmdDrawIndexedIndirectCount(commandBuffer,
-                vegCascadeCullFrames[f].compactBuffers[cascadeIndex].buffer, 0,
-                vegCascadeCullFrames[f].countBuffers[cascadeIndex].buffer, 0,
-                vegMaxDraws, sizeof(VkDrawIndexedIndirectCommand));
-        }
-    }
-
-    // Impostor shadow pass — uses the same per-cascade visibility data from
-    // the cascade compact buffer (filled by prepareCullCascades) so impostors
-    // are only rendered in cascades where the chunk is visible.
-    VkPipeline impostorShadowPipe = (impostorShadowPipeline != VK_NULL_HANDLE)
-                                  ? impostorShadowPipeline : impostorDepthPipeline;
-    VkPipelineLayout impostorShadowLayout = (impostorShadowPipelineLayout != VK_NULL_HANDLE)
-                                          ? impostorShadowPipelineLayout : impostorDepthPipelineLayout;
-    if (impostorShadowPipe != VK_NULL_HANDLE &&
-        impostorDepthDescSet != VK_NULL_HANDLE &&
-        impostorDistance > 0.0f && impostorVBO.vertexBuffer.buffer != VK_NULL_HANDLE &&
-        !chunkBuffers.empty()) {
-        // Raw binds: same cross-command-buffer tracker rationale as above.
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowPipe);
-
-        VkDescriptorSet depthSets[3] = { shadowDescriptorSet, impostorDepthDescSet, windParamsDescSet };
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, impostorShadowLayout, 0, 3, depthSets, 0, nullptr);
-
-        vkCmdPushConstants(commandBuffer, impostorShadowLayout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(WindPushConstants), &pc);
-
-        vkCmdBindIndexBuffer(commandBuffer, impostorVBO.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        VkBuffer impVbs[3] = { impostorVBO.vertexBuffer.buffer, VK_NULL_HANDLE, VK_NULL_HANDLE };
-        VkDeviceSize impOffsets[3] = { 0, 0, 0 };
-        if (activeConcatenatedBuffer().buffer != VK_NULL_HANDLE && vegNumChunks > 0) {
-            impVbs[1] = activeConcatenatedBuffer().buffer;
-            impVbs[2] = activeBakedHeightsBuffer().buffer;
-            vkCmdBindVertexBuffers(commandBuffer, 0, 3, impVbs, impOffsets);
-
-            // Impostor draw commands (indexCount=6) are written by the GPU
-            // veg_cascade_cull.comp into the per-cascade impostor compact +
-            // count buffers — no CPU readback of cull results.
-            Buffer& impCompactBuf = vegCascadeCullFrames[f].impostorCompactBuffers[cascadeIndex];
-            Buffer& impCountBuf   = vegCascadeCullFrames[f].impostorCountBuffers[cascadeIndex];
-            if (impCompactBuf.buffer != VK_NULL_HANDLE && impCountBuf.buffer != VK_NULL_HANDLE) {
-                uint32_t vegMaxImpostorDraws = std::min(vegNumChunks, vegCascadeCompactCapacity);
-                {
-                    vkCmdDrawIndexedIndirectCount(commandBuffer,
-                        impCompactBuf.buffer, 0,
-                        impCountBuf.buffer, 0,
-                        vegMaxImpostorDraws, sizeof(VkDrawIndexedIndirectCommand));
-                }
-            }
-        }
-    }
 }
 
 void VegetationRenderer::setTextureArrayManager(TextureArrayManager* mgr, VulkanApp* app) {
@@ -1328,61 +1070,6 @@ void VegetationRenderer::init(VulkanApp* app) {
         depthFragShader = VK_NULL_HANDLE;
     }
 
-    // ── EVSM shadow pipeline (writes moments via ShadowRenderer.frag ──
-    {
-        VkShaderModule shadowVertShader = app->getOrCreateShaderModule("shaders/renderer/vegetation/VegetationRendererShadow.vert.spv");
-        VkShaderModule shadowFragShader = app->getOrCreateShaderModule("shaders/renderer/vegetation/VegetationRendererShadow.frag.spv");
-        VkPipelineShaderStageCreateInfo shadowVertStage{};
-        shadowVertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        shadowVertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        shadowVertStage.module = shadowVertShader;
-        shadowVertStage.pName = "main";
-
-        VkPipelineShaderStageCreateInfo shadowFragStage{};
-        shadowFragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        shadowFragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        shadowFragStage.module = shadowFragShader;
-        shadowFragStage.pName = "main";
-
-        VkPipelineShaderStageCreateInfo shadowStages[] = { shadowVertStage, shadowFragStage };
-
-        // Shadow vertex shader (VegetationRendererShadow.vert) omits ATTR_UV (location 2)
-        // — do not include it in the attribute descriptions to avoid a PERFORMANCE warning.
-        // H4/C2: aux baked height IS consumed — include it.
-        // ATTR_VEG_NORMAL is consumed for the normal-aligned billboard frame.
-        std::vector<VkVertexInputAttributeDescription> shadowAttribDescs = {
-            attribDescs[0], // ATTR_POS
-            attribDescs[1], // ATTR_COLOR
-            attribDescs[3], // ATTR_BRUSH_INDEX (location 4)
-            attribDescs[4], // ATTR_INSTANCE   (location 5)
-            attribDescs[5], // ATTR_VEG_AUX    (location 7)
-            attribDescs[6], // ATTR_VEG_NORMAL (location 8)
-        };
-        GraphicsPipelineConfig shadowCfg{};
-        shadowCfg.cullMode = VK_CULL_MODE_NONE;
-        shadowCfg.depthCompareOp = VK_COMPARE_OP_LESS;
-        shadowCfg.colorFormats = { VK_FORMAT_R32G32_SFLOAT };
-        shadowCfg.depthBiasEnable = true;
-        auto [shadowPipeline, shadowLayout] = app->createGraphicsPipeline(
-            { shadowStages[0], shadowStages[1] },
-            std::vector<VkVertexInputBindingDescription>{bindingDescs[0], bindingDescs[1], bindingDescs[2]},
-            shadowAttribDescs,
-            setLayouts,
-            &pushConstantRange,
-            shadowCfg
-        );
-        vegetationShadowPipeline = shadowPipeline;
-        shadowPipelineLayout = shadowLayout;
-
-        shadowVertShader = VK_NULL_HANDLE;
-        shadowFragShader = VK_NULL_HANDLE;
-    }
-    if (vegetationShadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE) {
-        std::cerr << "[VEGETATION SHADOW PIPELINE ERROR] Failed to create vegetation shadow pipeline/layout" << std::endl;
-    } else {
-        std::cerr << "[VEGETATION SHADOW PIPELINE] Created pipeline=" << (void*)vegetationShadowPipeline << " layout=" << (void*)shadowPipelineLayout << std::endl;
-    }
-
     // Clear local shader module references; destruction handled by VulkanResourceManager
     vertShader = VK_NULL_HANDLE;
     fragShader = VK_NULL_HANDLE;
@@ -1485,7 +1172,7 @@ bool VegetationRenderer::hasDrawContent() const {
     // H7 (report 26) as fixed: TRUE iff the draw streams could emit anything
     // today. The ONLY exact empty condition is "no consolidated chunks"
     // (chunkBuffers empty or vegNumChunks == 0): every draw entry point
-    // already no-ops on it (drawDepth/drawColor/drawShadowCascade return
+    // already no-ops on it (drawDepth/drawColor return
     // without binds when vegNumChunks == 0), so skipping the pass leaves
     // identical cleared targets.
     // Deliberately NOT gated on streaming backlog or consolidation dirt:
@@ -1646,8 +1333,6 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
     impostorDepthDescSetLayout  = VK_NULL_HANDLE;
     impostorDepthDescPool       = VK_NULL_HANDLE;
     impostorDepthDescSet        = VK_NULL_HANDLE;
-    impostorShadowPipeline      = VK_NULL_HANDLE;
-    impostorShadowPipelineLayout = VK_NULL_HANDLE;
 
     bool hasImpostorDepth = (depthArray60 != VK_NULL_HANDLE && captureInvVPBuf != VK_NULL_HANDLE);
 
@@ -1811,46 +1496,6 @@ void VegetationRenderer::setImpostorData(VulkanApp* app,
         else
             std::cerr << "[VegetationRenderer] Impostor depth pipeline created: " << (void*)impostorDepthPipeline << "\n";
 
-        // ── Build impostor shadow EVSM pipeline (color+depth write) ──────
-        // Shadow-caster vertex VARIANT (VEG_SHADOW_PASS=1): same module
-        // source as the depth VS, but the quad faces the LIGHT and the
-        // capture layer is the light-facing view, so the rasterized
-        // footprint covers the sun and the captured-depth silhouette is
-        // exact from the light's side. The depth twin keeps the camera-
-        // facing orientation for the deferred depth prepass.
-        VkShaderModule shadowVertMod = app->getOrCreateShaderModule("shaders/renderer/vegetation/VegetationRendererImpostorShadow.vert.spv");
-        VkShaderModule shadowFragMod = app->getOrCreateShaderModule("shaders/renderer/vegetation/VegetationRendererImpostorShadow.frag.spv");
-        depthStages[0].module = shadowVertMod;
-        depthStages[1].module = shadowFragMod;  // reuse depthStages array, swap frag
-
-        VkFormat evsmColorFormat = VK_FORMAT_R32G32_SFLOAT;
-        GraphicsPipelineConfig impShadowCfg{};
-        impShadowCfg.cullMode = VK_CULL_MODE_NONE;
-        impShadowCfg.depthCompareOp = VK_COMPARE_OP_LESS;
-        impShadowCfg.colorFormats = { evsmColorFormat };
-        impShadowCfg.depthBiasEnable = true;
-        auto [shadowPipe, shadowLayout] = app->createGraphicsPipeline(
-            { depthStages[0], depthStages[1] },
-            std::vector<VkVertexInputBindingDescription>{ depthBindingDescs[0], depthBindingDescs[1], depthBindingDescs[2] },
-            {
-                { ATTR_UV, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(Vertex, texCoord) },
-                { ATTR_INSTANCE, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0                              },
-                { ATTR_VEG_AUX, 2, VK_FORMAT_R32_SFLOAT, 0                                          },
-                { ATTR_VEG_NORMAL, 1, VK_FORMAT_R32G32B32_SFLOAT, sizeof(glm::vec4)                  },
-            },
-            depthSetLayouts,
-            &depthPCRange,
-            impShadowCfg
-        );
-        impostorShadowPipeline       = shadowPipe;
-        impostorShadowPipelineLayout = shadowLayout;
-
-        if (impostorShadowPipeline == VK_NULL_HANDLE)
-            std::cerr << "[VegetationRenderer] WARNING: impostor shadow pipeline creation failed\n";
-        else
-            std::cerr << "[VegetationRenderer] Impostor shadow pipeline created: " << (void*)impostorShadowPipeline << "\n";
-
-        // Shader module is cached by VulkanApp — kept alive for app lifetime.
     }
 
     // ── Build impostor color pipeline ───────────────────────────────────

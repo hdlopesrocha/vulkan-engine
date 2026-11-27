@@ -21,7 +21,7 @@
 // layer roots and keeps the nearest hit, so solid and water surfaces occlude
 // each other in one pass. Solid hits shade through the shared solid surface
 // body (raster-style three-brush barycentric blending, tessellation
-// displacement folded into the SDF, CSM/cloud shadows, optional inline RT
+// displacement folded into the SDF, LOD-locked SDF/cloud shadows, optional inline RT
 // reflections/contact shadows); water hits take the water-surface shading
 // branch (layer tint + Fresnel + specular, opaque because the pass writes the
 // solid color/depth targets).
@@ -60,12 +60,8 @@ public:
         uint32_t tableVersion = 0;  // low 32 bits of the table revision
         uint32_t nodeCount = 0;     // records uploaded for this frame slot
         uint32_t flags = 0;         // reserved
-        // Shadow caster only: inverse of this cascade's light-space matrix.
-        // The camera march ignores it. 96 B total keeps one push range for
-        // both pipelines.
-        glm::mat4 shadowInvLightSpace{1.0f};
     };
-    static_assert(sizeof(PushConstants) == 96,
+    static_assert(sizeof(PushConstants) == 32,
                   "OctreeRaymarchRenderer::PushConstants must match OctreeRaymarchPush");
 
     OctreeRaymarchRenderer() = default;
@@ -109,23 +105,6 @@ public:
               uint32_t width, uint32_t height,
               VkDescriptorSet mainSet, VkDescriptorSet brushSet);
 
-    // Record the raymarched terrain caster into one CSM cascade. Called by
-    // ShadowRenderer after the rasterized casters while the cascade's dynamic
-    // rendering scope is open. `mainSet` is the per-cascade shadow descriptor
-    // (binding 0 carries the light-space UBO); `brushSet` is the frame's brush
-    // params set (unused by the caster, present because the shared pipeline
-    // layout has three sets). `invLightSpace` is the inverse of that cascade's
-    // light-space matrix; the caster reconstructs orthographic light rays from
-    // it. The shader reads only the node table (set 2), so no derive payload is
-    // required and the pass can run before recordDerive().
-    void recordShadowCascade(VkCommandBuffer cmd, uint32_t frameIndex,
-                             VkDescriptorSet mainSet, VkDescriptorSet brushSet,
-                             const glm::mat4& invLightSpace,
-                             uint32_t shadowMapSize);
-    // Host-write barrier for the node/root buffers before a shadow caster
-    // reads them. Must be recorded outside dynamic rendering.
-    void recordShadowHostBarrier(VkCommandBuffer cmd);
-
 private:
     // One immutable table revision shared by every frame slot that displays
     // it. users counts the slot descriptors currently pointing here; when it
@@ -153,8 +132,6 @@ private:
     std::array<int, RAYMARCH_FRAMES> slotRevision_{-1, -1, -1};
 
     VkPipeline pipeline_ = VK_NULL_HANDLE;
-    // Raymarched terrain caster for the CSM cascades (shares pipelineLayout_).
-    VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
     // Once-per-revision payload derive pass (OctreeDerive.comp): writes the
     // resolved material, 1/Lipschitz bound and the payload flag into the
     // record's dead bytes, and the QEF position/normal into the shared

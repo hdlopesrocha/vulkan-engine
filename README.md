@@ -2,7 +2,7 @@
 
 ![Screenshot](screenshot.png)
 
-A real-time 3D terrain and scene rendering engine built with modern Vulkan (targeting 1.4, compatible with 1.3 through runtime feature detection) and C++23. Procedural geometry is generated from Signed Distance Functions; terrain and water are rendered by a fullscreen octree SDF raymarcher (Surface Nets remains available for offline/export paths). Rendering is a hybrid rasterization + raymarching pipeline covering terrain, water, vegetation, EVSM shadows, atmospheric sky and GPU impostors.
+A real-time 3D terrain and scene rendering engine built with modern Vulkan (targeting 1.4, compatible with 1.3 through runtime feature detection) and C++23. Procedural geometry is generated from Signed Distance Functions; terrain and water are rendered by a fullscreen octree SDF raymarcher (Surface Nets remains available for offline/export paths). Rendering is a hybrid rasterization + raymarching pipeline covering terrain, water, vegetation, SDF-raymarched shadows, atmospheric sky and GPU impostors.
 
 Terrain supports **true raymarched displacement mapping**: a per-material height offset is folded into the SDF (`F(p) = d_original(p) - h(p)`) and the camera/shadow rays intersect the actual displaced zero set, so silhouettes, depth, normals, AO and shadows move with the geometry. It does not require tessellated meshes or permanent octree subdivision. See [docs/raymarch-displacement.md](docs/raymarch-displacement.md) for the math, conservative traversal, triplanar mapping, depth/shadow integration and performance limits.
 
@@ -89,7 +89,6 @@ Every pass renders with dynamic rendering (`vkCmdBeginRendering` / `vkCmdEndRend
 
 - **Solid targets** — swapchain-format color plus `D32_SFLOAT` depth, rendered to offscreen images and composited by the post-process pass.
 - **Water targets** — `R32G32B32A32_SFLOAT` color plus a dedicated water geometry depth image, with a separate back-face depth target for thickness.
-- **Shadow cascades** — EVSM moment color (`R32G32_SFLOAT`) plus a `D32_SFLOAT` depth-test attachment.
 - **Swapchain** — `B8G8R8A8_SRGB`, chosen at startup.
 
 ### Frames in Flight and Synchronization
@@ -123,17 +122,15 @@ Each renderer owns its command pool; short-lived work uses a shared `transientCo
 
 ### Descriptors
 
-The main scene set uses a fixed layout (25 bindings; no descriptor arrays). Bindings 14–25 are the hybrid-RT / SSR additions, written when the corresponding feature is available:
+The main scene set uses a fixed layout (no descriptor arrays). Bindings 14–25 are the hybrid-RT / SSR additions, written when the corresponding feature is available:
 
 | Binding | Content |
 |---------|---------|
 | 0 | Per-frame UBO (transforms, camera, view-projection) |
 | 1–3 | Texture arrays: albedo, normal, height/bump (tessellation displacement) |
-| 4 | Shadow map cascade 0 (EVSM) |
 | 5 | Materials SSBO |
 | 6 | Sky UBO |
 | 7 | Water params SSBO |
-| 8–9 | Shadow map cascades 1 and 2 |
 | 10 | Water render UBO (time) |
 | 12–13 | Roughness and ambient-occlusion texture arrays |
 | 14 | TLAS (proxy acceleration structure) |
@@ -162,7 +159,7 @@ Video clips become animated materials: each clip owns a slot of the dedicated vi
 
 ## Hybrid Ray Tracing
 
-Rasterization owns primary visibility (tessellation, displacement, LOD, water surface, vegetation, materials, depth, sky) and the EVSM cascades own the authoritative directional-sun shadows. Hardware ray tracing provides the secondary visibility representation:
+Rasterization owns primary visibility (tessellation, displacement, LOD, water surface, vegetation, materials, depth, sky) and the octree SDF raymarcher owns the authoritative directional-sun shadows. Hardware ray tracing provides the secondary visibility representation:
 
 - **Proxy acceleration structures** — a stable AABB proxy BLAS/TLAS built from octree chunk bounds: solid boxes (one per 4×4 height-grid cell, 8 vertices / 12 triangles each) and water boxes. Rebuilt only when the underlying chunk set changes, never on camera moves, LOD switches or tessellation changes.
 - **Scene geometry BLAS** — exact chunk triangles taken from the merged raster vertex/index pools (finest non-overlapping rung), including the real water mesh. Lookup buffers resolve primitive hits to geometry and vertex pools.
@@ -170,19 +167,42 @@ Rasterization owns primary visibility (tessellation, displacement, LOD, water su
 - **Inline ray queries** (`VK_KHR_ray_query`) — default water path: solid reflections, water reflections/refractions (Snell IOR) and selective local/contact shadows traced from the raster shaders. Solid reflections use contribution, roughness and checkerboard ray-budget gates; misses refine with SSR or fall back to the equirect sky.
 - **Async water RT pipeline** — `rt_water.rgen/.rmiss/.rchit` with a 3-record SBT and recursion depth 1, dispatched on the water queue after the water geometry pass. It traces proxy geometry and writes two half-resolution outputs (reflection; refraction + thickness) consumed with one frame of latency.
 
-RT parameters stream through a small per-frame UBO. All ray paths are independently toggleable at runtime — solid reflections, water reflections, refractions, thickness and local/contact shadows — along with reflection/refraction distance caps, roughness threshold, self-skip distance and ray-budget mode. When ray tracing is unsupported the feature accessors report it and the raster path keeps working with the equirect environment and EVSM shadows.
+RT parameters stream through a small per-frame UBO. All ray paths are independently toggleable at runtime — solid reflections, water reflections, refractions, thickness and local/contact shadows — along with reflection/refraction distance caps, roughness threshold, self-skip distance and ray-budget mode. When ray tracing is unsupported the feature accessors report it and the raster path keeps working with the equirect environment and SDF-raymarched sun shadows.
 
 ---
 
-## Shadow Mapping
+## SDF Raymarched Shadows
 
-Shadows use three cascaded **Exponential Variance Shadow Maps** (EVSM2):
+Directional-sun visibility is evaluated per surface hit by raymarching the same
+octree SDF representation that produced the primary hit. There are no shadow
+maps, cascade matrices, EVSM moments or PCF taps.
 
-- Cascade resolutions `{2048, 1024, 512}` with a 50/50 log-uniform split; 3-cascade constant `SHADOW_CASCADE_COUNT`.
-- Per cascade: `R32G32_SFLOAT` moment targets (`exp(c·z)`, `exp(2c·z)` with `c = 2`) plus a `D32_SFLOAT` depth-test attachment; texels cleared to the far-plane moments to avoid false darkening.
-- A separable 9-tap Gaussian blur post-processes cascades 0 and 1.
-- Sampling uses Chebyshev's upper bound with variance clamping and light-bleeding reduction, with edge/Z blending between cascades.
-- Solid terrain, water and vegetation/impostors all render into the cascades with front-face culling and depth bias. The water surface itself does not sample the cascades (RT hit shading does), but casts into them.
+- **Exact inherited LOD** — the accepted primary hit stores its effective
+  octree cell size (`rmInheritedLodSize`). Every shadow ray launched from that
+  hit descends the octree only while a cell is coarser than the inherited size,
+  then samples that representation and never descends further. Ray distance,
+  screen-space error, camera distance and traversal heuristics cannot change
+  it.
+- **Missing-LOD policy** — a region with no stored cell at the inherited size
+  (leaf above it, pruned/non-surface child, cross-layer level mismatch) is
+  sampled with the only representation that exists and raises the
+  `ShadowLodMissing` diagnostic. It is never silently replaced by a different
+  LOD.
+- **Displacement** — shadow rays use the same `F(p) = d_original(p) - h(p)`
+  field, material resolver and conservative stepping as the camera ray, so a
+  displaced surface casts against its actual visible geometry.
+- **Bias** — the ray origin is lifted by a fraction of the inherited cell size
+  plus the hit material's displacement bound, scaling with the representation
+  instead of a fixed world offset.
+- **Soft shadows** — an SDF penumbra estimate
+  `visibility = min(visibility, k * fieldDistance / rayDistance)` is applied
+  when `k > 0`; `k = 0` is the hard-shadow path.
+- **Cost controls** — configurable maximum distance and step budget, early exit
+  on the first occluder, and solid roots only (water does not cast an opaque
+  shadow).
+- **Debug views** — primary effective LOD, inherited shadow LOD (green = exact
+  equality, red = mismatch), SDF shadow visibility, shadow-ray distance, and
+  missing-LOD regions.
 
 ---
 
@@ -212,7 +232,7 @@ Composition is done by the post-process pass: the water pass renders to its own 
 - **Instance generation** — CPU-side, per finest chunk: area-weighted virtual slots with unbiased stochastic rounding, biome noise, steep-face filtering and shuffled submission into device-local instance buffers, drained a few chunks per frame.
 - **Billboards** — vertex-shader expanded crossed planes (no geometry shader), three billboard types, alpha from an opacity/normal-confidence sigmoid.
 - **Impostors** — beyond `impostorDistance`, pre-captured impostors replace billboards: 20 Fibonacci camera views × 4 billboard types (3 vegetation + fire) captured to 80-layer albedo, normal and depth arrays. Depth is reprojected per fragment for correct deferred depth and shadow casting, and a dither cross-fade blends billboards into impostors.
-- **Pipelines** — shading, depth prepass, EVSM shadow and impostor color/depth/shadow variants. Culling and compaction run on the GPU through the shared indirect dispatcher.
+- **Pipelines** — shading, depth prepass and impostor color/depth variants. Culling and compaction run on the GPU through the shared indirect dispatcher.
 - **Editing** — `AtlasManager` slices billboard atlases (auto-detected tiles) and `VegetationAtlasEditor` edits them live; `BillboardService` bakes composed layers into the three texture arrays that `ImpostorService` captures from.
 
 ---
@@ -268,7 +288,7 @@ The octree in `space/` is the central data structure for scene management. Each 
 | `MyApp.cpp` | Entry point (`MyApp` extends `VulkanApp`) |
 | `server.cpp` | Headless server entry point |
 | `vulkan/` | Vulkan setup, resource management, renderers |
-| `vulkan/renderer/` | Renderers grouped by subsystem (`water/`, `solid/`, `sdf/`, `rt/`, `sky/`, `vegetation/`, `shadow/`, `debug/`, `post/`, `indirect/`, `brush/`) plus scene infrastructure (SceneRenderer, descriptors, allocators, queues) at the root |
+| `vulkan/renderer/` | Renderers grouped by subsystem (`water/`, `solid/`, `sdf/`, `rt/`, `sky/`, `vegetation/`, `octree/`, `debug/`, `post/`, `indirect/`, `brush/`) plus scene infrastructure (SceneRenderer, descriptors, allocators, queues) at the root |
 | `vulkan/{core,resources,pipeline,sync,streaming}/` | Device/app core, GPU resources (buffers/textures/materials), pipeline helpers, submission tracking, streaming/uploads |
 | `vulkan/ubo/` | GPU uniform buffer structs |
 | `vulkan/ssbo/` | GPU storage-buffer element structs (Material, WaterParams, RTProxyMeta) |

@@ -33,7 +33,6 @@ class World;
 #include "water/WaterRenderer.hpp"
 #include "post/PostProcessRenderer.hpp"
 #include "sky/SkyRenderer.hpp"
-#include "shadow/ShadowRenderer.hpp"
 #include "debug/DebugCubeRenderer.hpp"
 #include "debug/DebugSDFRenderer.hpp"
 #include "sdf/SdfRenderer.hpp"
@@ -73,13 +72,7 @@ public:
     // Byte size of waterParamsBuffer_ (vkGetDescriptorEXT forbids WHOLE_SIZE).
     VkDeviceSize waterParamsBufferSize_ = 0;
 
-    // Shadow-specific descriptor sets (one per frame). Each mirrors the main
-    // descriptor set but binding 4 points to a dummy depth view to avoid
-    // layout-mismatch validation errors while writing the real shadow maps.
-    std::vector<VkDescriptorSet> shadowDescriptorSets;
-
     std::unique_ptr<SkyRenderer> skyRenderer;
-    std::unique_ptr<ShadowRenderer> shadowMapper;
     std::unique_ptr<PostProcessRenderer> postProcessRenderer;
     std::unique_ptr<SolidRenderer> solidRenderer;
     std::unique_ptr<WaterRenderer> waterRenderer;
@@ -219,7 +212,7 @@ public:
     // beginInit() runs the serial prologue and starts the four heavy renderer
     // groups on worker threads, then returns. pollInit() is a non-blocking
     // "are the groups done?" check; finishInit() joins them and performs the
-    // main-thread wiring (shadow map, vegetation, descriptors, pools).
+    // main-thread wiring (vegetation, descriptors, pools).
     void beginInit(VulkanApp* app_, TextureArrayManager* textureArrayManager);
     bool pollInit();
     void finishInit(VulkanApp* app_, TextureArrayManager* textureArrayManager, MaterialManager* materialManager, const std::vector<WaterSettings>& waterParams);
@@ -380,7 +373,7 @@ private:
     World* world_ = nullptr;
 
     // Descriptor-buffer migration: change guard for updateTextureDescriptorSet().
-    // Static bindings (texture arrays, shadow maps, materials, water params) are
+    // Static bindings (texture arrays, materials, water params) are
     // written once at init and re-written only when the underlying resources
     // actually change (texture realloc, resize). updateTextureDescriptorSet() is
     // event-driven (allocation listener / swapchain resize) — never called from

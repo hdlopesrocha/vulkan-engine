@@ -5,8 +5,8 @@ layout(triangles, equal_spacing, cw) in;
 // ── Solid terrain tessellation evaluation shader ──────────────────────────
 // Split out of the old shared main.tese. The stage body lives in
 // includes/solid/SolidTese.glsl.
-// Compiled as shaders/ShadowRenderer.tese.spv with -DSHADOW_PASS=1 for the EVSM shadow
-// pipeline (keeps only the displacement/position outputs).
+// The SHADOW_PASS variant was retired with the CSM shadow maps; the stage now
+// feeds the regular solid/depth pipelines.
 #include "../../includes/SceneBindings.glsl"
 #include "../../includes/Locations.glsl"
 

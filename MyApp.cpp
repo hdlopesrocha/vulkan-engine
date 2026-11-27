@@ -128,7 +128,6 @@
 #include "server/SceneServer.hpp"
 #include "vulkan/renderer/water/DropletRenderer.hpp"
 #include "services/OctreeTopologyTypes.hpp"
-#include "utils/ShadowParams.hpp"
 #include "space/ThreadPool.hpp"
 #include "space/Octree.hpp"
 
@@ -560,7 +559,6 @@ public:
     float mainTime = 0.0f;
     // Last frame delta, forwarded to postSubmit for the per-frame brush rebuild
     float lastFrameDelta = 0.0f;
-    ShadowParams shadowParams;
     // When user clicks "Apply Brush" from ImGui we defer the octree edit until
     // after the current frame is submitted to avoid waiting on fences while
     // the frame is being recorded (causes deadlock). Set by UI, consumed in
@@ -944,7 +942,7 @@ public:
         // complete static/per-frame set-0 bindings with the now-allocated
         // materials and brush-map buffers, and registers the texture-allocation
         // listener for later array reallocations. Calling
-        // updateTextureDescriptorSet() here would run before the shadow maps,
+        // updateTextureDescriptorSet() here would run before the texture arrays,
         // material handles and water buffers are wired, so it could only log
         // skipped bindings — and init would overwrite the set anyway.
 
@@ -1345,10 +1343,13 @@ public:
         }
         if (const char* env = std::getenv("VULKAN_DISPLACEMENT_AO"))
             settings.displacementAOEnabled = env[0] != '0';
-        if (const char* env = std::getenv("VULKAN_DISPLACEMENT_CASTER"))
-            settings.displacementShadowCasterEnabled = env[0] != '0';
-        if (std::getenv("VULKAN_NO_TERRAIN_SHADOWS") != nullptr)
-            settings.displacementShadowCasterEnabled = false;
+        // Headless SDF-shadow controls (octree path). Softness 0 = hard.
+        if (const char* env = std::getenv("VULKAN_SHADOW_SOFTNESS"))
+            settings.shadowSoftness = std::max(0.0f, static_cast<float>(std::atof(env)));
+        if (const char* env = std::getenv("VULKAN_SHADOW_MAX_DISTANCE"))
+            settings.shadowMaxDistance = std::max(0.0f, static_cast<float>(std::atof(env)));
+        if (const char* env = std::getenv("VULKAN_SHADOW_STEPS"))
+            settings.shadowMaxSteps = std::clamp(std::atoi(env), 1, 256);
         // VULKAN_OCTREE_SCREEN_EPS=<px>: A/B capture of the
         // screen-space hit tolerance. 0 keeps the world-space epsilon.
         if (const char* env = std::getenv("VULKAN_OCTREE_SCREEN_EPS")) {
@@ -1541,7 +1542,7 @@ public:
 
     // S1: final main-thread wiring after the four async renderer groups have
     // completed. Runs between frames (the boot loop calls it after present),
-    // so ImGui descriptor creation in ShadowRenderer::init is safe.
+    // so ImGui descriptor creation during renderer init is safe.
     void finishRendererInit() {
         if (!sceneRenderer) return;
         sceneRenderer->finishInit(this, &textureArrayManager, &materialManager, waterParams);
@@ -1611,7 +1612,7 @@ public:
         physicsWidget = std::make_shared<PhysicsWidget>(settings);
         widgetManager.addWidget(physicsWidget);
         // Create settings widget (was missing previously)
-        settingsWidget = std::make_shared<SettingsWidget>(settings, &shadowParams);
+        settingsWidget = std::make_shared<SettingsWidget>(settings);
         // Water UI uses the application-owned water params vector and updates GPU state explicitly.
         waterWidget = std::make_shared<WaterWidget>(sceneRenderer->waterRenderer.get(), &waterParams);
 
@@ -1620,8 +1621,7 @@ public:
 
         renderTargetsWidget = std::make_shared<RenderTargetsWidget>(
             this,
-            sceneRenderer, sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get(),
-            sceneRenderer->shadowMapper.get());
+            sceneRenderer, sceneRenderer->solidRenderer.get(), sceneRenderer->skyRenderer.get());
         if (renderTargetsWidget) renderTargetsWidget->setFrameInfo(getCurrentFrame(), getWidth(), getHeight());
 
         cameraWidget = std::make_shared<CameraWidget>(&camera);
@@ -1695,7 +1695,6 @@ public:
         glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspectRatio, settings.nearPlane, settings.farPlane);
         proj[1][1] *= -1; // Vulkan Y-flip
         camera.setProjection(proj);
-        shadowParams.update(light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
         
         // Position camera to view the terrain
         printf("[Camera Setup] Final Position: (%.1f, %.1f, %.1f)\n", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
@@ -2009,7 +2008,6 @@ public:
             }
         }
 
-        shadowParams.update(light, camera.getViewProjectionMatrix(), settings.nearPlane, settings.farPlane);
 
         // Drain the pending mesh queue populated by the background scene-loading
         // thread.  GPU uploads happen here on the main thread so newly generated
@@ -2351,9 +2349,6 @@ public:
         uboStatic.lightDirection = glm::vec3(light.getDirection());
         uboStatic.lightElevation = uboStatic.lightDirection.y;
         uboStatic.lightColor = glm::vec3(1.0f, 1.0f, 0.9f);
-        uboStatic.lightSpaceMatrix  = shadowParams.lightSpaceMatrix[0];
-        uboStatic.lightSpaceMatrix1 = shadowParams.lightSpaceMatrix[1];
-        uboStatic.lightSpaceMatrix2 = shadowParams.lightSpaceMatrix[2];
         // Canonical scene UBO fields (see vulkan/ubo/UniformObject.hpp)
         uboStatic.debugMode = settings.debugMode;
         uboStatic.roughnessEnabled = settings.roughnessEnabled ? 1u : 0u;
@@ -2363,7 +2358,6 @@ public:
         uboStatic.tessNearDist = settings.tessMinDistance;
         uboStatic.tessFarDist = settings.tessMaxDistance;
         uboStatic.tessellationFactor = settings.tessellationFactor;
-        uboStatic.isShadowPass = 0u;
         uboStatic.tessellationEnabled = settings.tessellationEnabled ? 1u : 0u;
         // Screen-space octree raymarch hit tolerance (0 = off, see Settings).
         uboStatic.raymarchScreenEps = settings.octreeRaymarchScreenEps;
@@ -2403,13 +2397,15 @@ public:
             (settings.displacementEnabled && anyMaterialDisplacement) ? 1u : 0u;
         uboStatic.displacementAOEnabled =
             (settings.displacementAOEnabled && anyMaterialDisplacement) ? 1u : 0u;
-        uboStatic.displacementShadowCaster =
-            (settings.displacementShadowCasterEnabled && anyMaterialDisplacement) ? 1u : 0u;
         uboStatic.displacementMaxBound = maxMaterialDisplacementBound;
         uboStatic.nearPlane = settings.nearPlane;
         uboStatic.farPlane = settings.farPlane;
         uboStatic.normalMappingEnabled = settings.normalMappingEnabled ? 1u : 0u;
         uboStatic.shadowsEnabled = settings.enableShadows ? 1u : 0u;
+        uboStatic.shadowSoftness = std::max(settings.shadowSoftness, 0.0f);
+        uboStatic.shadowMaxDistance = std::max(settings.shadowMaxDistance, 0.0f);
+        uboStatic.shadowMaxSteps = static_cast<uint32_t>(std::clamp(
+            settings.shadowMaxSteps, 1, 256));
 
         // Brush params: brushTextureIndex, brushMode, brushHSV
         {
@@ -2435,29 +2431,15 @@ public:
         // ── GPU culling (solid / vegetation / brush / water) and the early brush
         // pass now run on a SEPARATE async command buffer (the "cull" task) that
         // signals semMainCull. This keeps the heavy solid/vegetation shading on
-        // this main command buffer free to overlap the cull + shadow +
-        // water + vegetation offscreen work. The shadow pass, the water geometry
-        // pass, and the vegetation pass each run on their own async command buffer
-        // and wait on semMainCull (directly or via queue ordering) so the shared
-        // visibleLods / brush-depth buffers are current before they read them.
+        // this main command buffer free to overlap the cull + vegetation
+        // offscreen work. The vegetation pass runs on its own async command
+        // buffer and waits on semMainCull (directly or via queue ordering) so
+        // the shared visibleLods / brush-depth buffers are current before it
+        // reads them.
 
-        // NOTE: the shadow pass has been moved to its own async command buffer
-        // (see the "shadow" task launched later in draw()). It signals semShadow,
-        // which the main command buffer waits on below so the shadow map and the
-        // restored UBO / visibleLods are ready before the solid shading samples
-        // them.
-
-        // Upload UBO to GPU (VMA persistently mapped — no map/unmap needed)
         // Upload UBO to GPU (VMA persistently mapped — no map/unmap needed).
-        // When shadows are ENABLED the shadow pass (now its own async command
-        // buffer) restores this buffer to uboStatic at the end of its render, so
-        // we must NOT also write it here (that would be a concurrent host/GPU
-        // write on the same buffer). When shadows are DISABLED the shadow task
-        // early-returns without restoring, so the main CB must upload uboStatic.
         if (sceneRenderer) {
-            if (!settings.enableShadows) {
-                memcpy(sceneRenderer->mainUniformBuffers[frameIdx].mappedData, &uboStatic, sizeof(UniformObject));
-            }
+            memcpy(sceneRenderer->mainUniformBuffers[frameIdx].mappedData, &uboStatic, sizeof(UniformObject));
         } else {
             std::cerr << "[MyApp::preRenderPass] sceneRenderer is null, skipping UBO upload\n";
         }
@@ -2481,7 +2463,7 @@ public:
             sceneRenderer->sdfRenderer->setMaxSteps(settings.sdfMaxSteps);
             sceneRenderer->sdfRenderer->setSmokeSamples(settings.sdfSmokeSamples);
             // Ray-marching master gate (Settings toggle / Minimal preset):
-            // off clears the SDF targets and skips the grass shadow caster.
+            // off clears the SDF targets.
             sceneRenderer->sdfRenderer->setRayMarchingEnabled(settings.rayMarchingEnabled);
             // M10 (report 25): current view-projection for the CPU container
             // screen-overlap gate on the solid-depth preload copy.
@@ -2556,11 +2538,10 @@ public:
 
         // ── Solid scene pass (sky offscreen + depth prepass + color pass) ──
         // Recorded on its OWN command buffer (solidCmd) and submitted to the
-        // dedicated solidQueue. It waits on the cull task's visibleLods/brush depth
-        // (semCullSolid) and the shadow map + restored UBO (semShadowSolid), then
-        // signals semSolid. The main command buffer (postprocess), the water task
-        // composite waits on tlSolid transitively. The "solid" task is launched
-        // later in draw().
+        // dedicated solidQueue. It waits on the cull task's visibleLods/brush
+        // depth (semCullSolid), then signals semSolid. The main command buffer
+        // (postprocess) and the water task composite wait on tlSolid
+        // transitively. The "solid" task is launched later in draw().
 
         // ── Early brush pass moved to its own async command buffer (see the
         // "cull" task launched later in draw()). The brush pass writes brush
@@ -2576,12 +2557,7 @@ public:
         // using a persistent thread pool to avoid per-frame std::thread creation overhead.
         // Dependency graph (timeline semaphores, one per producer):
         //   cull task      : brush early pass + all GPU culls -> tlCull
-        //   shadow task    : shadow map + cascade cull + blur, restores visibleLods/UBO
-        //                    (runs after cull on the worker) -> tlShadow
-        //                    (not enqueued when shadows are disabled; consumers
-        //                    then wait tlCull@v directly)
-        //   vegetation task: own offscreen color+depth (runs after shadow on the
-        //                    worker, so the shadow map is current) -> tlVeg
+        //   vegetation task: own offscreen color+depth -> tlVeg
         //   sdf task       : own offscreen color+depth (debug SDF cubes) -> tlSdf
         //   bbox task       : own offscreen color+depth (mesh bounding boxes) -> tlBbox
         // The main command buffer waits on the producer timelines via
@@ -2593,23 +2569,20 @@ public:
         // into one. Created once and reused across frames; per-frame ordering is the
         // monotonically increasing tlFrameValue. They are NOT destroyed per frame
         // (unlike the old binary semaphores) — ResourceManager owns them until teardown.
-        static VkSemaphore tlCull = VK_NULL_HANDLE, tlShadow = VK_NULL_HANDLE, tlSky = VK_NULL_HANDLE;
+        static VkSemaphore tlCull = VK_NULL_HANDLE, tlSky = VK_NULL_HANDLE;
         static VkSemaphore tlSolid = VK_NULL_HANDLE, tlBrush = VK_NULL_HANDLE;
         static VkSemaphore tlVeg = VK_NULL_HANDLE, tlSdf = VK_NULL_HANDLE, tlBbox = VK_NULL_HANDLE;
         static uint64_t tlFrameValue = 0;
         // Last frame value signaled on tlVeg (0 = none yet). The vegetation
         // consolidation copy waits on it so its overwrite of the inactive
         // instance pair never races the previous era's vegetation draws
-        // (vegetation queue) or the shadow cascade draws (cube queues,
-        // transitively covered because the veg task waits tlShadow first).
-        // Flicker fix: without this wait the copy overwrote instance bytes
-        // under in-flight draws and every streaming consolidation flashed
+        // (vegetation queue). Without this wait the copy overwrote instance
+        // bytes under in-flight draws and every streaming consolidation flashed
         // wrong instances for a frame.
         static uint64_t lastVegSignal = 0;
         static bool tlInit = false;
         if (!tlInit) {
             tlCull      = createTimelineSemaphore();
-            tlShadow    = createTimelineSemaphore();
             tlSky       = createTimelineSemaphore();
             tlSolid     = createTimelineSemaphore();
             tlBrush     = createTimelineSemaphore();
@@ -2620,7 +2593,7 @@ public:
         }
         const uint64_t v = ++tlFrameValue;
         std::future<void> asyncCullFuture;
-        std::future<void> asyncShadowFuture, asyncVegFuture, asyncSdfFuture, asyncBboxFuture;
+        std::future<void> asyncVegFuture, asyncSdfFuture, asyncBboxFuture;
         std::future<void> asyncSolidFuture, asyncSkyFuture;
 
         // --- Cull + early brush pass on its own command buffer (signals semMainCull) ---
@@ -2635,7 +2608,7 @@ public:
                 VkCommandBuffer cullCmd = app->beginAsyncTask("cull");
                 if (cullCmd == VK_NULL_HANDLE) return;
                 // Timeline semaphore: the cull results are signaled once on tlCull with
-                // the current frame value v. Every consumer (shadow, veg, sdf, bbox,
+                // the current frame value v. Every consumer (veg, sdf, bbox,
                 // solid, brush-solid, water, solid360, and the composite) waits on
                 // tlCull@v, which is valid because a timeline semaphore may have many
                 // waiters on the same value (unlike a binary semaphore).
@@ -2669,15 +2642,12 @@ public:
             // Restore the per-frame state for the main CB's continued recording.
             this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
 
-            // Brush preview is submitted after the shadow task is joined (see
-            // below): its camera UBO is restored at the end of that task.
         }
 
         // SDF frame inputs + depth bindings, set on the MAIN THREAD before the
-        // shadow task records: the grass shadow pass binds the SDF descriptor
-        // set, and vkUpdateDescriptorSets on a set referenced by a pending
-        // command buffer is illegal (VUID 03047). refreshFrameBindings is
-        // gated once per frame; the later SDF task only records barriers.
+        // async SDF task records. vkUpdateDescriptorSets on a set referenced by
+        // a pending command buffer is illegal (VUID 03047). refreshFrameBindings
+        // is gated once per frame; the later SDF task only records barriers.
         if (sceneRenderer && sceneRenderer->sdfRenderer) {
             if (sceneRenderer->solidRenderer) {
                 VkImageView dv = sceneRenderer->solidRenderer->getDepthView(frameIdx);
@@ -2710,75 +2680,20 @@ public:
             sceneRenderer->sdfRenderer->refreshFrameBindings(frameIdx);
         }
 
-        // --- Shadow pass on its own command buffer (signals semShadow) ---
-        // The shadow pass does its own cascade culling, blurs the cascades, and at
-        // the end restores the shared visibleLods + main UBO (so the main command
-        // buffer's solid shading reads the correct state). It depends on the cull
-        // task's visibleLods (run earlier on the worker) and restores them, so the
-        // main CB must wait on semShadow before sampling the shadow map / restored
-        // UBO / visibleLods. It runs on the same graphics queue, after the cull
-        // task (worker ordering), so the visibleLods are current when it reads them.
-        // Shadows disabled: no task is enqueued (renderParallel would only submit
-        // an empty CB relaying tlCull -> tlShadow). Nothing signals tlShadow on
-        // those frames, so its consumers wait tlCull@v directly instead and no
-        // worker is joined.
-        {
-            const bool shEnableShadows = settings.enableShadows;
-            const bool shRenderSolid = settings.renderSolid;
-            const bool shVegEnabled = vegetationEnabled;
-            const bool shShadowTess = settings.shadowTessellationEnabled;
-            const float shLodBias = settings.lodBias;
-            const float shMaxTargetLod = settings.maxTargetLod;
-            const glm::vec3 shCamPos = camera.getPosition();
-            if (shEnableShadows) {
-                asyncShadowFuture = asyncThreadPool.enqueue([this, frameIdx, viewProj, shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shMaxTargetLod, shCamPos, v]() {
-                    // The shadow producer signals a single timeline semaphore tlShadow@v.
-                    // The shadow producer signals a single timeline semaphore tlShadow@v.
-                    // Its internal cascade/blur sub-passes use their own (persistent binary)
-                    // semaphores; only the cross-queue edge becomes a timeline wait. The
-                    // composite does NOT wait on tlShadow (it only samples the final images,
-                    // not the shadow map), so registerSignal is false; solid/veg/water/
-                    // solid360 wait tlShadow@v via their own wait lists (tlCull@v when
-                    // shadows are disabled and tlShadow is never signaled).
-                    // Render each cascade on its own command buffer (parallel on distinct
-                    // cube queues); the EVSM blur + main-camera cull restore run serially in
-                    // a final CB that raises tlShadow once the shadow map is ready. Waits on
-                    // tlCull@v so the cull GPU buffers are visible before the cascade draws
-                    // read them.
-                    this->sceneRenderer->shadowMapper->renderParallel(this, frameIdx,
-                        sceneRenderer->mainUniformBuffers[frameIdx], uboStatic,
-                        shEnableShadows, shRenderSolid, shVegEnabled, shShadowTess, shLodBias, shCamPos, shMaxTargetLod,
-                        tlCull, v, tlShadow, v);
-                });
-            }
-        }
-
         // --- Solid scene pass on its OWN command buffer (submitted to solidQueue) ---
         // Records the sky offscreen + solid depth pre-pass + solid color pass and
         // transitions the solid color/depth images to SHADER_READ_ONLY_OPTIMAL, all
         // on a dedicated command buffer that runs on solidQueue. It waits on the cull
-        // task's visibleLods / brush depth (semCullSolid) and the shadow map + restored
-        // UBO (semShadowSolid), then signals semSolid (consumed by the main composite
-        // command buffer), semSolidWater (water task) and semSolid360 (solid360 task) —
-        // three DISTINCT binary semaphores so none is waited twice. Submitting to
-        // solidQueue (which may alias graphicsQueue on HW that exposes few graphics
-        // queues) keeps the solid shading decoupled from the composite/postprocess work.
-        // The solid task waits on the shadow task's timeline signal (on
-        // graphicsQueue) when shadows are enabled. Join the shadow task first so
-        // its signal submit is guaranteed to precede the solid task's wait submit
-        // (binary semaphores can't be waited before their signal has been submitted
-        // for execution). Shadows disabled: no shadow task exists, so this join is
-        // skipped and the solid task waits tlCull@v directly.
-        if (asyncShadowFuture.valid())
-            asyncShadowFuture.get();
+        // task's visibleLods / brush depth (semCullSolid), then signals semSolid
+        // (consumed by the main composite command buffer). Submitting to solidQueue
+        // (which may alias graphicsQueue on HW that exposes few graphics queues)
+        // keeps the solid shading decoupled from the composite/postprocess work.
+        //
+        // Directional shadows are evaluated per surface hit by SDF raymarching in
+        // the octree fragment shader: there is no shadow-map producer task, no
+        // cascade cull/blur and no tlShadow timeline to wait on.
 
         // --- Brush preview offscreen on its own queue (signals tlBrush) ---
-        // Submitted after the shadow task join: with shadows on, the shadow
-        // pass temporarily overwrites the main camera UBO and restores it at
-        // the end of that task. Waiting on tlShadow (implied by the join +
-        // explicit wait below) makes the preview raymarch read the current
-        // frame's restored camera instead of the shadow-pass matrices, which
-        // made the preview visibly lag behind camera/brush motion.
         // SDF-raymarched brush preview (color + front depth) into the brush
         // targets the composite overlays. No tessellated brush geometry and
         // no dependency on the solid pass: the solid shader evaluates the
@@ -2829,9 +2744,7 @@ public:
                 this->sceneRenderer->brushRenderer->recordPass(this, brushCmd, frameIdx, getMainDescriptorSet(),
                     this->sceneRenderer->mainUniformBuffers[frameIdx].buffer);
                 this->sceneRenderer->setCmdState(&this->sceneRenderer->frameCmdState);
-                // tlShadow implies tlCull and guarantees the restored camera
-                // UBO; shadows off means no tlShadow signal, so wait tlCull.
-                VkSemaphore brushWait = settings.enableShadows ? tlShadow : tlCull;
+                VkSemaphore brushWait = tlCull;
                 submitCommandBufferAsyncToQueue(brushCmd, getBrushQueue(), &tlBrush, {brushWait}, true, {}, {v}, v, {}, true);
             }
         }
@@ -2978,8 +2891,8 @@ public:
                 }
 
                 // ── Sky offscreen moved to its own queue (asyncSkyFuture) so the
-                //    equirectangular sky image is produced in parallel with the solid
-                //    and shadow passes. The fullscreen sky (render()) still draws into
+                //    equirectangular sky image is produced in parallel with the
+                //    solid pass. The fullscreen sky (render()) still draws into
                 //    this solid color pass below. ──
 
                 VkClearValue colorClear{};
@@ -3196,11 +3109,8 @@ public:
                 }
 
                 // Submit to the dedicated solid queue. Wait on the cull
-                // (visibleLods) and shadow (shadow map + restored UBO) results,
-                // then signal tlSolid@v (registered so the main composite CB
-                // waits on it).
-                // Shadows disabled: nothing signals tlShadow, so the solid pass
-                // waits tlCull@v directly instead (cull buffers + restored UBO).
+                // (visibleLods + brush depth) results, then signal tlSolid@v
+                // (registered so the main composite CB waits on it).
                 // The brush preview is an independent offscreen pass; its signal
                 // (tlBrush) goes straight to the composite, not through the
                 // solid pass. tlSolid is registered for the composite.
@@ -3210,7 +3120,7 @@ public:
                 // waits on tlSolid@(v-1) — the previous frame's solid pass must
                 // have completed before its images are marched.
                 {
-                    std::vector<VkSemaphore> solidWaitSemaphores = {settings.enableShadows ? tlShadow : tlCull};
+                    std::vector<VkSemaphore> solidWaitSemaphores = {tlCull};
                     std::vector<uint64_t> solidWaitValues = {v};
                     if (v > 0) {
                         solidWaitSemaphores.push_back(tlSolid);
@@ -3237,9 +3147,8 @@ public:
 
         // --- Vegetation pass on its own command buffer (signals semVeg) ---
         // Rendered to its own offscreen color+depth framebuffer (decoupled from
-        // the solid pass). Runs after the shadow task on the worker, so the shadow
-        // map it samples is current. Occlusion against solid geometry is resolved
-        // at composite time (PostProcessRenderer.frag). Like the other async passes, it
+        // the solid pass). Occlusion against solid geometry is resolved at
+        // composite time (PostProcessRenderer.frag). Like the other async passes, it
         // uses a dedicated CommandBufferState and signals semVeg (registered so the
         // composite waits on it).
         // H7 + M12 (perf report 27): single veg-pass decision owned by the
@@ -3286,10 +3195,8 @@ public:
                 VkImageView vegColorView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegColorView(frameIdx) : VK_NULL_HANDLE;
                 VkImageView vegDepthView = sceneRenderer->vegetationRenderer ? sceneRenderer->vegetationRenderer->getVegDepthView(frameIdx) : VK_NULL_HANDLE;
                 if (vegColorView == VK_NULL_HANDLE || vegDepthView == VK_NULL_HANDLE) {
-                // Shadows disabled: no shadow task signals tlShadow, so wait the
-                // cull timeline directly (same frame value).
                 app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg,
-                    {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
+                    {tlCull}, true, {}, {v}, v, {}, true);
                 lastVegSignal = v; // valid consolidation wait target (flicker fix)
                     return;
                 }
@@ -3373,17 +3280,13 @@ public:
                     vkCmdWriteTimestamp(vegCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPools[frameIdx], 13);
 
                 // Run on the dedicated vegetation queue (separate from graphicsQueue) so it
-                // parallelizes with the solid/shadow passes. Wait on the cull task's
-                // GPU-written vegetation instance/indirect buffers (tlCull@v) so they are
-                // visible before the veg pass reads them, and on the shadow task's timeline
-                // signal (tlShadow@v) so the shadow map written by the shadow task (on
-                // graphicsQueue) is visible before the veg pass samples it. Shadows
-                // disabled: nothing signals tlShadow, so the wait becomes tlCull@v (the
-                // shadow map is not sampled with shadowEffects.w == 0). The wait provides
-                // the cross-queue (graphics→vegetation) memory dependency, and being the
-                // same queue family no ownership transfer is required.
+                // parallelizes with the solid pass. Wait on the cull task's GPU-written
+                // vegetation instance/indirect buffers (tlCull@v) so they are visible
+                // before the veg pass reads them. The wait provides the cross-queue
+                // (graphics→vegetation) memory dependency, and being the same queue
+                // family no ownership transfer is required.
                 app->submitCommandBufferAsyncToQueue(vegCmd, app->getVegetationQueue(), &tlVeg,
-                    {settings.enableShadows ? tlShadow : tlCull}, true, {}, {v}, v, {}, true);
+                    {tlCull}, true, {}, {v}, v, {}, true);
                 // Publish the value the consolidation copy must wait on
                 // (flicker fix). Worker-thread write; the frame thread reads
                 // it only after joining this future.
@@ -3477,9 +3380,8 @@ public:
                 // Generic SDF volume (fire/grass): GPU-procedural animation
                 // needs no CPU scene edits; just stream the time uniform per
                 // frame. The scene slot + depth bindings were already
-                // prepared on the main thread (before the shadow pass, which
-                // also binds this set); prepareCull here only records the
-                // HOST->shader barriers for this CB.
+                // prepared on the main thread; prepareCull here only records
+                // the HOST->shader barriers for this CB.
                 if (this->sceneRenderer->sdfRenderer) {
                     float t = this->mainTime * (this->raymarchWidget ? this->raymarchWidget->timeScale : 1.0f);
                     this->sceneRenderer->sdfRenderer->setFrame(frameIdx);
@@ -3505,18 +3407,9 @@ public:
             });
             } // !sdfSkipSubmit (M11 elision: no CB, no tlSdf signal)
         }
-        // Wait for the shadow + vegetation async tasks (same rationale as above:
-        // keeps their signal semaphores valid and avoids concurrent descriptor-set
-        // binds on the shared renderers).
-        if (asyncShadowFuture.valid()) {
-            try {
-                asyncShadowFuture.get();
-            } catch (const std::exception &e) {
-                std::cerr << "[Async] shadow task failed, skipping shadow pass this frame: " << e.what() << std::endl;
-            } catch (...) {
-                std::cerr << "[Async] shadow task failed with unknown error, skipping shadow pass this frame" << std::endl;
-            }
-        }
+        // Wait for the vegetation async task (same rationale as above: keeps its
+        // signal semaphore valid and avoids concurrent descriptor-set binds on
+        // the shared renderers).
         if (asyncVegFuture.valid()) {
             try {
                 asyncVegFuture.get();
@@ -4420,9 +4313,6 @@ public:
         // Free all ImGui descriptor sets BEFORE Shutdown while the old backend data
         // is still alive. This avoids freeing DS allocated with the old descriptor
         // set layout through the new backend data after a Shutdown/Init cycle.
-        if (sceneRenderer && sceneRenderer->shadowMapper) {
-            sceneRenderer->shadowMapper->freeImGuiDescriptors();
-        }
         if (renderTargetsWidget) {
             renderTargetsWidget->invalidateImGuiDescriptors();
         }
@@ -4436,13 +4326,6 @@ public:
     }
 
     void onImGuiRecreated() override {
-        // Re-create ImGui AddTexture DS for shadow cascades — the old ones used the
-        // previous DescriptorSetLayout which was destroyed by ImGui_ImplVulkan_Shutdown.
-        // Old handles were freed by preImGuiShutdown() so recreateImGuiDescriptors
-        // will skip the free and go straight to allocation.
-        if (sceneRenderer && sceneRenderer->shadowMapper) {
-            sceneRenderer->shadowMapper->recreateImGuiDescriptors();
-        }
         // Widget handles were nulled by preImGuiShutdown(); this is a no-op.
         if (renderTargetsWidget) {
             renderTargetsWidget->invalidateImGuiDescriptors();

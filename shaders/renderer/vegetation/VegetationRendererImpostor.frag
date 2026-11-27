@@ -26,10 +26,6 @@ layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 #include "../../includes/noise/Perlin.glsl"
 #include "../../includes/sky/Clouds.glsl"
 
-layout(set = 0, binding = 4) uniform sampler2D shadowMap;
-layout(set = 0, binding = 8) uniform sampler2D shadowMap1;
-layout(set = 0, binding = 9) uniform sampler2D shadowMap2;
-
 // 60-layer impostor arrays: 3 vegetation types × 20 Fibonacci views.
 layout(set = 1, binding = 0) uniform sampler2DArray impostorArray;
 layout(set = 1, binding = 1) uniform sampler2DArray impostorNormalArray;
@@ -59,9 +55,6 @@ layout(push_constant) uniform PushConstants {
     float impostorDistance;
 };
 
-vec3 fragPosWorld; // set in main() — required by shadows.glsl cascades 1 & 2
-
-#include "../../includes/shadow/Shadows.glsl"
 #include "../../includes/vegetation/GrassShading.glsl"
 
 void main() {

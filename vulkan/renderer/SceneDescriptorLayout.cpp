@@ -39,13 +39,16 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     // Height sampler is used by fragment shader and tessellation evaluation shader (for displacement)
     heightSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
-    // binding 4: shadow map sampler
-    VkDescriptorSetLayoutBinding shadowSamplerBinding{};
-    shadowSamplerBinding.binding = 4;
-    shadowSamplerBinding.descriptorCount = 1;
-    shadowSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    shadowSamplerBinding.pImmutableSamplers = nullptr;
-    shadowSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // binding 5: Materials SSBO. (Bindings 4/8/9 held the retired CSM
+    // cascades; they are intentionally absent now.)
+    VkDescriptorSetLayoutBinding materialBinding{};
+    materialBinding.binding = 5;
+    materialBinding.descriptorCount = 1;
+    materialBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    materialBinding.pImmutableSamplers = nullptr;
+    materialBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+        | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
+        | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     // binding 6: Sky UBO
     VkDescriptorSetLayoutBinding skyBinding{};
@@ -66,25 +69,10 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
     // water vertex path (C1), which loads the per-vertex layer params directly.
     waterParamsBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 
-    // Per-instance / per-draw descriptor set uses bindings: 0 (UBO), 1..3 (samplers), 4 (shadow cascade 0),
-    // 5 (Materials SSBO), 6 (Sky UBO), 7 (water params), 8 (shadow cascade 1), 9 (shadow cascade 2)
-    // Note: Materials (binding 5) is declared in shaders as set=0 binding=5, so include it in the main layout.
-
-    // binding 8: shadow map cascade 1
-    VkDescriptorSetLayoutBinding shadowCascade1Binding{};
-    shadowCascade1Binding.binding = 8;
-    shadowCascade1Binding.descriptorCount = 1;
-    shadowCascade1Binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    shadowCascade1Binding.pImmutableSamplers = nullptr;
-    shadowCascade1Binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // binding 9: shadow map cascade 2
-    VkDescriptorSetLayoutBinding shadowCascade2Binding{};
-    shadowCascade2Binding.binding = 9;
-    shadowCascade2Binding.descriptorCount = 1;
-    shadowCascade2Binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    shadowCascade2Binding.pImmutableSamplers = nullptr;
-    shadowCascade2Binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Per-instance / per-draw descriptor set uses bindings: 0 (UBO),
+    // 1..3 (samplers), 5 (Materials SSBO), 6 (Sky UBO), 7 (water params),
+    // 10 (water render UBO). Bindings 4, 8 and 9 are intentionally absent:
+    // directional shadows are SDF raymarched, not sampled from CSM maps.
 
     // binding 10: Water render UBO (time parameter for water shaders)
     VkDescriptorSetLayoutBinding waterRenderUBOBinding{};
@@ -166,20 +154,13 @@ void SceneDescriptorLayout::create(VulkanApp& app) {
 
     // Binding numbers are sparse by design: 11 (legacy 360 cubemap) is
     // intentionally absent.
-    std::array<VkDescriptorSetLayoutBinding, 17> bindings = {
+    std::array<VkDescriptorSetLayoutBinding, 14> bindings = {
         uboLayoutBinding, samplerLayoutBinding, normalSamplerBinding, heightSamplerBinding,
-        shadowSamplerBinding, /* material */ VkDescriptorSetLayoutBinding{}, skyBinding,
-        waterParamsBinding, shadowCascade1Binding, shadowCascade2Binding, waterRenderUBOBinding,
+        materialBinding, skyBinding, waterParamsBinding, waterRenderUBOBinding,
         roughnessSamplerBinding, aoSamplerBinding,
         ssrColorBinding, ssrDepthBinding,
         windFieldBinding, brushMapBinding
     };
-    // Fill the material binding at position 5
-    bindings[5].binding = 5;
-    bindings[5].descriptorCount = 1;
-    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[5].pImmutableSamplers = nullptr;
-    bindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 
     const uint32_t layoutBindingCount = static_cast<uint32_t>(bindings.size());
 

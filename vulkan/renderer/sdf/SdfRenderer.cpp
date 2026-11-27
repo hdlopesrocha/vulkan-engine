@@ -18,10 +18,6 @@
 // 2 cube, 3 fire (one generic flame instance on the volumetric fire path).
 static constexpr int kSmokeShapeFire = 3;
 
-// EVSM moment format of the shadow cascades (must match ShadowRenderer's
-// EVSM_FORMAT); used by the grass-shadow pipeline's color attachment.
-static constexpr VkFormat kSdfShadowEvsmFormat = VK_FORMAT_R32G32_SFLOAT;
-
 SdfRenderer::SdfRenderer() = default;
 
 SdfRenderer::~SdfRenderer() { cleanup(nullptr); }
@@ -127,7 +123,6 @@ void SdfRenderer::init(VulkanApp* app) {
     ensureSmokeScene();
     refreshMergedLocked();
     createPipeline(app);
-    // Grass-only EVSM shadow retired with SDF grass.
 }
 
 void SdfRenderer::createCubeBuffers(VulkanApp* app) {
@@ -293,7 +288,6 @@ void SdfRenderer::createPipeline(VulkanApp* app) {
         pipelineLayout);
 }
 
-// Grass-only EVSM shadow retired with SDF grass (bladed grass casts via VegetationRenderer).
 
 // ─── Scene input ─────────────────────────────────────────────────────────────
 
@@ -1716,7 +1710,7 @@ void SdfRenderer::render(VulkanApp* app, VkCommandBuffer& cmd, VkDescriptorSet m
     // one: prepareCull's barrier lives on the cull CB, which may be a
     // different command buffer/queue; without this the draw can read
     // pre-upload state. Same pattern as DebugSDFRenderer::render.
-    // M9: copies were already recorded by prepareCull/prepareShadowCascade
+    // M9: copies were already recorded by prepareCull
     // (copiesPending consumed there, so this records no second copy); this
     // barrier covers cross-CB visibility for the payload staged/copied or
     // flushed this frame and early-outs in steady state. The device-local

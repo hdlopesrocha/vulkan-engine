@@ -6,9 +6,9 @@
 // this fullscreen pass marches the octree's stored corner SDFs for EVERY
 // terrain layer (Solid and Water) and shades the nearest isosurface hit. Solid
 // layers go through the same shadeSolidSurface() routine the raster path uses
-// (materials/mapping, CSM shadows); Water
-// layers use a water-surface shading branch (Snell-refracted lake bed + SDF
-// mirror ray, composed with the raster surface's Fresnel/strength mix).
+// (materials/mapping, LOD-locked SDF shadows); Water layers use a
+// water-surface shading branch (Snell-refracted lake bed + SDF mirror ray,
+// composed with the raster surface's Fresnel/strength mix).
 //
 // The node table (utils/OctreeRaymarchTable.hpp) stores SURFACE cells only,
 // flattened breadth-first per enabled terrain layer. Each layer contributes one
@@ -71,10 +71,9 @@
 #include "../../includes/solid/TangentBasis.glsl"
 #include "../../includes/solid/Triplanar.glsl"
 #include "../../includes/solid/Displacement.glsl"
-// Shared true-displacement field definition (same include used by the CSM
-// terrain caster, so camera and shadow rays intersect one surface).
+// Shared true-displacement field definition: camera and shadow rays evaluate
+// the identical displaced field/materials.
 #include "../../includes/octree/DisplacementField.glsl"
-#include "../../includes/shadow/Shadows.glsl"
 #include "../../includes/Hsv.glsl"
 
 // Screen-space reflection refinement (set 0, bindings 19/20) required by
@@ -90,7 +89,6 @@ layout(push_constant) uniform OctreeRaymarchPush {
     uint tableVersion; // low 32 bits of the table revision (future caches)
     uint nodeCount;    // records uploaded for this frame slot
     uint flags;        // reserved
-    mat4 shadowInvLightSpace; // shadow caster only (camera march ignores it)
 } pc;
 
 // Instrumentation was removed with the profile shader variants; the march
@@ -99,11 +97,10 @@ layout(push_constant) uniform OctreeRaymarchPush {
 
 layout(location = FRAG_OUT_COLOR) out vec4 outColor;
 
-// Terrain shadows are ray marched from the same node table (the raster CSM
-// has no terrain casters once chunk meshing is gone). Declared before the
-// shared shading body, defined below once the march helpers exist.
+// Terrain shadows are ray marched from the same node table. Declared before
+// the shared shading body, defined below once the march helpers exist.
 #define SOLID_SHADOW_TRACE 1
-float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int cascadeHint);
+float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int shadowHint);
 
 // ── Fragment globals consumed by shadeSolidSurface() ───────────────────────
 // The raster path fills these from tessellation varyings; a raymarched hit has
@@ -114,7 +111,6 @@ vec3 fragNormal;
 vec3 fragPosWorld;
 ivec3 fragTexIndices;
 ivec3 fragTextureTypes;
-vec4 fragPosLightSpace;
 vec3 fragPosWorldNotDisplaced;
 vec3 fragTexWeights;
 vec3 fragHSV;
@@ -184,6 +180,16 @@ float rmDebugBound = 0.0;
 int rmDebugRefineIters = 0;
 int rmDebugShadowSteps = 0;
 float rmDebugShadowT = 0.0;
+// Effective LOD (octree cell edge length) of the surface hit currently being
+// shaded. Every shadow ray started from that hit inherits this exact value and
+// may never choose another one from ray distance, screen error or traversal
+// heuristics. Set by the camera march / secondary-hit shading before
+// shadeSolidSurface() runs.
+float rmInheritedLodSize = 1.0;
+// Shadow-ray diagnostics (debug views only; no effect on the visibility term).
+int rmShadowDebugMissingLod = 0;
+int rmShadowDebugLodMismatch = 0;
+float rmShadowDebugPrimaryLod = 0.0;
 
 // World size of one pixel at distance t. viewProjection[1][1] holds
 // 1/tan(fovy/2) and pc.viewport is the solid target extent in pixels.
@@ -336,7 +342,7 @@ int rmCachedBrush(uint id) {
 // approximation of the original signed distance), and the offset is sampled
 // from the material height map with the same mapping mode / UV scale the
 // surface shader uses. DisplacementField.glsl owns the material resolution and
-// sampling so the CSM caster evaluates the identical expression.
+// sampling so camera and shadow rays evaluate the identical expression.
 float rmDisplacementN(uint id, int material, vec3 p, vec3 n) {
     if (material < 0) return 0.0;
     RmDisplacement d = rmDisplacementParams(material);
@@ -958,6 +964,14 @@ RmSurfaceBlend rmBlendAtHit(uint root, uint hitId, vec3 baseHit, vec3 displacedH
 vec3 rmLayerDebugColor(int layerId) {
     float hue = fract(float(layerId) * 0.618033988749895) * 360.0;
     return hsvToRgb(vec3(hue, 0.68, 0.95));
+}
+
+// Blue -> green -> red heat ramp for the LOD diagnostics.
+vec3 rmLodHeat(float t) {
+    t = clamp(t, 0.0, 1.0);
+    vec3 heat = mix(vec3(0.15, 0.25, 1.0), vec3(0.0, 1.0, 0.25),
+                    clamp(t * 2.0, 0.0, 1.0));
+    return mix(heat, vec3(1.0, 0.15, 0.0), clamp(t * 2.0 - 1.0, 0.0, 1.0));
 }
 
 // Cheap integer hash in [0,1) so adjacent leaf cells get different tints.
@@ -1610,7 +1624,6 @@ void rmWriteFragGlobals(vec3 hitPos, RmHitShading h) {
     // Interpolated per-vertex UV scale (OctreeNode::data), matching the
     // raster's interpolated fragUV.
     fragUV = h.blend.uv;
-    fragPosLightSpace = ubo.lightSpaceMatrix * vec4(hitPos, 1.0);
     // Same feed the TES writes (tess levels / 16, clamped to the heat range).
     // The raster's tess levels are per base cell, not per bumped hit.
     fragTessLevel = vec3(rmTessLevel(h.blendCell, rmCachedBrush(h.blendCell), h.basePos));
@@ -1763,50 +1776,289 @@ bool rmMarchSolidRoots(vec3 ro, vec3 rd, out uint hitRoot, out uint hitNode,
     return found;
 }
 
+// ── LOD-locked SDF shadow march ───────────────────────────────────────────
+// The primary march's effective LOD is the node whose trilinear field produced
+// the accepted surface hit (rmInheritedLodSize). A shadow ray must evaluate
+// that SAME cell size everywhere along its path:
+//
+//   * the descent gate is `nodeSize > inheritedCellSize`, with no dependence
+//     on ray distance, screen-space error, pixel footprint or camera distance;
+//   * once a cell reaches the inherited size its field is sampled directly and
+//     the traversal never descends below it (no independent refinement);
+//   * a node that is already coarser than the inherited size is never replaced
+//     by an available finer child, so the ray cannot switch representations;
+//   * when the hierarchy has no stored cell at the inherited size (leaf above
+//     it, pruned/non-surface child, cross-layer level mismatch), the region is
+//     sampled with the coarsest field that actually exists and
+//     rmShadowDebugMissingLod is raised. This is the explicit, visible
+//     fallback mandated by the LOD contract — never a silent substitution.
+//
+// The field expression, material resolution, displacement, corner-sentinel
+// handling and conservative stepping are the same helpers the primary march
+// uses, so a shadow sample evaluates exactly the same geometric representation.
+bool rmShadowMarchRoot(uint root, vec3 ro, vec3 rd, vec3 invRd, float tMax,
+                       float lodCell, float biasDist, int stepBudget,
+                       out float occlT, inout float visibility) {
+    occlT = 0.0;
+
+    // Same conservative root rejection box as the primary shadow path: the
+    // stored surface AABB expanded by the global displacement bound.
+    vec3 b = vec3(max(ubo.displacementMaxBound, 0.0));
+    vec3 boxMin = rmRoots[root].surfaceMin.xyz - b;
+    vec3 boxMax = rmRoots[root].surfaceMax.xyz + b;
+    float t0, t1;
+    if (!rmRayBoxInv(boxMin, boxMax - boxMin, ro, invRd, t0, t1)) return false;
+    t1 = min(t1, tMax);
+    float t = max(t0, 0.0);
+    if (t >= t1) return false;
+
+    uint stackNode[RM_MAX_STACK];
+    float stackExit[RM_MAX_STACK];
+    int depth = 0;
+    uint node = root;
+    float nodeExit = t1;
+
+    // Exact cell-size comparison tolerance. The octree subdivides by exact
+    // powers of two, so equality is the common case; the tolerance only covers
+    // float round-off from the stored cube sizes.
+    float lodTol = max(lodCell * 1.0e-3, 1.0e-5);
+
+    for (int iter = 0; iter < RM_SHADOW_STEPS; ++iter) {
+        if (iter >= stepBudget) break;
+        ++rmDebugShadowSteps;
+        if (t >= tMax) return false;
+        if (t >= nodeExit) {
+            if (depth == 0) return false;
+            --depth;
+            node = stackNode[depth];
+            nodeExit = stackExit[depth];
+            continue;
+        }
+
+        vec3 p = ro + rd * t;
+        float nodeSize = rmNodeSize(node);
+        float cellExit = nodeExit;
+        const bool coarser = nodeSize > lodCell + lodTol;
+        const bool finer = nodeSize < lodCell - lodTol;
+
+        // Fixed-LOD descent: only the inherited cell size decides whether the
+        // traversal may enter a child. There is deliberately no `t`-dependent
+        // term here.
+        bool descend = !rmNodeIsLeaf(node) && coarser;
+        if (descend) {
+            vec3 mn = rmNodeMin(node);
+            float nudge = max(nodeSize * 1.0e-5, 1.0e-4);
+            float tn = t + nudge;
+            vec3 pn = ro + rd * tn;
+            float childSize = nodeSize * 0.5;
+
+            vec3 local = (pn - mn) / max(nodeSize, 1e-8);
+            ivec3 cell = clamp(ivec3(floor(local * 2.0)), ivec3(0), ivec3(1));
+            int slot = cell.x * 4 + cell.y * 2 + cell.z;
+            vec3 childMin = mn + vec3(cell) * childSize;
+
+            float c0, c1;
+            if (rmRayBoxInv(childMin, childSize, pn, invRd, c0, c1) && c1 > 0.0) {
+                cellExit = min(nodeExit, tn + c1);
+            } else {
+                t = min(t + nudge, nodeExit);
+                continue;
+            }
+
+            if (childSize < lodCell - lodTol) {
+                // The root's hierarchy cannot represent the inherited cell size
+                // (different layer root / mixed level). Do not refine
+                // independently; sample this node and flag the missing LOD.
+                rmShadowDebugMissingLod = 1;
+            } else {
+                int child = rmNodeChild(node, slot);
+                if (child >= 0) {
+                    if (depth < RM_MAX_STACK) {
+                        stackNode[depth] = node;
+                        stackExit[depth] = nodeExit;
+                        ++depth;
+                        node = uint(child);
+                        nodeExit = cellExit;
+                        continue;
+                    }
+                    // Stack exhausted: keep the parent's field for this child
+                    // interval (flagged, as in the primary march).
+                    rmShadowDebugMissingLod = 1;
+                } else if (rmNodeChildPruned(node, slot)) {
+                    // Pruned surface child: the primary march samples the
+                    // parent's trilinear field over this interval. Same sample,
+                    // same explicit flag.
+                    rmShadowDebugMissingLod = 1;
+                } else {
+                    int childType = rmNodeChildType(node, slot);
+                    if (childType != RM_TYPE_SURFACE) {
+                        int brush = rmCachedBrush(node);
+                        bool displaced = brush >= 0 && rmDisplacementActive(brush);
+                        if (!displaced) {
+                            if (childType == RM_TYPE_SOLID) {
+                                // The unbumped field is entirely inside this
+                                // child (the primary march skips it because no
+                                // isosurface can cross it). Entering it means the
+                                // ray has already crossed the visible surface.
+                                occlT = t;
+                                return true;
+                            }
+                            // Empty: no isosurface can cross. Skip exactly.
+                            t = max(cellExit, t + nudge);
+                            continue;
+                        }
+                        // Displacement can move the surface across the border,
+                        // exactly as in the primary march: keep sampling the
+                        // parent field. Coarser than the inherited LOD by one
+                        // level; flag it explicitly.
+                        rmShadowDebugMissingLod = 1;
+                    } else {
+                        // Surface child without a stored record (table cap or
+                        // missing index): the primary fallback samples the
+                        // parent field. Same explicit fallback.
+                        rmShadowDebugMissingLod = 1;
+                    }
+                }
+            }
+        }
+
+        if (coarser || finer) {
+            // Reached a leaf above the inherited LOD, a pruned/non-surface
+            // fallback, or a cross-layer level mismatch. The flag makes this
+            // visible to the debug views; the sample still uses the only field
+            // that exists in the region.
+            rmShadowDebugMissingLod = 1;
+            rmShadowDebugLodMismatch = 1;
+        }
+
+        int material = rmCachedBrush(node);
+        float baseD;
+        float maxDisp;
+        float d = rmField(node, p, material, false, baseD, maxDisp);
+        if (isnan(d)) d = 1.0; // defensive, same policy as the primary march
+        // Tolerance follows the cell actually sampled (the inherited LOD in
+        // the normal case, the explicit fallback cell in a missing-LOD region).
+        float eps = max(nodeSize * 2.0e-3, 1.0e-4);
+
+        if (d <= 0.0) {
+            // A lifted origin can still sample marginally inside the surface.
+            // Give the bias one interval to clear; only then report occlusion.
+            if (t <= biasDist * 1.5) {
+                float tAdvance = min(biasDist * 2.0, cellExit);
+                if (tAdvance > t) {
+                    t = tAdvance;
+                    continue;
+                }
+            }
+            occlT = t;
+            return true;
+        }
+        if (abs(d) <= eps) {
+            occlT = t;
+            return true;
+        }
+
+        // Soft-shadow penumbra estimate (IQ-style): the closest approach of the
+        // ray to the field bounds the visibility. Skipped when softness is 0
+        // (hard shadows) and for the first few bias lengths so contact pixels
+        // are not darkened by the lifted origin.
+        if (ubo.shadowSoftness > 0.0 && t > max(biasDist * 4.0, eps * 4.0)) {
+            visibility = min(visibility,
+                             ubo.shadowSoftness * d / max(t, 1.0e-4));
+        }
+
+        // Conservative step, identical to the primary march's field rule.
+        float invLip = ((uint(rmNodes[node].meta.w) & RM_FLAG_PAYLOAD) != 0u)
+            ? rmNodes[node].hsv1.z
+            : 0.5;
+        float stepLen;
+        if (maxDisp > 0.0) {
+            float safe = abs(baseD) - maxDisp;
+            if (safe > eps) {
+                stepLen = max(safe * invLip, eps);
+            } else {
+                float wavelength = rmDisplacementWavelengthForNode(node, material);
+                if (!(wavelength > 0.0) || isnan(wavelength) || isinf(wavelength))
+                    wavelength = nodeSize * 0.5;
+                float feature = clamp(wavelength, nodeSize * 1.0e-4,
+                                      nodeSize * 0.5);
+                float Lbase = 1.0 / max(invLip, 1.0e-3);
+                float Ldisp = 6.28318530718 * maxDisp / max(feature, 1.0e-4);
+                float L = max(Lbase + Ldisp, 1.0e-4);
+                stepLen = max(clamp(abs(d) / L, feature * 0.125,
+                                    feature * 0.5), eps);
+            }
+        } else {
+            stepLen = max(abs(d) * invLip, eps);
+        }
+
+        float tNext = min(t + stepLen, cellExit);
+        if (!(tNext > t)) {
+            float tAdvance = min(t + max(eps, 1.0e-5), nodeExit);
+            if (!(tAdvance > t)) return false;
+            t = tAdvance;
+            continue;
+        }
+        float nb, nm;
+        float dNext = rmField(node, ro + rd * tNext, material, false, nb, nm);
+        if (isnan(dNext)) dNext = -1.0;
+
+        // Any sign change or inside sample occludes. The shadow does not need
+        // the primary's exact crossing position, only visibility.
+        if (dNext <= 0.0) {
+            if (tNext <= biasDist * 1.5) {
+                t = tNext;
+                continue;
+            }
+            occlT = tNext;
+            return true;
+        }
+        t = tNext;
+    }
+    return false;
+}
+
 // Primary-hit sun shadow: march the SOLID layer roots from the shaded point
-// toward the light. Returns 1.0 when anything occludes the ray (the CSM
-// convention used by shadeSolidSurface), 0.0 when the light is visible. The
-// start point is lifted along the surface normal so the self-cell cannot
-// intersect at t=0; the same adaptive octree march as the primary ray keeps
-// the shadow edge aligned with the rendered isosurface.
-float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int cascadeHint) {
-    cascadeHint = 0;
+// toward the light using the inherited primary-hit LOD. Returns 1.0 when the
+// light is blocked, 0.0 when it is visible (the convention used by
+// shadeSolidSurface). No raster CSM term is sampled: terrain shadows are
+// evaluated against the same octree representation that rendered the surface.
+float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int shadowHint) {
+    shadowHint = 0;
     if (ubo.shadowsEnabled == 0u) return 0.0;
 
-    // Raster CSM first: it carries every non-terrain caster (vegetation, SDF
-    // objects, video layers). The terrain CSM caster writes the same displaced
-    // field, so combining the two terms keeps ordinary geometry shadowing the
-    // displaced surface while the SDF traversal supplies the terrain's own
-    // self-shadowing at camera-march precision.
     vec3 toSun = normalize(l);
     float ndl = max(dot(n, toSun), 0.0);
-    float csmShadow = 0.0;
-    // Preserve the historical terrain path exactly when the new displacement
-    // path is globally inactive: the old terrain march never sampled the CSM.
-    // When displacement is active the CSM carries the raster casters (and the
-    // optional raymarched terrain caster), so combine both terms.
-    if (ubo.displacementEnabled != 0u && ndl > 0.01) {
-        float bias = max(0.002 * (1.0 - ndl), 0.0005);
-        csmShadow = ShadowCalculation(fragPosLightSpace, p, bias);
-    }
+    // A surface facing away from the sun cannot receive direct light; skip the
+    // shadow ray entirely (same early-out as the shared shading path).
+    if (ndl <= 0.01) return 1.0;
 
+    // Inherited LOD: exactly the cell size of the node that produced the hit.
+    // rmInheritedLodSize is written before shading (camera march, water bed or
+    // reflection ray). No distance/screen-space term is consulted here.
+    const float lodCell = max(rmInheritedLodSize, 1.0e-4);
+    rmShadowDebugPrimaryLod = lodCell;
+    rmShadowDebugMissingLod = 0;
+    rmShadowDebugLodMismatch = 0;
     rmDebugShadowSteps = 0;
+    rmDebugShadowT = 0.0;
+
+    // Bias in world units: a fraction of the inherited cell size (local SDF
+    // sampling resolution) plus the material's displacement amplitude. This
+    // scales with the actual representation instead of a fixed world offset.
+    float eps = max(lodCell * 2.0e-3, 1.0e-4);
+    float bias = max(eps, fragDisplacementBound * 0.05);
+    vec3 ro = p + n * bias + toSun * (bias * 0.05);
     vec3 rd = toSun;
-    // Normal-based bias scaled by the hit's displacement bound plus a small
-    // ray-direction term, so a displaced peak cannot shadow its own surface.
-    float bias = max(0.1, fragDisplacementBound * 0.05);
-    vec3 ro = p + n * bias + rd * (bias * 0.05);
     vec3 invRd = vec3(rmInvComp(rd.x), rmInvComp(rd.y), rmInvComp(rd.z));
-    // Terrain self-shadowing is a macro effect; cap the ray to keep grazing
-    // sun rays from marching the entire domain per pixel.
-    // Displaced-band shadow rays are expensive; 1 km is plenty for terrain
-    // self-shadowing at the reference scene scale.
-    const float maxT = ubo.displacementEnabled != 0u
-        ? min(max(ubo.farPlane, 1.0), 1024.0)
-        : min(max(ubo.farPlane, 1.0), 4096.0);
+
+    float maxT = (ubo.shadowMaxDistance > 0.0)
+        ? min(ubo.shadowMaxDistance, max(ubo.farPlane, 1.0))
+        : max(ubo.farPlane, 1.0);
+    const int stepBudget = clamp(int(ubo.shadowMaxSteps), 1, RM_SHADOW_STEPS);
 
     // Front-to-back root intervals among SOLID roots only: water is
-    // transparent and must not cast an opaque shadow on the terrain.
+    // transparent and must not cast an opaque shadow.
     RmRootInterval iv[RM_MAX_ROOTS];
     int ivCount = 0;
     const uint sortedRoots = min(pc.rootCount, uint(RM_MAX_ROOTS));
@@ -1820,19 +2072,17 @@ float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int cascadeHint) {
         rmInsertRootInterval(iv, ivCount, i, t0, t1);
     }
 
+    float visibility = 1.0;
     for (int k = 0; k < ivCount; ++k) {
         if (iv[k].t0 >= maxT) break;
-        uint node;
-        float t;
-        int brush;
-        vec3 normal;
-        if (rmMarchRoot(rmRoots[iv[k].root].node, ro, rd, invRd, maxT,
-                        true, max(iv[k].t0, 0.0), min(iv[k].t1, maxT),
-                        node, t, brush, normal, false, RM_SHADOW_STEPS) && t > 0.0) {
+        float occlT;
+        if (rmShadowMarchRoot(iv[k].root, ro, rd, invRd, maxT, lodCell,
+                              bias, stepBudget, occlT, visibility)) {
+            rmDebugShadowT = occlT;
             return 1.0;
         }
     }
-    // Roots beyond the sorting budget: unsorted fallback, same clamp.
+    // Roots beyond the sorting budget: unsorted fallback, same LOD lock.
     for (uint i = sortedRoots; i < pc.rootCount; ++i) {
         if (rmRoots[i].kind != 0u) continue;
         vec3 testMin, testMax;
@@ -1840,19 +2090,14 @@ float solidShadowTrace(vec3 p, vec3 n, vec3 l, out int cascadeHint) {
         float t0, t1;
         if (!rmRayBoxInv(testMin, testMax - testMin, ro, invRd, t0, t1)) continue;
         if (t1 <= 0.0 || t0 >= maxT) continue;
-        uint node;
-        float t;
-        int brush;
-        vec3 normal;
-        if (rmMarchRoot(rmRoots[i].node, ro, rd, invRd, maxT,
-                        true, max(t0, 0.0), min(t1, maxT),
-                        node, t, brush, normal, false, RM_SHADOW_STEPS) && t > 0.0) {
+        float occlT;
+        if (rmShadowMarchRoot(i, ro, rd, invRd, maxT, lodCell, bias,
+                              stepBudget, occlT, visibility)) {
+            rmDebugShadowT = occlT;
             return 1.0;
         }
     }
-    // No SDF occluder: the raster CSM term still applies (vegetation / SDF /
-    // video casters), so a lit terrain point is not shadowed by stale maps.
-    return clamp(csmShadow, 0.0, 1.0);
+    return clamp(1.0 - visibility, 0.0, 1.0);
 }
 
 // ── Ray-marched water surface waves ───────────────────────────────────────
@@ -1926,6 +2171,9 @@ RmWaterSurface rmWaterSurface(WaterParamsNamed wp, vec3 p, vec3 N, float detail,
 // shaded color (outColor is the target shadeSolidSurface writes).
 vec3 rmShadeSolidHit(uint root, uint node, int brush, vec3 pos, vec3 rd,
                      vec3 acceptedNormal) {
+    // The effective LOD of this surface hit is the cell that produced it. Any
+    // shadow ray started by this shading pass inherits that exact cell size.
+    rmInheritedLodSize = rmNodeSize(node);
     RmHitShading h = rmResolveHitShading(rmRoots[root].node, node,
                                          max(brush, 0), pos, rd, acceptedNormal);
     rmWriteFragGlobals(pos, h);
@@ -1950,7 +2198,7 @@ vec3 rmShadeSolidHit(uint root, uint node, int brush, vec3 pos, vec3 rd,
 //     detail (shared with the raster surface) perturb the normal and move the
 //     ray origins, so both images animate with the live wind;
 //   * the two are composed with the raster surface's exact Fresnel/strength
-//     mirror mix, and the CSM surface shadow darkens the result.
+//     mirror mix, and the SDF surface shadow darkens the result.
 vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
                            vec3 N, vec3 Nw, vec3 V) {
     vec3 toSun = normalize(-ubo.lightDirection);
@@ -1960,15 +2208,12 @@ vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
     float fresnel = clamp(0.02 + 0.98 * pow(1.0 - ndv,
                           clamp(wp.fresnelPower, 1.0, 8.0)), 0.0, 1.0);
 
-    // CSM shadow on the water surface (the refracted bed carries its own).
+    // SDF sun shadow on the water surface (the refracted bed carries its own).
+    // The ray inherits the water hit's effective LOD; no CSM/map is sampled.
     float surfaceShadow = 0.0;
     if (ubo.shadowsEnabled != 0u) {
-        float ndlS = max(dot(Nw, toSun), 0.0);
-        if (ndlS > 0.01) {
-            float bias = max(0.002 * (1.0 - ndlS), 0.0005);
-            surfaceShadow = ShadowCalculation(
-                ubo.lightSpaceMatrix * vec4(hitPos, 1.0), hitPos, bias);
-        }
+        int shadowHint;
+        surfaceShadow = solidShadowTrace(hitPos, Nw, toSun, shadowHint);
     }
 
     // ── Refraction: Snell-bent ray traced through the SDF to the bed ──
@@ -1995,7 +2240,7 @@ vec3 shadeRaymarchWaterSDF(WaterParamsNamed wp, vec3 hitPos, vec3 shadePos,
         thickness = min(bedT, max(wp.maxThickness, 0.0));
         vec3 bedPos = refrOrigin + refrDir * bedT;
         // Shade the bed with the shared solid shading body (materials,
-        // triplanar mapping, displacement parity, CSM shadows). It writes
+        // triplanar mapping, displacement parity, SDF shadows). It writes
         // outColor; the water composition below replaces it.
         vec3 bedColor = rmShadeSolidHit(bedRoot, bedNode, bedBrush, bedPos, refrDir,
                                         bedNormal);
@@ -2158,6 +2403,10 @@ void main() {
     }
     if (!found) discard;
     rmCount(RM_COUNTER_HITS);
+    // Effective primary LOD at the accepted hit. Preserved verbatim so every
+    // shadow ray launched while shading this surface evaluates the same octree
+    // representation (rmShadowMarchRoot).
+    rmInheritedLodSize = rmNodeSize(nearestNode);
     const bool isWater = rmRoots[nearestRoot].kind == 1u;
     // rmHitAllowed() already rejected solid DISCARD_BRUSH_INDEX cells and
     // non-upward water faces. Keep the solid guard as a defensive backstop;
@@ -2225,7 +2474,7 @@ void main() {
     // These views are produced by the same march that shaded the hit, so they
     // show the actual traversal values (not a parallel approximation).
     if (!isWater && ubo.debugMode >= DEBUG_MODE_ORIGINAL_SDF_SURFACE &&
-        ubo.debugMode <= DEBUG_MODE_DISPLACEMENT_SHADOW) {
+        ubo.debugMode <= DEBUG_MODE_SHADOW_LOD_MISSING) {
         float bound = max(solidHit.dispBound, 1.0e-6);
         int mode = ubo.debugMode;
         if (mode == DEBUG_MODE_ORIGINAL_SDF_SURFACE) {
@@ -2279,6 +2528,47 @@ void main() {
                                             normalize(-ubo.lightDirection), hint);
             float steps = clamp(float(rmDebugShadowSteps) / 128.0, 0.0, 1.0);
             outColor = vec4(steps, shadow, 0.0, 1.0);
+            return;
+        }
+        if (mode >= DEBUG_MODE_PRIMARY_LOD && mode <= DEBUG_MODE_SHADOW_LOD_MISSING) {
+            vec3 toSun = normalize(-ubo.lightDirection);
+            int hint;
+            // The shadow trace fills the inherited-LOD / missing-LOD telemetry.
+            float shadow = solidShadowTrace(hitPos, normalize(normal), toSun, hint);
+            float visibility = clamp(1.0 - shadow, 0.0, 1.0);
+            float rootSize = max(rmNodeSize(rmRoots[nearestRoot].node), 1.0e-6);
+            float primaryLevel = clamp(log2(rootSize /
+                                            max(rmShadowDebugPrimaryLod, 1.0e-6)) / 12.0,
+                                       0.0, 1.0);
+            if (mode == DEBUG_MODE_PRIMARY_LOD) {
+                outColor = vec4(rmLodHeat(primaryLevel), 1.0);
+                return;
+            }
+            if (mode == DEBUG_MODE_SHADOW_LOD) {
+                // Green = every sampled shadow cell equals the primary hit's
+                // effective cell size; red = a different representation was
+                // sampled (the explicit missing-LOD fallback).
+                float ok = (rmShadowDebugLodMismatch == 0) ? 1.0 : 0.0;
+                outColor = vec4(1.0 - ok, ok, 0.0, 1.0);
+                return;
+            }
+            if (mode == DEBUG_MODE_SHADOW_VISIBILITY) {
+                outColor = vec4(1.0 - visibility, visibility, 0.0, 1.0);
+                return;
+            }
+            if (mode == DEBUG_MODE_SHADOW_DISTANCE) {
+                float maxT = (ubo.shadowMaxDistance > 0.0)
+                    ? ubo.shadowMaxDistance : max(ubo.farPlane, 1.0);
+                float t = clamp(rmDebugShadowT / max(maxT, 1.0e-4), 0.0, 1.0);
+                vec3 heat = mix(vec3(0.0, 1.0, 0.2), vec3(1.0, 0.0, 0.0), t);
+                outColor = vec4(heat, 1.0);
+                return;
+            }
+            // DEBUG_MODE_SHADOW_LOD_MISSING: red marks a sample/region where the
+            // inherited cell size was not representable and the explicit
+            // coarser fallback ran.
+            float missing = (rmShadowDebugMissingLod != 0) ? 1.0 : 0.0;
+            outColor = vec4(missing, 1.0 - missing, 0.0, 1.0);
             return;
         }
     }

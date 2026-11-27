@@ -58,10 +58,10 @@ run_case procedural VULKAN_DISPLACEMENT_TEST=1 VULKAN_DISPLACEMENT=1 \
     VULKAN_DISPLACEMENT_AMP=1 VULKAN_DISPLACEMENT_FREQ=2 \
     VULKAN_DISPLACEMENT_TEXTURE=-2
 
-# 6. Same displacement with the CSM terrain caster off: exercises the
-#    "displaced geometry self-shadows but does not cast into CSM" path.
-run_case caster_off VULKAN_DISPLACEMENT_TEST=1 VULKAN_DISPLACEMENT=1 \
-    VULKAN_DISPLACEMENT_CASTER=0 VULKAN_DISPLACEMENT_AMP=1 VULKAN_DISPLACEMENT_FREQ=2
+# 6. Hard-shadow path: the SDF shadow ray keeps the inherited LOD and disables
+#    the soft-shadow penumbra estimate.
+run_case hard_shadow VULKAN_DISPLACEMENT_TEST=1 VULKAN_DISPLACEMENT=1 \
+    VULKAN_SHADOW_SOFTNESS=0 VULKAN_DISPLACEMENT_AMP=1 VULKAN_DISPLACEMENT_FREQ=2
 
 # 7. Displacement AO off: verifies the AO term is optional and does not leak.
 run_case ao_off VULKAN_DISPLACEMENT_TEST=1 VULKAN_DISPLACEMENT=1 \
@@ -85,11 +85,10 @@ run_case secondary_sdf_debug VULKAN_PATTERN_TEST=1 \
 # 8. Full procedural / catalogue scene (complex octree geometry) with a small
 #    amplitude. This is the heavy case; 8 frames is enough for a smoke test.
 FRAMES=8 run_case large_scene VULKAN_DISPLACEMENT=1 \
-    VULKAN_DISPLACEMENT_AMP=0.5 VULKAN_DISPLACEMENT_FREQ=1 \
-    VULKAN_DISPLACEMENT_CASTER=0
+    VULKAN_DISPLACEMENT_AMP=0.5 VULKAN_DISPLACEMENT_FREQ=1
 
 # The enable log is emitted by setupTexturesFinish for every non-baseline run.
-for n in positive negative highfreq offset_bounds procedural caster_off ao_off \
+for n in positive negative highfreq offset_bounds procedural hard_shadow ao_off \
          debug_normals large_scene; do
     if ! grep -q '\[MyApp\] true displacement:' "logs/run-displacement-${n}.log"; then
         echo "FAIL: displacement material setup missing in ${n}" >&2

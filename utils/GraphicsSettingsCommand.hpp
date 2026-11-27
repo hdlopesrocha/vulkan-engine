@@ -39,7 +39,6 @@ public:
 private:
     static void applyMaximum(Settings& settings) {
         settings.tessellationEnabled = true;
-        settings.shadowTessellationEnabled = true;
         settings.enableShadows = true;
         // Volumetric clouds on (sky + shadows + reflections).
         settings.cloudsEnabled = true;
@@ -67,9 +66,8 @@ private:
         // The global tessellation toggle drives both the solid and the water
         // TCS (tess level collapses to 1 when it is off).
         settings.tessellationEnabled = false;
-        settings.shadowTessellationEnabled = false;
-        // Shadow maps + cascade passes off (the solid pass then uses the
-        // unshadowed direct-lighting path).
+        // SDF shadow rays off (the solid pass then uses the unshadowed
+        // direct-lighting path).
         settings.enableShadows = false;
         // Volumetric clouds off (no sky raymarch, no cloud shadows).
         settings.cloudsEnabled = false;

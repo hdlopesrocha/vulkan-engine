@@ -1214,15 +1214,9 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
         }
     }
 
-    // Solid cascade OUTPUT zeroing: ONLY when this dispatch actually emits the
-    // solid cascade streams (doCascade). The vegetation cascade cull
-    // (doVegCascade=true, doCascade=false) runs as a SEPARATE later dispatch on
-    // this same renderer inside the shadow cull command buffer (see
-    // ShadowRenderer::renderParallel -> VegetationRenderer::
-    // prepareCullCascades); zeroing the solid cascade streams there would wipe
-    // the streams the solid cascade cull just filled, and since that dispatch
-    // runs with pc.doCascade=0 they are never refilled — drawCascadeOnly then
-    // reads count=0 and no solid geometry is rendered into the shadow cascades.
+    // Cascade output zeroing (legacy path): only when this dispatch actually
+    // emits the cascade streams (doCascade). The engine no longer requests
+    // cascade culling (SDF shadows replaced CSM), so this stays dormant.
     if (doCascadeThisFrame) {
         {
             VkBufferMemoryBarrier2 preFill[6]{};
@@ -1374,7 +1368,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // For a vegetation cascade-only dispatch there are no solid/SDF/bbox entries
     // but the veg chunks still need culling, so keep going when doVegCascade.
     bool hasWork = (numCmds + sdfCount + bboxCount) > 0
-        || (doMain && vegCascadeInited && lastVegChunkCount_ > 0)
+        || (doMain && lastVegChunkCount_ > 0)
         || (doVegCascade && vegCascadeInited && vegChunkCount > 0);
     if (!hasWork) {
         // Count active meshes only on this rare path (used by the warn-once
@@ -1410,7 +1404,7 @@ void IndirectRenderer::prepareCull(VkCommandBuffer cmd, const glm::mat4& viewPro
     // (binding 9) can never emit anything. The cascade path passes the chunk
     // count every frame; remember it for the main dispatch.
     if (vegChunkCount > 0) lastVegChunkCount_ = vegChunkCount;
-    const uint32_t mainVegCount = (doMain && vegCascadeInited) ? lastVegChunkCount_ : 0u;
+    const uint32_t mainVegCount = doMain ? lastVegChunkCount_ : 0u;
     pc.vegChunkCount     = (vegChunkCount > 0) ? vegChunkCount : mainVegCount;
     pc.doVegMain         = (doMain && mainVegCount > 0) ? 1u : 0u;
     pc.lodRootMin        = lodRootMin_;
@@ -2144,8 +2138,10 @@ void IndirectRenderer::initSlots(VulkanApp* app,
 
     slottedMode = true;
 
-    // Initialize cascade-aware culling resources
-    initCascadeCull(app);
+    // Directional shadows are SDF-raymarched: no cascade cull resources are
+    // allocated. The compute shader keeps its statically declared cascade
+    // bindings fed by the shared dummy buffer (see the !cascadeCullInited path
+    // above) and doCascade is never set.
 
     std::cerr << "[IndirectRenderer::initSlots] maxActiveChunks=" << maxActiveChunks
               << " meshCapacity=" << meshCapacity

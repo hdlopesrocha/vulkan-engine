@@ -3,9 +3,9 @@
 
 // Shared true-displacement field definition for the octree raymarcher.
 //
-// Both the camera march (OctreeRaymarch.frag) and the CSM terrain caster
-// (OctreeRaymarchShadow.frag) include this file, so the surface they intersect
-// is defined by exactly the same expression:
+// Both the camera march (OctreeRaymarch.frag) and its LOD-locked shadow ray
+// include this file, so the surface they intersect is defined by exactly the
+// same expression:
 //
 //     F(p) = d_original(p) - h(p)
 //

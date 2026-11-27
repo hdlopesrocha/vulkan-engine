@@ -245,12 +245,6 @@ public:
     // frame's slot. Call OUTSIDE a render pass, before render().
     void prepareCull(VkCommandBuffer cmd);
 
-    // Retired grass-only EVSM shadow API (bladed grass casts via
-    // VegetationRenderer). Kept as no-ops so ShadowRenderer links unchanged.
-    void prepareShadowCascade(VkCommandBuffer, uint32_t) {}
-    void drawShadowCascade(VkCommandBuffer, uint32_t, const glm::mat4&, float) {}
-    void setShadowLightDirection(const glm::vec3&) {}
-
     // Global SDF clock (last updateParams time).
     float getTime() const;
 

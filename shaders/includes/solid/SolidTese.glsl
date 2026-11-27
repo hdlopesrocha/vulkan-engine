@@ -5,7 +5,7 @@ layout(triangles, equal_spacing, cw) in;
 
 
 // Inputs from TCS (per-vertex arrays). SHADOW_PASS (perf report 21 H4) keeps
-// only the displacement inputs: the EVSM shadow fragment shader consumes
+// only the displacement inputs: the depth-only fragment shader consumes
 // VARY_POSWORLD alone, so color/uv/normal varyings, the sharp-face normal,
 // the light-space position and the tess-level feed are compiled out (~40
 // flops/vertex of dead interpolation + VGPR/LDS pressure). Displacement
@@ -33,7 +33,7 @@ layout(location = VARY_HSV) in vec3 tc_fragHSV[];
 #endif
 
 #ifdef SHADOW_PASS
-// Outputs to the EVSM shadow fragment shader (position only).
+// Outputs to the depth-only fragment shader (position only).
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
 #else
 // Outputs to fragment shader (match SolidRenderer.frag inputs)
@@ -44,7 +44,6 @@ layout(location = VARY_NORMAL) out vec3 fragNormal; // world-space normal
 layout(location = VARY_POSWORLD) out vec3 fragPosWorld;
 layout(location = VARY_BRUSHPATCH) flat out ivec3 fragTexIndices;
 layout(location = VARY_TEXTURETYPE) flat out ivec3 fragTextureTypes;
-layout(location = VARY_POSLIGHT) out vec4 fragPosLightSpace;
 layout(location = VARY_LOCALPOS) out vec3 fragPosWorldNotDisplaced;
 layout(location = VARY_SHARPNORMAL) out vec3 fragSharpNormal; // face normal computed from triangle corners (sharp)
 layout(location = VARY_TEXWEIGHTS) out vec3 fragTexWeights;
@@ -58,7 +57,9 @@ layout(location = VARY_DEBUG) out vec3 fragTessLevel;
 
 
 void main() {
-    bool isDepthPass = (ubo.isShadowPass != 0u);
+    // The engine has no raster shadow pass anymore: this interface is used by
+    // the regular solid graph only.
+    const bool isDepthPass = false;
 
     // barycentric coordinates
     vec3 bc = gl_TessCoord;
@@ -100,7 +101,6 @@ void main() {
         fragTexWeights = vec3(0.0);
         fragPosWorld = vec3(0.0);
         fragPosWorldNotDisplaced = vec3(0.0);
-        fragPosLightSpace = vec4(0.0);
         fragSharpNormal = vec3(0.0);
         fragHSV = vec3(0.0);
         fragTessLevel = vec3(0.0);
@@ -117,7 +117,6 @@ void main() {
         fragPosWorldNotDisplaced = worldPos.xyz;
         worldPos = vec4(displacedLocalPos, 1.0);
         fragPosWorld = worldPos.xyz;
-        fragPosLightSpace = ubo.lightSpaceMatrix * worldPos;
         
         fragUV = uv;
         fragTexIndices = texIndices;
