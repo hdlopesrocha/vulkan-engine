@@ -44,5 +44,9 @@ enum class TestShape {
     CubeAngular,
     Interpolation,
     ObjMesh,
+    Twist,
+    Bend,
+    Extrude,
+    Revolve,
     Count
 };

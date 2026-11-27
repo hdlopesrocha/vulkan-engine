@@ -253,6 +253,13 @@ The `sdf/` directory implements a full SDF primitive and composition library:
 - Hard: union, subtraction, intersection, XOR
 - Smooth: `opSmoothUnion`, `opSmoothSubtraction`, `opSmoothIntersection` (blending parameter controls transition width)
 
+**Domain and profile operations:**
+- **Twist** — rotates the domain around the local Y axis by a rate proportional to height.
+- **Bend** — rotates local YZ slices by a rate proportional to X.
+- **Extrude** — extrudes a normalized 2D profile along local Z.
+- **Revolve** — revolves a normalized radial/axial 2D profile around local Y.
+- The extrude/revolve profiles include `Circle2DDistanceFunction` and `Box2DDistanceFunction`; `TestShape`/`applyTestObject` stamp a catalogue example of each new operation.
+
 **Distortion effects:**
 - **Fractal Perlin distortion** — displaces the SDF domain with multi-octave Perlin noise (frequency, octaves, lacunarity, gain) to produce eroded or organic surfaces.
 - **Perlin carve** — combines Perlin noise with a threshold to punch procedural holes and erosion patterns.

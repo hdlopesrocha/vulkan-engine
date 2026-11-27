@@ -43,6 +43,12 @@
 // SDF sweep
 #include "../sdf/operations/SweepSignedDistanceFunction.hpp"
 #include "../sdf/operations/InterpolatedDistanceFunction.hpp"
+#include "../sdf/operations/TwistDistanceFunction.hpp"
+#include "../sdf/operations/BendDistanceFunction.hpp"
+#include "../sdf/operations/ExtrudeDistanceFunction.hpp"
+#include "../sdf/operations/RevolveDistanceFunction.hpp"
+#include "../sdf/primitives/Circle2DDistanceFunction.hpp"
+#include "../sdf/primitives/Box2DDistanceFunction.hpp"
 
 // SDF operations
 #include "../sdf/operations/AddSignedDistanceOperation.hpp"
@@ -438,6 +444,68 @@ public:
                 if (!function.empty()) {
                     opaqueLayer.apply(AddSignedDistanceOperation(), function, SimpleBrush(7), TriplanarMappingPainter(), tileSize, simplifier, opaqueUpdateHandler, opaqueDeleteHandler);
                 }
+                break;
+            }
+            case TestShape::Twist: {
+                std::cout << "\topaqueLayer.add(twist box)" << std::endl;
+                Transformation twistBoxModel(
+                    glm::vec3(objectSize.x * 0.25f, objectSize.y * 0.5f,
+                              objectSize.z * 0.25f),
+                    center, 0, 0, 0);
+                BoxDistanceFunction base(twistBoxModel, tileSize);
+                // Half a turn over the full object height, measured from the
+                // primitive center (q.y in [-64, 64]).
+                TwistDistanceFunction function(
+                    base, glm::radians(180.0f) / objectSize.y, model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function,
+                                  SimpleBrush(7), TriplanarMappingPainter(),
+                                  tileSize, simplifier, opaqueUpdateHandler,
+                                  opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::Bend: {
+                std::cout << "\topaqueLayer.add(bend box)" << std::endl;
+                Transformation bendBoxModel(
+                    glm::vec3(objectSize.x * 0.5f, objectSize.y * 0.15f,
+                              objectSize.z * 0.15f),
+                    center, 0, 0, 0);
+                BoxDistanceFunction base(bendBoxModel, tileSize);
+                // 120 degrees of bend across the long X axis.
+                BendDistanceFunction function(
+                    base, glm::radians(120.0f) / objectSize.x, model, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function,
+                                  SimpleBrush(7), TriplanarMappingPainter(),
+                                  tileSize, simplifier, opaqueUpdateHandler,
+                                  opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::Extrude: {
+                std::cout << "\topaqueLayer.add(extruded circle)" << std::endl;
+                auto profile = std::make_shared<Circle2DDistanceFunction>(1.0f);
+                Transformation extrusionModel(
+                    glm::vec3(objectSize.x * 0.35f, objectSize.z * 0.35f,
+                              objectSize.y * 0.4f),
+                    center, 0, 0, 0);
+                ExtrudeDistanceFunction function(profile, extrusionModel, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function,
+                                  SimpleBrush(11), TriplanarMappingPainter(),
+                                  tileSize, simplifier, opaqueUpdateHandler,
+                                  opaqueDeleteHandler);
+                break;
+            }
+            case TestShape::Revolve: {
+                std::cout << "\topaqueLayer.add(revolved tube profile)" << std::endl;
+                // Profile: a radial/axial box -> a thick tube when revolved.
+                auto profile = std::make_shared<Box2DDistanceFunction>(
+                    glm::vec2(0.60f, 0.0f), glm::vec2(0.25f, 0.40f));
+                Transformation revolveModel(
+                    glm::vec3(objectSize.x * 0.5f, objectSize.y * 0.5f, 1.0f),
+                    center, 0, 0, 0);
+                RevolveDistanceFunction function(profile, revolveModel, tileSize);
+                opaqueLayer.apply(AddSignedDistanceOperation(), function,
+                                  SimpleBrush(11), TriplanarMappingPainter(),
+                                  tileSize, simplifier, opaqueUpdateHandler,
+                                  opaqueDeleteHandler);
                 break;
             }
             case TestShape::Dodecahedron: {
